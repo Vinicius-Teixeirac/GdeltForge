@@ -1,0 +1,138 @@
+# ================================
+#   GDELT PIPELINE CONFIGURATION
+#   Copy this file to settings.yaml
+#   and adjust the paths as needed.
+# ================================
+
+# Columns present in the GDELT Event dataset
+columns:
+  gdelt_event:
+    - GLOBALEVENTID
+    - Day
+    - MonthYear
+    - Year
+    - FractionDate
+    - Actor1Code
+    - Actor1Name
+    - Actor1CountryCode
+    - Actor1KnownGroupCode
+    - Actor1EthnicCode
+    - Actor1Religion1Code
+    - Actor1Religion2Code
+    - Actor1Type1Code
+    - Actor1Type2Code
+    - Actor1Type3Code
+    - Actor2Code
+    - Actor2Name
+    - Actor2CountryCode
+    - Actor2KnownGroupCode
+    - Actor2EthnicCode
+    - Actor2Religion1Code
+    - Actor2Religion2Code
+    - Actor2Type1Code
+    - Actor2Type2Code
+    - Actor2Type3Code
+    - IsRootEvent
+    - EventCode
+    - EventBaseCode
+    - EventRootCode
+    - QuadClass
+    - GoldsteinScale
+    - NumMentions
+    - NumSources
+    - NumArticles
+    - AvgTone
+    - Actor1Geo_Type
+    - Actor1Geo_FullName
+    - Actor1Geo_CountryCode
+    - Actor1Geo_ADM1Code
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor1Geo_FeatureID
+    - Actor2Geo_Type
+    - Actor2Geo_FullName
+    - Actor2Geo_CountryCode
+    - Actor2Geo_ADM1Code
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
+    - Actor2Geo_FeatureID
+    - ActionGeo_Type
+    - ActionGeo_FullName
+    - ActionGeo_CountryCode
+    - ActionGeo_ADM1Code
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - ActionGeo_FeatureID
+    - DATEADDED
+    - SOURCEURL
+
+# Numeric columns 
+columns_numeric:
+  - GLOBALEVENTID
+  - Day
+  - MonthYear
+  - Year
+  - FractionDate
+  - IsRootEvent
+  - QuadClass
+  - GoldsteinScale
+  - NumMentions
+  - NumSources
+  - NumArticles
+  - AvgTone
+  - Actor1Geo_Type
+  - Actor1Geo_Lat
+  - Actor1Geo_Long
+  - Actor2Geo_Type
+  - Actor2Geo_Lat
+  - Actor2Geo_Long
+  - ActionGeo_Type
+  - ActionGeo_Lat
+  - ActionGeo_Long
+
+# ================================
+#       DIRECTORY PATHS
+# ================================
+# The user should customize these.
+# Use absolute or relative paths.
+
+paths:
+  # Directory where the pipeline will download ZIP files
+  downloaded_data_directory: "/path/to/raw_data"
+
+  # Directory for extracted CSV files
+  unzipped_data_directory: "/path/to/csv"
+
+  # Directory for Parquet output
+  parquet_data_directory: "/path/to/parquet"
+
+  # Directory for filtered Parquet files
+  filtered_data_directory: "/path/to/filtered"
+
+# ================================
+#          STAGE SETTINGS
+# ================================
+
+scraper:
+  retries: 3
+  timeout: 30  # seconds
+
+converter:
+  keep_unzipped: false
+  file_pattern: "*.zip"
+
+# The user should customize this.
+# Provide columns so the filter drop instances with NAN values on them.
+filter:
+  columns_to_check: # example
+    - Actor1Code
+    - Actor2Code
+    - EventRootCode
+    - EventBaseCode
+    - EventCode
+    - QuadClass
+    - ActionGeo_CountryCode
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - ActionGeo_FeatureID
+    - Day
