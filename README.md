@@ -266,7 +266,7 @@ python main.py sample --mode indexed -n 10000
 ```
 
 ### 5.6 Bônus
-A extensive guide of filtered sampling is available in filtered_examples.txt
+A extensive guide of filtered sampling is available in filtered_sampling.examples.md
 
 # 6. Logging System
 
@@ -296,7 +296,7 @@ Only one pipeline stage per command. No automatic chaining. No dependency resolu
 python main.py scrape convert sample
 ```
 
-> Disclaimer: Users can run multiple stages at once by .sh (.cmd, .ps) files. Take a look on multi_sample_.example.cmd or multi_sample.example.sh.
+> Disclaimer: Users can run multiple stages at once by .sh (.cmd, .ps, ...) files. Take a look on multi_sample_.example.cmd or multi_sample.example.sh.
 
 - Data Ingestion
 
