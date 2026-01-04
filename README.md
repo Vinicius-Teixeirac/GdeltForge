@@ -53,10 +53,10 @@ The pipeline follows a **single-responsibility, single-stage execution model**:
 Each command performs *exactly one* transformation.
 
 ### Stages
-scrape → download raw GDELT CSV files
-convert → transform CSV → Parquet
-filter → remove rows with missing values
-sample → reproducibly sample from Parquet files
+scrape: download raw GDELT CSV files
+convert: transform CSV -> Parquet
+filter: remove rows with missing values
+sample: reproducibly sample from Parquet files
 
 
 This design is intentionally **transparent and low-magic**:
@@ -71,7 +71,7 @@ This design is intentionally **transparent and low-magic**:
 ```
 ┌─────────────┐      ┌────────────┐      ┌─────────────┐      ┌─────────────┐
 
-│   Scraper   │ ---> │ Converter  │ --->v│   Filter    │ ---> │   Sampler   │
+│   Scraper   │ ---> │ Converter  │ ---> │   Filter    │ ---> │   Sampler   │
 
 └─────────────┘      └────────────┘      └─────────────┘      └─────────────┘
       CSV               Parquet            Cleaned data         Sampled data
@@ -96,7 +96,7 @@ project_root/
 │ └── settings.yaml # Global configuration for all pipeline stages
 │
 ├── conversion/
-│ └── converter.py # CSV → Parquet conversion logic
+│ └── converter.py # CSV -> Parquet conversion logic
 │
 ├── filtering/
 │ └── filter.py # Filtering logic (drop invalid rows)
@@ -132,7 +132,7 @@ Available commands:
 
 | Command | Description |
 |---------|-------------|
-| scrape  | Download raw GDELT data (ZIP → CSV) |
+| scrape  | Download raw GDELT data (ZIP -> CSV) |
 | convert | Convert downloaded CSV files to Parquet |
 | filter  | Apply row-column filtering to Parquet files |
 | sample  | Efficient, reproducible sampling |
@@ -150,14 +150,14 @@ Below are practical, beginner-friendly examples covering all common workflows.
 ```
 python main.py scrape
 ```
-Downloads and extracts all missing GDELT raw files.
+Downloads and extracts all existent GDELT raw files.
 
-## 5.2 Convert CSV → Parquet
+## 5.2 Convert CSV -> Parquet
 
 ```
 python main.py convert
 ```
-Reads all CSV files and writes partitioned Parquet files.
+Extracts all CSV files from the compact folders previously downloaded and converts them to Parquet files.
 
 ## 5.3 Filter the Parquet Dataset
 ```
@@ -169,7 +169,7 @@ Drops rows with missing values in the columns defined in settings.yaml.
 
 All sampling modes read from the filtered directory.
 
-> Disclaimer: It's easy to adjust this behavior (look for run_sampling_cmd() first line), but we observe that the sampling methods are already as memory friendly as possible in the current setup and, despite that, they still demand lots of RAM, due to the huge data'ss volume. They would demand much more without the filtering step.
+> Disclaimer: It's easy to adjust this behavior (look for run_sampling_cmd() first line), but we observe that the sampling methods are already as memory friendly as possible in the current setup and, despite that, they still demand lots of RAM, due to the huge data's volume. They would demand much more without the filtering step.
 
 ### 5.4.1 Indexed Sampling (Uniform Random)
 ```
@@ -306,7 +306,7 @@ Scrapes all available GDELT files not already downloaded. No date-range filterin
 
 - Format Limitations
 
-Only CSV → Parquet is supported. Schema is preserved without additional transformations
+Only CSV -> Parquet is supported. Schema is preserved without additional transformations
 
 - Sampling Limitations
 
