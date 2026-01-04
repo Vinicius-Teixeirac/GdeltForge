@@ -313,7 +313,7 @@ Only CSV -> Parquet is supported. Schema is preserved without additional transfo
 
 - Sampling Limitations
 
-Supports ony: indexed random sampling, daily sampling and a filtered sampling.Large samples (>20M rows) require significant disk I/O.
+Supports ony: indexed random sampling, daily sampling and a filtered sampling. Large samples (>20M rows) require significant disk I/O. The sampling is by default without replacement.
 
 > Disclaimer: Data is intentionally partitioned into many files to avoid extreme RAM usage.
 
@@ -325,6 +325,7 @@ Supports ony: indexed random sampling, daily sampling and a filtered sampling.La
 - Partition Parquet by year/month
 - Parallel execution of scraping, conversion, filtering, sampling
 - GPU-aware sampling (cuDF / RAPIDS)
+- More advanced sampling techniques
 
 # 9. License
 
