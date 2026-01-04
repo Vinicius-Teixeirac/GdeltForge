@@ -98,22 +98,22 @@ columns_numeric:
 
 paths:
   # Directory where the pipeline will download ZIP files
-  downloaded_data_directory: "/path/to/raw_data"
+  downloaded_data_directory: "./path_example/raw_data" # choose your own directory
 
   # Directory for extracted CSV files
-  unzipped_data_directory: "/path/to/csv"
+  unzipped_data_directory: "./path_example/csv"
 
   # Directory for Parquet output
-  parquet_data_directory: "/path/to/parquet"
+  parquet_data_directory: "./path_example/parquet"
 
   # Directory for filtered Parquet files
-  filtered_data_directory: "/path/to/filtered"
+  filtered_data_directory: "./path_example/filtered"
 
 # ================================
 #          STAGE SETTINGS
 # ================================
 
-scraper:
+scraping:
   retries: 3
   timeout: 30  # seconds
 
@@ -125,14 +125,14 @@ converter:
 # Provide columns so the filter drop instances with NAN values on them.
 filter:
   columns_to_check: # example
-    - Actor1Code
-    - Actor2Code
-    - EventRootCode
-    - EventBaseCode
-    - EventCode
+    - GLOBALEVENTID
+    - Actor1Name
+    - Actor2Name
     - QuadClass
-    - ActionGeo_CountryCode
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
     - ActionGeo_Lat
     - ActionGeo_Long
-    - ActionGeo_FeatureID
     - Day

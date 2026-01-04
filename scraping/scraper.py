@@ -86,7 +86,7 @@ def download_gdelt_files(urls: List[str]) -> Dict[str, List[str] | int]:
     Downloads all files listed in `urls` using streaming requests with retry.
     """
     config = load_config()
-    download_dir = config["paths"]["download_directory"]
+    download_dir = config["paths"]["downloaded_data_directory"]
     retries = config["scraping"]["retries"]
     timeout = config["scraping"]["timeout"]
 

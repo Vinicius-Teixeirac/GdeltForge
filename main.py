@@ -33,7 +33,7 @@ logger = get_logger(__name__, log_to_file=True)
 
 def run_scrape_cmd(config: dict) -> None:
     logger.info("Starting scraping stage...")
-    run_scraping_pipeline(config)
+    run_scraping_pipeline()
     logger.info("Scraping completed.")
 
 

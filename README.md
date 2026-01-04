@@ -266,7 +266,7 @@ python main.py sample --mode indexed -n 10000
 ```
 
 ### 5.6 Bônus
-A extensive guide of filtered sampling is available in filtered_sampling.examples.md
+A extensive guide of filtered sampling is available in filtered_sampling_guide.md
 
 # 6. Logging System
 

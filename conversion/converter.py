@@ -56,8 +56,8 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES
     # ------------------------------------------------------------
-    def process_all_files(self, pattern: str) -> List[str]:
-        zip_files = glob.glob(str(self.input_folder / pattern))
+    def process_all_files(self) -> List[str]:
+        zip_files = glob.glob(str(self.input_folder / self.pattern))
 
         if not zip_files:
             log.warning(f"No zip files found in {self.input_folder} with pattern '{pattern}'")
