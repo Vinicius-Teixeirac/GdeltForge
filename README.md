@@ -89,6 +89,9 @@ Each stage consumes the output of the previous one, enabling:
 ---
 
 # 3. Project Structure
+For simplicity purposes, the structure is straightforward, as it's expected to most of the repository users not be programmers. 
+
+> Disclaimer: I will consider a typical "src, docs, tests,..." structure in the future, depending on the feedback - feel free to leave yours :)
 
 ```
 project_root/
@@ -169,7 +172,7 @@ Drops rows with missing values in the columns defined in settings.yaml.
 
 All sampling modes read from the filtered directory.
 
-> Disclaimer: It's easy to adjust this behavior (look for run_sampling_cmd() first line), but we observe that the sampling methods are already as memory friendly as possible in the current setup and, despite that, they still demand lots of RAM, due to the huge data's volume. They would demand much more without the filtering step.
+> Disclaimer: It's easy to adjust this behavior (look for run_sampling_cmd() first line), but I observe that the sampling methods are already as memory friendly as possible in the current setup and, despite that, they still demand lots of RAM, due to the huge data's volume. They would demand much more without the filtering step.
 
 ### 5.4.1 Indexed Sampling (Uniform Random)
 ```
@@ -296,7 +299,7 @@ Only one pipeline stage per command. No automatic chaining. No dependency resolu
 python main.py scrape convert sample
 ```
 
-> Disclaimer: Users can run multiple stages at once by .sh (.cmd, .ps, ...) files. Take a look on multi_sample_.example.cmd or multi_sample.example.sh.
+> Disclaimer: Users can run multiple stages at once by .sh (.cmd, .ps, ...) files. Take a look on sample.example.cmd or sample.example.sh.
 
 - Data Ingestion
 
