@@ -7,7 +7,7 @@
 # Columns present in the GDELT Event dataset
 columns:
   gdelt_event:
-    - GLOBALEVENTID
+    - GlobalEventID
     - Day
     - MonthYear
     - Year
@@ -89,6 +89,7 @@ columns_numeric:
   - ActionGeo_Type
   - ActionGeo_Lat
   - ActionGeo_Long
+  - DATEADDED
 
 # ================================
 #       DIRECTORY PATHS
