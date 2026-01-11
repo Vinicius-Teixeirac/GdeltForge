@@ -68,7 +68,7 @@ columns:
 
 # Numeric columns 
 columns_numeric:
-  - GLOBALEVENTID
+  - GlobalEventID
   - Day
   - MonthYear
   - Year
@@ -126,7 +126,7 @@ converter:
 # Provide columns so the filter drop instances with NAN values on them.
 filter:
   columns_to_check: # example
-    - GLOBALEVENTID
+    - GlobalEventID
     - Actor1Name
     - Actor2Name
     - QuadClass
