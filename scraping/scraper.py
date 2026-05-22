@@ -5,6 +5,8 @@ Utilities for scraping GDELT event data (https://data.gdeltproject.org/events/).
 
 Provides:
     - collect_gdelt_links: retrieves all downloadable file links from the GDELT events directory
+    - parse_file_date: extracts the date period covered by a GDELT filename
+    - filter_urls_by_date: narrows a URL list to a [start_date, end_date] window
     - download_gdelt_files: downloads the files returned by `collect_gdelt_links`
     - run_scraping_pipeline: high-level interface that runs the full scraping workflow
 """
@@ -12,7 +14,9 @@ Provides:
 import os
 import requests
 import time
-from typing import List, Dict
+from calendar import monthrange
+from datetime import date
+from typing import List, Dict, Optional, Tuple
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -118,6 +122,95 @@ def collect_gdelt_links(config: dict) -> List[str]:
 
 
 # ------------------------------------------------------------
+# DATE-RANGE FILTERING
+# ------------------------------------------------------------
+def parse_file_date(filename: str) -> Tuple[Optional[date], Optional[date]]:
+    """
+    Return (period_start, period_end) for the time window a GDELT file covers.
+
+    File naming conventions:
+      - Daily   YYYYMMDD.export.CSV.zip  -> single day
+      - Monthly YYYYMM.zip               -> full calendar month
+      - Yearly  YYYY.zip                 -> full calendar year
+
+    Returns (None, None) when the date cannot be determined.
+    """
+    # Daily: 20150218.export.CSV.zip
+    if filename.endswith(".export.CSV.zip"):
+        raw = filename[:8]
+        if raw.isdigit() and len(raw) == 8:
+            try:
+                d = date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
+                return d, d
+            except ValueError:
+                pass
+        return None, None
+
+    # Monthly: YYYYMM.zip (10 chars)
+    if filename[:6].isdigit() and len(filename) == 10 and filename.endswith(".zip"):
+        try:
+            year, month = int(filename[:4]), int(filename[4:6])
+            start = date(year, month, 1)
+            end = date(year, month, monthrange(year, month)[1])
+            return start, end
+        except ValueError:
+            return None, None
+
+    # Yearly: YYYY.zip (8 chars)
+    if filename[:4].isdigit() and len(filename) == 8 and filename.endswith(".zip"):
+        try:
+            year = int(filename[:4])
+            return date(year, 1, 1), date(year, 12, 31)
+        except ValueError:
+            return None, None
+
+    return None, None
+
+
+def filter_urls_by_date(
+    urls: List[str],
+    start_date: Optional[date],
+    end_date: Optional[date],
+) -> List[str]:
+    """
+    Keep only URLs whose file period overlaps [start_date, end_date].
+
+    Either bound may be None (open-ended). If both are None the full list
+    is returned unchanged so existing behaviour is preserved.
+    """
+    if start_date is None and end_date is None:
+        return urls
+
+    kept = []
+    skipped = 0
+
+    for url in urls:
+        filename = url.split("/")[-1]
+        file_start, file_end = parse_file_date(filename)
+
+        if file_start is None:
+            logger.debug(f"Could not parse date from {filename}, skipping.")
+            skipped += 1
+            continue
+
+        # Overlap: file period must intersect [start_date, end_date]
+        if start_date and file_end < start_date:
+            continue
+        if end_date and file_start > end_date:
+            continue
+
+        kept.append(url)
+
+    logger.info(
+        f"Date filter [{start_date} - {end_date}]: "
+        f"{len(kept)} URLs kept, {len(urls) - len(kept) - skipped} excluded, "
+        f"{skipped} skipped (unparseable filename)."
+    )
+
+    return kept
+
+
+# ------------------------------------------------------------
 # STEP 2: Download files using requests + tqdm
 # ------------------------------------------------------------
 def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] | int]:
@@ -136,7 +229,7 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
     skipped = 0
     failed = []
 
-    logger.info(f"Starting download into {download_dir}...")
+    logger.info(f"Starting download of {len(urls)} file(s) into {download_dir}...")
 
     for url in tqdm(urls, desc="Downloading GDELT files", unit="file"):
         filename = url.split("/")[-1]
@@ -182,12 +275,17 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
 # ------------------------------------------------------------
 # PIPELINE INTERFACE
 # ------------------------------------------------------------
-def run_scraping_pipeline(config: dict) -> Dict[str, int | List[str]]:
+def run_scraping_pipeline(
+    config: dict,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> Dict[str, int | List[str]]:
     """
-    Complete scraping step: collect URLs -> download all.
+    Complete scraping step: collect URLs -> (optionally) filter by date -> download.
     Called from main.py.
     """
     urls = collect_gdelt_links(config)
+    urls = filter_urls_by_date(urls, start_date, end_date)
     result = download_gdelt_files(urls, config)
     return result
 

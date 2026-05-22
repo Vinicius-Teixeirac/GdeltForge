@@ -1,5 +1,6 @@
 import argparse
 import json
+from datetime import date
 from pathlib import Path
 
 from utils.config import load_config
@@ -29,9 +30,22 @@ logger = get_logger(__name__, log_to_file=True)
 # Subcommand Runners
 # ======================================================================
 
-def run_scrape_cmd(config: dict) -> None:
+def _parse_date(value: str, arg_name: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"Invalid date for {arg_name}: '{value}'. Expected YYYY-MM-DD.")
+
+
+def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
+    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
+    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
+
+    if start_date and end_date and start_date > end_date:
+        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+
     logger.info("Starting scraping stage...")
-    run_scraping_pipeline(config)
+    run_scraping_pipeline(config, start_date=start_date, end_date=end_date)
     logger.info("Scraping completed.")
 
 
@@ -128,7 +142,17 @@ def build_parser() -> argparse.ArgumentParser:
     # ----------------------------------------------------
     # scrape
     # ----------------------------------------------------
-    subparsers.add_parser("scrape", help="Download and extract raw GDELT data")
+    scrape = subparsers.add_parser("scrape", help="Download and extract raw GDELT data")
+    scrape.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        help="Only download files whose period starts on or after this date",
+    )
+    scrape.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        help="Only download files whose period ends on or before this date",
+    )
 
     # ----------------------------------------------------
     # convert
@@ -197,7 +221,7 @@ def main() -> None:
     logger.info(f"Running command: {args.command}")
 
     if args.command == "scrape":
-        run_scrape_cmd(config)
+        run_scrape_cmd(config, args)
 
     elif args.command == "convert":
         run_convert_cmd(config)
