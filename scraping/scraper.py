@@ -15,10 +15,12 @@ import time
 from typing import List, Dict
 
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from tqdm import tqdm
+from webdriver_manager.chrome import ChromeDriverManager
 
 from utils.logging import get_logger
 
@@ -28,15 +30,53 @@ logger = get_logger(__name__)
 # ------------------------------------------------------------
 # STEP 1: Collect GDELT links via Selenium
 # ------------------------------------------------------------
-def collect_gdelt_links() -> List[str]:
+def _build_driver(config: dict) -> webdriver.Chrome:
+    """
+    Build a Chrome WebDriver instance.
+
+    Resolution order:
+      1. scraping.chromedriver_path in settings.yaml (manual override, no network)
+      2. webdriver-manager auto-download (requires internet on first run)
+
+    If the network is blocked (e.g. corporate/university firewall), download
+    ChromeDriver manually from https://googlechromelabs.github.io/chrome-for-testing/
+    and set scraping.chromedriver_path in config/settings.yaml.
+    """
+    chrome_options = webdriver.ChromeOptions()
+    chrome_options.add_argument("--ignore-certificate-errors")
+
+    manual_path = config.get("scraping", {}).get("chromedriver_path")
+
+    if manual_path:
+        logger.info(f"Using ChromeDriver from config: {manual_path}")
+        return webdriver.Chrome(service=Service(manual_path), options=chrome_options)
+
+    logger.info("No chromedriver_path set, attempting auto-download via webdriver-manager...")
+    try:
+        return webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=chrome_options,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not initialize Chrome WebDriver: {e}\n\n"
+            "The automatic ChromeDriver download failed (network may be blocked).\n"
+            "To fix:\n"
+            "  1. Download ChromeDriver matching your Chrome version from:\n"
+            "     https://googlechromelabs.github.io/chrome-for-testing/\n"
+            "  2. Set scraping.chromedriver_path in config/settings.yaml:\n"
+            "       chromedriver_path: C:/path/to/chromedriver.exe\n"
+            "  3. Make sure Google Chrome is installed: https://www.google.com/chrome/"
+        ) from e
+
+
+def collect_gdelt_links(config: dict) -> List[str]:
     """
     Uses Selenium to extract all GDELT .zip file URLs from the events page.
     """
     logger.info("Collecting GDELT links using Selenium...")
 
-    chrome_options = webdriver.ChromeOptions()
-    chrome_options.add_argument("--ignore-certificate-errors")
-    driver = webdriver.Chrome(options=chrome_options)
+    driver = _build_driver(config)
 
     urls = []
 
@@ -147,7 +187,7 @@ def run_scraping_pipeline(config: dict) -> Dict[str, int | List[str]]:
     Complete scraping step: collect URLs -> download all.
     Called from main.py.
     """
-    urls = collect_gdelt_links()
+    urls = collect_gdelt_links(config)
     result = download_gdelt_files(urls, config)
     return result
 

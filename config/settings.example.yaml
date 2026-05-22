@@ -118,6 +118,12 @@ scraping:
   retries: 3
   timeout: 30  # seconds
 
+  # Optional: absolute path to chromedriver.exe
+  # Set this when automatic download is blocked by a network firewall.
+  # Download the matching version from:
+  # https://googlechromelabs.github.io/chrome-for-testing/
+  chromedriver_path: null
+
 converter:
   keep_unzipped: false
   file_pattern: "*.zip"
