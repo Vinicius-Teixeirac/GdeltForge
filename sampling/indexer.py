@@ -53,19 +53,17 @@ class FileIndex:
         self.starts: List[int] = []   # starting global index for each file
         self.counts: List[int] = []   # rows per file
 
+        fragments = list(dataset.get_fragments())
         cumulative = 0
-        for fragment in dataset.get_fragments():
-            md = fragment.metadata
-
-            # PyArrow metadata gives row count directly
-            nrows = md.num_rows
+        for fragment in fragments:
+            nrows = fragment.metadata.num_rows
             self.starts.append(cumulative)
             cumulative += nrows
             self.stops.append(cumulative)
             self.counts.append(nrows)
 
         self.total_rows = cumulative
-        self.files = [Path(f.path) for f in dataset.get_fragments()]
+        self.files = [Path(f.path) for f in fragments]
 
     # ----------------------------------------------------------
     # Fast lookup via binary search

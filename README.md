@@ -213,7 +213,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
   python main.py sample \
       --mode filtered \
       --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
-      --columns GLOBALEVENTID Year Actor1Code \
+      --columns GlobalEventID Year Actor1Code \
       -n 1000
   ```
   It outputs 1000 instances following the same rule as before, but this time with only three columns.
@@ -276,7 +276,7 @@ A extensive guide of filtered sampling is available in filtered_sampling_guide.m
 Logging is enabled through a shared logger helper:
 
 ```
-from utils.logger import get_logger
+from utils.logging import get_logger
 logger = get_logger(__name__)
 ```
 

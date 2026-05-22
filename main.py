@@ -1,5 +1,3 @@
- 
-
 import argparse
 import json
 from pathlib import Path
@@ -33,7 +31,7 @@ logger = get_logger(__name__, log_to_file=True)
 
 def run_scrape_cmd(config: dict) -> None:
     logger.info("Starting scraping stage...")
-    run_scraping_pipeline()
+    run_scraping_pipeline(config)
     logger.info("Scraping completed.")
 
 
@@ -99,6 +97,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
 
         sampler = FilteredSampler(
             folder_path=str(filtered_folder),
+            gdelt_columns=config["columns"]["gdelt_event"],
             columns=set(args.columns) if args.columns else None,
             filter_dict=filter_dict,
             random_state=args.seed
@@ -208,9 +207,6 @@ def main() -> None:
 
     elif args.command == "sample":
         run_sampling_cmd(config, args)
-
-    else:
-        raise ValueError(f"Unknown command {args.command}. Use 'scrape', 'convert', 'filter' or 'sample'")
 
 
 if __name__ == "__main__":

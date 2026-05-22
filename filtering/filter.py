@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Union
 
 import pandas as pd
+import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from utils.logging import get_logger
@@ -55,7 +56,6 @@ class GDELTFilter:
     # ======================================================================
 
     def filter_all_files(self, pattern: str = "*.parquet") -> tuple[int, int]:
-
         """
         Filter all parquet files in input_folder matching pattern.
         """
@@ -72,7 +72,7 @@ class GDELTFilter:
         files_processed = 0
         files_failed = 0
 
-        for idx, parquet_path in tqdm(enumerate(parquet_files, start=1), desc='filtering data'):
+        for idx, parquet_path in tqdm(enumerate(parquet_files, start=1), total=len(parquet_files), desc="Filtering parquet files"):
             file_name = Path(parquet_path).name
 
             try:
@@ -84,7 +84,7 @@ class GDELTFilter:
                 rate = (rows_after / rows_before * 100) if rows_before else 0
                 logger.info(
                     f"[{idx}/{len(parquet_files)}] {file_name}: "
-                    f"{rows_before:,} → {rows_after:,} rows ({rate:.1f}% kept)"
+                    f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
                 )
 
             except Exception as e:
@@ -176,9 +176,9 @@ class GDELTFilter:
         logger.info(f"Validating column presence in: {sample_file.name}")
 
         try:
-            schema = pd.read_parquet(sample_file, nrows=0)
-            existing = [c for c in self.columns_to_check if c in schema.columns]
-            missing = [c for c in self.columns_to_check if c not in schema.columns]
+            schema_cols = pq.read_schema(sample_file).names
+            existing = [c for c in self.columns_to_check if c in schema_cols]
+            missing = [c for c in self.columns_to_check if c not in schema_cols]
 
             return {
                 "sample_file": sample_file.name,

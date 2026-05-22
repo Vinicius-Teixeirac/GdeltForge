@@ -22,7 +22,6 @@ from tqdm import tqdm
 
 from .rng import ReproducibleRNG
 from .indexer import FileIndex
-from utils.config import load_config
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,7 +51,7 @@ class FilterType(Enum):
 class IndexedSampler:
     """
     Draws samples from many parquet files without loading the entire dataset.
-    Uses FileIndex to resolve "global row index" → (file, row).
+    Uses FileIndex to resolve "global row index" -> (file, row).
     """
 
     def __init__(self, folder_path: str, random_state: Optional[int] = 42):
@@ -76,10 +75,8 @@ class IndexedSampler:
         random_indices = self.rng.choice(self.index.total_rows, n, replace=False)
         logger.info(f"Sampling {n} rows across {len(self.index.files)} files")
 
-        # group sampled indices into: file_path → [indices]
         indices_by_file = self.index.group_indices_by_file(random_indices)
-        logger.info(f"Mapped the indices to the correspondent files")
-
+        logger.info("Mapped the indices to the correspondent files")
 
         sampled = []
         for file_path, relative_rows in tqdm(indices_by_file.items(), desc="Loading samples"):
@@ -103,8 +100,9 @@ class DailySampler:
 
     def get_daily_samples(self, samples_per_day: int = 10) -> pd.DataFrame:
         daily = {}
+        parquet_files = list(self.folder.glob("*.parquet"))
 
-        for file_path in tqdm(self.folder.glob("*.parquet"), desc="Daily sampling"):
+        for file_path in tqdm(parquet_files, desc="Daily sampling"):
             df = pd.read_parquet(file_path)
             if "Day" not in df.columns:
                 continue
@@ -122,13 +120,12 @@ class DailySampler:
         if not daily:
             return pd.DataFrame()
 
-        # flatten
         all_samples = [pd.concat(chunks) for chunks in daily.values()]
         return pd.concat(all_samples, ignore_index=True)
 
 
 # ----------------------------------------------------------
-# FilteredSampler  
+# FilteredSampler
 # ----------------------------------------------------------
 class FilteredSampler:
     """
@@ -138,12 +135,13 @@ class FilteredSampler:
     def __init__(
         self,
         folder_path: str,
+        gdelt_columns: List[str],
         columns: Optional[Set[str]] = None,
         filter_dict: Optional[Dict[str, Any]] = None,
         random_state: Optional[int] = 42,
     ):
-        self.config = load_config()
-        self.gdelt_columns = set(self.config["columns"]["gdelt_event"])
+        self._gdelt_columns_ordered = list(gdelt_columns)
+        self.gdelt_columns = set(gdelt_columns)
 
         self.folder = Path(folder_path)
         self.columns = columns or self.gdelt_columns
@@ -155,8 +153,7 @@ class FilteredSampler:
 
     # ---------- validation ----------
     def _validate_columns(self):
-        valid = self.gdelt_columns
-        invalid = self.columns - valid
+        invalid = self.columns - self.gdelt_columns
         if invalid:
             raise ValueError(f"Invalid columns: {invalid}")
 
@@ -176,25 +173,31 @@ class FilteredSampler:
 
         validate_block(self.filter_dict)
 
+    # ---------- recursively collect all column names referenced in a filter block ----------
+    def _filter_columns(self, block: Dict[str, Any]) -> Set[str]:
+        cols: Set[str] = set()
+        for key, val in block.items():
+            if key in ("AND", "OR"):
+                if isinstance(val, dict):
+                    cols |= self._filter_columns(val)
+            else:
+                cols.add(key)
+        return cols
+
     # ---------- convert simple condition -> pyarrow expression ----------
     def _expr_for_condition(self, column: str, cond: Any) -> ds.Expression:
         f = ds.field(column)
 
-        # scalar equality
         if isinstance(cond, (str, int, float, bool)):
             return f == cond
 
-        # list -> isin
         if isinstance(cond, list):
-            # use pyarrow compute is_in via dataset expression .isin
             return f.isin(cond)
 
-        # tuple -> range inclusive
         if isinstance(cond, tuple) and len(cond) == 2:
             lo, hi = cond
             return (f >= lo) & (f <= hi)
 
-        # dict with explicit op
         if isinstance(cond, dict):
             op = cond.get("op")
             if op == FilterType.EQUALS.value:
@@ -235,19 +238,15 @@ class FilteredSampler:
                 expr = sub if expr is None else (expr | sub)
 
             else:
-                # base column condition
                 sub = self._expr_for_condition(key, val)
                 expr = sub if expr is None else (expr & sub)
 
         return expr
 
     # ---------- dataset scanner and batch iterator ----------
-    def _dataset(self, needed) -> ds.dataset:
-        schema = pa.schema([pa.field(c, pa.string(), nullable=True) for c in needed])
-
+    def _dataset(self) -> ds.Dataset:
         return ds.dataset(
             list(self.folder.glob("*.parquet")),
-            schema=schema,
             format="parquet"
         )
 
@@ -256,25 +255,25 @@ class FilteredSampler:
         Yield pyarrow.RecordBatch objects matching the configured filter,
         using pyarrow.dataset Scanner with filter pushdown.
         """
-        dataset = self._dataset(needed_columns)
+        dataset = self._dataset()
         expr = self._build_expression(self.filter_dict)
 
-        # Use scanner to stream record batches
         scanner = dataset.scanner(columns=needed_columns, filter=expr, batch_size=64_000)
         for batch in scanner.to_batches():
             yield batch
 
+    def _needed_columns(self) -> List[str]:
+        """Union of requested columns and any column referenced in the filter expression."""
+        return list(self.columns | self._filter_columns(self.filter_dict))
+
     # ---------- API ----------
     def filter_dataset(self) -> pd.DataFrame:
-        needed = list(self.columns | {
-            key for key in self.filter_dict.keys()
-            if key not in {"AND", "OR", "NOT"} and not isinstance(key, tuple)
-        })
+        needed = self._needed_columns()
 
         frames: List[pd.DataFrame] = []
         for batch in tqdm(self._batches(needed), desc="Filtering parquet files"):
             try:
-                df_batch = batch.to_pandas()  # only convert each batch
+                df_batch = batch.to_pandas()
                 if not df_batch.empty:
                     frames.append(df_batch[needed])
             except Exception as e:
@@ -289,12 +288,9 @@ class FilteredSampler:
         if n <= 0:
             return pd.DataFrame()
 
-        needed = list(self.columns | {
-            key for key in self.filter_dict.keys()
-            if key not in {"AND", "OR", "NOT"} and not isinstance(key, tuple)
-        })
+        needed = self._needed_columns()
 
-        reservoir: List[pd.DataFrame] = []  # store selected rows as 1-row DataFrames
+        reservoir: List[pd.DataFrame] = []
         total_seen = 0
 
         for batch in tqdm(self._batches(needed), desc="Sampling (random)"):
@@ -302,14 +298,12 @@ class FilteredSampler:
             if df_batch.empty:
                 continue
 
-            # iterate rows in batch but operate on numpy indices for speed
             for i in range(len(df_batch)):
-                row = df_batch.iloc[[i]]  # keep as DataFrame
+                row = df_batch.iloc[[i]]
                 total_seen += 1
                 if len(reservoir) < n:
                     reservoir.append(row)
                 else:
-                    # replace with decreasing probability
                     j = self.rng.randint(0, total_seen - 1)
                     if j < n:
                         reservoir[j] = row
@@ -317,30 +311,17 @@ class FilteredSampler:
         if not reservoir:
             return pd.DataFrame()
 
-        # concat reservoir items and reset index
         sample_df = pd.concat(reservoir, ignore_index=True)
-        # If we saw fewer than n rows, return all
-        if len(sample_df) <= n:
-            return sample_df.reset_index(drop=True)
-        # Otherwise randomly choose n rows deterministically from reservoir (already uniform)
-        idx = self.rng.choice(len(sample_df), size=n, replace=False)
-
-        # Keep only original gdelt_event columns ordering if available
-        keep_cols = [c for c in self.config["columns"]["gdelt_event"] if c in sample_df.columns]
-
-        return sample_df.iloc[idx].reset_index(drop=True)[keep_cols]
+        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample_df.columns]
+        return sample_df.reset_index(drop=True)[keep_cols]
 
     # ---------- stratified reservoir sampling ----------
     def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pd.DataFrame:
         if n_per_group <= 0:
             return pd.DataFrame()
 
-        needed = list(self.columns | {stratify_col} | {
-            key for key in self.filter_dict.keys()
-            if key not in {"AND", "OR", "NOT"} and not isinstance(key, tuple)
-        })
+        needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
-        # map group_value -> list of row-DataFrames (reservoir)
         reservoirs: Dict[Any, List[pd.DataFrame]] = {}
         counts: Dict[Any, int] = {}
 
@@ -349,11 +330,9 @@ class FilteredSampler:
             if df_batch.empty or stratify_col not in df_batch.columns:
                 continue
 
-            # iterate rows; could be optimized with vectorized group ops but reservoir needs per-row logic
             for i in range(len(df_batch)):
                 row = df_batch.iloc[[i]]
                 g = row.iloc[0][stratify_col]
-                # normalize NaN group keys
                 if pd.isna(g):
                     g = None
 
@@ -370,16 +349,13 @@ class FilteredSampler:
                     if j < n_per_group:
                         r[j] = row
 
-        # flatten reservoirs
         parts: List[pd.DataFrame] = []
-        for group, rows in reservoirs.items():
+        for rows in reservoirs.values():
             parts.append(pd.concat(rows, ignore_index=True))
 
         if not parts:
             return pd.DataFrame()
 
         sample = pd.concat(parts, ignore_index=True)
-
-        # Keep only original gdelt_event columns ordering if available
-        keep_cols = [c for c in self.config["columns"]["gdelt_event"] if c in sample.columns]
+        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
         return sample[keep_cols]
