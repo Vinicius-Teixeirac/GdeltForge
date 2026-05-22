@@ -176,10 +176,28 @@ You run each stage explicitly to maintain full control.
 Below are practical, beginner-friendly examples covering all common workflows.
 
 ## 6.1 Scrape Raw Data
+
+Download the entire archive:
 ```
 python main.py scrape
 ```
-Downloads and extracts all existent GDELT raw files.
+
+Download only files within a date range (any combination of bounds is valid):
+```
+python main.py scrape --start-date 2020-01-01 --end-date 2023-12-31
+python main.py scrape --start-date 2022-01-01          # from date onward
+python main.py scrape --end-date   2015-12-31          # up to date
+```
+
+The filter applies to all three file types the GDELT archive provides:
+
+| File type | Example filename | Included when |
+|-----------|-----------------|---------------|
+| Daily | `20200315.export.CSV.zip` | day falls within range |
+| Monthly | `202003.zip` | month overlaps range |
+| Yearly | `2020.zip` | year overlaps range |
+
+Files already present in the download directory are skipped regardless of the date filter.
 
 ## 6.2 Convert CSV -> Parquet
 
@@ -329,9 +347,7 @@ python main.py scrape convert sample
 
 - Data Ingestion
 
-Scrapes all available GDELT files not already downloaded. No date-range filtering during download
-
-> Disclaimer: Users can create year/month/country subsets later using FilteredSampler.
+Scrapes GDELT files not already downloaded. Use `--start-date` / `--end-date` to restrict the download window. Without either flag, all available files are downloaded.
 
 - Format Limitations
 
@@ -345,7 +361,6 @@ Supports ony: indexed random sampling, daily sampling and a filtered sampling. L
 
 # 9. Future Work (Roadmap)
 
-- Date-range scraping
 - Parallel executation of operations
 - CLI pipelines (e.g., python main.py run all)
 - Partition Parquet by year/month
