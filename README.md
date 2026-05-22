@@ -312,6 +312,15 @@ foreach ($c in "scrape", "convert", "filter") {
 python main.py sample --mode indexed -n 10000
 ```
 
+### 6.5.7 Date-restricted pipeline
+```
+python main.py scrape --start-date 2020-01-01 --end-date 2023-12-31
+python main.py convert
+python main.py filter
+python main.py sample --mode indexed -n 10000
+```
+The date flags apply only to `scrape`. The subsequent stages operate on whatever files are already on disk.
+
 ### 6.6 Bonus
 A extensive guide of filtered sampling is available in filtered_sampling_guide.md
 
