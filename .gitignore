@@ -15,6 +15,9 @@ venv/
 env/
 ENV/
 
+# uv
+.python-version
+
 # Config (contains local paths — copy from settings.example.yaml)
 config/settings.yaml
 
