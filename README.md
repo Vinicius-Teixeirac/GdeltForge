@@ -88,7 +88,33 @@ Each stage consumes the output of the previous one, enabling:
 
 ---
 
-# 3. Project Structure
+# 3. Installation
+
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+
+```
+# Install uv (if not already installed)
+pip install uv
+
+# Create virtual environment and install all dependencies from the lock file
+uv sync
+
+# Activate the virtual environment
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+```
+
+Then copy the example config and adjust paths:
+
+```
+cp config/settings.example.yaml config/settings.yaml
+```
+
+---
+
+# 4. Project Structure
 For simplicity purposes, the structure is straightforward, as it's expected to most of the repository users not be programmers. 
 
 > Disclaimer: I will consider a typical "src, docs, tests,..." structure in the future, depending on the feedback - feel free to leave yours :)
@@ -123,7 +149,7 @@ project_root/
 
 ---
 
-# 4. Command Line Interface (CLI)
+# 5. Command Line Interface (CLI)
 
 Run pipeline stages using:
 
@@ -145,48 +171,48 @@ You run each stage explicitly to maintain full control.
 
 ---
 
-# 5. Usage Examples
+# 6. Usage Examples
 
 Below are practical, beginner-friendly examples covering all common workflows.
 
-## 5.1 Scrape Raw Data
+## 6.1 Scrape Raw Data
 ```
 python main.py scrape
 ```
 Downloads and extracts all existent GDELT raw files.
 
-## 5.2 Convert CSV -> Parquet
+## 6.2 Convert CSV -> Parquet
 
 ```
 python main.py convert
 ```
 Extracts all CSV files from the compact folders previously downloaded and converts them to Parquet files.
 
-## 5.3 Filter the Parquet Dataset
+## 6.3 Filter the Parquet Dataset
 ```
 python main.py filter
 ```
 Drops rows with missing values in the columns defined in settings.yaml.
 
-## 5.4 Sampling
+## 6.4 Sampling
 
 All sampling modes read from the filtered directory.
 
 > Disclaimer: It's easy to adjust this behavior (look for run_sampling_cmd() first line), but I observe that the sampling methods are already as memory friendly as possible in the current setup and, despite that, they still demand lots of RAM, due to the huge data's volume. They would demand much more without the filtering step.
 
-### 5.4.1 Indexed Sampling (Uniform Random)
+### 6.4.1 Indexed Sampling (Uniform Random)
 ```
 python main.py sample --mode indexed -n 10000 --seed 123 --out sample.parquet
 ```
 This samples 10000 instances considering the entire data.
 
-### 5.4.2 Daily Sampling (N Rows Per Day)
+### 6.4.2 Daily Sampling (N Rows Per Day)
 ```
 python main.py sample --mode daily --per-day 20 --out daily.parquet
 ```
 This samples 20 instances per day from the entire period (1971 - 20xx)
 
-### 5.4.3 Filtered Sampling (Using JSON Filters)
+### 6.4.3 Filtered Sampling (Using JSON Filters)
 
 * Example — 5000 events whose QuadClass is in {1,2}:
 
@@ -218,22 +244,22 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
   ```
   It outputs 1000 instances following the same rule as before, but this time with only three columns.
 
-## 5.5 Full Pipeline Examples
-### 5.5.1 Full pipeline — sample 10,000 rows
+## 6.5 Full Pipeline Examples
+### 6.5.1 Full pipeline — sample 10,000 rows
 ```
 python main.py scrape
 python main.py convert
 python main.py filter
 python main.py sample --mode indexed -n 10000
 ```
-### 5.5.2 Reproducible sampling
+### 6.5.2 Reproducible sampling
 ```
 python main.py scrape
 python main.py convert
 python main.py filter
 python main.py sample --mode indexed -n 5000 --seed 42
 ```
-### 5.5.3 USA-only events
+### 6.5.3 USA-only events
 ```
 python main.py scrape
 python main.py convert
@@ -244,7 +270,7 @@ python main.py sample \
     -n 3000
 ```
 
-### 5.5.4 30 Events Per Day
+### 6.5.4 30 Events Per Day
 ```
 python main.py scrape
 python main.py convert
@@ -252,7 +278,7 @@ python main.py filter
 python main.py sample --mode daily --per-day 30
 ```
 
-### 5.5.5 Bash One-Liner
+### 6.5.5 Bash One-Liner
 ```
 python main.py scrape && \
 python main.py convert && \
@@ -260,7 +286,7 @@ python main.py filter && \
 python main.py sample --mode indexed -n 10000
 ```
 
-### 5.5.6 PowerShell Loop
+### 6.5.6 PowerShell Loop
 ```
 foreach ($c in "scrape", "convert", "filter") {
     python main.py $c
@@ -268,10 +294,10 @@ foreach ($c in "scrape", "convert", "filter") {
 python main.py sample --mode indexed -n 10000
 ```
 
-### 5.6 Bônus
+### 6.6 Bonus
 A extensive guide of filtered sampling is available in filtered_sampling_guide.md
 
-# 6. Logging System
+# 7. Logging System
 
 Logging is enabled through a shared logger helper:
 
@@ -286,7 +312,7 @@ Logging to a file:
 logger = get_logger(__name__, log_to_file=True)
 ```
 
-# 7. Known Limitations (Current Version)
+# 8. Known Limitations (Current Version)
 
 The pipeline is intentionally simple and transparent.
 Current limitations include:
@@ -317,7 +343,7 @@ Supports ony: indexed random sampling, daily sampling and a filtered sampling. L
 
 > Disclaimer: Data is intentionally partitioned into many files to avoid extreme RAM usage.
 
-# 8. Future Work (Roadmap)
+# 9. Future Work (Roadmap)
 
 - Date-range scraping
 - Parallel executation of operations
@@ -327,6 +353,6 @@ Supports ony: indexed random sampling, daily sampling and a filtered sampling. L
 - GPU-aware sampling (cuDF / RAPIDS)
 - More advanced sampling techniques
 
-# 9. License
+# 10. License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
