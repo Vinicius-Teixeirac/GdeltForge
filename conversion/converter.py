@@ -23,7 +23,7 @@ from tqdm import tqdm
 from utils.io import unzip_file
 from utils.logging import get_logger
 
-log = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class GDELTConverter:
@@ -51,7 +51,7 @@ class GDELTConverter:
         """Create necessary folders if they don't exist."""
         for folder in [self.unzip_folder, self.parquet_folder]:
             folder.mkdir(parents=True, exist_ok=True)
-            log.debug(f"Ensured folder exists: {folder}")
+            logger.debug(f"Ensured folder exists: {folder}")
 
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES
@@ -60,10 +60,10 @@ class GDELTConverter:
         zip_files = glob.glob(str(self.input_folder / self.pattern))
 
         if not zip_files:
-            log.warning(f"No zip files found in {self.input_folder} with pattern '{pattern}'")
+            logger.warning(f"No zip files found in {self.input_folder} with pattern '{self.pattern}'")
             return []
 
-        log.info(f"Found {len(zip_files)} zip files to convert.")
+        logger.info(f"Found {len(zip_files)} zip files to convert.")
 
         all_outputs = []
 
@@ -72,9 +72,9 @@ class GDELTConverter:
                 outputs = self.process_single_file(zip_file)
                 all_outputs.extend(outputs)
             except Exception as e:
-                log.error(f"Failed to process {os.path.basename(zip_file)}: {e}")
+                logger.error(f"Failed to process {os.path.basename(zip_file)}: {e}")
 
-        log.info(f"Conversion complete. Total Parquets created: {len(all_outputs)}")
+        logger.info(f"Conversion complete. Total Parquets created: {len(all_outputs)}")
         self._cleanup_unzipped_folder()
 
         return all_outputs
@@ -83,18 +83,18 @@ class GDELTConverter:
     # PROCESS SINGLE ZIP FILE
     # ------------------------------------------------------------
     def process_single_file(self, zip_path: str) -> List[str]:
-        log.info(f"Processing ZIP: {os.path.basename(zip_path)}")
+        logger.info(f"Processing ZIP: {os.path.basename(zip_path)}")
         created_parquets = []
 
         extracted_files = unzip_file(zip_path, str(self.unzip_folder))
         if not extracted_files:
-            log.warning(f"No extracted files from {zip_path}")
+            logger.warning(f"No extracted files from {zip_path}")
             return created_parquets
 
         for csv_path in extracted_files:
             csv_file = Path(csv_path)
             if csv_file.suffix.lower() != ".csv":
-                log.debug(f"Skipping non-CSV file: {csv_file.name}")
+                logger.debug(f"Skipping non-CSV file: {csv_file.name}")
                 continue
 
             try:
@@ -110,7 +110,7 @@ class GDELTConverter:
                     os.remove(csv_path)
 
             except Exception as e:
-                log.error(f"Error processing CSV {csv_file.name}: {e}")
+                logger.error(f"Error processing CSV {csv_file.name}: {e}")
 
         return created_parquets
 
@@ -138,7 +138,7 @@ class GDELTConverter:
             return df
 
         except Exception as e:
-            log.error(f"Error reading CSV {csv_path}: {e}")
+            logger.error(f"Error reading CSV {csv_path}: {e}")
             return pd.DataFrame()
 
     # ------------------------------------------------------------
@@ -146,7 +146,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     def _save_parquet(self, df: pd.DataFrame, base_name: str) -> Optional[Path]:
         if df.empty:
-            log.warning(f"DataFrame empty, skipping parquet: {base_name}")
+            logger.warning(f"DataFrame empty, skipping parquet: {base_name}")
             return None
 
         parquet_path = self.parquet_folder / f"{base_name}.parquet"
@@ -161,7 +161,7 @@ class GDELTConverter:
             return parquet_path
 
         except Exception as e:
-            log.error(f"Error saving parquet {parquet_path}: {e}")
+            logger.error(f"Error saving parquet {parquet_path}: {e}")
             return None
 
     # ------------------------------------------------------------
@@ -174,9 +174,9 @@ class GDELTConverter:
 
         try:
             self.unzip_folder.rmdir()  # Only works if empty
-            log.info(f"Deleted empty unzipped folder: {self.unzip_folder}")
+            logger.info(f"Deleted empty unzipped folder: {self.unzip_folder}")
         except OSError:
-            log.warning(
+            logger.warning(
                 f"Unzipped folder not removed because it is not empty: {self.unzip_folder}"
             )
 
@@ -198,7 +198,7 @@ def run_converter(config: dict) -> List[str]:
 if __name__ == "__main__":
     from utils.config import load_config
 
-    log.info("Running GDELT conversion pipeline as standalone script…")
+    logger.info("Running GDELT conversion pipeline as standalone script…")
     cfg = load_config()
     outputs = run_converter(cfg)
-    log.info(f"Created {len(outputs)} parquet files.")
+    logger.info(f"Created {len(outputs)} parquet files.")

@@ -20,10 +20,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from tqdm import tqdm
 
-from utils.config import load_config
 from utils.logging import get_logger
 
-log = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 # ------------------------------------------------------------
@@ -33,7 +32,7 @@ def collect_gdelt_links() -> List[str]:
     """
     Uses Selenium to extract all GDELT .zip file URLs from the events page.
     """
-    log.info("Collecting GDELT links using Selenium…")
+    logger.info("Collecting GDELT links using Selenium...")
 
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--ignore-certificate-errors")
@@ -50,15 +49,15 @@ def collect_gdelt_links() -> List[str]:
             proceed_btn = driver.find_element(By.XPATH, "//a[contains(text(), 'Proceed') or contains(text(), 'Advanced')]")
             proceed_btn.click()
             time.sleep(2)
-            log.info("Security warning bypassed.")
-        except:
-            pass  # no warning—good
+            logger.info("Security warning bypassed.")
+        except Exception:
+            pass  # no warning -- good
 
         WebDriverWait(driver, 15).until(
             EC.presence_of_all_elements_located((By.TAG_NAME, "a"))
         )
         anchors = driver.find_elements(By.TAG_NAME, "a")
-        log.info(f"Found {len(anchors)} total links.")
+        logger.info(f"Found {len(anchors)} total links.")
 
         for tag in anchors:
             href = tag.get_attribute("href")
@@ -70,7 +69,7 @@ def collect_gdelt_links() -> List[str]:
                 if is_daily or is_monthly or is_yearly:
                     urls.append(href.replace("https://", "http://", 1))
 
-        log.info(f"Identified {len(urls)} GDELT dataset URLs.")
+        logger.info(f"Identified {len(urls)} GDELT dataset URLs.")
 
     finally:
         driver.quit()
@@ -81,11 +80,10 @@ def collect_gdelt_links() -> List[str]:
 # ------------------------------------------------------------
 # STEP 2: Download files using requests + tqdm
 # ------------------------------------------------------------
-def download_gdelt_files(urls: List[str]) -> Dict[str, List[str] | int]:
+def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] | int]:
     """
     Downloads all files listed in `urls` using streaming requests with retry.
     """
-    config = load_config()
     download_dir = config["paths"]["downloaded_data_directory"]
     retries = config["scraping"]["retries"]
     timeout = config["scraping"]["timeout"]
@@ -98,7 +96,7 @@ def download_gdelt_files(urls: List[str]) -> Dict[str, List[str] | int]:
     skipped = 0
     failed = []
 
-    log.info(f"Starting download into {download_dir}…")
+    logger.info(f"Starting download into {download_dir}...")
 
     for url in tqdm(urls, desc="Downloading GDELT files", unit="file"):
         filename = url.split("/")[-1]
@@ -111,7 +109,7 @@ def download_gdelt_files(urls: List[str]) -> Dict[str, List[str] | int]:
 
         for attempt in range(retries):
             try:
-                log.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
+                logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
 
                 with session.get(url, stream=True, timeout=timeout) as response:
                     response.raise_for_status()
@@ -125,14 +123,14 @@ def download_gdelt_files(urls: List[str]) -> Dict[str, List[str] | int]:
                 break
 
             except Exception as e:
-                log.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
+                logger.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
                 time.sleep(1)
 
                 if attempt == retries - 1:
-                    log.error(f"Failed to download after {retries} attempts: {filename}")
+                    logger.error(f"Failed to download after {retries} attempts: {filename}")
                     failed.append(filename)
 
-    log.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
+    logger.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
 
     return {
         "success": success,
@@ -144,19 +142,23 @@ def download_gdelt_files(urls: List[str]) -> Dict[str, List[str] | int]:
 # ------------------------------------------------------------
 # PIPELINE INTERFACE
 # ------------------------------------------------------------
-def run_scraping_pipeline() -> Dict[str, int | List[str]]:
+def run_scraping_pipeline(config: dict) -> Dict[str, int | List[str]]:
     """
-    Complete scraping step: collect URLs → download all.
+    Complete scraping step: collect URLs -> download all.
     Called from main.py.
     """
     urls = collect_gdelt_links()
-    result = download_gdelt_files(urls)
+    result = download_gdelt_files(urls, config)
     return result
+
 
 # ------------------------------------------------------------
 # STANDALONE SCRIPT
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    log.info("Running scraping pipeline as standalone script…")
-    result = run_scraping_pipeline()
-    log.info(result)
+    from utils.config import load_config
+
+    logger.info("Running scraping pipeline as standalone script...")
+    cfg = load_config()
+    result = run_scraping_pipeline(cfg)
+    logger.info(result)
