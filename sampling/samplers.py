@@ -294,31 +294,52 @@ class FilteredSampler:
             return pd.DataFrame()
 
         needed = self._needed_columns()
-
-        reservoir: List[pd.DataFrame] = []
+        fill_chunks: List[pd.DataFrame] = []
+        filled = 0
+        reservoir: Optional[pd.DataFrame] = None
         total_seen = 0
 
         for batch in tqdm(self._batches(needed), desc="Sampling (random)"):
             df_batch = batch.to_pandas()
-            if df_batch.empty:
+            batch_size = len(df_batch)
+            if batch_size == 0:
                 continue
 
-            for i in range(len(df_batch)):
-                row = df_batch.iloc[[i]]
-                total_seen += 1
-                if len(reservoir) < n:
-                    reservoir.append(row)
-                else:
-                    j = self.rng.randint(0, total_seen - 1)
-                    if j < n:
-                        reservoir[j] = row
+            # Fill phase: accumulate chunks until reservoir has n rows
+            if filled < n:
+                take = min(n - filled, batch_size)
+                fill_chunks.append(df_batch.iloc[:take])
+                filled += take
+                total_seen += take
 
-        if not reservoir:
+                if filled == n:
+                    reservoir = pd.concat(fill_chunks, ignore_index=True)
+                    fill_chunks.clear()
+
+                if take == batch_size:
+                    continue
+
+                df_batch = df_batch.iloc[take:].reset_index(drop=True)
+                batch_size = len(df_batch)
+
+            # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
+            # For each row at global position p, draw j uniformly from [0, p].
+            # Accept (replace reservoir slot j) iff j < n.
+            positions = np.arange(total_seen, total_seen + batch_size)
+            rand_slots = self.rng.rng.integers(0, positions + 1)
+            for k in np.where(rand_slots < n)[0]:
+                reservoir.iloc[int(rand_slots[k])] = df_batch.iloc[k]
+
+            total_seen += batch_size
+
+        if reservoir is None and fill_chunks:
+            reservoir = pd.concat(fill_chunks, ignore_index=True)
+
+        if reservoir is None or reservoir.empty:
             return pd.DataFrame()
 
-        sample_df = pd.concat(reservoir, ignore_index=True)
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample_df.columns]
-        return sample_df.reset_index(drop=True)[keep_cols]
+        keep_cols = [c for c in self._gdelt_columns_ordered if c in reservoir.columns]
+        return reservoir.reset_index(drop=True)[keep_cols]
 
     # ---------- stratified reservoir sampling ----------
     def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pd.DataFrame:
