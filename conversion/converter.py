@@ -86,15 +86,14 @@ class GDELTConverter:
         logger.info(f"Processing ZIP: {os.path.basename(zip_path)}")
         created_parquets = []
 
-        extracted_files = unzip_file(zip_path, str(self.unzip_folder))
+        extracted_files = unzip_file(zip_path, self.unzip_folder)
         if not extracted_files:
             logger.warning(f"No extracted files from {zip_path}")
             return created_parquets
 
         for csv_path in extracted_files:
-            csv_file = Path(csv_path)
-            if csv_file.suffix.lower() != ".csv":
-                logger.debug(f"Skipping non-CSV file: {csv_file.name}")
+            if csv_path.suffix.lower() != ".csv":
+                logger.debug(f"Skipping non-CSV file: {csv_path.name}")
                 continue
 
             try:
@@ -102,12 +101,12 @@ class GDELTConverter:
                 if df.empty:
                     continue
 
-                parquet_path = self._save_parquet(df, csv_file.stem)
+                parquet_path = self._save_parquet(df, csv_path.stem)
                 if parquet_path:
                     created_parquets.append(str(parquet_path))
 
                 if not self.keep_unzipped:
-                    os.remove(csv_path)
+                    csv_path.unlink()
 
             except Exception as e:
                 logger.error(f"Error processing CSV {csv_file.name}: {e}")
@@ -117,7 +116,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # READ CSV
     # ------------------------------------------------------------
-    def _read_csv(self, csv_path: str) -> pd.DataFrame:
+    def _read_csv(self, csv_path: str | Path) -> pd.DataFrame:
         try:
             df = pd.read_csv(
                 csv_path,
