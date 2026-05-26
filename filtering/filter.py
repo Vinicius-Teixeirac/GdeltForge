@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Union
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
@@ -115,21 +116,20 @@ class GDELTFilter:
     def filter_single_file(self, parquet_path: str) -> Tuple[int, int]:
         """
         Filter a single parquet file and return (rows_before, rows_after).
+        Streams the file in batches to keep peak RAM bounded.
         """
         file_path = Path(parquet_path)
         logger.debug(f"Filtering file: {file_path.name}")
 
-        # 1. Read parquet
-        df = pd.read_parquet(file_path)
-        rows_before = len(df)
+        pf = pq.ParquetFile(file_path)
 
-        if rows_before == 0:
+        if pf.metadata.num_rows == 0:
             logger.warning(f"Empty parquet file skipped: {file_path.name}")
             return 0, 0
 
-        # 2. Determine which columns exist
-        existing_columns = [c for c in self.columns_to_check if c in df.columns]
-        missing_columns = [c for c in self.columns_to_check if c not in df.columns]
+        schema_cols = pf.schema_arrow.names
+        existing_columns = [c for c in self.columns_to_check if c in schema_cols]
+        missing_columns = [c for c in self.columns_to_check if c not in schema_cols]
 
         if missing_columns:
             logger.warning(
@@ -138,22 +138,27 @@ class GDELTFilter:
 
         if not existing_columns:
             logger.error(f"{file_path.name}: None of the filter columns exist.")
-            return rows_before, rows_before
+            return pf.metadata.num_rows, pf.metadata.num_rows
 
-        # 3. Drop NaN rows
-        df_clean = df.dropna(subset=existing_columns).reset_index(drop=True)
-        rows_after = len(df_clean)
+        output_path = self.output_folder / f"{file_path.stem}_filtered.parquet"
+        rows_before = 0
+        rows_after = 0
 
-        # 4. Save filtered parquet
-        output_filename = f"{file_path.stem}_filtered.parquet"
-        output_path = self.output_folder / output_filename
+        writer = pq.ParquetWriter(output_path, pf.schema_arrow, compression="snappy")
+        try:
+            for batch in pf.iter_batches(batch_size=64_000):
+                df_batch = batch.to_pandas()
+                rows_before += len(df_batch)
 
-        df_clean.to_parquet(
-            output_path,
-            engine="pyarrow",
-            compression="snappy",
-            index=False,
-        )
+                df_clean = df_batch.dropna(subset=existing_columns)
+                rows_after += len(df_clean)
+
+                if not df_clean.empty:
+                    writer.write_table(
+                        pa.Table.from_pandas(df_clean, preserve_index=False)
+                    )
+        finally:
+            writer.close()
 
         logger.debug(f"Saved filtered file -> {output_path}")
         return rows_before, rows_after
