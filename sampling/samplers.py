@@ -102,6 +102,9 @@ class DailySampler:
         daily = {}
         parquet_files = list(self.folder.glob("*.parquet"))
 
+        if not parquet_files:
+            raise FileNotFoundError(f"No parquet files found in {self.folder}")
+
         for file_path in tqdm(parquet_files, desc="Daily sampling"):
             df = pd.read_parquet(file_path)
             if "Day" not in df.columns:
