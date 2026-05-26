@@ -214,7 +214,7 @@ class FilteredSampler:
         raise ValueError(f"Invalid condition for {column}: {cond}")
 
     # ---------- recursive builder: filter_dict -> pyarrow.dataset expression ----------
-    def _build_expression(self, block: Dict[str, Any]) -> Optional[ds.Expression]:
+    def _build_expression(self, block: Dict[str, Any], _join_with: str = "AND") -> Optional[ds.Expression]:
         """
         Return a pyarrow.dataset Expression or None if block is empty.
         Supports nested AND/OR and base column conditions.
@@ -224,22 +224,27 @@ class FilteredSampler:
 
         expr = None
 
+        def _combine(acc: Optional[ds.Expression], new: ds.Expression) -> ds.Expression:
+            if acc is None:
+                return new
+            return (acc & new) if _join_with == "AND" else (acc | new)
+
         for key, val in block.items():
             if key == "AND":
-                sub = self._build_expression(val)
+                sub = self._build_expression(val, _join_with="AND")
                 if sub is None:
                     continue
-                expr = sub if expr is None else (expr & sub)
+                expr = _combine(expr, sub)
 
             elif key == "OR":
-                sub = self._build_expression(val)
+                sub = self._build_expression(val, _join_with="OR")
                 if sub is None:
                     continue
-                expr = sub if expr is None else (expr | sub)
+                expr = _combine(expr, sub)
 
             else:
                 sub = self._expr_for_condition(key, val)
-                expr = sub if expr is None else (expr & sub)
+                expr = _combine(expr, sub)
 
         return expr
 
