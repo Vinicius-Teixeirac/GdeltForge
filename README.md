@@ -262,6 +262,23 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
   ```
   It outputs 1000 instances following the same rule as before, but this time with only three columns.
 
+### 6.4.4 Stratified Sampling (Fixed N Per Group)
+
+Combines a filter with stratified reservoir sampling: draws exactly `--n-per-group` rows for each distinct value of a chosen column.
+
+```
+python main.py sample \
+    --mode filtered \
+    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    --stratify QuadClass \
+    --n-per-group 500 \
+    --out stratified.parquet
+```
+
+This produces a balanced dataset with 500 USA events per QuadClass value, regardless of the natural class distribution.
+
+`--stratify` requires `--n-per-group`. The `-n` flag is ignored when `--stratify` is set.
+
 ## 6.5 Full Pipeline Examples
 ### 6.5.1 Full pipeline — sample 10,000 rows
 ```
@@ -364,7 +381,7 @@ Only CSV -> Parquet is supported. Schema is preserved without additional transfo
 
 - Sampling Limitations
 
-Supports ony: indexed random sampling, daily sampling and a filtered sampling. Large samples (>20M rows) require significant disk I/O. The sampling is by default without replacement.
+Supports only: indexed random sampling, daily sampling, filtered sampling, and stratified sampling. Large samples (>20M rows) require significant disk I/O. The sampling is by default without replacement.
 
 > Disclaimer: Data is intentionally partitioned into many files to avoid extreme RAM usage.
 
