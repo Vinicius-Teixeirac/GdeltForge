@@ -10,7 +10,7 @@ Provides:
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Dict, Union, Tuple, Optional, Set, List
+from typing import Any, Dict, Tuple, Optional, Set, List
 from enum import Enum
 
 import numpy as np
@@ -25,13 +25,6 @@ from .indexer import FileIndex
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-FilterCondition = Union[
-    str, int, float, bool,
-    List[Any],
-    Tuple[Any, Any],
-    Dict[str, Any],
-]
 
 # ----------------------------------------------------------
 # Filter operation types

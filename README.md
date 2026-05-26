@@ -370,7 +370,7 @@ Supports ony: indexed random sampling, daily sampling and a filtered sampling. L
 
 # 9. Future Work (Roadmap)
 
-- Parallel executation of operations
+- Parallel execution of operations
 - CLI pipelines (e.g., python main.py run all)
 - Partition Parquet by year/month
 - Parallel execution of scraping, conversion, filtering, sampling
