@@ -234,6 +234,7 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
     for url in tqdm(urls, desc="Downloading GDELT files", unit="file"):
         filename = url.split("/")[-1]
         local_path = os.path.join(download_dir, filename)
+        tmp_path = local_path + ".tmp"
 
         # Skip existing
         if os.path.exists(local_path):
@@ -247,11 +248,12 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
                 with session.get(url, stream=True, timeout=timeout) as response:
                     response.raise_for_status()
 
-                    with open(local_path, "wb") as f:
+                    with open(tmp_path, "wb") as f:
                         for chunk in response.iter_content(chunk_size=8192):
                             if chunk:
                                 f.write(chunk)
 
+                os.replace(tmp_path, local_path)
                 success += 1
                 break
 
@@ -261,6 +263,8 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
 
                 if attempt == retries - 1:
                     logger.error(f"Failed to download after {retries} attempts: {filename}")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
                     failed.append(filename)
 
     logger.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
