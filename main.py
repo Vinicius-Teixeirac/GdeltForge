@@ -51,7 +51,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
 
 def run_convert_cmd(config: dict) -> None:
     logger.info("Starting conversion stage...")
-    outputs = run_converter(config)  
+    outputs = run_converter(config)
     logger.info(f"Created {len(outputs)} parquet files.")
 
 
