@@ -35,14 +35,17 @@ Below is the complete specification.
 
   $$\text{QuadClass} \in \{1, 2, 3\}$$
 
-- Numeric Range (Tuple Style)
+- Numeric Range
 
-  **{ "GoldsteinScale": [0, 5] }**
+  Range filters require the explicit dictionary form (see Dictionary Operator below):
 
+  **{ "GoldsteinScale": { "op": "between", "min": 0, "max": 5 } }**
 
   Equivalent to:
 
   $$0 \leq GoldsteinScale \leq 5$$
+
+  Note: a JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), not a range.
 
 ### Dictionary Operator (Explicit)
 
@@ -108,9 +111,9 @@ filter_dict can contain nested AND / OR blocks to build richer logic.
   ```
   {
     "OR": {
-      "Actor1_CountryCode": "BRA",
+      "Actor1CountryCode": "BRA",
       "AND": {
-        "Actor2_CountryCode": "BRA",
+        "Actor2CountryCode": "BRA",
         "ActionGeo_CountryCode": "BR"
       }
     }
@@ -182,7 +185,7 @@ You may include only specific output columns:
 python main.py sample \
   --mode filtered \
   --filter '{"ActionGeo_CountryCode": "USA"}' \
-  --columns GLOBALEVENTID Year Actor1Code \
+  --columns GlobalEventID Year Actor1Code \
   -n 1000
 ```
 
@@ -208,11 +211,10 @@ Once the filter is applied, sampling works normally:
 |-------------|--------------|-------------|
 | equal | `"X": "USA"` | $\text{X} == "USA"$ |
 | in list | `"X": [1,2,3]` | $\text{X} \in \{1,2,3\}$ |
-| tuple range | `"X": [0,5]` | $0 \leq \text{X} \leq 5$ |
 | op:equals | `"X": {"op":"equals","value":10}` | explicit equality |
 | op:gt | `"X": {"op":"gt","value":0}` | $\text{X} > 0$ |
 | op:lt | `"X": {"op":"lt","value":5}` | $\text{X} < 5$ |
-| op:between | `"X":{"op":"between","min":0,"max":10}` | between range |
+| op:between | `"X":{"op":"between","min":0,"max":10}` | $0 \leq \text{X} \leq 10$ |
 | AND block | `"AND": {...}` | all conditions must match |
 | OR block | `"OR": {...}` | any condition may match |
 | nested logic | `{"OR": {"X":1, "AND": {...}}}` | combine logic trees |
