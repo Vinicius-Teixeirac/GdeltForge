@@ -47,6 +47,7 @@ def _build_driver(config: dict) -> webdriver.Chrome:
     and set scraping.chromedriver_path in config/settings.yaml.
     """
     chrome_options = webdriver.ChromeOptions()
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--ignore-certificate-errors")
 
     manual_path = config.get("scraping", {}).get("chromedriver_path")
