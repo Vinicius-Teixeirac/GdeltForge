@@ -224,49 +224,48 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
 
     os.makedirs(download_dir, exist_ok=True)
 
-    session = requests.Session()
-
     success = 0
     skipped = 0
     failed = []
 
     logger.info(f"Starting download of {len(urls)} file(s) into {download_dir}...")
 
-    for url in tqdm(urls, desc="Downloading GDELT files", unit="file"):
-        filename = url.split("/")[-1]
-        local_path = os.path.join(download_dir, filename)
-        tmp_path = local_path + ".tmp"
+    with requests.Session() as session:
+        for url in tqdm(urls, desc="Downloading GDELT files", unit="file"):
+            filename = url.split("/")[-1]
+            local_path = os.path.join(download_dir, filename)
+            tmp_path = local_path + ".tmp"
 
-        # Skip existing
-        if os.path.exists(local_path):
-            skipped += 1
-            continue
+            # Skip existing
+            if os.path.exists(local_path):
+                skipped += 1
+                continue
 
-        for attempt in range(retries):
-            try:
-                logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
+            for attempt in range(retries):
+                try:
+                    logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
 
-                with session.get(url, stream=True, timeout=timeout) as response:
-                    response.raise_for_status()
+                    with session.get(url, stream=True, timeout=timeout) as response:
+                        response.raise_for_status()
 
-                    with open(tmp_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
+                        with open(tmp_path, "wb") as f:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
 
-                os.replace(tmp_path, local_path)
-                success += 1
-                break
+                    os.replace(tmp_path, local_path)
+                    success += 1
+                    break
 
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
-                time.sleep(1)
+                except Exception as e:
+                    logger.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
+                    time.sleep(1)
 
-                if attempt == retries - 1:
-                    logger.error(f"Failed to download after {retries} attempts: {filename}")
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                    failed.append(filename)
+                    if attempt == retries - 1:
+                        logger.error(f"Failed to download after {retries} attempts: {filename}")
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                        failed.append(filename)
 
     logger.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
 
