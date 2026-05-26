@@ -344,40 +344,57 @@ class FilteredSampler:
 
         needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
-        reservoirs: Dict[Any, List[pd.DataFrame]] = {}
-        counts: Dict[Any, int] = {}
+        fill_chunks: Dict[Any, List[pd.DataFrame]] = {}
+        filled: Dict[Any, int] = {}
+        reservoirs: Dict[Any, pd.DataFrame] = {}
+        total_seen: Dict[Any, int] = {}
 
         for batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
             df_batch = batch.to_pandas()
             if df_batch.empty or stratify_col not in df_batch.columns:
                 continue
 
-            for i in range(len(df_batch)):
-                row = df_batch.iloc[[i]]
-                g = row.iloc[0][stratify_col]
-                if pd.isna(g):
-                    g = None
+            for g, group_df in df_batch.groupby(df_batch[stratify_col].fillna("__NA__"), sort=False):
+                group_df = group_df.reset_index(drop=True)
+                group_size = len(group_df)
 
-                counts[g] = counts.get(g, 0) + 1
-                if g not in reservoirs:
-                    reservoirs[g] = []
+                if g not in total_seen:
+                    total_seen[g] = 0
+                    fill_chunks[g] = []
+                    filled[g] = 0
 
-                r = reservoirs[g]
-                cnt = counts[g]
-                if len(r) < n_per_group:
-                    r.append(row)
-                else:
-                    j = self.rng.randint(0, cnt - 1)
-                    if j < n_per_group:
-                        r[j] = row
+                # Fill phase
+                if filled[g] < n_per_group:
+                    take = min(n_per_group - filled[g], group_size)
+                    fill_chunks[g].append(group_df.iloc[:take])
+                    filled[g] += take
+                    total_seen[g] += take
 
-        parts: List[pd.DataFrame] = []
-        for rows in reservoirs.values():
-            parts.append(pd.concat(rows, ignore_index=True))
+                    if filled[g] == n_per_group:
+                        reservoirs[g] = pd.concat(fill_chunks[g], ignore_index=True)
+                        fill_chunks[g] = []
 
-        if not parts:
+                    if take == group_size:
+                        continue
+
+                    group_df = group_df.iloc[take:].reset_index(drop=True)
+                    group_size = len(group_df)
+
+                # Replacement phase: vectorized slot selection via Vitter's Algorithm R
+                positions = np.arange(total_seen[g], total_seen[g] + group_size)
+                rand_slots = self.rng.rng.integers(0, positions + 1)
+                for k in np.where(rand_slots < n_per_group)[0]:
+                    reservoirs[g].iloc[int(rand_slots[k])] = group_df.iloc[k]
+
+                total_seen[g] += group_size
+
+        for g, chunks in fill_chunks.items():
+            if chunks and g not in reservoirs:
+                reservoirs[g] = pd.concat(chunks, ignore_index=True)
+
+        if not reservoirs:
             return pd.DataFrame()
 
-        sample = pd.concat(parts, ignore_index=True)
+        sample = pd.concat(list(reservoirs.values()), ignore_index=True)
         keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
         return sample[keep_cols]

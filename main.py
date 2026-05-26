@@ -117,12 +117,22 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             random_state=args.seed
         )
 
-        df = sampler.get_random_sample(args.n)
-        df.to_parquet(out)
-        logger.info(
-            f"Saved filtered sample ({len(df)} rows) "
-            f"using filter={filter_dict} -> {out}"
-        )
+        if args.stratify:
+            if args.n_per_group is None:
+                raise ValueError("--n-per-group is required when --stratify is set")
+            df = sampler.get_stratified_sample(args.stratify, args.n_per_group)
+            df.to_parquet(out)
+            logger.info(
+                f"Saved stratified sample ({len(df)} rows) "
+                f"stratified by '{args.stratify}' ({args.n_per_group} per group) -> {out}"
+            )
+        else:
+            df = sampler.get_random_sample(args.n)
+            df.to_parquet(out)
+            logger.info(
+                f"Saved filtered sample ({len(df)} rows) "
+                f"using filter={filter_dict} -> {out}"
+            )
         return
 
     raise ValueError(f"Unknown sampling mode: {args.mode}")
@@ -198,6 +208,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--columns",
         nargs="*",
         help="Columns to include (filtered sampler)"
+    )
+    sample.add_argument(
+        "--stratify",
+        metavar="COLUMN",
+        help="Column to stratify by (filtered mode only); requires --n-per-group"
+    )
+    sample.add_argument(
+        "--n-per-group",
+        type=int,
+        metavar="N",
+        help="Rows per stratum when --stratify is set"
     )
     sample.add_argument(
         "--out",
