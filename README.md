@@ -204,7 +204,51 @@ Files already present in the download directory are skipped regardless of the da
 ```
 python main.py convert
 ```
-Extracts all CSV files from the compact folders previously downloaded and converts them to Parquet files.
+Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet files.
+
+### 6.2.1 Optional: Hive Partitioning for Historical Data
+
+The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `1979.zip`, `200601.zip`) rather than daily files. When you are working with the full archive (1971-2025), keeping those as flat Parquet files means every query scans thousands of files. Enabling Hive partitioning routes those files into a structured directory tree, so filters on `Year` or `MonthYear` skip irrelevant files entirely.
+
+**This feature is off by default.** To enable it, add the following to `settings.yaml`:
+
+```yaml
+paths:
+  # existing paths ...
+  parquet_historical_directory: "./data/parquet_historical"
+  filtered_historical_directory: "./data/filtered_historical"
+
+converter:
+  partitioning:
+    enabled: true
+    rules:
+      - file_type: yearly    # e.g. 1979.zip
+        by: ["Year"]
+      - file_type: monthly   # e.g. 200601.zip
+        by: ["Year", "MonthYear"]
+```
+
+With partitioning enabled, running `python main.py convert` produces two separate output areas:
+
+```
+data/
+├── parquet/                        # daily files (2013-present), unchanged
+│   ├── 20130401.export.parquet
+│   └── ...
+└── parquet_historical/             # yearly/monthly files, Hive-organized
+    ├── Year=1979/
+    │   └── 1979.parquet
+    ├── Year=2006/
+    │   └── MonthYear=200601/
+    │       └── 200601.parquet
+    └── ...
+```
+
+Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files. Yearly and monthly ZIPs go to `parquet_historical_directory` under the directory structure defined by their rule.
+
+Historical ZIPs that have already been converted are tracked with `.done` marker files, so re-running `convert` skips them safely.
+
+All downstream stages (`filter`, `sample`) detect the historical directory automatically from the config and include its data without any extra flags.
 
 ## 6.3 Filter the Parquet Dataset
 ```
@@ -387,10 +431,8 @@ Supports only: indexed random sampling, daily sampling, filtered sampling, and s
 
 # 9. Future Work (Roadmap)
 
-- Parallel execution of operations
+- Parallel execution of scraping, conversion, filtering, and sampling
 - CLI pipelines (e.g., python main.py run all)
-- Partition Parquet by year/month
-- Parallel execution of scraping, conversion, filtering, sampling
 - GPU-aware sampling (cuDF / RAPIDS)
 - More advanced sampling techniques
 
