@@ -110,6 +110,14 @@ paths:
   # Directory for filtered Parquet files
   filtered_data_directory: "./path_example/filtered"
 
+  # Hive-partitioned Parquet for historical files (yearly / monthly ZIPs).
+  # Only used when converter.partitioning.enabled is true.
+  parquet_historical_directory: "./path_example/parquet_historical"
+
+  # Filtered version of the historical Hive dataset.
+  # Only used when converter.partitioning.enabled is true.
+  filtered_historical_directory: "./path_example/filtered_historical"
+
 # ================================
 #          STAGE SETTINGS
 # ================================
@@ -127,6 +135,18 @@ scraping:
 converter:
   keep_unzipped: false
   file_pattern: "*.zip"
+
+  # Optional Hive partitioning for pre-daily (yearly / monthly) source files.
+  # When enabled, yearly and monthly ZIPs are written as a Hive-partitioned
+  # dataset under parquet_historical_directory instead of flat files.
+  # Daily ZIPs (2013-present) always go to parquet_data_directory unchanged.
+  partitioning:
+    enabled: false
+    rules:
+      - file_type: yearly    # e.g. 1979.zip
+        by: ["Year"]
+      - file_type: monthly   # e.g. 200601.zip
+        by: ["Year", "MonthYear"]
 
 # The user should customize this.
 # Provide columns so the filter drop instances with NAN values on them.
