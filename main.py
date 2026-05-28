@@ -2,6 +2,7 @@ import argparse
 import json
 from datetime import date
 from pathlib import Path
+from typing import Optional
 
 from utils.config import load_config
 from utils.io import ensure_exists
@@ -25,6 +26,14 @@ from sampling.samplers import (
 # ======================================================================
 
 logger = get_logger(__name__, log_to_file=True)
+
+
+def _historical_folder(config: dict, path_key: str) -> Optional[str]:
+    """Return the historical directory path when partitioning is enabled, else None."""
+    part_cfg = config.get("converter", {}).get("partitioning", {})
+    if not part_cfg.get("enabled", False):
+        return None
+    return config["paths"].get(path_key)
 
 # ======================================================================
 # Subcommand Runners
@@ -72,12 +81,17 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    hist_filtered = _historical_folder(config, "filtered_historical_directory")
+
     # -----------------------------
     # Indexed Sampling
     # -----------------------------
     if args.mode == "indexed":
-        sampler = IndexedSampler(folder_path=str(filtered_folder),
-                                 random_state=args.seed)
+        sampler = IndexedSampler(
+            folder_path=str(filtered_folder),
+            historical_folder=hist_filtered,
+            random_state=args.seed,
+        )
         df = sampler.get_random_sample(args.n)
         df.to_parquet(out)
         logger.info(f"Saved indexed sample ({len(df)} rows) -> {out}")
@@ -87,8 +101,11 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Daily Sampling
     # -----------------------------
     if args.mode == "daily":
-        sampler = DailySampler(folder_path=str(filtered_folder),
-                               random_state=args.seed)
+        sampler = DailySampler(
+            folder_path=str(filtered_folder),
+            historical_folder=hist_filtered,
+            random_state=args.seed,
+        )
         df = sampler.get_daily_samples(samples_per_day=args.per_day)
         df.to_parquet(out)
         logger.info(f"Saved daily sample ({len(df)} rows) -> {out}")
@@ -114,7 +131,8 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             gdelt_columns=config["columns"]["gdelt_event"],
             columns=set(args.columns) if args.columns else None,
             filter_dict=filter_dict,
-            random_state=args.seed
+            random_state=args.seed,
+            historical_folder=hist_filtered,
         )
 
         if args.stratify:
