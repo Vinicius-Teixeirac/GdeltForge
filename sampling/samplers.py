@@ -45,20 +45,40 @@ class IndexedSampler:
     """
     Draws samples from many parquet files without loading the entire dataset.
     Uses FileIndex to resolve "global row index" -> (file, row).
+
+    When historical_folder is provided the sampler includes Hive-partitioned
+    historical files in the global index alongside the flat daily files.
     """
 
-    def __init__(self, folder_path: str, random_state: Optional[int] = 42):
+    def __init__(
+        self,
+        folder_path: str,
+        historical_folder: Optional[str] = None,
+        random_state: Optional[int] = 42,
+    ):
         self.folder = Path(folder_path)
         parquet_files = sorted(self.folder.glob("*.parquet"))
 
-        if not parquet_files:
-            raise FileNotFoundError(f"No parquet files found in {self.folder}")
+        if historical_folder:
+            hist_path = Path(historical_folder)
+            if hist_path.exists():
+                parquet_files = sorted(
+                    set(parquet_files) | set(hist_path.rglob("*.parquet"))
+                )
 
-        self.rng = ReproducibleRNG(random_state)
+        if not parquet_files:
+            raise FileNotFoundError(
+                f"No parquet files found in {self.folder}"
+                + (f" or {historical_folder}" if historical_folder else "")
+            )
+
+        self.rng   = ReproducibleRNG(random_state)
         self.index = FileIndex(parquet_files)
 
-        logger.info(f"IndexedSampler: {len(self.index.files)} files, "
-                    f"{self.index.total_rows:,} total rows.")
+        logger.info(
+            f"IndexedSampler: {len(self.index.files)} files, "
+            f"{self.index.total_rows:,} total rows."
+        )
 
     def get_random_sample(self, n: int) -> pd.DataFrame:
         """Sample n rows uniformly across all parquet files."""
@@ -85,18 +105,39 @@ class IndexedSampler:
 class DailySampler:
     """
     For each day, sample a fixed number of rows per parquet file.
+
+    When historical_folder is provided the sampler includes Hive-partitioned
+    historical files alongside the flat daily files.
     """
 
-    def __init__(self, folder_path: str, random_state: Optional[int] = 42):
+    def __init__(
+        self,
+        folder_path: str,
+        historical_folder: Optional[str] = None,
+        random_state: Optional[int] = 42,
+    ):
         self.folder = Path(folder_path)
+        self.historical_folder: Optional[Path] = (
+            Path(historical_folder) if historical_folder else None
+        )
         self.rng = ReproducibleRNG(random_state)
 
     def get_daily_samples(self, samples_per_day: int = 10) -> pd.DataFrame:
-        daily = {}
-        parquet_files = list(self.folder.glob("*.parquet"))
+        flat_files = list(self.folder.glob("*.parquet"))
+        hist_files = (
+            list(self.historical_folder.rglob("*.parquet"))
+            if self.historical_folder and self.historical_folder.exists()
+            else []
+        )
+        parquet_files = flat_files + hist_files
 
         if not parquet_files:
-            raise FileNotFoundError(f"No parquet files found in {self.folder}")
+            raise FileNotFoundError(
+                f"No parquet files found in {self.folder}"
+                + (f" or {self.historical_folder}" if self.historical_folder else "")
+            )
+
+        daily: Dict[Any, List[pd.DataFrame]] = {}
 
         for file_path in tqdm(parquet_files, desc="Daily sampling"):
             df = pd.read_parquet(file_path)
@@ -110,7 +151,6 @@ class DailySampler:
 
                 idx = self.rng.choice(len(group), size=size, replace=False)
                 sample = group.iloc[idx]
-
                 daily.setdefault(day, []).append(sample)
 
         if not daily:
@@ -125,7 +165,13 @@ class DailySampler:
 # ----------------------------------------------------------
 class FilteredSampler:
     """
-    Filter + sample from folder of parquet files using PyArrow dataset scanning + batch streaming.
+    Filter + sample from folder of parquet files using PyArrow dataset scanning
+    + batch streaming.
+
+    When historical_folder is provided the sampler unions a Hive-partitioned
+    historical dataset with the flat daily files. Filters that reference Year
+    or MonthYear benefit from directory-level predicate pushdown on the
+    historical side.
     """
 
     def __init__(
@@ -135,14 +181,18 @@ class FilteredSampler:
         columns: Optional[Set[str]] = None,
         filter_dict: Optional[Dict[str, Any]] = None,
         random_state: Optional[int] = 42,
+        historical_folder: Optional[str] = None,
     ):
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
 
         self.folder = Path(folder_path)
-        self.columns = columns or self.gdelt_columns
+        self.historical_folder: Optional[Path] = (
+            Path(historical_folder) if historical_folder else None
+        )
+        self.columns     = columns or self.gdelt_columns
         self.filter_dict = filter_dict or {}
-        self.rng = ReproducibleRNG(random_state)
+        self.rng         = ReproducibleRNG(random_state)
 
         self._validate_columns()
         self._validate_filter_dict()
@@ -210,7 +260,9 @@ class FilteredSampler:
         raise ValueError(f"Invalid condition for {column}: {cond}")
 
     # ---------- recursive builder: filter_dict -> pyarrow.dataset expression ----------
-    def _build_expression(self, block: Dict[str, Any], _join_with: str = "AND") -> Optional[ds.Expression]:
+    def _build_expression(
+        self, block: Dict[str, Any], _join_with: str = "AND"
+    ) -> Optional[ds.Expression]:
         """
         Return a pyarrow.dataset Expression or None if block is empty.
         Supports nested AND/OR and base column conditions.
@@ -244,12 +296,24 @@ class FilteredSampler:
 
         return expr
 
-    # ---------- dataset scanner and batch iterator ----------
+    # ---------- dataset: union of flat daily + historical partition files ----------
     def _dataset(self) -> ds.Dataset:
-        return ds.dataset(
-            list(self.folder.glob("*.parquet")),
-            format="parquet"
-        )
+        all_files: List[Path] = list(self.folder.glob("*.parquet"))
+
+        if self.historical_folder and self.historical_folder.exists():
+            all_files += list(self.historical_folder.rglob("*.parquet"))
+
+        if not all_files:
+            raise FileNotFoundError(
+                f"No parquet files found in {self.folder}"
+                + (f" or {self.historical_folder}" if self.historical_folder else "")
+            )
+
+        # Pass files as a flat list so PyArrow uses a single physical schema.
+        # Predicate pushdown on Year / MonthYear works via row-group statistics:
+        # each historical partition file has constant values for those columns,
+        # so non-matching files are skipped without reading any row data.
+        return ds.dataset(all_files, format="parquet")
 
     def _batches(self, needed_columns: List[str]):
         """
@@ -257,7 +321,7 @@ class FilteredSampler:
         using pyarrow.dataset Scanner with filter pushdown.
         """
         dataset = self._dataset()
-        expr = self._build_expression(self.filter_dict)
+        expr    = self._build_expression(self.filter_dict)
 
         scanner = dataset.scanner(columns=needed_columns, filter=expr, batch_size=64_000)
         for batch in scanner.to_batches():
@@ -291,12 +355,12 @@ class FilteredSampler:
 
         needed = self._needed_columns()
         fill_chunks: List[pd.DataFrame] = []
-        filled = 0
+        filled    = 0
         reservoir: Optional[pd.DataFrame] = None
         total_seen = 0
 
         for batch in tqdm(self._batches(needed), desc="Sampling (random)"):
-            df_batch = batch.to_pandas()
+            df_batch   = batch.to_pandas()
             batch_size = len(df_batch)
             if batch_size == 0:
                 continue
@@ -305,7 +369,7 @@ class FilteredSampler:
             if filled < n:
                 take = min(n - filled, batch_size)
                 fill_chunks.append(df_batch.iloc[:take])
-                filled += take
+                filled     += take
                 total_seen += take
 
                 if filled == n:
@@ -315,13 +379,13 @@ class FilteredSampler:
                 if take == batch_size:
                     continue
 
-                df_batch = df_batch.iloc[take:].reset_index(drop=True)
+                df_batch   = df_batch.iloc[take:].reset_index(drop=True)
                 batch_size = len(df_batch)
 
             # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
             # For each row at global position p, draw j uniformly from [0, p].
             # Accept (replace reservoir slot j) iff j < n.
-            positions = np.arange(total_seen, total_seen + batch_size)
+            positions  = np.arange(total_seen, total_seen + batch_size)
             rand_slots = self.rng.rng.integers(0, positions + 1)
             for k in np.where(rand_slots < n)[0]:
                 reservoir.iloc[int(rand_slots[k])] = df_batch.iloc[k]
@@ -345,30 +409,32 @@ class FilteredSampler:
         needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
         fill_chunks: Dict[Any, List[pd.DataFrame]] = {}
-        filled: Dict[Any, int] = {}
-        reservoirs: Dict[Any, pd.DataFrame] = {}
-        total_seen: Dict[Any, int] = {}
+        filled:      Dict[Any, int]                = {}
+        reservoirs:  Dict[Any, pd.DataFrame]       = {}
+        total_seen:  Dict[Any, int]                = {}
 
         for batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
             df_batch = batch.to_pandas()
             if df_batch.empty or stratify_col not in df_batch.columns:
                 continue
 
-            for g, group_df in df_batch.groupby(df_batch[stratify_col].fillna("__NA__"), sort=False):
-                group_df = group_df.reset_index(drop=True)
+            for g, group_df in df_batch.groupby(
+                df_batch[stratify_col].fillna("__NA__"), sort=False
+            ):
+                group_df   = group_df.reset_index(drop=True)
                 group_size = len(group_df)
 
                 if g not in total_seen:
-                    total_seen[g] = 0
-                    fill_chunks[g] = []
-                    filled[g] = 0
+                    total_seen[g]   = 0
+                    fill_chunks[g]  = []
+                    filled[g]       = 0
 
                 # Fill phase
                 if filled[g] < n_per_group:
                     take = min(n_per_group - filled[g], group_size)
                     fill_chunks[g].append(group_df.iloc[:take])
-                    filled[g] += take
-                    total_seen[g] += take
+                    filled[g]      += take
+                    total_seen[g]  += take
 
                     if filled[g] == n_per_group:
                         reservoirs[g] = pd.concat(fill_chunks[g], ignore_index=True)
@@ -377,11 +443,11 @@ class FilteredSampler:
                     if take == group_size:
                         continue
 
-                    group_df = group_df.iloc[take:].reset_index(drop=True)
+                    group_df   = group_df.iloc[take:].reset_index(drop=True)
                     group_size = len(group_df)
 
                 # Replacement phase: vectorized slot selection via Vitter's Algorithm R
-                positions = np.arange(total_seen[g], total_seen[g] + group_size)
+                positions  = np.arange(total_seen[g], total_seen[g] + group_size)
                 rand_slots = self.rng.rng.integers(0, positions + 1)
                 for k in np.where(rand_slots < n_per_group)[0]:
                     reservoirs[g].iloc[int(rand_slots[k])] = group_df.iloc[k]
@@ -395,6 +461,6 @@ class FilteredSampler:
         if not reservoirs:
             return pd.DataFrame()
 
-        sample = pd.concat(list(reservoirs.values()), ignore_index=True)
+        sample    = pd.concat(list(reservoirs.values()), ignore_index=True)
         keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
         return sample[keep_cols]
