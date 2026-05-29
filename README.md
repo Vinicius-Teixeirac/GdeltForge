@@ -1,13 +1,6 @@
 # GDELT 2.0 EVENT DATABASE Pipeline  
 ### A Simple and Modular Data Engineering Framework
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
-[![uv](https://img.shields.io/badge/uv-package_manager-DE5FE9?style=for-the-badge)](https://docs.astral.sh/uv/)
-[![PyArrow](https://img.shields.io/badge/PyArrow-parquet_%26_datasets-FF6F00?style=for-the-badge)](https://arrow.apache.org/docs/python/)
-[![pandas](https://img.shields.io/badge/pandas-dataframes-150458?style=for-the-badge&logo=pandas&logoColor=white)](https://pandas.pydata.org/)
-[![NumPy](https://img.shields.io/badge/NumPy-vectorized_sampling-013243?style=for-the-badge&logo=numpy&logoColor=white)](https://numpy.org/)
-[![Selenium](https://img.shields.io/badge/Selenium-web_scraping-43B02A?style=for-the-badge&logo=selenium&logoColor=white)](https://selenium-python.readthedocs.io/)
-
 This project implements a lightweight but scalable data pipeline to extract, transform, and load the entire **GDELT 2.0 Events Database**.  
 It is designed for research workflows requiring:
 
@@ -19,6 +12,15 @@ It is designed for research workflows requiring:
 The architecture emphasizes **simplicity**, **efficiency**, and **explicit execution**: each stage can be run independently or reused in larger workflows.
 
 ---
+
+# Stack
+
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![uv](https://img.shields.io/badge/uv-package_manager-DE5FE9?style=for-the-badge)](https://docs.astral.sh/uv/)
+[![PyArrow](https://img.shields.io/badge/PyArrow-parquet_%26_datasets-FF6F00?style=for-the-badge)](https://arrow.apache.org/docs/python/)
+[![pandas](https://img.shields.io/badge/pandas-dataframes-150458?style=for-the-badge&logo=pandas&logoColor=white)](https://pandas.pydata.org/)
+[![NumPy](https://img.shields.io/badge/NumPy-vectorized_sampling-013243?style=for-the-badge&logo=numpy&logoColor=white)](https://numpy.org/)
+[![Selenium](https://img.shields.io/badge/Selenium-web_scraping-43B02A?style=for-the-badge&logo=selenium&logoColor=white)](https://selenium-python.readthedocs.io/)
 
 # 1. Challenges with Official Access Methods
 
