@@ -1,6 +1,6 @@
 import pytest
 
-from conversion.converter import GDELTConverter
+from gdeltforge.conversion.converter import GDELTConverter
 
 
 def _make_config(tmp_path, **converter_overrides):
