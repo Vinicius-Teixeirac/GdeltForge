@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/banner.png" alt="GdeltForge emblem: a world map globe resting on an anvil" width="360">
+</p>
+
 # GdeltForge
 
 ### Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet
