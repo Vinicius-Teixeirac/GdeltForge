@@ -9,6 +9,9 @@ dist/
 build/
 .eggs/
 
+# Generated at build time by hatch-vcs
+src/gdeltforge/_version.py
+
 # Virtual environments
 .venv/
 venv/
@@ -41,3 +44,6 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+
+# Personal notes (not part of the public project)
+ROADMAP.md
