@@ -1,7 +1,7 @@
 [project]
-name = "gdelt-pipeline"
-version = "0.1.0"
-description = "A modular data pipeline for the GDELT 2.0 Events Database"
+name = "gdeltforge"
+version = "0.2.0"
+description = "Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet datasets"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.26",
