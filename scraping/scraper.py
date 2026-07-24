@@ -12,29 +12,72 @@ Provides:
 """
 
 import os
+import re
 import requests
 import time
+import urllib3
 from calendar import monthrange
 from datetime import date
 from typing import List, Dict, Optional, Tuple
+from urllib.parse import urljoin
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from tqdm import tqdm
-from webdriver_manager.chrome import ChromeDriverManager
 
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+GDELT_EVENTS_URL = "https://data.gdeltproject.org/events/"
+
+# data.gdeltproject.org serves this page from a GCS bucket whose TLS cert
+# only covers *.googleapis.com, so the hostname never matches. Both
+# collection methods below deliberately skip certificate verification for
+# this one known site; downloads themselves happen over plain http.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 # ------------------------------------------------------------
-# STEP 1: Collect GDELT links via Selenium
+# STEP 1: Collect GDELT links
 # ------------------------------------------------------------
-def _build_driver(config: dict) -> webdriver.Chrome:
+def _is_gdelt_dataset_file(filename: str) -> bool:
+    is_daily = filename.endswith(".export.CSV.zip")
+    is_monthly = filename[:6].isdigit() and len(filename) == 10
+    is_yearly = filename[:4].isdigit() and len(filename) == 8
+    return is_daily or is_monthly or is_yearly
+
+
+def _collect_gdelt_links_requests(config: dict) -> List[str]:
+    """
+    Fetches the GDELT events directory listing with a plain HTTP GET and
+    parses the anchor hrefs out of the HTML.
+
+    The page is a static, server-rendered Apache-style index (not
+    JS-rendered), so no browser is required. This is the default and
+    recommended method: no Chrome/ChromeDriver dependency, no version
+    mismatches, and roughly an order of magnitude faster than Selenium.
+    """
+    logger.info("Collecting GDELT links using requests...")
+    timeout = config.get("scraping", {}).get("timeout", 30)
+
+    response = requests.get(GDELT_EVENTS_URL, timeout=timeout, verify=False)
+    response.raise_for_status()
+
+    hrefs = re.findall(r'href="([^"]+)"', response.text, flags=re.IGNORECASE)
+    logger.info(f"Found {len(hrefs)} total links.")
+
+    urls = []
+    for href in hrefs:
+        filename = href.split("/")[-1]
+        if _is_gdelt_dataset_file(filename):
+            full_url = urljoin(GDELT_EVENTS_URL, href)
+            urls.append(full_url.replace("https://", "http://", 1))
+
+    logger.info(f"Identified {len(urls)} GDELT dataset URLs.")
+
+    return urls
+
+
+def _build_driver(config: dict):
     """
     Build a Chrome WebDriver instance.
 
@@ -46,6 +89,10 @@ def _build_driver(config: dict) -> webdriver.Chrome:
     ChromeDriver manually from https://googlechromelabs.github.io/chrome-for-testing/
     and set scraping.chromedriver_path in config/settings.yaml.
     """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--ignore-certificate-errors")
@@ -75,10 +122,18 @@ def _build_driver(config: dict) -> webdriver.Chrome:
         ) from e
 
 
-def collect_gdelt_links(config: dict) -> List[str]:
+def _collect_gdelt_links_selenium(config: dict) -> List[str]:
     """
     Uses Selenium to extract all GDELT .zip file URLs from the events page.
+
+    Kept as an opt-in fallback (scraping.method: selenium) in case the page
+    ever becomes JS-rendered, or as a manual comparison against the
+    requests-based method. Requires Chrome + a matching ChromeDriver.
     """
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
     logger.info("Collecting GDELT links using Selenium...")
 
     driver = _build_driver(config)
@@ -86,7 +141,7 @@ def collect_gdelt_links(config: dict) -> List[str]:
     urls = []
 
     try:
-        driver.get("https://data.gdeltproject.org/events/")
+        driver.get(GDELT_EVENTS_URL)
         time.sleep(2)
 
         # Try to bypass certificate warning if present
@@ -108,10 +163,7 @@ def collect_gdelt_links(config: dict) -> List[str]:
             href = tag.get_attribute("href")
             if href:
                 filename = href.split("/")[-1]
-                is_daily = filename.endswith(".export.CSV.zip")
-                is_monthly = (filename[:6].isdigit() and len(filename) == 10)
-                is_yearly = (filename[:4].isdigit() and len(filename) == 8)
-                if is_daily or is_monthly or is_yearly:
+                if _is_gdelt_dataset_file(filename):
                     urls.append(href.replace("https://", "http://", 1))
 
         logger.info(f"Identified {len(urls)} GDELT dataset URLs.")
@@ -120,6 +172,22 @@ def collect_gdelt_links(config: dict) -> List[str]:
         driver.quit()
 
     return urls
+
+
+def collect_gdelt_links(config: dict) -> List[str]:
+    """
+    Retrieves all downloadable GDELT file URLs, dispatching to the method
+    configured in scraping.method ("requests", default, or "selenium").
+    """
+    method = config.get("scraping", {}).get("method", "requests").lower()
+
+    if method == "selenium":
+        return _collect_gdelt_links_selenium(config)
+
+    if method != "requests":
+        logger.warning(f"Unknown scraping.method '{method}', falling back to 'requests'.")
+
+    return _collect_gdelt_links_requests(config)
 
 
 # ------------------------------------------------------------

@@ -20,7 +20,8 @@ The architecture emphasizes **simplicity**, **efficiency**, and **explicit execu
 [![PyArrow](https://img.shields.io/badge/PyArrow-parquet_%26_datasets-FF6F00?style=for-the-badge)](https://arrow.apache.org/docs/python/)
 [![pandas](https://img.shields.io/badge/pandas-dataframes-150458?style=for-the-badge&logo=pandas&logoColor=white)](https://pandas.pydata.org/)
 [![NumPy](https://img.shields.io/badge/NumPy-vectorized_sampling-013243?style=for-the-badge&logo=numpy&logoColor=white)](https://numpy.org/)
-[![Selenium](https://img.shields.io/badge/Selenium-web_scraping-43B02A?style=for-the-badge&logo=selenium&logoColor=white)](https://selenium-python.readthedocs.io/)
+[![Requests](https://img.shields.io/badge/Requests-web_scraping-000000?style=for-the-badge&logo=python&logoColor=white)](https://requests.readthedocs.io/)
+[![Selenium](https://img.shields.io/badge/Selenium-optional_fallback-43B02A?style=for-the-badge&logo=selenium&logoColor=white)](https://selenium-python.readthedocs.io/)
 
 # 1. Challenges with Official Access Methods
 
@@ -207,6 +208,20 @@ The filter applies to all three file types the GDELT archive provides:
 | Yearly | `2020.zip` | year overlaps range |
 
 Files already present in the download directory are skipped regardless of the date filter.
+
+### 6.1.1 Link Collection Method: `requests` vs `selenium`
+
+The scraper needs to read the file index at `data.gdeltproject.org/events/` before it can download anything. That index turns out to be a plain, server-rendered HTML directory listing (not JS-rendered), so a headless browser is unnecessary overhead. `scraping.method` in `config/settings.yaml` controls which collector is used:
+
+| | `requests` (default) | `selenium` |
+|---|---|---|
+| How it works | Plain HTTP GET + regex over the HTML | Launches headless Chrome, waits for the DOM, reads `<a>` tags |
+| Dependencies | Just `requests` (already required) | Chrome install + a version-matched ChromeDriver + `selenium`/`webdriver-manager` (`uv pip install '.[selenium]'`) |
+| Measured speed | ~0.4s | ~16s (~40x slower) |
+| Failure modes | None specific to this site | Breaks whenever Chrome auto-updates past the pinned ChromeDriver version (the original reason this option was added) |
+| When to use | Always, unless the page below stops being static | Fallback only, in case GDELT ever switches this index page to a JS-rendered listing |
+
+Both methods were verified to return an identical set of URLs. The site's TLS certificate doesn't match its hostname (it's served off a GCS bucket cert), so both methods intentionally skip certificate verification for this one connection; the actual file downloads happen over plain `http://`, which sidesteps the issue entirely.
 
 ## 6.2 Convert CSV -> Parquet
 
