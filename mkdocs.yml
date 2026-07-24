@@ -1,0 +1,45 @@
+site_name: GdeltForge
+site_description: Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet datasets
+repo_url: https://github.com/Vinicius-Teixeirac/GDELT-2.0-EVENT-DATABASE-Pipeline
+repo_name: GDELT-2.0-EVENT-DATABASE-Pipeline
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - CLI Reference: cli-reference.md
+  - Configuration: configuration.md
+  - Architecture: architecture.md
+  - Limitations & Roadmap: limitations-and-roadmap.md
