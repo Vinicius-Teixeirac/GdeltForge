@@ -1,7 +1,8 @@
-# GDELT 2.0 EVENT DATABASE Pipeline  
-### A Simple and Modular Data Engineering Framework
+# GdeltForge
 
-This project implements a lightweight but scalable data pipeline to extract, transform, and load the entire **GDELT 2.0 Events Database**.  
+### Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet
+
+GdeltForge is a lightweight but scalable data pipeline to extract, transform, and load the entire **GDELT 2.0 Events Database**.
 It is designed for research workflows requiring:
 
 - Large-scale event data  
@@ -100,13 +101,13 @@ Each stage consumes the output of the previous one, enabling:
 
 # 3. Installation
 
-This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management. `uv sync` builds and installs GdeltForge itself (editable), so the `gdeltforge` command becomes available inside the virtual environment.
 
 ```
 # Install uv (if not already installed)
 pip install uv
 
-# Create virtual environment and install all dependencies from the lock file
+# Create virtual environment, install dependencies, and install GdeltForge itself
 uv sync
 
 # Activate the virtual environment
@@ -114,6 +115,9 @@ uv sync
 .venv\Scripts\activate
 # macOS / Linux
 source .venv/bin/activate
+
+# Verify the CLI is installed
+gdeltforge --help
 ```
 
 Then copy the example config and adjust paths:
@@ -134,37 +138,40 @@ uv run pytest
 ---
 
 # 4. Project Structure
-For simplicity purposes, the structure is straightforward, as it's expected to most of the repository users not be programmers. 
 
-> Disclaimer: I will consider a typical "src, docs, tests,..." structure in the future, depending on the feedback - feel free to leave yours :)
+GdeltForge follows a standard `src/` package layout, installable via `uv sync` / `pip install`:
 
 ```
 project_root/
 ├── config/
 │ └── settings.yaml # Global configuration for all pipeline stages
 │
-├── conversion/
-│ └── converter.py # CSV -> Parquet conversion logic
-│
-├── filtering/
-│ └── filter.py # Filtering logic (drop invalid rows)
-│
-├── sampling/
-│ ├── indexer.py # File indexing for reproducible sampling
-│ ├── rng.py # Random number generation helpers
-│ └── samplers.py # Indexed, daily, and filtered sampling
-│
-├── scraping/
-│ └── scraper.py # Downloader for raw GDELT event files
-│
-├── utils/
-│ ├── config.py # YAML loader and configuration utilities
-│ ├── io.py # File and chunked-IO helpers
-│ └── logging.py # Central logging system
+├── src/gdeltforge/
+│ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
+│ │
+│ ├── conversion/
+│ │ └── converter.py # CSV -> Parquet conversion logic
+│ │
+│ ├── filtering/
+│ │ └── filter.py # Filtering logic (drop invalid rows)
+│ │
+│ ├── sampling/
+│ │ ├── indexer.py # File indexing for reproducible sampling
+│ │ ├── rng.py # Random number generation helpers
+│ │ └── samplers.py # Indexed, daily, and filtered sampling
+│ │
+│ ├── scraping/
+│ │ └── scraper.py # Downloader for raw GDELT event files
+│ │
+│ └── utils/
+│   ├── config.py # Config resolution (--config / env var / CWD) and YAML loading
+│   ├── io.py # File and chunked-IO helpers
+│   └── logging.py # Central logging system
 │
 ├── tests/ # pytest suite (unit tests, no network/browser required)
 │
-├── main.py # Pipeline entrypoint
+├── main.py # Backward-compatible shim: `python main.py <command>` still works
+├── pyproject.toml # Package metadata, build backend, gdeltforge console-script entry point
 └── README.md
 ```
 
@@ -172,11 +179,13 @@ project_root/
 
 # 5. Command Line Interface (CLI)
 
-Run pipeline stages using:
+Run pipeline stages using the installed console script:
 
 ```
-python main.py <command> [options]
+gdeltforge <command> [options]
 ```
+
+`python main.py <command> [options]` is kept as a backward-compatible equivalent, so existing scripts (and the `sample.example.cmd`/`.sh` files below) keep working unchanged.
 
 Available commands:
 
@@ -190,6 +199,8 @@ Available commands:
 The CLI intentionally does not chain stages automatically.
 You run each stage explicitly to maintain full control.
 
+By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable -- useful once GdeltForge is installed and invoked from outside the repo checkout.
+
 ---
 
 # 6. Usage Examples
@@ -200,14 +211,14 @@ Below are practical, beginner-friendly examples covering all common workflows.
 
 Download the entire archive:
 ```
-python main.py scrape
+gdeltforge scrape
 ```
 
 Download only files within a date range (any combination of bounds is valid):
 ```
-python main.py scrape --start-date 2020-01-01 --end-date 2023-12-31
-python main.py scrape --start-date 2022-01-01          # from date onward
-python main.py scrape --end-date   2015-12-31          # up to date
+gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge scrape --start-date 2022-01-01          # from date onward
+gdeltforge scrape --end-date   2015-12-31          # up to date
 ```
 
 The filter applies to all three file types the GDELT archive provides:
@@ -241,7 +252,7 @@ The site's TLS certificate doesn't match its hostname (it's served off a GCS buc
 ## 6.2 Convert CSV -> Parquet
 
 ```
-python main.py convert
+gdeltforge convert
 ```
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet files. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers` in `config/settings.yaml`; `null`, the default, uses all available CPU cores).
 
@@ -267,7 +278,7 @@ converter:
         by: ["Year", "MonthYear"]
 ```
 
-With partitioning enabled, running `python main.py convert` produces two separate output areas:
+With partitioning enabled, running `gdeltforge convert` produces two separate output areas:
 
 ```
 data/
@@ -291,7 +302,7 @@ All downstream stages (`filter`, `sample`) detect the historical directory autom
 
 ## 6.3 Filter the Parquet Dataset
 ```
-python main.py filter
+gdeltforge filter
 ```
 Drops rows with missing values in the columns defined in settings.yaml.
 
@@ -303,13 +314,13 @@ All sampling modes read from the filtered directory.
 
 ### 6.4.1 Indexed Sampling (Uniform Random)
 ```
-python main.py sample --mode indexed -n 10000 --seed 123 --out sample.parquet
+gdeltforge sample --mode indexed -n 10000 --seed 123 --out sample.parquet
 ```
 This samples 10000 instances considering the entire data.
 
 ### 6.4.2 Daily Sampling (N Rows Per Day)
 ```
-python main.py sample --mode daily --per-day 20 --out daily.parquet
+gdeltforge sample --mode daily --per-day 20 --out daily.parquet
 ```
 This samples 20 instances per day from the entire period (1971 - 20xx)
 
@@ -318,7 +329,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 * Example — 5000 events whose QuadClass is in {1,2}:
 
   ```
-  python main.py sample \
+  gdeltforge sample \
       --mode filtered \
       --filter '{"QuadClass": [1, 2]}' \
       -n 5000 \
@@ -328,7 +339,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 * Example — 2000 "Verbal Cooperation" events that happened in "USA":
 
   ```
-  python main.py sample \
+  gdeltforge sample \
       --mode filtered \
       --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
       -n 2000
@@ -337,7 +348,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 * Example — You can select specific columns of interest, which is a memory friendly practice:
 
   ```
-  python main.py sample \
+  gdeltforge sample \
       --mode filtered \
       --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
       --columns GlobalEventID Year Actor1Code \
@@ -350,7 +361,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 Combines a filter with stratified reservoir sampling: draws exactly `--n-per-group` rows for each distinct value of a chosen column.
 
 ```
-python main.py sample \
+gdeltforge sample \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["USA"]}' \
     --stratify QuadClass \
@@ -365,24 +376,24 @@ This produces a balanced dataset with 500 USA events per QuadClass value, regard
 ## 6.5 Full Pipeline Examples
 ### 6.5.1 Full pipeline — sample 10,000 rows
 ```
-python main.py scrape
-python main.py convert
-python main.py filter
-python main.py sample --mode indexed -n 10000
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode indexed -n 10000
 ```
 ### 6.5.2 Reproducible sampling
 ```
-python main.py scrape
-python main.py convert
-python main.py filter
-python main.py sample --mode indexed -n 5000 --seed 42
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode indexed -n 5000 --seed 42
 ```
 ### 6.5.3 USA-only events
 ```
-python main.py scrape
-python main.py convert
-python main.py filter
-python main.py sample \
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["USA"]}' \
     -n 3000
@@ -390,34 +401,34 @@ python main.py sample \
 
 ### 6.5.4 30 Events Per Day
 ```
-python main.py scrape
-python main.py convert
-python main.py filter
-python main.py sample --mode daily --per-day 30
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode daily --per-day 30
 ```
 
 ### 6.5.5 Bash One-Liner
 ```
-python main.py scrape && \
-python main.py convert && \
-python main.py filter && \
-python main.py sample --mode indexed -n 10000
+gdeltforge scrape && \
+gdeltforge convert && \
+gdeltforge filter && \
+gdeltforge sample --mode indexed -n 10000
 ```
 
 ### 6.5.6 PowerShell Loop
 ```
 foreach ($c in "scrape", "convert", "filter") {
-    python main.py $c
+    gdeltforge $c
 }
-python main.py sample --mode indexed -n 10000
+gdeltforge sample --mode indexed -n 10000
 ```
 
 ### 6.5.7 Date-restricted pipeline
 ```
-python main.py scrape --start-date 2020-01-01 --end-date 2023-12-31
-python main.py convert
-python main.py filter
-python main.py sample --mode indexed -n 10000
+gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode indexed -n 10000
 ```
 The date flags apply only to `scrape`. The subsequent stages operate on whatever files are already on disk.
 
@@ -429,7 +440,7 @@ A extensive guide of filtered sampling is available in filtered_sampling_guide.m
 Logging is enabled through a shared logger helper:
 
 ```
-from utils.logging import get_logger
+from gdeltforge.utils.logging import get_logger
 logger = get_logger(__name__)
 ```
 
@@ -449,7 +460,7 @@ Current limitations include:
 Only one pipeline stage per command. No automatic chaining. No dependency resolution. Example of unsupported:
 
 ```
-python main.py scrape convert sample
+gdeltforge scrape convert sample
 ```
 
 > Disclaimer: Users can run multiple stages at once by .sh (.cmd, .ps, ...) files. Take a look on sample.example.cmd or sample.example.sh.
@@ -474,8 +485,8 @@ Supports only: indexed random sampling, daily sampling, filtered sampling, and s
 - [x] Checksum-verified downloads (MD5, when GDELT provides one) and a pytest unit-test suite
 - [ ] Parallel execution of filtering and sampling
 - [ ] Support for additional GDELT datasets (GKG, Mentions) alongside Events
-- [ ] Package restructuring for distribution (installable entry point, config resolution outside the repo directory)
-- CLI pipelines (e.g., python main.py run all)
+- [x] Package restructuring for distribution: rebranded as GdeltForge, `src/gdeltforge` layout, installable `gdeltforge` entry point, config resolution outside the repo directory
+- CLI pipelines (e.g., gdeltforge run all)
 - GPU-aware sampling (cuDF / RAPIDS)
 - More advanced sampling techniques
 
