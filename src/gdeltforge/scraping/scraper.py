@@ -27,7 +27,7 @@ from urllib.parse import urljoin
 
 from tqdm import tqdm
 
-from utils.logging import get_logger
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -186,7 +186,7 @@ def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
             time.sleep(2)
             logger.info("Security warning bypassed.")
         except Exception:
-            pass  # no warning -- good
+            pass  # no warning, good
 
         WebDriverWait(driver, 15).until(
             EC.presence_of_all_elements_located((By.TAG_NAME, "a"))
@@ -455,7 +455,7 @@ def run_scraping_pipeline(
 # STANDALONE SCRIPT
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    from utils.config import load_config
+    from gdeltforge.utils.config import load_config
 
     logger.info("Running scraping pipeline as standalone script...")
     cfg = load_config()

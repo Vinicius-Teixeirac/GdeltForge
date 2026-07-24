@@ -33,8 +33,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from utils.io import unzip_file
-from utils.logging import get_logger
+from gdeltforge.utils.io import unzip_file
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -163,7 +163,7 @@ class GDELTConverter:
 
         # Each zip is processed independently (its own extracted CSV names,
         # own output parquet paths), so file-level parallelism across
-        # processes is safe -- this is CPU-bound (CSV parsing + parquet
+        # processes is safe: this is CPU-bound (CSV parsing + parquet
         # writing), so ProcessPoolExecutor beats threads here.
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
@@ -369,7 +369,7 @@ def run_converter(config: dict) -> List[str]:
 # STANDALONE EXECUTION
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    from utils.config import load_config
+    from gdeltforge.utils.config import load_config
 
     logger.info("Running GDELT conversion pipeline as standalone script...")
     cfg = load_config()
