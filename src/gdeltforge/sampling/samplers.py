@@ -9,20 +9,20 @@ Provides:
 """
 
 from __future__ import annotations
-from pathlib import Path
-from typing import Any, Dict, Tuple, Optional, Set, List
+
 from enum import Enum
+from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.dataset as ds
 from tqdm import tqdm
 
-from .rng import ReproducibleRNG
-from .indexer import FileIndex
 from gdeltforge.utils.logging import get_logger
+
+from .indexer import FileIndex
+from .rng import ReproducibleRNG
 
 logger = get_logger(__name__)
 
@@ -53,8 +53,8 @@ class IndexedSampler:
     def __init__(
         self,
         folder_path: str,
-        historical_folder: Optional[str] = None,
-        random_state: Optional[int] = 42,
+        historical_folder: str | None = None,
+        random_state: int | None = 42,
     ):
         self.folder = Path(folder_path)
         parquet_files = sorted(self.folder.glob("*.parquet"))
@@ -113,11 +113,11 @@ class DailySampler:
     def __init__(
         self,
         folder_path: str,
-        historical_folder: Optional[str] = None,
-        random_state: Optional[int] = 42,
+        historical_folder: str | None = None,
+        random_state: int | None = 42,
     ):
         self.folder = Path(folder_path)
-        self.historical_folder: Optional[Path] = (
+        self.historical_folder: Path | None = (
             Path(historical_folder) if historical_folder else None
         )
         self.rng = ReproducibleRNG(random_state)
@@ -137,7 +137,7 @@ class DailySampler:
                 + (f" or {self.historical_folder}" if self.historical_folder else "")
             )
 
-        daily: Dict[Any, List[pd.DataFrame]] = {}
+        daily: dict[Any, list[pd.DataFrame]] = {}
 
         for file_path in tqdm(parquet_files, desc="Daily sampling"):
             df = pd.read_parquet(file_path)
@@ -177,17 +177,17 @@ class FilteredSampler:
     def __init__(
         self,
         folder_path: str,
-        gdelt_columns: List[str],
-        columns: Optional[Set[str]] = None,
-        filter_dict: Optional[Dict[str, Any]] = None,
-        random_state: Optional[int] = 42,
-        historical_folder: Optional[str] = None,
+        gdelt_columns: list[str],
+        columns: set[str] | None = None,
+        filter_dict: dict[str, Any] | None = None,
+        random_state: int | None = 42,
+        historical_folder: str | None = None,
     ):
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
 
         self.folder = Path(folder_path)
-        self.historical_folder: Optional[Path] = (
+        self.historical_folder: Path | None = (
             Path(historical_folder) if historical_folder else None
         )
         self.columns     = columns or self.gdelt_columns
@@ -220,8 +220,8 @@ class FilteredSampler:
         validate_block(self.filter_dict)
 
     # ---------- recursively collect all column names referenced in a filter block ----------
-    def _filter_columns(self, block: Dict[str, Any]) -> Set[str]:
-        cols: Set[str] = set()
+    def _filter_columns(self, block: dict[str, Any]) -> set[str]:
+        cols: set[str] = set()
         for key, val in block.items():
             if key in ("AND", "OR"):
                 if isinstance(val, dict):
@@ -261,8 +261,8 @@ class FilteredSampler:
 
     # ---------- recursive builder: filter_dict -> pyarrow.dataset expression ----------
     def _build_expression(
-        self, block: Dict[str, Any], _join_with: str = "AND"
-    ) -> Optional[ds.Expression]:
+        self, block: dict[str, Any], _join_with: str = "AND"
+    ) -> ds.Expression | None:
         """
         Return a pyarrow.dataset Expression or None if block is empty.
         Supports nested AND/OR and base column conditions.
@@ -272,7 +272,7 @@ class FilteredSampler:
 
         expr = None
 
-        def _combine(acc: Optional[ds.Expression], new: ds.Expression) -> ds.Expression:
+        def _combine(acc: ds.Expression | None, new: ds.Expression) -> ds.Expression:
             if acc is None:
                 return new
             return (acc & new) if _join_with == "AND" else (acc | new)
@@ -298,7 +298,7 @@ class FilteredSampler:
 
     # ---------- dataset: union of flat daily + historical partition files ----------
     def _dataset(self) -> ds.Dataset:
-        all_files: List[Path] = list(self.folder.glob("*.parquet"))
+        all_files: list[Path] = list(self.folder.glob("*.parquet"))
 
         if self.historical_folder and self.historical_folder.exists():
             all_files += list(self.historical_folder.rglob("*.parquet"))
@@ -315,7 +315,7 @@ class FilteredSampler:
         # so non-matching files are skipped without reading any row data.
         return ds.dataset(all_files, format="parquet")
 
-    def _batches(self, needed_columns: List[str]):
+    def _batches(self, needed_columns: list[str]):
         """
         Yield pyarrow.RecordBatch objects matching the configured filter,
         using pyarrow.dataset Scanner with filter pushdown.
@@ -324,10 +324,9 @@ class FilteredSampler:
         expr    = self._build_expression(self.filter_dict)
 
         scanner = dataset.scanner(columns=needed_columns, filter=expr, batch_size=64_000)
-        for batch in scanner.to_batches():
-            yield batch
+        yield from scanner.to_batches()
 
-    def _needed_columns(self) -> List[str]:
+    def _needed_columns(self) -> list[str]:
         """Union of requested columns and any column referenced in the filter expression."""
         return list(self.columns | self._filter_columns(self.filter_dict))
 
@@ -335,7 +334,7 @@ class FilteredSampler:
     def filter_dataset(self) -> pd.DataFrame:
         needed = self._needed_columns()
 
-        frames: List[pd.DataFrame] = []
+        frames: list[pd.DataFrame] = []
         for batch in tqdm(self._batches(needed), desc="Filtering parquet files"):
             try:
                 df_batch = batch.to_pandas()
@@ -354,9 +353,9 @@ class FilteredSampler:
             return pd.DataFrame()
 
         needed = self._needed_columns()
-        fill_chunks: List[pd.DataFrame] = []
+        fill_chunks: list[pd.DataFrame] = []
         filled    = 0
-        reservoir: Optional[pd.DataFrame] = None
+        reservoir: pd.DataFrame | None = None
         total_seen = 0
 
         for batch in tqdm(self._batches(needed), desc="Sampling (random)"):
@@ -385,6 +384,9 @@ class FilteredSampler:
             # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
             # For each row at global position p, draw j uniformly from [0, p].
             # Accept (replace reservoir slot j) iff j < n.
+            # reservoir is always set by this point: either from a previous
+            # batch, or by the fill phase above within this same batch.
+            assert reservoir is not None
             positions  = np.arange(total_seen, total_seen + batch_size)
             rand_slots = self.rng.rng.integers(0, positions + 1)
             for k in np.where(rand_slots < n)[0]:
@@ -399,7 +401,10 @@ class FilteredSampler:
             return pd.DataFrame()
 
         keep_cols = [c for c in self._gdelt_columns_ordered if c in reservoir.columns]
-        return reservoir.reset_index(drop=True)[keep_cols]
+        # Indexing a DataFrame with a list of columns always returns a
+        # DataFrame at runtime; pandas-stubs' overloads can't always prove
+        # that statically.
+        return cast(pd.DataFrame, reservoir.reset_index(drop=True).loc[:, keep_cols])
 
     # ---------- stratified reservoir sampling ----------
     def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pd.DataFrame:
@@ -408,10 +413,10 @@ class FilteredSampler:
 
         needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
-        fill_chunks: Dict[Any, List[pd.DataFrame]] = {}
-        filled:      Dict[Any, int]                = {}
-        reservoirs:  Dict[Any, pd.DataFrame]       = {}
-        total_seen:  Dict[Any, int]                = {}
+        fill_chunks: dict[Any, list[pd.DataFrame]] = {}
+        filled:      dict[Any, int]                = {}
+        reservoirs:  dict[Any, pd.DataFrame]       = {}
+        total_seen:  dict[Any, int]                = {}
 
         for batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
             df_batch = batch.to_pandas()
@@ -463,4 +468,4 @@ class FilteredSampler:
 
         sample    = pd.concat(list(reservoirs.values()), ignore_index=True)
         keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
-        return sample[keep_cols]
+        return cast(pd.DataFrame, sample.loc[:, keep_cols])

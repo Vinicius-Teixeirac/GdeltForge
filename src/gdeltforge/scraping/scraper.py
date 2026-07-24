@@ -14,17 +14,16 @@ Provides:
 import hashlib
 import os
 import re
-import requests
-import requests.adapters
 import time
-import urllib3
 from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
-from typing import List, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
+import requests
+import requests.adapters
+import urllib3
 from tqdm import tqdm
 
 from gdeltforge.utils.logging import get_logger
@@ -46,7 +45,7 @@ _MD5_RE = re.compile(r'MD5:\s*([0-9a-fA-F]{32})')
 class GdeltFile:
     """A downloadable GDELT file, with its expected MD5 when the index page provides one."""
     url: str
-    md5: Optional[str] = None
+    md5: str | None = None
 
 
 # ------------------------------------------------------------
@@ -59,7 +58,7 @@ def _is_gdelt_dataset_file(filename: str) -> bool:
     return is_daily or is_monthly or is_yearly
 
 
-def _collect_gdelt_links_requests(config: dict) -> List[GdeltFile]:
+def _collect_gdelt_links_requests(config: dict) -> list[GdeltFile]:
     """
     Fetches the GDELT events directory listing with a plain HTTP GET and
     parses the anchor hrefs (and, when present, the "(MD5: ...)" hash that
@@ -113,9 +112,16 @@ def _build_driver(config: dict):
     and set scraping.chromedriver_path in config/settings.yaml.
     """
     try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.service import Service
-        from webdriver_manager.chrome import ChromeDriverManager
+        # selenium/webdriver-manager are an optional extra (uv pip install
+        # '.[selenium]'), not installed by default -- pyright checks against
+        # an env without them, hence the ignores below.
+        from selenium import webdriver  # pyright: ignore[reportMissingImports]
+        from selenium.webdriver.chrome.service import (  # pyright: ignore[reportMissingImports]
+            Service,
+        )
+        from webdriver_manager.chrome import (  # pyright: ignore[reportMissingImports]
+            ChromeDriverManager,
+        )
     except ImportError as e:
         raise RuntimeError(
             "scraping.method is set to 'selenium' but the selenium/webdriver-manager "
@@ -154,7 +160,7 @@ def _build_driver(config: dict):
         ) from e
 
 
-def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
+def _collect_gdelt_links_selenium(config: dict) -> list[GdeltFile]:
     """
     Uses Selenium to extract all GDELT .zip file URLs from the events page.
 
@@ -167,9 +173,11 @@ def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
     # is what surfaces.
     driver = _build_driver(config)
 
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.common.by import By  # pyright: ignore[reportMissingImports]
+    from selenium.webdriver.support import (  # pyright: ignore[reportMissingImports]
+        expected_conditions as EC,
+    )
+    from selenium.webdriver.support.ui import WebDriverWait  # pyright: ignore[reportMissingImports]
 
     logger.info("Collecting GDELT links using Selenium...")
 
@@ -181,7 +189,9 @@ def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
 
         # Try to bypass certificate warning if present
         try:
-            proceed_btn = driver.find_element(By.XPATH, "//a[contains(text(), 'Proceed') or contains(text(), 'Advanced')]")
+            proceed_btn = driver.find_element(
+                By.XPATH, "//a[contains(text(), 'Proceed') or contains(text(), 'Advanced')]"
+            )
             proceed_btn.click()
             time.sleep(2)
             logger.info("Security warning bypassed.")
@@ -224,7 +234,7 @@ def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
     return files
 
 
-def collect_gdelt_links(config: dict) -> List[GdeltFile]:
+def collect_gdelt_links(config: dict) -> list[GdeltFile]:
     """
     Retrieves all downloadable GDELT file URLs, dispatching to the method
     configured in scraping.method ("requests", default, or "selenium").
@@ -243,7 +253,7 @@ def collect_gdelt_links(config: dict) -> List[GdeltFile]:
 # ------------------------------------------------------------
 # DATE-RANGE FILTERING
 # ------------------------------------------------------------
-def parse_file_date(filename: str) -> Tuple[Optional[date], Optional[date]]:
+def parse_file_date(filename: str) -> tuple[date | None, date | None]:
     """
     Return (period_start, period_end) for the time window a GDELT file covers.
 
@@ -287,10 +297,10 @@ def parse_file_date(filename: str) -> Tuple[Optional[date], Optional[date]]:
 
 
 def filter_urls_by_date(
-    files: List[GdeltFile],
-    start_date: Optional[date],
-    end_date: Optional[date],
-) -> List[GdeltFile]:
+    files: list[GdeltFile],
+    start_date: date | None,
+    end_date: date | None,
+) -> list[GdeltFile]:
     """
     Keep only files whose period overlaps [start_date, end_date].
 
@@ -338,7 +348,7 @@ def _download_one(
     retries: int,
     timeout: int,
     session: requests.Session,
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """
     Download a single file with retry and (when file.md5 is known) checksum
     verification. Returns (status, filename) with status one of
@@ -384,7 +394,7 @@ def _download_one(
     return "failed", filename
 
 
-def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List[str] | int]:
+def download_gdelt_files(files: list[GdeltFile], config: dict) -> dict[str, list[str] | int]:
     """
     Downloads all `files` concurrently using a bounded thread pool, verifying
     each download's MD5 against the hash GDELT published for it (when known).
@@ -398,7 +408,7 @@ def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List
 
     success = 0
     skipped = 0
-    failed: List[str] = []
+    failed: list[str] = []
 
     logger.info(
         f"Starting download of {len(files)} file(s) into {download_dir} "
@@ -406,7 +416,9 @@ def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List
     )
 
     with requests.Session() as session:
-        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=max_workers, pool_maxsize=max_workers
+        )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
@@ -415,7 +427,10 @@ def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List
                 executor.submit(_download_one, file, download_dir, retries, timeout, session)
                 for file in files
             ]
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading GDELT files", unit="file"):
+            for future in tqdm(
+                as_completed(futures), total=len(futures),
+                desc="Downloading GDELT files", unit="file",
+            ):
                 status, filename = future.result()
                 if status == "success":
                     success += 1
@@ -438,9 +453,9 @@ def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List
 # ------------------------------------------------------------
 def run_scraping_pipeline(
     config: dict,
-    start_date: Optional[date] = None,
-    end_date: Optional[date] = None,
-) -> Dict[str, int | List[str]]:
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> dict[str, int | list[str]]:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date -> download.
     Called from main.py.
