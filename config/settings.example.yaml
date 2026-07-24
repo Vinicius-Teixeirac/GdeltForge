@@ -141,6 +141,11 @@ scraping:
   # https://googlechromelabs.github.io/chrome-for-testing/
   chromedriver_path: null
 
+  # Concurrent download workers. Downloads are I/O-bound (network wait),
+  # so this can comfortably exceed CPU core count; raise/lower based on
+  # your connection and how politely you want to hit data.gdeltproject.org.
+  max_workers: 8
+
 converter:
   keep_unzipped: false
   file_pattern: "*.zip"
