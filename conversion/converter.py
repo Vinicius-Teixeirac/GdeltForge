@@ -24,6 +24,7 @@ This module provides:
 import glob
 import os
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -63,6 +64,9 @@ class GDELTConverter:
         self.parquet_folder = Path(config["paths"]["parquet_data_directory"])
         self.keep_unzipped = config["converter"]["keep_unzipped"]
         self.pattern       = config["converter"].get("file_pattern", "*.zip")
+        # None is a valid value here: ProcessPoolExecutor treats
+        # max_workers=None as "use os.cpu_count()" on its own.
+        self.max_workers: Optional[int] = config["converter"].get("max_workers")
 
         self.EVENT_COLUMNS  = config["columns"]["gdelt_event"]
         self.NUMERIC_COLUMNS = config["columns_numeric"]
@@ -136,10 +140,8 @@ class GDELTConverter:
             )
             return []
 
-        logger.info(f"Found {len(zip_files)} zip files to convert.")
-        all_outputs = []
-
-        for zip_file in tqdm(zip_files, desc="Converting ZIP files", unit="zip"):
+        to_process = []
+        for zip_file in zip_files:
             zip_path = Path(zip_file)
             file_type = self._detect_file_type(zip_path.name)
 
@@ -147,15 +149,40 @@ class GDELTConverter:
                 logger.info(f"Skipping already converted: {zip_path.name}")
                 continue
 
-            try:
-                outputs = self.process_single_file(zip_file)
-                all_outputs.extend(outputs)
+            to_process.append(zip_file)
 
-                if self._partitioning_enabled and file_type != "daily":
-                    self._mark_done(zip_path)
+        if not to_process:
+            logger.info("Nothing to convert; all files already processed.")
+            return []
 
-            except Exception as e:
-                logger.error(f"Failed to process {zip_path.name}: {e}")
+        logger.info(
+            f"Converting {len(to_process)} zip file(s) using "
+            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
+        )
+        all_outputs: List[str] = []
+
+        # Each zip is processed independently (its own extracted CSV names,
+        # own output parquet paths), so file-level parallelism across
+        # processes is safe -- this is CPU-bound (CSV parsing + parquet
+        # writing), so ProcessPoolExecutor beats threads here.
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(self.process_single_file, zip_file): zip_file
+                for zip_file in to_process
+            }
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Converting ZIP files", unit="zip"):
+                zip_path = Path(futures[future])
+                try:
+                    outputs = future.result()
+                    all_outputs.extend(outputs)
+
+                    file_type = self._detect_file_type(zip_path.name)
+                    if self._partitioning_enabled and file_type != "daily":
+                        self._mark_done(zip_path)
+
+                except Exception as e:
+                    logger.error(f"Failed to process {zip_path.name}: {e}")
 
         logger.info(f"Conversion complete. Total Parquets created: {len(all_outputs)}")
         self._cleanup_unzipped_folder()
