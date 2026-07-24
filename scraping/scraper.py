@@ -11,12 +11,14 @@ Provides:
     - run_scraping_pipeline: high-level interface that runs the full scraping workflow
 """
 
+import hashlib
 import os
 import re
 import requests
 import time
 import urllib3
 from calendar import monthrange
+from dataclasses import dataclass
 from datetime import date
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urljoin
@@ -35,6 +37,15 @@ GDELT_EVENTS_URL = "https://data.gdeltproject.org/events/"
 # this one known site; downloads themselves happen over plain http.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+_MD5_RE = re.compile(r'MD5:\s*([0-9a-fA-F]{32})')
+
+
+@dataclass(frozen=True)
+class GdeltFile:
+    """A downloadable GDELT file, with its expected MD5 when the index page provides one."""
+    url: str
+    md5: Optional[str] = None
+
 
 # ------------------------------------------------------------
 # STEP 1: Collect GDELT links
@@ -46,10 +57,11 @@ def _is_gdelt_dataset_file(filename: str) -> bool:
     return is_daily or is_monthly or is_yearly
 
 
-def _collect_gdelt_links_requests(config: dict) -> List[str]:
+def _collect_gdelt_links_requests(config: dict) -> List[GdeltFile]:
     """
     Fetches the GDELT events directory listing with a plain HTTP GET and
-    parses the anchor hrefs out of the HTML.
+    parses the anchor hrefs (and, when present, the "(MD5: ...)" hash that
+    follows each entry) out of the HTML.
 
     The page is a static, server-rendered Apache-style index (not
     JS-rendered), so no browser is required. This is the default and
@@ -62,19 +74,28 @@ def _collect_gdelt_links_requests(config: dict) -> List[str]:
     response = requests.get(GDELT_EVENTS_URL, timeout=timeout, verify=False)
     response.raise_for_status()
 
-    hrefs = re.findall(r'href="([^"]+)"', response.text, flags=re.IGNORECASE)
-    logger.info(f"Found {len(hrefs)} total links.")
+    lines = response.text.splitlines()
+    href_matches = [
+        (line, m.group(1))
+        for line in lines
+        for m in [re.search(r'href="([^"]+)"', line, flags=re.IGNORECASE)]
+        if m
+    ]
+    logger.info(f"Found {len(href_matches)} total links.")
 
-    urls = []
-    for href in hrefs:
+    files = []
+    for line, href in href_matches:
         filename = href.split("/")[-1]
-        if _is_gdelt_dataset_file(filename):
-            full_url = urljoin(GDELT_EVENTS_URL, href)
-            urls.append(full_url.replace("https://", "http://", 1))
+        if not _is_gdelt_dataset_file(filename):
+            continue
 
-    logger.info(f"Identified {len(urls)} GDELT dataset URLs.")
+        full_url = urljoin(GDELT_EVENTS_URL, href).replace("https://", "http://", 1)
+        md5_match = _MD5_RE.search(line)
+        files.append(GdeltFile(url=full_url, md5=md5_match.group(1).lower() if md5_match else None))
 
-    return urls
+    logger.info(f"Identified {len(files)} GDELT dataset URLs.")
+
+    return files
 
 
 def _build_driver(config: dict):
@@ -122,7 +143,7 @@ def _build_driver(config: dict):
         ) from e
 
 
-def _collect_gdelt_links_selenium(config: dict) -> List[str]:
+def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
     """
     Uses Selenium to extract all GDELT .zip file URLs from the events page.
 
@@ -138,7 +159,7 @@ def _collect_gdelt_links_selenium(config: dict) -> List[str]:
 
     driver = _build_driver(config)
 
-    urls = []
+    files = []
 
     try:
         driver.get(GDELT_EVENTS_URL)
@@ -161,20 +182,35 @@ def _collect_gdelt_links_selenium(config: dict) -> List[str]:
 
         for tag in anchors:
             href = tag.get_attribute("href")
-            if href:
-                filename = href.split("/")[-1]
-                if _is_gdelt_dataset_file(filename):
-                    urls.append(href.replace("https://", "http://", 1))
+            if not href:
+                continue
 
-        logger.info(f"Identified {len(urls)} GDELT dataset URLs.")
+            filename = href.split("/")[-1]
+            if not _is_gdelt_dataset_file(filename):
+                continue
+
+            md5 = None
+            try:
+                # The MD5 hash sits as plain text next to the <a> tag inside
+                # the same <li>; read the parent element's text to find it.
+                li_text = tag.find_element(By.XPATH, "..").text
+                md5_match = _MD5_RE.search(li_text)
+                if md5_match:
+                    md5 = md5_match.group(1).lower()
+            except Exception:
+                pass
+
+            files.append(GdeltFile(url=href.replace("https://", "http://", 1), md5=md5))
+
+        logger.info(f"Identified {len(files)} GDELT dataset URLs.")
 
     finally:
         driver.quit()
 
-    return urls
+    return files
 
 
-def collect_gdelt_links(config: dict) -> List[str]:
+def collect_gdelt_links(config: dict) -> List[GdeltFile]:
     """
     Retrieves all downloadable GDELT file URLs, dispatching to the method
     configured in scraping.method ("requests", default, or "selenium").
@@ -237,27 +273,27 @@ def parse_file_date(filename: str) -> Tuple[Optional[date], Optional[date]]:
 
 
 def filter_urls_by_date(
-    urls: List[str],
+    files: List[GdeltFile],
     start_date: Optional[date],
     end_date: Optional[date],
-) -> List[str]:
+) -> List[GdeltFile]:
     """
-    Keep only URLs whose file period overlaps [start_date, end_date].
+    Keep only files whose period overlaps [start_date, end_date].
 
     Either bound may be None (open-ended). If both are None the full list
     is returned unchanged so existing behaviour is preserved.
     """
     if start_date is None and end_date is None:
-        return urls
+        return files
 
     kept = []
     skipped = 0
 
-    for url in urls:
-        filename = url.split("/")[-1]
+    for file in files:
+        filename = file.url.split("/")[-1]
         file_start, file_end = parse_file_date(filename)
 
-        if file_start is None:
+        if file_start is None or file_end is None:
             logger.debug(f"Could not parse date from {filename}, skipping.")
             skipped += 1
             continue
@@ -268,11 +304,11 @@ def filter_urls_by_date(
         if end_date and file_start > end_date:
             continue
 
-        kept.append(url)
+        kept.append(file)
 
     logger.info(
         f"Date filter [{start_date} - {end_date}]: "
-        f"{len(kept)} URLs kept, {len(urls) - len(kept) - skipped} excluded, "
+        f"{len(kept)} URLs kept, {len(files) - len(kept) - skipped} excluded, "
         f"{skipped} skipped (unparseable filename)."
     )
 
@@ -280,11 +316,13 @@ def filter_urls_by_date(
 
 
 # ------------------------------------------------------------
-# STEP 2: Download files using requests + tqdm
+# STEP 2: Download files using requests + tqdm, verifying MD5 when known
 # ------------------------------------------------------------
-def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] | int]:
+def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List[str] | int]:
     """
-    Downloads all files listed in `urls` using streaming requests with retry.
+    Downloads all files listed in `files` using streaming requests with retry,
+    verifying each download's MD5 against the hash GDELT published for it
+    (when known).
     """
     download_dir = config["paths"]["downloaded_data_directory"]
     retries = config["scraping"]["retries"]
@@ -296,11 +334,11 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
     skipped = 0
     failed = []
 
-    logger.info(f"Starting download of {len(urls)} file(s) into {download_dir}...")
+    logger.info(f"Starting download of {len(files)} file(s) into {download_dir}...")
 
     with requests.Session() as session:
-        for url in tqdm(urls, desc="Downloading GDELT files", unit="file"):
-            filename = url.split("/")[-1]
+        for file in tqdm(files, desc="Downloading GDELT files", unit="file"):
+            filename = file.url.split("/")[-1]
             local_path = os.path.join(download_dir, filename)
             tmp_path = local_path + ".tmp"
 
@@ -312,14 +350,21 @@ def download_gdelt_files(urls: List[str], config: dict) -> Dict[str, List[str] |
             for attempt in range(retries):
                 try:
                     logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
+                    md5_hash = hashlib.md5()
 
-                    with session.get(url, stream=True, timeout=timeout) as response:
+                    with session.get(file.url, stream=True, timeout=timeout) as response:
                         response.raise_for_status()
 
                         with open(tmp_path, "wb") as f:
                             for chunk in response.iter_content(chunk_size=8192):
                                 if chunk:
                                     f.write(chunk)
+                                    md5_hash.update(chunk)
+
+                    if file.md5 and md5_hash.hexdigest() != file.md5:
+                        raise ValueError(
+                            f"MD5 mismatch: expected {file.md5}, got {md5_hash.hexdigest()}"
+                        )
 
                     os.replace(tmp_path, local_path)
                     success += 1
@@ -356,9 +401,9 @@ def run_scraping_pipeline(
     Complete scraping step: collect URLs -> (optionally) filter by date -> download.
     Called from main.py.
     """
-    urls = collect_gdelt_links(config)
-    urls = filter_urls_by_date(urls, start_date, end_date)
-    result = download_gdelt_files(urls, config)
+    files = collect_gdelt_links(config)
+    files = filter_urls_by_date(files, start_date, end_date)
+    result = download_gdelt_files(files, config)
     return result
 
 
