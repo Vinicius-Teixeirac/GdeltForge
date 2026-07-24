@@ -496,6 +496,12 @@ Supports only: indexed random sampling, daily sampling, filtered sampling, and s
 - GPU-aware sampling (cuDF / RAPIDS)
 - More advanced sampling techniques
 
-# 10. License
+# 10. Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for dev setup, the branch/commit conventions this repo follows, and how to propose a change. Please also read the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
+
+Found a security issue? See [SECURITY.md](.github/SECURITY.md) rather than opening a public issue.
+
+# 11. License
 
 This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
