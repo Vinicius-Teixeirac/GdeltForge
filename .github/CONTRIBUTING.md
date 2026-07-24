@@ -33,8 +33,8 @@ See the [full documentation](https://vinicius-teixeirac.github.io/GdeltForge/) f
 ## Making a change
 
 1. **Open an issue first for anything non-trivial** (new features, behavior changes, architectural changes) so we can agree on the approach before you put work into it. Small fixes and docs corrections can go straight to a PR.
-2. **Branch off `main`** — don't commit directly to it. Name the branch for what it does (`feat/...`, `fix/...`, `docs/...`).
-3. **Keep commits atomic and typed**: one logical change per commit, with a conventional-commits-style prefix describing its nature —
+2. **Branch off `main`**: don't commit directly to it. Name the branch for what it does (`feat/...`, `fix/...`, `docs/...`).
+3. **Keep commits atomic and typed**: one logical change per commit, with a conventional-commits-style prefix describing its nature:
    `feat`, `fix`, `perf`, `docs`, `chore`, `refactor`, `test`, or `ci`. Look at the existing git history for the style this repo follows.
 4. **Add or update tests** for any behavior change. `uv run pytest` should pass before you open a PR.
 5. **Update the docs** (`docs/`) if you're changing anything user-facing — a new CLI flag, a new config key, a changed default.
@@ -42,11 +42,19 @@ See the [full documentation](https://vinicius-teixeirac.github.io/GdeltForge/) f
 
 ## Code style
 
-There's no enforced linter/formatter yet — match the style of the surrounding code (see the modules under `src/gdeltforge/`). Prefer clarity and small, focused functions over cleverness. Comments should explain *why*, not *what* — the code should already say what it does.
+This project uses [Ruff](https://docs.astral.sh/ruff/) for linting and [Pyright](https://microsoft.github.io/pyright/) for type checking; both run in CI and should pass before you open a PR:
+
+```
+uv sync --group lint
+uv run ruff check .
+uv run pyright
+```
+
+Beyond what the tools catch, prefer clarity and small, focused functions over cleverness. Comments should explain *why*, not *what*: the code should already say what it does.
 
 ## Reporting bugs / requesting features
 
-Use the issue templates (Bug Report / Feature Request) when opening an issue on GitHub — they ask for the details that are usually needed to act on a report (GdeltForge version, Python version, config relevant to the issue, steps to reproduce).
+Use the issue templates (Bug Report / Feature Request) when opening an issue on GitHub: they ask for the details that are usually needed to act on a report (GdeltForge version, Python version, config relevant to the issue, steps to reproduce).
 
 ## License
 
