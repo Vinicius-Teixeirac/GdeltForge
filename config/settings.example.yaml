@@ -126,6 +126,15 @@ scraping:
   retries: 3
   timeout: 30  # seconds
 
+  # How to collect the list of downloadable GDELT files:
+  #   "requests" (default, recommended): plain HTTP GET + HTML parsing.
+  #       No browser dependency, no version-mismatch failures, ~10x faster.
+  #   "selenium": drives headless Chrome. Kept as a fallback in case the
+  #       GDELT page ever becomes JS-rendered. Requires `uv pip install
+  #       '.[selenium]'` and a Chrome install with a matching ChromeDriver.
+  method: requests
+
+  # Only used when method is "selenium".
   # Optional: absolute path to chromedriver.exe
   # Set this when automatic download is blocked by a network firewall.
   # Download the matching version from:
