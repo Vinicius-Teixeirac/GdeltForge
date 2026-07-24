@@ -232,7 +232,7 @@ The site's TLS certificate doesn't match its hostname (it's served off a GCS buc
 ```
 python main.py convert
 ```
-Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet files.
+Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet files. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers` in `config/settings.yaml`; `null`, the default, uses all available CPU cores).
 
 ### 6.2.1 Optional: Hive Partitioning for Historical Data
 

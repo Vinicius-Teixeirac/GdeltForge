@@ -150,6 +150,11 @@ converter:
   keep_unzipped: false
   file_pattern: "*.zip"
 
+  # Concurrent conversion worker processes. Conversion is CPU-bound (CSV
+  # parsing + parquet writing), so this defaults to the machine's core
+  # count. Lower it if the conversion stage competes with other work.
+  max_workers: null  # null = os.cpu_count()
+
   # Optional Hive partitioning for pre-daily (yearly / monthly) source files.
   # When enabled, yearly and monthly ZIPs are written as a Hive-partitioned
   # dataset under parquet_historical_directory instead of flat files.
