@@ -27,7 +27,7 @@ from urllib.parse import urljoin
 
 from tqdm import tqdm
 
-from utils.logging import get_logger
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -455,7 +455,7 @@ def run_scraping_pipeline(
 # STANDALONE SCRIPT
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    from utils.config import load_config
+    from gdeltforge.utils.config import load_config
 
     logger.info("Running scraping pipeline as standalone script...")
     cfg = load_config()

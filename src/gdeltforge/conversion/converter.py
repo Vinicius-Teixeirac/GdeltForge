@@ -33,8 +33,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
-from utils.io import unzip_file
-from utils.logging import get_logger
+from gdeltforge.utils.io import unzip_file
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -369,7 +369,7 @@ def run_converter(config: dict) -> List[str]:
 # STANDALONE EXECUTION
 # ------------------------------------------------------------
 if __name__ == "__main__":
-    from utils.config import load_config
+    from gdeltforge.utils.config import load_config
 
     logger.info("Running GDELT conversion pipeline as standalone script...")
     cfg = load_config()

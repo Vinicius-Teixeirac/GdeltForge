@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from .rng import ReproducibleRNG
 from .indexer import FileIndex
-from utils.logging import get_logger
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 

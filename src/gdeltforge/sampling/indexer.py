@@ -6,7 +6,7 @@ from typing import Iterable, List, Dict
 import numpy as np
 import pyarrow.dataset as ds
 
-from utils.logging import get_logger
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
