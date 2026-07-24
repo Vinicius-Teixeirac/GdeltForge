@@ -218,4 +218,4 @@ foreach ($c in "scrape", "convert", "filter") {
 gdeltforge sample --mode indexed -n 10000
 ```
 
-A more extensive filtered-sampling guide, including nested `AND`/`OR` filters and country/region groupings, is available in `filtered_sampling_guide.md` in the repo, and runnable examples live in `sample.example.sh` / `sample.example.cmd`.
+For the complete filter syntax (nested `AND`/`OR` blocks, all operators) see [Filtered Sampling](filtered-sampling.md); for complete runnable examples see [Recipes](recipes.md).
