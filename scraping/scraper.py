@@ -15,9 +15,11 @@ import hashlib
 import os
 import re
 import requests
+import requests.adapters
 import time
 import urllib3
 from calendar import monthrange
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 from typing import List, Dict, Optional, Tuple
@@ -328,69 +330,99 @@ def filter_urls_by_date(
 
 
 # ------------------------------------------------------------
-# STEP 2: Download files using requests + tqdm, verifying MD5 when known
+# STEP 2: Download files concurrently, verifying MD5 when known
 # ------------------------------------------------------------
+def _download_one(
+    file: GdeltFile,
+    download_dir: str,
+    retries: int,
+    timeout: int,
+    session: requests.Session,
+) -> Tuple[str, str]:
+    """
+    Download a single file with retry and (when file.md5 is known) checksum
+    verification. Returns (status, filename) with status one of
+    "success" / "skipped" / "failed".
+    """
+    filename = file.url.split("/")[-1]
+    local_path = os.path.join(download_dir, filename)
+    tmp_path = local_path + ".tmp"
+
+    if os.path.exists(local_path):
+        return "skipped", filename
+
+    for attempt in range(retries):
+        try:
+            logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
+            md5_hash = hashlib.md5()
+
+            with session.get(file.url, stream=True, timeout=timeout) as response:
+                response.raise_for_status()
+
+                with open(tmp_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            md5_hash.update(chunk)
+
+            if file.md5 and md5_hash.hexdigest() != file.md5:
+                raise ValueError(
+                    f"MD5 mismatch: expected {file.md5}, got {md5_hash.hexdigest()}"
+                )
+
+            os.replace(tmp_path, local_path)
+            return "success", filename
+
+        except Exception as e:
+            logger.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            if attempt < retries - 1:
+                time.sleep(1)
+
+    logger.error(f"Failed to download after {retries} attempts: {filename}")
+    return "failed", filename
+
+
 def download_gdelt_files(files: List[GdeltFile], config: dict) -> Dict[str, List[str] | int]:
     """
-    Downloads all files listed in `files` using streaming requests with retry,
-    verifying each download's MD5 against the hash GDELT published for it
-    (when known).
+    Downloads all `files` concurrently using a bounded thread pool, verifying
+    each download's MD5 against the hash GDELT published for it (when known).
     """
     download_dir = config["paths"]["downloaded_data_directory"]
     retries = config["scraping"]["retries"]
     timeout = config["scraping"]["timeout"]
+    max_workers = config.get("scraping", {}).get("max_workers", 8)
 
     os.makedirs(download_dir, exist_ok=True)
 
     success = 0
     skipped = 0
-    failed = []
+    failed: List[str] = []
 
-    logger.info(f"Starting download of {len(files)} file(s) into {download_dir}...")
+    logger.info(
+        f"Starting download of {len(files)} file(s) into {download_dir} "
+        f"({max_workers} concurrent workers)..."
+    )
 
     with requests.Session() as session:
-        for file in tqdm(files, desc="Downloading GDELT files", unit="file"):
-            filename = file.url.split("/")[-1]
-            local_path = os.path.join(download_dir, filename)
-            tmp_path = local_path + ".tmp"
+        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
 
-            # Skip existing
-            if os.path.exists(local_path):
-                skipped += 1
-                continue
-
-            for attempt in range(retries):
-                try:
-                    logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")
-                    md5_hash = hashlib.md5()
-
-                    with session.get(file.url, stream=True, timeout=timeout) as response:
-                        response.raise_for_status()
-
-                        with open(tmp_path, "wb") as f:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    md5_hash.update(chunk)
-
-                    if file.md5 and md5_hash.hexdigest() != file.md5:
-                        raise ValueError(
-                            f"MD5 mismatch: expected {file.md5}, got {md5_hash.hexdigest()}"
-                        )
-
-                    os.replace(tmp_path, local_path)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(_download_one, file, download_dir, retries, timeout, session)
+                for file in files
+            ]
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading GDELT files", unit="file"):
+                status, filename = future.result()
+                if status == "success":
                     success += 1
-                    break
-
-                except Exception as e:
-                    logger.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
-                    time.sleep(1)
-
-                    if attempt == retries - 1:
-                        logger.error(f"Failed to download after {retries} attempts: {filename}")
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-                        failed.append(filename)
+                elif status == "skipped":
+                    skipped += 1
+                else:
+                    failed.append(filename)
 
     logger.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
 
