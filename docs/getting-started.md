@@ -8,8 +8,8 @@ GdeltForge isn't on PyPI yet, so install it from a clone using [uv](https://docs
 # Install uv (if not already installed)
 pip install uv
 
-git clone https://github.com/Vinicius-Teixeirac/GDELT-2.0-EVENT-DATABASE-Pipeline.git
-cd GDELT-2.0-EVENT-DATABASE-Pipeline
+git clone https://github.com/Vinicius-Teixeirac/GdeltForge.git
+cd GdeltForge
 
 # Create the virtual environment, install dependencies, and install
 # GdeltForge itself (editable) -- this is what makes the `gdeltforge`
