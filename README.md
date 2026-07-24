@@ -221,7 +221,9 @@ The scraper needs to read the file index at `data.gdeltproject.org/events/` befo
 | Failure modes | None specific to this site | Breaks whenever Chrome auto-updates past the pinned ChromeDriver version (the original reason this option was added) |
 | When to use | Always, unless the page below stops being static | Fallback only, in case GDELT ever switches this index page to a JS-rendered listing |
 
-Both methods were verified to return an identical set of URLs. The site's TLS certificate doesn't match its hostname (it's served off a GCS bucket cert), so both methods intentionally skip certificate verification for this one connection; the actual file downloads happen over plain `http://`, which sidesteps the issue entirely.
+Both methods were verified to return an identical set of URLs (4,953 files). Timing was a single wall-clock run of each method's link-collection call only (`_collect_gdelt_links_requests` / `_collect_gdelt_links_selenium`, timed with `time.perf_counter()`), back-to-back against the live site on the same machine/network: it does *not* include the subsequent file downloads, which are identical for both methods. It's a one-off measurement, not an average over multiple runs, so treat the ~40x figure as indicative of the order of magnitude rather than a precise benchmark; the gap is structural (Chrome process startup + page-render wait vs. a single HTTP GET), so it should hold up under repeated measurement.
+
+The site's TLS certificate doesn't match its hostname (it's served off a GCS bucket cert), so both methods intentionally skip certificate verification for this one connection; the actual file downloads happen over plain `http://`, which sidesteps the issue entirely.
 
 ## 6.2 Convert CSV -> Parquet
 
