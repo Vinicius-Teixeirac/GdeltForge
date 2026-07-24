@@ -42,6 +42,8 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - CLI Reference: cli-reference.md
+  - Filtered Sampling: filtered-sampling.md
+  - Recipes: recipes.md
   - Configuration: configuration.md
   - Architecture: architecture.md
   - Limitations & Roadmap: limitations-and-roadmap.md
