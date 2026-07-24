@@ -26,7 +26,6 @@ import os
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 import pyarrow as pa
@@ -66,16 +65,16 @@ class GDELTConverter:
         self.pattern       = config["converter"].get("file_pattern", "*.zip")
         # None is a valid value here: ProcessPoolExecutor treats
         # max_workers=None as "use os.cpu_count()" on its own.
-        self.max_workers: Optional[int] = config["converter"].get("max_workers")
+        self.max_workers: int | None = config["converter"].get("max_workers")
 
         self.EVENT_COLUMNS  = config["columns"]["gdelt_event"]
         self.NUMERIC_COLUMNS = config["columns_numeric"]
 
         part_cfg = config["converter"].get("partitioning", {})
         self._partitioning_enabled = part_cfg.get("enabled", False)
-        self._partition_rules: List[Dict] = part_cfg.get("rules", [])
+        self._partition_rules: list[dict] = part_cfg.get("rules", [])
 
-        self.historical_folder: Optional[Path] = None
+        self.historical_folder: Path | None = None
         if self._partitioning_enabled:
             hist_path = config["paths"].get("parquet_historical_directory")
             if not hist_path:
@@ -108,7 +107,7 @@ class GDELTConverter:
             return "yearly"
         return "unknown"
 
-    def _partition_rule_for(self, file_type: str) -> Optional[List[str]]:
+    def _partition_rule_for(self, file_type: str) -> list[str] | None:
         """Return the partition column list for this file type, or None (flat)."""
         for rule in self._partition_rules:
             if rule.get("file_type") == file_type:
@@ -131,7 +130,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES
     # ------------------------------------------------------------
-    def process_all_files(self) -> List[str]:
+    def process_all_files(self) -> list[str]:
         zip_files = glob.glob(str(self.input_folder / self.pattern))
 
         if not zip_files:
@@ -159,7 +158,7 @@ class GDELTConverter:
             f"Converting {len(to_process)} zip file(s) using "
             f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
         )
-        all_outputs: List[str] = []
+        all_outputs: list[str] = []
 
         # Each zip is processed independently (its own extracted CSV names,
         # own output parquet paths), so file-level parallelism across
@@ -171,7 +170,9 @@ class GDELTConverter:
                 for zip_file in to_process
             }
 
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Converting ZIP files", unit="zip"):
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc="Converting ZIP files", unit="zip"
+            ):
                 zip_path = Path(futures[future])
                 try:
                     outputs = future.result()
@@ -191,7 +192,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # PROCESS SINGLE ZIP FILE
     # ------------------------------------------------------------
-    def process_single_file(self, zip_path: str) -> List[str]:
+    def process_single_file(self, zip_path: str) -> list[str]:
         zip_p = Path(zip_path)
         logger.info(f"Processing ZIP: {zip_p.name}")
         created_parquets = []
@@ -262,7 +263,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # SAVE PARQUET  (flat daily files)
     # ------------------------------------------------------------
-    def _save_parquet(self, df: pd.DataFrame, base_name: str) -> Optional[Path]:
+    def _save_parquet(self, df: pd.DataFrame, base_name: str) -> Path | None:
         if df.empty:
             logger.warning(f"DataFrame empty, skipping parquet: {base_name}")
             return None
@@ -293,7 +294,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     def _save_historical_parquet(
         self, df: pd.DataFrame, zip_path: Path, file_type: str
-    ) -> List[Path]:
+    ) -> list[Path]:
         """
         Write df into the historical Hive directory, partitioned by the columns
         defined in settings under converter.partitioning.rules for this file_type.
@@ -321,13 +322,17 @@ class GDELTConverter:
         for col in by:
             df_clean[col] = df_clean[col].astype("Int64")
 
-        created: List[Path] = []
+        # Only called when partitioning is enabled, which requires
+        # historical_folder to be set (see __init__).
+        assert self.historical_folder is not None
+
+        created: list[Path] = []
 
         for key, group in df_clean.groupby(by, sort=True):
             if not isinstance(key, tuple):
                 key = (key,)
 
-            dir_parts = "/".join(f"{col}={int(val)}" for col, val in zip(by, key))
+            dir_parts = "/".join(f"{col}={int(val)}" for col, val in zip(by, key, strict=True))
             out_dir = self.historical_folder / dir_parts
             out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -357,7 +362,7 @@ class GDELTConverter:
 # ------------------------------------------------------------
 # WRAPPER
 # ------------------------------------------------------------
-def run_converter(config: dict) -> List[str]:
+def run_converter(config: dict) -> list[str]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
     """

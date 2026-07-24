@@ -1,7 +1,9 @@
-from typing import Optional, Sequence
+from collections.abc import Sequence
+
 import numpy as np
 
 from gdeltforge.utils.logging import get_logger
+
 logger = get_logger(__name__)
 
 
@@ -10,7 +12,7 @@ class ReproducibleRNG:
     Thin wrapper around numpy.random.Generator adding logging
     and exposing commonly used operations: choice, multinomial, randint.
     """
-    def __init__(self, seed: Optional[int]):
+    def __init__(self, seed: int | None):
         self.rng = np.random.default_rng(seed)
         logger.info(f"random seed set: {seed}")
 

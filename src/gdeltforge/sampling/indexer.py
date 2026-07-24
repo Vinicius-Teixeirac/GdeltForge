@@ -1,7 +1,8 @@
 from __future__ import annotations
+
 from bisect import bisect_right
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Dict
 
 import numpy as np
 import pyarrow.dataset as ds
@@ -49,9 +50,9 @@ class FileIndex:
     def _build_arrow_metadata(self):
         dataset = ds.dataset(self.files, format="parquet")
 
-        self.stops: List[int] = []    # cumulative row end positions (+1)
-        self.starts: List[int] = []   # starting global index for each file
-        self.counts: List[int] = []   # rows per file
+        self.stops: list[int] = []    # cumulative row end positions (+1)
+        self.starts: list[int] = []   # starting global index for each file
+        self.counts: list[int] = []   # rows per file
 
         fragments = list(dataset.get_fragments())
         cumulative = 0
@@ -79,14 +80,14 @@ class FileIndex:
     # ----------------------------------------------------------
     # Group a batch of global indices by file
     # ----------------------------------------------------------
-    def group_indices_by_file(self, global_indices: np.ndarray) -> Dict[Path, List[int]]:
+    def group_indices_by_file(self, global_indices: np.ndarray) -> dict[Path, list[int]]:
         """
         Input: array of global row indices
         Output: dict: file_path -> [relative_indices]
         """
         global_indices = np.sort(global_indices)
 
-        result: Dict[Path, List[int]] = {}
+        result: dict[Path, list[int]] = {}
         j = 0  # pointer for file index
 
         for g in global_indices:

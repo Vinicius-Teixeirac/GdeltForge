@@ -2,24 +2,22 @@ import argparse
 import json
 from datetime import date
 from pathlib import Path
-from typing import Optional
 
-from gdeltforge.utils.config import load_config
-from gdeltforge.utils.io import ensure_exists
-from gdeltforge.utils.logging import get_logger
-
-# Pipeline stages
-from gdeltforge.scraping.scraper import run_scraping_pipeline
 from gdeltforge.conversion.converter import run_converter
 from gdeltforge.filtering.filter import run_filter
 
 # Samplers
 from gdeltforge.sampling.samplers import (
-    IndexedSampler,
     DailySampler,
     FilteredSampler,
+    IndexedSampler,
 )
 
+# Pipeline stages
+from gdeltforge.scraping.scraper import run_scraping_pipeline
+from gdeltforge.utils.config import load_config
+from gdeltforge.utils.io import ensure_exists
+from gdeltforge.utils.logging import get_logger
 
 # ======================================================================
 # Utilities
@@ -28,7 +26,7 @@ from gdeltforge.sampling.samplers import (
 logger = get_logger(__name__, log_to_file=True)
 
 
-def _historical_folder(config: dict, path_key: str) -> Optional[str]:
+def _historical_folder(config: dict, path_key: str) -> str | None:
     """Return the historical directory path when partitioning is enabled, else None."""
     part_cfg = config.get("converter", {}).get("partitioning", {})
     if not part_cfg.get("enabled", False):
@@ -42,8 +40,8 @@ def _historical_folder(config: dict, path_key: str) -> Optional[str]:
 def _parse_date(value: str, arg_name: str) -> date:
     try:
         return date.fromisoformat(value)
-    except ValueError:
-        raise ValueError(f"Invalid date for {arg_name}: '{value}'. Expected YYYY-MM-DD.")
+    except ValueError as e:
+        raise ValueError(f"Invalid date for {arg_name}: '{value}'. Expected YYYY-MM-DD.") from e
 
 
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
@@ -124,7 +122,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         try:
             filter_dict = json.loads(args.filter)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON passed to --filter: {e}")
+            raise ValueError(f"Invalid JSON passed to --filter: {e}") from e
 
         sampler = FilteredSampler(
             folder_path=str(filtered_folder),
