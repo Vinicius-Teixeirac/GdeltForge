@@ -26,9 +26,7 @@ Provides:
 
 import glob
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Union
 
-import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
@@ -48,18 +46,18 @@ class GDELTFilter:
         self,
         input_folder: str,
         output_folder: str,
-        columns_to_check: List[str],
-        historical_input_folder: Optional[str] = None,
-        historical_output_folder: Optional[str] = None,
+        columns_to_check: list[str],
+        historical_input_folder: str | None = None,
+        historical_output_folder: str | None = None,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
         self.columns_to_check = columns_to_check
 
-        self.historical_input_folder: Optional[Path] = (
+        self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
         )
-        self.historical_output_folder: Optional[Path] = (
+        self.historical_output_folder: Path | None = (
             Path(historical_output_folder) if historical_output_folder else None
         )
 
@@ -76,7 +74,7 @@ class GDELTFilter:
     # PUBLIC API
     # ======================================================================
 
-    def filter_all_files(self, pattern: str = "*.parquet") -> Tuple[int, int]:
+    def filter_all_files(self, pattern: str = "*.parquet") -> tuple[int, int]:
         """
         Filter all parquet files in input_folder (flat) and, if configured,
         all parquet files under historical_input_folder (Hive tree).
@@ -155,8 +153,8 @@ class GDELTFilter:
     def filter_single_file(
         self,
         parquet_path: str | Path,
-        output_path: Optional[Path] = None,
-    ) -> Tuple[int, int]:
+        output_path: Path | None = None,
+    ) -> tuple[int, int]:
         """
         Filter a single parquet file and return (rows_before, rows_after).
         Streams the file in batches to keep peak RAM bounded.
@@ -218,8 +216,8 @@ class GDELTFilter:
     # ======================================================================
 
     def validate_columns(
-        self, sample_file: Optional[str] = None
-    ) -> Dict[str, Union[str, int, List[str]]]:
+        self, sample_file: str | None = None
+    ) -> dict[str, str | int | list[str]]:
         """
         Check if required columns exist in a sample parquet file.
         """
@@ -229,16 +227,16 @@ class GDELTFilter:
                 return {"error": "No parquet files found for validation."}
             sample_file = files[0]
 
-        sample_file = Path(sample_file)
-        logger.info(f"Validating column presence in: {sample_file.name}")
+        sample_path = Path(sample_file)
+        logger.info(f"Validating column presence in: {sample_path.name}")
 
         try:
-            schema_cols = pq.read_schema(sample_file).names
+            schema_cols = pq.read_schema(sample_path).names
             existing = [c for c in self.columns_to_check if c in schema_cols]
             missing  = [c for c in self.columns_to_check if c not in schema_cols]
 
             return {
-                "sample_file": sample_file.name,
+                "sample_file": sample_path.name,
                 "total_expected_columns": len(self.columns_to_check),
                 "existing_columns": existing,
                 "missing_columns": missing,
@@ -257,10 +255,16 @@ class GDELTFilter:
         Compute the output path for a given input file.
 
         Flat daily files  -> output_folder/<stem>_filtered.parquet
-        Historical files  -> historical_output_folder/<relative_partition_path>/<stem>_filtered.parquet
+        Historical files  -> historical_output_folder/<relative_partition_path>/
+                             <stem>_filtered.parquet
         """
         if not is_historical:
             return self.output_folder / f"{parquet_path.stem}_filtered.parquet"
+
+        # Only called with is_historical=True for files collected from
+        # historical_input_folder, so both are guaranteed set here.
+        assert self.historical_input_folder is not None
+        assert self.historical_output_folder is not None
 
         relative = parquet_path.relative_to(self.historical_input_folder)
         return (
@@ -274,7 +278,7 @@ class GDELTFilter:
 # RUN WRAPPER (used by main.py)
 # ======================================================================
 
-def run_filter(config: dict) -> Tuple[int, int]:
+def run_filter(config: dict) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
     """

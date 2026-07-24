@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 
+
 def get_logger(name: str = "gdelt_pipeline", log_to_file: bool = False):
     logger = logging.getLogger(name)
 

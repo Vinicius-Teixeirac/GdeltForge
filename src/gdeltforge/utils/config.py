@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -8,7 +7,7 @@ CONFIG_ENV_VAR = "GDELTFORGE_CONFIG"
 DEFAULT_CONFIG_PATH = "config/settings.yaml"
 
 
-def load_config(config_path: Optional[str] = None) -> dict:
+def load_config(config_path: str | None = None) -> dict:
     """
     Resolve and load the pipeline config.
 
@@ -28,7 +27,8 @@ def load_config(config_path: Optional[str] = None) -> dict:
         raise FileNotFoundError(
             f"Config file not found: {path}. "
             f"Copy config/settings.example.yaml to config/settings.yaml and adjust the paths, "
-            f"or point to an existing config via --config or the {CONFIG_ENV_VAR} environment variable."
+            f"or point to an existing config via --config or the {CONFIG_ENV_VAR} "
+            f"environment variable."
         )
-    with open(path, "r") as f:
+    with open(path) as f:
         return yaml.safe_load(f)
