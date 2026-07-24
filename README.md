@@ -191,7 +191,7 @@ Run pipeline stages using the installed console script:
 gdeltforge <command> [options]
 ```
 
-`python main.py <command> [options]` is kept as a backward-compatible equivalent, so existing scripts (and the `sample.example.cmd`/`.sh` files below) keep working unchanged.
+`python main.py <command> [options]` is kept as a backward-compatible equivalent, so existing scripts keep working unchanged.
 
 Available commands:
 
@@ -439,7 +439,7 @@ gdeltforge sample --mode indexed -n 10000
 The date flags apply only to `scrape`. The subsequent stages operate on whatever files are already on disk.
 
 ### 6.6 Bonus
-A extensive guide of filtered sampling is available in filtered_sampling_guide.md
+The complete filtered-sampling syntax reference and a full set of runnable recipes are in the [documentation](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/): see [Filtered Sampling](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/) and [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/).
 
 # 7. Logging System
 
@@ -469,7 +469,7 @@ Only one pipeline stage per command. No automatic chaining. No dependency resolu
 gdeltforge scrape convert sample
 ```
 
-> Disclaimer: Users can run multiple stages at once by .sh (.cmd, .ps, ...) files. Take a look on sample.example.cmd or sample.example.sh.
+> Disclaimer: You can still run multiple stages at once with a shell script of your own (.sh, .cmd, .ps1, ...) that calls `gdeltforge` repeatedly -- see [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/) in the docs for worked examples.
 
 - Data Ingestion
 

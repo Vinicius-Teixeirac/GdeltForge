@@ -10,7 +10,7 @@ Only one pipeline stage per command. No automatic chaining, no dependency resolu
 gdeltforge scrape convert sample
 ```
 
-You can run multiple stages at once with a shell script -- see `sample.example.cmd` / `sample.example.sh` in the repo for runnable examples.
+You can run multiple stages at once with a shell script of your own -- see [Recipes](recipes.md) for worked examples chaining `gdeltforge` calls together.
 
 ## Data ingestion
 
