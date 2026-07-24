@@ -164,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="GdeltForge: a data pipeline for the GDELT 2.0 Events Database"
     )
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help="Path to settings.yaml. Defaults to the GDELTFORGE_CONFIG "
+             "environment variable, then ./config/settings.yaml.",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -252,10 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
 # ======================================================================
 
 def main() -> None:
-    config = load_config()
-
     parser = build_parser()
     args = parser.parse_args()
+    config = load_config(args.config)
 
     logger.info(f"Running command: {args.command}")
 
