@@ -122,6 +122,15 @@ Then copy the example config and adjust paths:
 cp config/settings.example.yaml config/settings.yaml
 ```
 
+### 3.1 Running Tests
+
+The test suite is pure unit tests (no network access, no browser, no real GDELT data required) covering the scraping and conversion logic.
+
+```
+uv sync --group dev
+uv run pytest
+```
+
 ---
 
 # 4. Project Structure
@@ -152,6 +161,8 @@ project_root/
 │ ├── config.py # YAML loader and configuration utilities
 │ ├── io.py # File and chunked-IO helpers
 │ └── logging.py # Central logging system
+│
+├── tests/ # pytest suite (unit tests, no network/browser required)
 │
 ├── main.py # Pipeline entrypoint
 └── README.md
@@ -459,7 +470,11 @@ Supports only: indexed random sampling, daily sampling, filtered sampling, and s
 
 # 9. Future Work (Roadmap)
 
-- Parallel execution of scraping, conversion, filtering, and sampling
+- [x] Parallel execution of scraping (concurrent downloads) and conversion (multi-process)
+- [x] Checksum-verified downloads (MD5, when GDELT provides one) and a pytest unit-test suite
+- [ ] Parallel execution of filtering and sampling
+- [ ] Support for additional GDELT datasets (GKG, Mentions) alongside Events
+- [ ] Package restructuring for distribution (installable entry point, config resolution outside the repo directory)
 - CLI pipelines (e.g., python main.py run all)
 - GPU-aware sampling (cuDF / RAPIDS)
 - More advanced sampling techniques
