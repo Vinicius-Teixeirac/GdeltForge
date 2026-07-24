@@ -195,8 +195,12 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyyaml" },
     { name = "requests" },
-    { name = "selenium" },
     { name = "tqdm" },
+]
+
+[package.optional-dependencies]
+selenium = [
+    { name = "selenium" },
     { name = "webdriver-manager" },
 ]
 
@@ -207,10 +211,11 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=14.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.28" },
-    { name = "selenium", specifier = ">=4.0" },
+    { name = "selenium", marker = "extra == 'selenium'", specifier = ">=4.0" },
     { name = "tqdm", specifier = ">=4.60" },
-    { name = "webdriver-manager", specifier = ">=4.0" },
+    { name = "webdriver-manager", marker = "extra == 'selenium'", specifier = ">=4.0" },
 ]
+provides-extras = ["selenium"]
 
 [[package]]
 name = "h11"
