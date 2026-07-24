@@ -30,6 +30,10 @@ docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
 ]
+lint = [
+    "ruff>=0.6",
+    "pyright>=1.1",
+]
 
 [project.scripts]
 gdeltforge = "gdeltforge.cli:main"
@@ -50,3 +54,24 @@ version-file = "src/gdeltforge/_version.py"
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gdeltforge"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "basic"
+# pyarrow.dataset genuinely exports Expression/field/Dataset at runtime;
+# its stubs just don't declare them in __all__, so pyright treats normal,
+# documented usage as a private-import violation.
+reportPrivateImportUsage = false
