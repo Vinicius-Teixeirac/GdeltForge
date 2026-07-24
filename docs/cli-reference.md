@@ -1,0 +1,221 @@
+# CLI Reference
+
+```
+gdeltforge <command> [options]
+```
+
+The CLI intentionally does not chain stages automatically -- you run each one explicitly to maintain full control. `python main.py <command>` is kept as a backward-compatible alias.
+
+| Command | Description |
+|---------|-------------|
+| `scrape`  | Download raw GDELT data (ZIP -> CSV) |
+| `convert` | Convert downloaded CSV files to Parquet |
+| `filter`  | Apply row-column filtering to Parquet files |
+| `sample`  | Efficient, reproducible sampling |
+
+## Global options
+
+`--config PATH`
+
+: Path to `settings.yaml`. Defaults to the `GDELTFORGE_CONFIG` environment variable, then `./config/settings.yaml` relative to the current working directory. Use this (or the env var) to run `gdeltforge` from outside the repo checkout, pointing at a config file anywhere on disk.
+
+## `gdeltforge scrape`
+
+Download the entire archive:
+
+```
+gdeltforge scrape
+```
+
+Download only files within a date range (any combination of bounds is valid):
+
+```
+gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge scrape --start-date 2022-01-01          # from date onward
+gdeltforge scrape --end-date   2015-12-31          # up to date
+```
+
+| Flag | Description |
+|------|-------------|
+| `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
+
+The date filter applies to all three file types the GDELT archive provides:
+
+| File type | Example filename | Included when |
+|-----------|-----------------|---------------|
+| Daily | `20200315.export.CSV.zip` | day falls within range |
+| Monthly | `202003.zip` | month overlaps range |
+| Yearly | `2020.zip` | year overlaps range |
+
+Files already present in the download directory are skipped regardless of the date filter, so re-running `scrape` is safe and incremental.
+
+Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksum-verified against the MD5 GDELT publishes for each file: a mismatch is treated like a network failure and retried, so a corrupted or truncated download never silently ends up in the dataset. See [Configuration](configuration.md#scraping) for the `requests` vs `selenium` link-collection method and the full list of scraping settings.
+
+## `gdeltforge convert`
+
+```
+gdeltforge convert
+```
+
+Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores).
+
+See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
+
+## `gdeltforge filter`
+
+```
+gdeltforge filter
+```
+
+Drops rows with missing values in the columns defined under `filter.columns_to_check` in `settings.yaml`.
+
+## `gdeltforge sample`
+
+All sampling modes read from the filtered directory.
+
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
+| `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
+| `--seed N` | all | RNG seed (default 42) |
+| `--per-day N` | daily | Rows per day (default 10) |
+| `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
+| `--columns COL [COL ...]` | filtered | Restrict output to these columns |
+| `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` |
+| `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set |
+| `--out PATH` | all | Output parquet file (default `sample.parquet`) |
+
+### Indexed sampling (uniform random)
+
+```
+gdeltforge sample --mode indexed -n 10000 --seed 123 --out sample.parquet
+```
+
+Samples 10,000 rows uniformly across the entire dataset.
+
+### Daily sampling (N rows per day)
+
+```
+gdeltforge sample --mode daily --per-day 20 --out daily.parquet
+```
+
+Samples 20 rows per day across the entire period covered by your downloaded data.
+
+### Filtered sampling (JSON filters)
+
+5,000 events whose `QuadClass` is in `{1, 2}`:
+
+```
+gdeltforge sample \
+    --mode filtered \
+    --filter '{"QuadClass": [1, 2]}' \
+    -n 5000 \
+    --out qc12.parquet
+```
+
+2,000 "Verbal Cooperation" events that happened in the USA:
+
+```
+gdeltforge sample \
+    --mode filtered \
+    --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
+    -n 2000
+```
+
+Selecting specific columns keeps memory use down:
+
+```
+gdeltforge sample \
+    --mode filtered \
+    --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
+    --columns GlobalEventID Year Actor1Code \
+    -n 1000
+```
+
+Filters support nested `AND`/`OR` blocks -- see the example pipelines below for an `OR` example across multiple columns.
+
+### Stratified sampling (fixed N per group)
+
+Combines a filter with stratified reservoir sampling: draws exactly `--n-per-group` rows for each distinct value of a chosen column, producing a class-balanced dataset regardless of the natural distribution.
+
+```
+gdeltforge sample \
+    --mode filtered \
+    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    --stratify QuadClass \
+    --n-per-group 500 \
+    --out stratified.parquet
+```
+
+This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
+
+## Full pipeline examples
+
+Sample 10,000 rows end-to-end:
+
+```
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode indexed -n 10000
+```
+
+Reproducible sampling (fixed seed):
+
+```
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode indexed -n 5000 --seed 42
+```
+
+USA-only events:
+
+```
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample \
+    --mode filtered \
+    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    -n 3000
+```
+
+30 events per day:
+
+```
+gdeltforge scrape
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode daily --per-day 30
+```
+
+Date-restricted pipeline (the date flags apply only to `scrape`; later stages operate on whatever files are already on disk):
+
+```
+gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge convert
+gdeltforge filter
+gdeltforge sample --mode indexed -n 10000
+```
+
+Bash one-liner:
+
+```bash
+gdeltforge scrape && \
+gdeltforge convert && \
+gdeltforge filter && \
+gdeltforge sample --mode indexed -n 10000
+```
+
+PowerShell loop:
+
+```powershell
+foreach ($c in "scrape", "convert", "filter") {
+    gdeltforge $c
+}
+gdeltforge sample --mode indexed -n 10000
+```
+
+A more extensive filtered-sampling guide, including nested `AND`/`OR` filters and country/region groupings, is available in `filtered_sampling_guide.md` in the repo, and runnable examples live in `sample.example.sh` / `sample.example.cmd`.
