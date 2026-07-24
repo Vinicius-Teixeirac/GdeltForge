@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.png" alt="GdeltForge emblem: a world map globe resting on an anvil" width="360">
+  <img src="docs/assets/emblem.png" alt="GdeltForge emblem: a world map globe resting on an anvil" width="360">
 </p>
 
 # GdeltForge
