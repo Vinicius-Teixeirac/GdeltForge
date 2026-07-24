@@ -101,7 +101,8 @@ class TestCollectLinksRequests:
             '<LI><A HREF="md5sums">md5sums</A>\n'
             '<LI><A HREF="20260722.export.CSV.zip">20260722.export.CSV.zip</A> '
             '(7.7MB) (MD5: BE29FB979F2832A9CC3126352E27E0F6)\n'
-            '<LI><A HREF="202006.zip">202006.zip</A> (1.2MB) (MD5: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n'
+            '<LI><A HREF="202006.zip">202006.zip</A> '
+            '(1.2MB) (MD5: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n'
             '<LI><A HREF="notes.txt">notes.txt</A>\n'
         )
 
@@ -186,7 +187,10 @@ class TestDownloadOne:
         md5 = hashlib.md5(content).hexdigest()
         file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5=md5)
 
-        status, filename = _download_one(file, str(tmp_path), retries=3, timeout=5, session=FakeSession(content))
+        status, filename = _download_one(
+            file, str(tmp_path), retries=3, timeout=5,
+            session=FakeSession(content),  # pyright: ignore[reportArgumentType]
+        )
 
         assert status == "success"
         assert filename == "20200101.export.CSV.zip"
@@ -196,7 +200,10 @@ class TestDownloadOne:
         content = b"no checksum known for this file"
         file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5=None)
 
-        status, filename = _download_one(file, str(tmp_path), retries=1, timeout=5, session=FakeSession(content))
+        status, filename = _download_one(
+            file, str(tmp_path), retries=1, timeout=5,
+            session=FakeSession(content),  # pyright: ignore[reportArgumentType]
+        )
 
         assert status == "success"
         assert (tmp_path / filename).read_bytes() == content
@@ -206,7 +213,10 @@ class TestDownloadOne:
         content = b"hello gdelt"
         file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5="0" * 32)
 
-        status, filename = _download_one(file, str(tmp_path), retries=3, timeout=5, session=FakeSession(content))
+        status, filename = _download_one(
+            file, str(tmp_path), retries=3, timeout=5,
+            session=FakeSession(content),  # pyright: ignore[reportArgumentType]
+        )
 
         assert status == "failed"
         assert not (tmp_path / filename).exists()
@@ -218,7 +228,10 @@ class TestDownloadOne:
         file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5="irrelevant")
         session = FakeSession()
 
-        status, filename = _download_one(file, str(tmp_path), retries=3, timeout=5, session=session)
+        status, filename = _download_one(
+            file, str(tmp_path), retries=3, timeout=5,
+            session=session,  # pyright: ignore[reportArgumentType]
+        )
 
         assert status == "skipped"
         assert session.calls == []  # no network call needed
@@ -228,7 +241,10 @@ class TestDownloadOne:
         file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5=None)
         session = FakeSession(ok=False)
 
-        status, filename = _download_one(file, str(tmp_path), retries=2, timeout=5, session=session)
+        status, filename = _download_one(
+            file, str(tmp_path), retries=2, timeout=5,
+            session=session,  # pyright: ignore[reportArgumentType]
+        )
 
         assert status == "failed"
         assert len(session.calls) == 2  # one attempt per retry
