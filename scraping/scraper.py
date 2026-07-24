@@ -110,9 +110,18 @@ def _build_driver(config: dict):
     ChromeDriver manually from https://googlechromelabs.github.io/chrome-for-testing/
     and set scraping.chromedriver_path in config/settings.yaml.
     """
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+    except ImportError as e:
+        raise RuntimeError(
+            "scraping.method is set to 'selenium' but the selenium/webdriver-manager "
+            "packages are not installed. Install them with:\n"
+            "    uv pip install '.[selenium]'\n"
+            "or switch scraping.method to 'requests' in config/settings.yaml "
+            "(the default, and faster in almost all cases)."
+        ) from e
 
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--headless=new")
@@ -151,13 +160,16 @@ def _collect_gdelt_links_selenium(config: dict) -> List[GdeltFile]:
     ever becomes JS-rendered, or as a manual comparison against the
     requests-based method. Requires Chrome + a matching ChromeDriver.
     """
+    # _build_driver() raises a helpful RuntimeError if selenium isn't
+    # installed; call it first so that error (not a raw ModuleNotFoundError)
+    # is what surfaces.
+    driver = _build_driver(config)
+
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
     logger.info("Collecting GDELT links using Selenium...")
-
-    driver = _build_driver(config)
 
     files = []
 
