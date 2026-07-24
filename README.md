@@ -209,6 +209,8 @@ The filter applies to all three file types the GDELT archive provides:
 
 Files already present in the download directory are skipped regardless of the date filter.
 
+Downloads are checksum-verified: the GDELT index publishes an MD5 per file, which the scraper captures and checks against each download after it completes. A mismatch is treated the same as a network failure: the file is discarded and retried up to `scraping.retries` times before being reported as failed, so a corrupted or truncated download never silently ends up in the dataset.
+
 ### 6.1.1 Link Collection Method: `requests` vs `selenium`
 
 The scraper needs to read the file index at `data.gdeltproject.org/events/` before it can download anything. That index turns out to be a plain, server-rendered HTML directory listing (not JS-rendered), so a headless browser is unnecessary overhead. `scraping.method` in `config/settings.yaml` controls which collector is used:
