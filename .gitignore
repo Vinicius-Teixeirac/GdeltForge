@@ -12,6 +12,9 @@ build/
 # Generated at build time by hatch-vcs
 src/gdeltforge/_version.py
 
+# MkDocs build output
+site/
+
 # Virtual environments
 .venv/
 venv/

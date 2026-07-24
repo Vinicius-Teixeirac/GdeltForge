@@ -2,6 +2,8 @@
 
 ### Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet
 
+📖 **[Full documentation](https://vinicius-teixeirac.github.io/GDELT-2.0-EVENT-DATABASE-Pipeline/)**
+
 GdeltForge is a lightweight but scalable data pipeline to extract, transform, and load the entire **GDELT 2.0 Events Database**.
 It is designed for research workflows requiring:
 
