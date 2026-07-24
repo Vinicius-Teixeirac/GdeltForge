@@ -15,6 +15,7 @@
 ## Checklist
 
 - [ ] `uv run pytest` passes locally
+- [ ] `uv run ruff check .` and `uv run pyright` pass locally
 - [ ] Docs updated (`docs/`) if this changes user-facing behavior (CLI flags, config keys, defaults)
 - [ ] Commits are atomic and follow the type prefixes above
 - [ ] Branched from `main`, not committed directly to it
