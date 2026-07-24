@@ -1,7 +1,7 @@
 import zipfile
 from pathlib import Path
 
-from utils.logging import get_logger
+from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 

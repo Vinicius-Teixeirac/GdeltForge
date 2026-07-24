@@ -3,8 +3,8 @@ from datetime import date
 
 import pytest
 
-import scraping.scraper as scraper
-from scraping.scraper import (
+import gdeltforge.scraping.scraper as scraper
+from gdeltforge.scraping.scraper import (
     GdeltFile,
     _download_one,
     _is_gdelt_dataset_file,
