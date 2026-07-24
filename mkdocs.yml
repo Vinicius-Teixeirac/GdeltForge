@@ -1,7 +1,7 @@
 site_name: GdeltForge
 site_description: Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet datasets
-repo_url: https://github.com/Vinicius-Teixeirac/GDELT-2.0-EVENT-DATABASE-Pipeline
-repo_name: GDELT-2.0-EVENT-DATABASE-Pipeline
+repo_url: https://github.com/Vinicius-Teixeirac/GdeltForge
+repo_name: GdeltForge
 edit_uri: edit/main/docs/
 
 theme:
