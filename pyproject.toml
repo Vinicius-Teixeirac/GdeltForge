@@ -5,6 +5,31 @@ description = "Forges the raw GDELT 2.0 Events archive into clean, reproducibly-
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
+authors = [
+    { name = "Vinícius Teixeira", email = "vinicius.teixeira.carvalho@usp.br" },
+]
+keywords = [
+    "gdelt",
+    "events",
+    "data-pipeline",
+    "etl",
+    "parquet",
+    "sampling",
+    "data-engineering",
+    "web-scraping",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
 dependencies = [
     "numpy>=1.26",
     "pandas>=2.0",
@@ -13,6 +38,12 @@ dependencies = [
     "requests>=2.28",
     "tqdm>=4.60",
 ]
+
+[project.urls]
+Homepage = "https://vinicius-teixeirac.github.io/GdeltForge/"
+Documentation = "https://vinicius-teixeirac.github.io/GdeltForge/"
+Repository = "https://github.com/Vinicius-Teixeirac/GdeltForge"
+Issues = "https://github.com/Vinicius-Teixeirac/GdeltForge/issues"
 
 # Only needed for scraping.method: selenium (opt-in fallback). The default
 # "requests" method has no browser dependency at all.
