@@ -59,9 +59,11 @@ class DownloadResult(TypedDict):
 # STEP 1: Collect GDELT links
 # ------------------------------------------------------------
 def _is_gdelt_dataset_file(filename: str) -> bool:
+    if not filename.endswith(".zip"):
+        return False
     is_daily = filename.endswith(".export.CSV.zip")
-    is_monthly = filename[:6].isdigit() and len(filename) == 10
-    is_yearly = filename[:4].isdigit() and len(filename) == 8
+    is_monthly = len(filename) == 10 and filename[:-4].isdigit()
+    is_yearly = len(filename) == 8 and filename[:-4].isdigit()
     return is_daily or is_monthly or is_yearly
 
 
