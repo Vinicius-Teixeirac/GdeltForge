@@ -52,20 +52,37 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
         raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
 
     logger.info("Starting scraping stage...")
-    run_scraping_pipeline(config, start_date=start_date, end_date=end_date)
+    result = run_scraping_pipeline(config, start_date=start_date, end_date=end_date)
     logger.info("Scraping completed.")
+
+    failed = result["failed"]
+    if failed:
+        raise RuntimeError(
+            f"Scraping finished with {len(failed)} failed download(s): {', '.join(failed)}"
+        )
 
 
 def run_convert_cmd(config: dict) -> None:
     logger.info("Starting conversion stage...")
-    outputs = run_converter(config)
+    outputs, failed = run_converter(config)
     logger.info(f"Created {len(outputs)} parquet files.")
+
+    if failed:
+        raise RuntimeError(
+            f"Conversion finished with {len(failed)} failed file(s): {', '.join(failed)}"
+        )
 
 
 def run_filter_cmd(config: dict) -> None:
     logger.info("Starting filtering stage...")
-    run_filter(config)
+    files_processed, files_failed = run_filter(config)
     logger.info("Filtering completed.")
+
+    if files_failed:
+        raise RuntimeError(
+            f"Filtering finished with {files_failed} failed file(s) out of "
+            f"{files_processed + files_failed}."
+        )
 
 
 def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
