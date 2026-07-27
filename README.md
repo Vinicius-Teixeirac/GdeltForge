@@ -50,7 +50,7 @@ While BigQuery provides full access, it suffers from practical issues:
 - full-table scans are expensive without billing
 - some researchers prefer *local* offline workflows
 
-## 1.3 Raw Bulk Downloads Are Available — But Hard to Use  
+## 1.3 Raw Bulk Downloads Are Available, But Hard to Use  
 The [raw GDELT 2.0 archives](https://data.gdeltproject.org/events/) contain **thousands of files**.  
 Processing them requires:
 
@@ -332,7 +332,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 
 ### 6.4.3 Filtered Sampling (Using JSON Filters)
 
-* Example — 5000 events whose QuadClass is in {1,2}:
+* Example: 5000 events whose QuadClass is in {1,2}:
 
   ```
   gdeltforge sample \
@@ -342,7 +342,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
       --out qc12.parquet
   ```
 
-* Example — 2000 "Verbal Cooperation" events that happened in "USA":
+* Example: 2000 "Verbal Cooperation" events that happened in "USA":
 
   ```
   gdeltforge sample \
@@ -351,7 +351,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
       -n 2000
   ```
 
-* Example — You can select specific columns of interest, which is a memory friendly practice:
+* Example: You can select specific columns of interest, which is a memory friendly practice:
 
   ```
   gdeltforge sample \
@@ -380,7 +380,7 @@ This produces a balanced dataset with 500 USA events per QuadClass value, regard
 `--stratify` requires `--n-per-group`. The `-n` flag is ignored when `--stratify` is set.
 
 ## 6.5 Full Pipeline Examples
-### 6.5.1 Full pipeline — sample 10,000 rows
+### 6.5.1 Full pipeline: sample 10,000 rows
 ```
 gdeltforge scrape
 gdeltforge convert
@@ -465,6 +465,8 @@ The full, current list of limitations and the roadmap live in one place, the doc
 # 9. Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for dev setup, the branch/commit conventions this repo follows, and how to propose a change. Please also read the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
+
+See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
 
 Found a security issue? See [SECURITY.md](.github/SECURITY.md) rather than opening a public issue.
 
