@@ -16,11 +16,12 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
-        with:
-          python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --group lint
+        # setup-uv has no python-version input; uv manages/downloads the
+        # interpreter itself via --python (confirmed against its actual
+        # input schema, not assumed).
+        run: uv sync --group lint --python 3.12
 
       - name: Ruff
         run: uv run ruff check .
@@ -40,11 +41,12 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
-        with:
-          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --group dev
+        # setup-uv has no python-version input; uv manages/downloads the
+        # interpreter itself via --python (confirmed against its actual
+        # input schema, not assumed).
+        run: uv sync --group dev --python ${{ matrix.python-version }}
 
       - name: Run tests
         run: uv run pytest -v
