@@ -13,7 +13,10 @@ git clone https://github.com/Vinicius-Teixeirac/GdeltForge.git
 cd GdeltForge
 uv sync --group dev
 cp config/settings.example.yaml config/settings.yaml
+uv run pre-commit install
 ```
+
+`pre-commit install` wires up git hooks (defined in `.pre-commit-config.yaml`) that run Ruff on every commit and Pyright + pytest on every push, so problems surface locally instead of in CI.
 
 Run the test suite (pure unit tests: no network, no browser, no real GDELT data required):
 
