@@ -456,52 +456,18 @@ Logging to a file:
 logger = get_logger(__name__, log_to_file=True)
 ```
 
-# 8. Known Limitations (Current Version)
+# 8. Limitations & Roadmap
 
-The pipeline is intentionally simple and transparent.
-Current limitations include:
+GdeltForge is intentionally simple: one pipeline stage per command (no automatic chaining or dependency resolution), CSV -> Parquet only, and `scrape`/`convert`/`filter` now exit non-zero if any individual file fails.
 
-- Execution Model
+The full, current list of limitations and the roadmap live in one place, the docs site, rather than duplicated here where they'd inevitably drift: see [Limitations & Roadmap](https://vinicius-teixeirac.github.io/GdeltForge/limitations-and-roadmap/).
 
-Only one pipeline stage per command. No automatic chaining. No dependency resolution. Example of unsupported:
-
-```
-gdeltforge scrape convert sample
-```
-
-> Disclaimer: You can still run multiple stages at once with a shell script of your own (.sh, .cmd, .ps1, ...) that calls `gdeltforge` repeatedly -- see [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/) in the docs for worked examples.
-
-- Data Ingestion
-
-Scrapes GDELT files not already downloaded. Use `--start-date` / `--end-date` to restrict the download window. Without either flag, all available files are downloaded.
-
-- Format Limitations
-
-Only CSV -> Parquet is supported. Schema is preserved without additional transformations
-
-- Sampling Limitations
-
-Supports only: indexed random sampling, daily sampling, filtered sampling, and stratified sampling. Large samples (>20M rows) require significant disk I/O. The sampling is by default without replacement.
-
-> Disclaimer: Data is intentionally partitioned into many files to avoid extreme RAM usage.
-
-# 9. Future Work (Roadmap)
-
-- [x] Parallel execution of scraping (concurrent downloads) and conversion (multi-process)
-- [x] Checksum-verified downloads (MD5, when GDELT provides one) and a pytest unit-test suite
-- [ ] Parallel execution of filtering and sampling
-- [ ] Support for additional GDELT datasets (GKG, Mentions) alongside Events
-- [x] Package restructuring for distribution: rebranded as GdeltForge, `src/gdeltforge` layout, installable `gdeltforge` entry point, config resolution outside the repo directory
-- CLI pipelines (e.g., gdeltforge run all)
-- GPU-aware sampling (cuDF / RAPIDS)
-- More advanced sampling techniques
-
-# 10. Contributing
+# 9. Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for dev setup, the branch/commit conventions this repo follows, and how to propose a change. Please also read the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
 Found a security issue? See [SECURITY.md](.github/SECURITY.md) rather than opening a public issue.
 
-# 11. License
+# 10. License
 
 This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
