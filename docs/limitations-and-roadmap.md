@@ -10,7 +10,7 @@ Only one pipeline stage per command. No automatic chaining, no dependency resolu
 gdeltforge scrape convert sample
 ```
 
-You can run multiple stages at once with a shell script of your own -- see [Recipes](recipes.md) for worked examples chaining `gdeltforge` calls together.
+You can run multiple stages at once with a shell script of your own: see [Recipes](recipes.md) for worked examples chaining `gdeltforge` calls together.
 
 ## Data ingestion
 
@@ -32,7 +32,10 @@ Supported modes: indexed random, daily, filtered, and stratified. Sampling is wi
 - [x] CI (GitHub Actions): tests + build check on every push/PR to main
 - [x] Single-source versioning via `hatch-vcs` (the git tag *is* the version)
 - [x] This documentation site
-- [ ] Publish to PyPI (`pip install gdeltforge`) -- planned once the above has settled
+- [x] Linting and type-checking (ruff + pyright) enforced in CI
+- [x] Community health files: Code of Conduct, Contributing guide, Security policy, issue/PR templates
+- [x] Unit test coverage for the filtering, sampling, indexing, and RNG modules
+- [ ] Publish to PyPI (`pip install gdeltforge`), planned once the above has settled
 - [ ] Docker image, for running the pipeline without a local Python/uv setup
 - [ ] Parallel execution of filtering and sampling
 - [ ] Support for additional GDELT datasets (GKG, Mentions) alongside Events
