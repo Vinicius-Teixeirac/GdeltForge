@@ -19,6 +19,7 @@ from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
+from typing import TypedDict
 from urllib.parse import urljoin
 
 import requests
@@ -46,6 +47,12 @@ class GdeltFile:
     """A downloadable GDELT file, with its expected MD5 when the index page provides one."""
     url: str
     md5: str | None = None
+
+
+class DownloadResult(TypedDict):
+    success: int
+    skipped: int
+    failed: list[str]
 
 
 # ------------------------------------------------------------
@@ -394,7 +401,7 @@ def _download_one(
     return "failed", filename
 
 
-def download_gdelt_files(files: list[GdeltFile], config: dict) -> dict[str, list[str] | int]:
+def download_gdelt_files(files: list[GdeltFile], config: dict) -> DownloadResult:
     """
     Downloads all `files` concurrently using a bounded thread pool, verifying
     each download's MD5 against the hash GDELT published for it (when known).
@@ -455,7 +462,7 @@ def run_scraping_pipeline(
     config: dict,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> dict[str, int | list[str]]:
+) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date -> download.
     Called from main.py.

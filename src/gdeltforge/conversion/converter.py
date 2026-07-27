@@ -130,14 +130,20 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES
     # ------------------------------------------------------------
-    def process_all_files(self) -> list[str]:
+    def process_all_files(self) -> tuple[list[str], list[str]]:
+        """
+        Convert every matching ZIP in input_folder.
+
+        Returns (outputs, failed) where outputs are the created parquet paths
+        and failed are the source ZIP filenames that raised during processing.
+        """
         zip_files = glob.glob(str(self.input_folder / self.pattern))
 
         if not zip_files:
             logger.warning(
                 f"No zip files found in {self.input_folder} with pattern '{self.pattern}'"
             )
-            return []
+            return [], []
 
         to_process = []
         for zip_file in zip_files:
@@ -152,13 +158,14 @@ class GDELTConverter:
 
         if not to_process:
             logger.info("Nothing to convert; all files already processed.")
-            return []
+            return [], []
 
         logger.info(
             f"Converting {len(to_process)} zip file(s) using "
             f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
         )
         all_outputs: list[str] = []
+        failed: list[str] = []
 
         # Each zip is processed independently (its own extracted CSV names,
         # own output parquet paths), so file-level parallelism across
@@ -184,10 +191,14 @@ class GDELTConverter:
 
                 except Exception as e:
                     logger.error(f"Failed to process {zip_path.name}: {e}")
+                    failed.append(zip_path.name)
 
-        logger.info(f"Conversion complete. Total Parquets created: {len(all_outputs)}")
+        logger.info(
+            f"Conversion complete. Total Parquets created: {len(all_outputs)}, "
+            f"{len(failed)} zip file(s) failed."
+        )
         self._cleanup_unzipped_folder()
-        return all_outputs
+        return all_outputs, failed
 
     # ------------------------------------------------------------
     # PROCESS SINGLE ZIP FILE
@@ -362,9 +373,11 @@ class GDELTConverter:
 # ------------------------------------------------------------
 # WRAPPER
 # ------------------------------------------------------------
-def run_converter(config: dict) -> list[str]:
+def run_converter(config: dict) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
+
+    Returns (outputs, failed): see GDELTConverter.process_all_files.
     """
     converter = GDELTConverter(config)
     return converter.process_all_files()
@@ -378,5 +391,5 @@ if __name__ == "__main__":
 
     logger.info("Running GDELT conversion pipeline as standalone script...")
     cfg = load_config()
-    outputs = run_converter(cfg)
-    logger.info(f"Created {len(outputs)} parquet files.")
+    outputs, failed = run_converter(cfg)
+    logger.info(f"Created {len(outputs)} parquet files, {len(failed)} failed.")
