@@ -4,7 +4,7 @@
 gdeltforge <command> [options]
 ```
 
-The CLI intentionally does not chain stages automatically -- you run each one explicitly to maintain full control. `python main.py <command>` is kept as a backward-compatible alias.
+The CLI intentionally does not chain stages automatically: you run each one explicitly to maintain full control. `python main.py <command>` is kept as a backward-compatible alias.
 
 | Command | Description |
 |---------|-------------|
@@ -12,6 +12,8 @@ The CLI intentionally does not chain stages automatically -- you run each one ex
 | `convert` | Convert downloaded CSV files to Parquet |
 | `filter`  | Apply row-column filtering to Parquet files |
 | `sample`  | Efficient, reproducible sampling |
+
+`scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
 
 ## Global options
 
@@ -133,7 +135,7 @@ gdeltforge sample \
     -n 1000
 ```
 
-Filters support nested `AND`/`OR` blocks -- see the example pipelines below for an `OR` example across multiple columns.
+Filters support nested `AND`/`OR` blocks; see the example pipelines below for an `OR` example across multiple columns.
 
 ### Stratified sampling (fixed N per group)
 
