@@ -330,6 +330,85 @@ class FilteredSampler:
         """Union of requested columns and any column referenced in the filter expression."""
         return list(self.columns | self._filter_columns(self.filter_dict))
 
+    # ---------- shared replacement-phase writer for both reservoir methods ----------
+    @staticmethod
+    def _dedup_last_write_per_slot(
+        rand_slots: np.ndarray, capacity: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Resolve one batch's Algorithm R draws to the writes that should
+        actually land: (target_slots, source_positions), accepted-only and
+        deduplicated.
+
+        rand_slots[k] < capacity means row k of the batch is accepted into
+        slot rand_slots[k]. Two rows in the same batch can draw the same
+        slot; true sequential Algorithm R applies draws in position order,
+        so only the last (highest-position) writer for a given slot should
+        survive: np.unique on the reversed array picks exactly that,
+        since target_slots is already in ascending position order.
+        """
+        accept_mask = rand_slots < capacity
+        target_slots = rand_slots[accept_mask]
+        source_pos = np.where(accept_mask)[0]
+
+        if target_slots.size > 1:
+            _, last_occurrence_rev = np.unique(target_slots[::-1], return_index=True)
+            keep = target_slots.size - 1 - last_occurrence_rev
+            target_slots = target_slots[keep]
+            source_pos = source_pos[keep]
+
+        return target_slots, source_pos
+
+    @staticmethod
+    def _assign_column(arr: np.ndarray, idx: np.ndarray, values: np.ndarray) -> np.ndarray:
+        """
+        Write values into arr at idx, positionally, returning the (possibly
+        new) array to write back into the caller's dict.
+
+        A batch row can carry a NaN in a column that's been int64 so far
+        (nullable numeric GDELT fields). Checked this against plain numpy
+        assignment directly: unlike pandas, numpy does NOT raise here --
+        `int_arr[idx] = nan_values` silently casts NaN to INT64_MIN with
+        only a RuntimeWarning, so a try/except around the assignment can't
+        catch it. Compute the correct common dtype up front instead (via
+        np.result_type, e.g. int64+float64 -> float64) and upcast before
+        ever writing, rather than reacting to a write that already
+        corrupted data.
+        """
+        target_dtype = np.result_type(arr.dtype, values.dtype)
+        if target_dtype != arr.dtype:
+            arr = arr.astype(target_dtype)
+        arr[idx] = values
+        return arr
+
+    @classmethod
+    def _apply_reservoir_replacements(
+        cls,
+        reservoir_cols: dict[str, np.ndarray],
+        batch: pd.DataFrame,
+        rand_slots: np.ndarray,
+        capacity: int,
+    ) -> None:
+        """
+        Write accepted rows into their drawn reservoir slots, in place,
+        column by column as plain numpy arrays rather than through pandas'
+        DataFrame.iloc setter. On a wide reservoir (GDELT has ~58 columns),
+        iloc's positional-index setter costs roughly 15x more per write
+        than direct numpy array assignment, since it goes through pandas'
+        block manager instead of touching each column's array directly;
+        that gap is what dominates a full-archive scan's wall-clock time,
+        not the number of individual per-column calls. The reservoir is
+        only turned back into a DataFrame once, at the very end of the
+        scan (see get_random_sample / get_stratified_sample).
+        """
+        target_slots, source_pos = cls._dedup_last_write_per_slot(rand_slots, capacity)
+        if target_slots.size == 0:
+            return
+
+        accepted = batch.iloc[source_pos]
+        for col, arr in reservoir_cols.items():
+            reservoir_cols[col] = cls._assign_column(arr, target_slots, accepted[col].to_numpy())
+
     # ---------- API ----------
     def filter_dataset(self) -> pd.DataFrame:
         needed = self._needed_columns()
@@ -355,7 +434,7 @@ class FilteredSampler:
         needed = self._needed_columns()
         fill_chunks: list[pd.DataFrame] = []
         filled    = 0
-        reservoir: pd.DataFrame | None = None
+        reservoir_cols: dict[str, np.ndarray] | None = None
         total_seen = 0
 
         for batch in tqdm(self._batches(needed), desc="Sampling (random)"):
@@ -364,7 +443,9 @@ class FilteredSampler:
             if batch_size == 0:
                 continue
 
-            # Fill phase: accumulate chunks until reservoir has n rows
+            # Fill phase: accumulate chunks until the reservoir has n rows,
+            # then turn it into plain per-column numpy arrays; see
+            # _apply_reservoir_replacements for why.
             if filled < n:
                 take = min(n - filled, batch_size)
                 fill_chunks.append(df_batch.iloc[:take])
@@ -372,7 +453,10 @@ class FilteredSampler:
                 total_seen += take
 
                 if filled == n:
-                    reservoir = pd.concat(fill_chunks, ignore_index=True)
+                    filled_df = pd.concat(fill_chunks, ignore_index=True)
+                    reservoir_cols = {
+                        c: filled_df[c].to_numpy(copy=True) for c in filled_df.columns
+                    }
                     fill_chunks.clear()
 
                 if take == batch_size:
@@ -384,18 +468,20 @@ class FilteredSampler:
             # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
             # For each row at global position p, draw j uniformly from [0, p].
             # Accept (replace reservoir slot j) iff j < n.
-            # reservoir is always set by this point: either from a previous
-            # batch, or by the fill phase above within this same batch.
-            assert reservoir is not None
+            # reservoir_cols is always set by this point: either from a
+            # previous batch, or by the fill phase above within this same batch.
+            assert reservoir_cols is not None
             positions  = np.arange(total_seen, total_seen + batch_size)
             rand_slots = self.rng.rng.integers(0, positions + 1)
-            for k in np.where(rand_slots < n)[0]:
-                reservoir.iloc[int(rand_slots[k])] = df_batch.iloc[k]
+            self._apply_reservoir_replacements(reservoir_cols, df_batch, rand_slots, n)
 
             total_seen += batch_size
 
-        if reservoir is None and fill_chunks:
-            reservoir = pd.concat(fill_chunks, ignore_index=True)
+        reservoir = (
+            pd.DataFrame(reservoir_cols) if reservoir_cols is not None
+            else pd.concat(fill_chunks, ignore_index=True) if fill_chunks
+            else None
+        )
 
         if reservoir is None or reservoir.empty:
             return pd.DataFrame()
@@ -413,10 +499,10 @@ class FilteredSampler:
 
         needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
-        fill_chunks: dict[Any, list[pd.DataFrame]] = {}
-        filled:      dict[Any, int]                = {}
-        reservoirs:  dict[Any, pd.DataFrame]       = {}
-        total_seen:  dict[Any, int]                = {}
+        fill_chunks:    dict[Any, list[pd.DataFrame]]   = {}
+        filled:         dict[Any, int]                  = {}
+        reservoir_cols: dict[Any, dict[str, np.ndarray]] = {}
+        total_seen:     dict[Any, int]                  = {}
 
         for batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
             df_batch = batch.to_pandas()
@@ -434,7 +520,8 @@ class FilteredSampler:
                     fill_chunks[g]  = []
                     filled[g]       = 0
 
-                # Fill phase
+                # Fill phase: see get_random_sample's fill phase, same
+                # pattern, once per stratify group.
                 if filled[g] < n_per_group:
                     take = min(n_per_group - filled[g], group_size)
                     fill_chunks[g].append(group_df.iloc[:take])
@@ -442,7 +529,10 @@ class FilteredSampler:
                     total_seen[g]  += take
 
                     if filled[g] == n_per_group:
-                        reservoirs[g] = pd.concat(fill_chunks[g], ignore_index=True)
+                        filled_df = pd.concat(fill_chunks[g], ignore_index=True)
+                        reservoir_cols[g] = {
+                            c: filled_df[c].to_numpy(copy=True) for c in filled_df.columns
+                        }
                         fill_chunks[g] = []
 
                     if take == group_size:
@@ -454,11 +544,15 @@ class FilteredSampler:
                 # Replacement phase: vectorized slot selection via Vitter's Algorithm R
                 positions  = np.arange(total_seen[g], total_seen[g] + group_size)
                 rand_slots = self.rng.rng.integers(0, positions + 1)
-                for k in np.where(rand_slots < n_per_group)[0]:
-                    reservoirs[g].iloc[int(rand_slots[k])] = group_df.iloc[k]
+                self._apply_reservoir_replacements(
+                    reservoir_cols[g], group_df, rand_slots, n_per_group
+                )
 
                 total_seen[g] += group_size
 
+        reservoirs: dict[Any, pd.DataFrame] = {
+            g: pd.DataFrame(cols) for g, cols in reservoir_cols.items()
+        }
         for g, chunks in fill_chunks.items():
             if chunks and g not in reservoirs:
                 reservoirs[g] = pd.concat(chunks, ignore_index=True)

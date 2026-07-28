@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -249,6 +250,148 @@ class TestFilteredSamplerReservoirSampling:
         assert len(df) == 5
         assert (df["QuadClass"] == 1).all()
         assert set(df["GlobalEventID"]).issubset(set(range(5)))
+
+
+class TestDedupLastWritePerSlot:
+    """
+    True sequential Algorithm R applies draws in position order, so when
+    two rows in the same batch draw the same slot, the higher-position
+    (later) one must be the one that survives. target_slots is built from
+    rand_slots in ascending position order, so "last occurrence in the
+    array" is the same thing as "highest position" here.
+    """
+
+    def test_dedups_to_last_occurrence_per_slot(self):
+        # positions 0,1,2,3,4 draw slots 5,3,5,3,5 -- slot 5 should keep
+        # position 4 (last), slot 3 should keep position 3 (last).
+        rand_slots = np.array([5, 3, 5, 3, 5])
+        target_slots, source_pos = FilteredSampler._dedup_last_write_per_slot(
+            rand_slots, capacity=10
+        )
+        result = dict(zip(target_slots.tolist(), source_pos.tolist(), strict=True))
+        assert result == {5: 4, 3: 3}
+
+    def test_rejects_slots_at_or_beyond_capacity(self):
+        rand_slots = np.array([0, 5, 10, 11])
+        target_slots, _source_pos = FilteredSampler._dedup_last_write_per_slot(
+            rand_slots, capacity=10
+        )
+        assert sorted(target_slots.tolist()) == [0, 5]
+
+    def test_empty_when_nothing_accepted(self):
+        rand_slots = np.array([10, 11, 12])
+        target_slots, source_pos = FilteredSampler._dedup_last_write_per_slot(
+            rand_slots, capacity=10
+        )
+        assert target_slots.size == 0
+        assert source_pos.size == 0
+
+
+class TestAssignColumn:
+    def test_plain_assignment_when_dtypes_already_compatible(self):
+        arr = np.array([1, 2, 3], dtype=np.int64)
+        out = FilteredSampler._assign_column(arr, np.array([0, 2]), np.array([10, 30]))
+        assert out.dtype == np.int64
+        assert out.tolist() == [10, 2, 30]
+
+    def test_upcasts_int_array_when_incoming_values_have_nan(self):
+        arr = np.array([1, 2, 3], dtype=np.int64)
+        out = FilteredSampler._assign_column(
+            arr, np.array([0, 1]), np.array([5.0, np.nan])
+        )
+        assert out.dtype == np.float64
+        assert out[0] == 5.0
+        assert np.isnan(out[1])
+        assert out[2] == 3  # untouched slot survives the upcast copy
+
+
+class TestApplyReservoirReplacements:
+    """
+    Regression coverage for a real bug: naively bulk-assigning
+    reservoir.iloc[dup_slots] = values when multiple rows in the same batch
+    draw the same slot let pandas resolve the duplicate independently per
+    column block, desyncing string columns from numeric ones in the
+    result. These tests force heavy in-batch collisions and check against
+    a true sequential (one row at a time, in position order) reference.
+
+    The reservoir here is a dict of per-column numpy arrays (what
+    get_random_sample/get_stratified_sample actually hold mid-scan), not a
+    DataFrame; _apply_reservoir_replacements writes into it in place.
+    """
+
+    @staticmethod
+    def _make_df(n, seed):
+        rng = np.random.default_rng(seed)
+        return pd.DataFrame({
+            "GlobalEventID": rng.integers(0, 10**9, n),
+            "QuadClass": rng.integers(1, 5, n),
+            "Actor1CountryCode": rng.choice(["USA", "BRA", "CHN", "RUS", "FRA"], n),
+            "GoldsteinScale": rng.uniform(-10, 10, n),
+        })
+
+    @staticmethod
+    def _to_cols(df):
+        return {c: df[c].to_numpy(copy=True) for c in df.columns}
+
+    def test_matches_true_sequential_application_under_heavy_collisions(self):
+        n_reservoir = 50
+        batch_size = 500
+
+        reservoir_ref = self._make_df(n_reservoir, seed=1)
+        reservoir_cols = self._to_cols(reservoir_ref)
+        batch = self._make_df(batch_size, seed=2)
+
+        rng = np.random.default_rng(7)
+        positions = np.arange(10, 10 + batch_size)
+        # Fold into a small slot range to force many in-batch collisions.
+        rand_slots = rng.integers(0, positions + 1) % n_reservoir
+
+        for k in range(batch_size):
+            if rand_slots[k] < n_reservoir:
+                reservoir_ref.iloc[int(rand_slots[k])] = batch.iloc[k]
+
+        FilteredSampler._apply_reservoir_replacements(
+            reservoir_cols, batch, rand_slots, n_reservoir
+        )
+
+        reservoir_vec = pd.DataFrame(reservoir_cols)
+        assert reservoir_ref.equals(reservoir_vec)
+        assert (reservoir_ref.dtypes == reservoir_vec.dtypes).all()
+
+    def test_upcasts_int_column_when_incoming_row_has_a_null(self):
+        # A batch row can carry NaN in a column that's int64 in the
+        # reservoir (nullable numeric GDELT fields, e.g. NumArticles).
+        # Plain numpy assignment raises rather than upcasting on its own;
+        # _assign_column upcasts just that column and retries.
+        reservoir_cols = {
+            "GlobalEventID": np.array([1, 2, 3], dtype=np.int64),
+            "NumArticles": np.array([10, 20, 30], dtype=np.int64),
+            "Actor1CountryCode": np.array(["USA", "BRA", "CHN"], dtype=object),
+        }
+        batch = pd.DataFrame({
+            "GlobalEventID": [101, 102],
+            "NumArticles": [5, np.nan],
+            "Actor1CountryCode": ["RUS", "FRA"],
+        })
+        rand_slots = np.array([0, 1])
+
+        FilteredSampler._apply_reservoir_replacements(reservoir_cols, batch, rand_slots, 3)
+
+        assert reservoir_cols["NumArticles"].dtype == np.float64
+        assert reservoir_cols["NumArticles"][0] == 5.0
+        assert np.isnan(reservoir_cols["NumArticles"][1])
+        assert reservoir_cols["GlobalEventID"][2] == 3  # untouched slot survives
+
+    def test_no_accepted_rows_leaves_reservoir_unchanged(self):
+        reservoir_cols = self._to_cols(self._make_df(10, seed=1))
+        original = {c: arr.copy() for c, arr in reservoir_cols.items()}
+        batch = self._make_df(5, seed=2)
+        rand_slots = np.array([100, 101, 102, 103, 104])  # all >= capacity
+
+        FilteredSampler._apply_reservoir_replacements(reservoir_cols, batch, rand_slots, 10)
+
+        for c in reservoir_cols:
+            assert np.array_equal(reservoir_cols[c], original[c])
 
 
 class TestStratifiedSampling:
