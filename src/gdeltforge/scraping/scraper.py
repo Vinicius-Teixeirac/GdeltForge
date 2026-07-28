@@ -370,6 +370,12 @@ def _download_one(
     if os.path.exists(local_path):
         return "skipped", filename
 
+    if os.path.exists(tmp_path):
+        logger.warning(
+            f"Found a leftover incomplete download from a previous "
+            f"interrupted run: {tmp_path}. Re-downloading."
+        )
+
     for attempt in range(retries):
         try:
             logger.debug(f"Downloading {filename} (attempt {attempt + 1}/{retries})")

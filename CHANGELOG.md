@@ -28,6 +28,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 - CI silently installed the wrong Python version, since `setup-uv` has no `python-version` input (now passed via `uv sync --python`)
 - Various Ruff and Pyright findings across the codebase
+- `_is_gdelt_dataset_file` matched same-length non-ZIP files (e.g. `2020.csv`) as monthly/yearly GDELT archives, since it only checked the digit-prefix length and never verified the `.zip` suffix
+- Sample output (`gdeltforge sample`) was written directly to its destination path, so a process killed mid-write could leave a corrupt or empty file there with no indication anything was wrong; sample output and scraped downloads now write atomically via a temp file, and warn instead of silently overwriting a leftover incomplete file from a previous interrupted run
 
 ## [0.2.0] - 2026-07-24
 
