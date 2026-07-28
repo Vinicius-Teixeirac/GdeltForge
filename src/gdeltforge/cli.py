@@ -16,7 +16,7 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import run_scraping_pipeline
 from gdeltforge.utils.config import load_config
-from gdeltforge.utils.io import ensure_exists
+from gdeltforge.utils.io import ensure_exists, write_parquet_atomic
 from gdeltforge.utils.logging import get_logger
 
 # ======================================================================
@@ -108,7 +108,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             random_state=args.seed,
         )
         df = sampler.get_random_sample(args.n)
-        df.to_parquet(out)
+        write_parquet_atomic(df, out)
         logger.info(f"Saved indexed sample ({len(df)} rows) -> {out}")
         return
 
@@ -122,7 +122,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             random_state=args.seed,
         )
         df = sampler.get_daily_samples(samples_per_day=args.per_day)
-        df.to_parquet(out)
+        write_parquet_atomic(df, out)
         logger.info(f"Saved daily sample ({len(df)} rows) -> {out}")
         return
 
@@ -154,14 +154,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             if args.n_per_group is None:
                 raise ValueError("--n-per-group is required when --stratify is set")
             df = sampler.get_stratified_sample(args.stratify, args.n_per_group)
-            df.to_parquet(out)
+            write_parquet_atomic(df, out)
             logger.info(
                 f"Saved stratified sample ({len(df)} rows) "
                 f"stratified by '{args.stratify}' ({args.n_per_group} per group) -> {out}"
             )
         else:
             df = sampler.get_random_sample(args.n)
-            df.to_parquet(out)
+            write_parquet_atomic(df, out)
             logger.info(
                 f"Saved filtered sample ({len(df)} rows) "
                 f"using filter={filter_dict} -> {out}"
