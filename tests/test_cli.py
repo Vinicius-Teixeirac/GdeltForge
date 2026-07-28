@@ -54,3 +54,33 @@ class TestRunFilterCmd:
         monkeypatch.setattr(cli, "run_filter", lambda config: (10, 0))
 
         cli.run_filter_cmd({})  # should not raise
+
+
+class TestRunCodesCmd:
+    def test_bare_lists_known_columns(self, capsys):
+        cli.run_codes_cmd(argparse.Namespace(column=None, search=None))
+
+        out = capsys.readouterr().out
+        assert "Actor1CountryCode" in out
+        assert "ActionGeo_CountryCode" in out
+
+    def test_column_lists_its_codes(self, capsys):
+        cli.run_codes_cmd(argparse.Namespace(column="ActionGeo_CountryCode", search=None))
+
+        out = capsys.readouterr().out
+        assert "US" in out
+        assert "United States" in out
+
+    def test_search_filters_to_matching_codes(self, capsys):
+        cli.run_codes_cmd(
+            argparse.Namespace(column="ActionGeo_CountryCode", search="korea")
+        )
+
+        out = capsys.readouterr().out
+        assert "Korea, North" in out
+        assert "Korea, South" in out
+        assert "United States" not in out
+
+    def test_unknown_column_raises(self):
+        with pytest.raises(ValueError, match="no country-code reference list"):
+            cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))

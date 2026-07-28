@@ -7,6 +7,7 @@ from gdeltforge.conversion.converter import run_converter
 from gdeltforge.filtering.filter import run_filter
 
 # Samplers
+from gdeltforge.sampling import country_codes
 from gdeltforge.sampling.samplers import (
     DailySampler,
     FilteredSampler,
@@ -171,6 +172,44 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     raise ValueError(f"Unknown sampling mode: {args.mode}")
 
 
+def run_codes_cmd(args: argparse.Namespace) -> None:
+    if args.column is None:
+        print("Country-code columns with a reference list:\n")
+        print("  CAMEO actor codes (3-letter):")
+        for c in sorted(country_codes.CAMEO_ACTOR_COLUMNS):
+            print(f"    {c}")
+        print("\n  FIPS geo codes (2-letter):")
+        for c in sorted(country_codes.FIPS_GEO_COLUMNS):
+            print(f"    {c}")
+        print("\nRun `gdeltforge codes <column>` to list that column's codes.")
+        return
+
+    code_family = country_codes.code_family_for_column(args.column)
+    if code_family is None:
+        known = sorted(country_codes.CAMEO_ACTOR_COLUMNS | country_codes.FIPS_GEO_COLUMNS)
+        raise ValueError(
+            f"'{args.column}' has no country-code reference list. Known columns: "
+            f"{', '.join(known)}"
+        )
+
+    entries = sorted(code_family.items())
+    if args.search:
+        term = args.search.lower()
+        entries = [
+            (code, name) for code, name in entries
+            if term in code.lower() or term in name.lower()
+        ]
+
+    if not entries:
+        print(f"No codes matching '{args.search}' in {args.column}.")
+        return
+
+    width = max(len(code) for code, _ in entries)
+    for code, name in entries:
+        print(f"  {code.ljust(width)}  {name}")
+    print(f"\n{len(entries)} code(s).")
+
+
 # ======================================================================
 # Argument Parser
 # ======================================================================
@@ -265,6 +304,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output parquet file"
     )
 
+    # ----------------------------------------------------
+    # codes
+    # ----------------------------------------------------
+    codes = subparsers.add_parser(
+        "codes", help="Look up valid GDELT country codes for filter values"
+    )
+    codes.add_argument(
+        "column",
+        nargs="?",
+        help="A country-code column (e.g. ActionGeo_CountryCode). "
+             "Omit to list which columns have a reference list.",
+    )
+    codes.add_argument(
+        "--search",
+        metavar="TERM",
+        help="Filter to codes/names containing this substring (case-insensitive)",
+    )
+
     return parser
 
 
@@ -275,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "codes":
+        run_codes_cmd(args)
+        return
+
     config = load_config(args.config)
 
     logger.info(f"Running command: {args.command}")
