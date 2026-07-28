@@ -12,6 +12,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 | `convert` | Convert downloaded CSV files to Parquet |
 | `filter`  | Apply row-column filtering to Parquet files |
 | `sample`  | Efficient, reproducible sampling |
+| `codes`   | Look up valid country codes for filter values |
 
 `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
 
@@ -121,7 +122,7 @@ gdeltforge sample \
 ```
 gdeltforge sample \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"], "QuadClass": [1]}' \
     -n 2000
 ```
 
@@ -130,12 +131,14 @@ Selecting specific columns keeps memory use down:
 ```
 gdeltforge sample \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"], "QuadClass": [1]}' \
     --columns GlobalEventID Year Actor1Code \
     -n 1000
 ```
 
 Filters support nested `AND`/`OR` blocks; see the example pipelines below for an `OR` example across multiple columns.
+
+GDELT has two distinct country-code schemes that are easy to mix up: `Actor1CountryCode`/`Actor2CountryCode` use 3-letter CAMEO codes (`USA`), while `ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, and `Actor2Geo_CountryCode` use 2-letter FIPS 10-4 codes (`US`). A value that doesn't match the right scheme for its column logs a warning rather than failing outright (FIPS 10-4 was retired in 2008 and can lag newer countries), but it also means the filter silently matches nothing. Run `gdeltforge codes` to check.
 
 ### Stratified sampling (fixed N per group)
 
@@ -144,13 +147,40 @@ Combines a filter with stratified reservoir sampling: draws exactly `--n-per-gro
 ```
 gdeltforge sample \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"]}' \
     --stratify QuadClass \
     --n-per-group 500 \
     --out stratified.parquet
 ```
 
 This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
+
+## `gdeltforge codes`
+
+Looks up valid country codes for the columns listed above, so a filter value can be checked before running a sample. Needs no config file: it's a static reference lookup, usable before `settings.yaml` even exists.
+
+List which columns have a reference list:
+
+```
+gdeltforge codes
+```
+
+List every code for a column:
+
+```
+gdeltforge codes ActionGeo_CountryCode
+```
+
+Search within a column by code or country name (case-insensitive substring match):
+
+```
+gdeltforge codes ActionGeo_CountryCode --search korea
+```
+
+| Flag | Description |
+|------|-------------|
+| `column` | Positional, optional. A country-code column, e.g. `ActionGeo_CountryCode` |
+| `--search TERM` | Filter results to codes or names containing this substring |
 
 ## Full pipeline examples
 
@@ -180,7 +210,7 @@ gdeltforge convert
 gdeltforge filter
 gdeltforge sample \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"]}' \
     -n 3000
 ```
 
