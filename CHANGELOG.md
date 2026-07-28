@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- `FilteredSampler.get_random_sample`/`get_stratified_sample`'s reservoir replacement phase wrote one row at a time via `DataFrame.iloc`, an inherently slow pandas access pattern that made large filtered/stratified samples over the full archive impractically slow
+- The initial fix for the above (bulk-assigning all accepted rows in one indexed write) let pandas resolve same-batch slot collisions independently per column block, silently desyncing string columns from numeric ones when both were written together
+- A later fix for that (per-column assignment via `DataFrame.iloc`) still relied on pandas' setter, which was itself the dominant cost on GDELT's ~58-column schema; the reservoir is now held as plain per-column numpy arrays during the scan and converted to a DataFrame once at the end, which is both correct and substantially faster
+- Getting there also surfaced that plain numpy assignment doesn't raise when a batch row's `NaN` lands in a column that's been `int64` so far: it silently casts to `INT64_MIN` with only a `RuntimeWarning`, unlike pandas' `TypeError`. The reservoir writer now checks the correct common dtype up front and upcasts before writing, rather than reacting to a write that already corrupted data
+
 ## [0.3.0] - 2026-07-28
 
 ### Added
