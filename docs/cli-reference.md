@@ -75,11 +75,12 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 
 ## `gdeltforge sample`
 
-All sampling modes read from the filtered directory.
+All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping.
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
+| `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
 | `--seed N` | all | RNG seed (default 42) |
 | `--per-day N` | daily | Rows per day (default 10) |

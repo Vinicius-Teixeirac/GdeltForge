@@ -87,25 +87,27 @@ def run_filter_cmd(config: dict) -> None:
 
 
 def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
-    filtered_folder = ensure_exists(
-        config["paths"]["filtered_data_directory"],
-        "filtered_data_directory"
+    source_key, historical_key = (
+        ("filtered_data_directory", "filtered_historical_directory")
+        if args.source == "filtered"
+        else ("parquet_data_directory", "parquet_historical_directory")
     )
+    source_folder = ensure_exists(config["paths"][source_key], source_key)
 
     out = Path(args.out)
 
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    hist_filtered = _historical_folder(config, "filtered_historical_directory")
+    hist_folder = _historical_folder(config, historical_key)
 
     # -----------------------------
     # Indexed Sampling
     # -----------------------------
     if args.mode == "indexed":
         sampler = IndexedSampler(
-            folder_path=str(filtered_folder),
-            historical_folder=hist_filtered,
+            folder_path=str(source_folder),
+            historical_folder=hist_folder,
             random_state=args.seed,
         )
         df = sampler.get_random_sample(args.n)
@@ -118,8 +120,8 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # -----------------------------
     if args.mode == "daily":
         sampler = DailySampler(
-            folder_path=str(filtered_folder),
-            historical_folder=hist_filtered,
+            folder_path=str(source_folder),
+            historical_folder=hist_folder,
             random_state=args.seed,
         )
         df = sampler.get_daily_samples(samples_per_day=args.per_day)
@@ -143,12 +145,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             raise ValueError(f"Invalid JSON passed to --filter: {e}") from e
 
         sampler = FilteredSampler(
-            folder_path=str(filtered_folder),
+            folder_path=str(source_folder),
             gdelt_columns=config["columns"]["gdelt_event"],
             columns=set(args.columns) if args.columns else None,
             filter_dict=filter_dict,
             random_state=args.seed,
-            historical_folder=hist_filtered,
+            historical_folder=hist_folder,
         )
 
         if args.stratify:
@@ -264,6 +266,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=["indexed", "filtered", "daily"],
         help="Sampling strategy"
+    )
+    sample.add_argument(
+        "--source",
+        choices=["filtered", "converted"],
+        default="filtered",
+        help="Which stage's output to sample from: 'filtered' (default, "
+             "after the filter command) or 'converted' (raw parquet, "
+             "before filtering)"
     )
     sample.add_argument(
         "-n", type=int, default=1000,
