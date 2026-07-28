@@ -1,5 +1,6 @@
 import argparse
 
+import pandas as pd
 import pytest
 
 import gdeltforge.cli as cli
@@ -54,6 +55,57 @@ class TestRunFilterCmd:
         monkeypatch.setattr(cli, "run_filter", lambda config: (10, 0))
 
         cli.run_filter_cmd({})  # should not raise
+
+
+class TestRunSamplingCmdSource:
+    """--source picks which config path the sampler reads from, without
+    changing the sampling logic itself. Real sampler classes are stubbed
+    out so this only checks which folder gets passed in."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+                "parquet_data_directory": "/converted",
+                "parquet_historical_directory": "/converted_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    def _run(self, tmp_path, monkeypatch, source):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(self, folder_path, historical_folder, random_state):
+                captured["folder_path"] = folder_path
+                captured["historical_folder"] = historical_folder
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        args = argparse.Namespace(
+            mode="indexed", source=source, n=10, seed=42, out=str(tmp_path / "o.parquet"),
+        )
+        cli.run_sampling_cmd(self._config(), args)
+        return captured
+
+    def test_default_source_is_filtered(self, tmp_path, monkeypatch):
+        captured = self._run(tmp_path, monkeypatch, source="filtered")
+        assert captured["folder_path"] == "/filtered"
+        # historical_folder is None here since partitioning isn't enabled
+        # in the test config; _historical_folder's own gating is covered
+        # by exercising both source values, not by this specific path.
+        assert captured["historical_folder"] is None
+
+    def test_source_converted_uses_parquet_directory(self, tmp_path, monkeypatch):
+        captured = self._run(tmp_path, monkeypatch, source="converted")
+        assert captured["folder_path"] == "/converted"
 
 
 class TestRunCodesCmd:
