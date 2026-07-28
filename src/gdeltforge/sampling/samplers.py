@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 from gdeltforge.utils.logging import get_logger
 
+from . import country_codes
 from .indexer import FileIndex
 from .rng import ReproducibleRNG
 
@@ -216,8 +217,49 @@ class FilteredSampler:
                 else:
                     if key not in self.gdelt_columns:
                         raise ValueError(f"Invalid filter column: {key}")
+                    self._warn_unrecognized_codes(key, val)
 
         validate_block(self.filter_dict)
+
+    @staticmethod
+    def _condition_values(cond: Any) -> list[str]:
+        """String values an equality/in_list-style condition checks for.
+        gt/lt/between/range conditions are numeric, so they never apply to
+        country-code columns and are skipped."""
+        if isinstance(cond, str):
+            return [cond]
+        if isinstance(cond, list):
+            return [v for v in cond if isinstance(v, str)]
+        if isinstance(cond, dict):
+            op = cond.get("op")
+            if op == FilterType.EQUALS.value and isinstance(cond.get("value"), str):
+                return [cond["value"]]
+            if op == FilterType.IN_LIST.value:
+                return [v for v in cond.get("values", []) if isinstance(v, str)]
+        return []
+
+    def _warn_unrecognized_codes(self, column: str, cond: Any) -> None:
+        """
+        Warn (never raise) when a filter value on a known country-code
+        column isn't in GDELT's reference list for that column's code
+        family. Column, not just value, matters here: "USA" is a real
+        CAMEO actor code but not a real FIPS geo code, and vice versa --
+        see country_codes module docstring.
+        """
+        code_family = country_codes.code_family_for_column(column)
+        if code_family is None:
+            return
+
+        unrecognized = [v for v in self._condition_values(cond) if v not in code_family]
+        if unrecognized:
+            family_name = (
+                "CAMEO actor" if column in country_codes.CAMEO_ACTOR_COLUMNS else "FIPS geo"
+            )
+            logger.warning(
+                f"{column}: {unrecognized} not recognized as {family_name} country "
+                f"code(s). Could be a typo, or a legitimate code newer than this "
+                f"reference list. Run `gdeltforge codes {column}` to check."
+            )
 
     # ---------- recursively collect all column names referenced in a filter block ----------
     def _filter_columns(self, block: dict[str, Any]) -> set[str]:

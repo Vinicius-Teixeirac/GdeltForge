@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -131,6 +133,64 @@ class TestFilteredSamplerValidation:
             FilteredSampler(str(folder), GDELT_COLUMNS, filter_dict={"NotAColumn": 1})
 
 
+class TestCountryCodeWarnings:
+    """
+    Regression coverage for the original real-world bug this session found:
+    a 3-letter CAMEO code ("USA") used against a 2-letter FIPS geo column
+    (ActionGeo_CountryCode) silently matched zero rows. These check that a
+    mismatch warns (not raises: FIPS 10-4 was retired in 2008 and can
+    lag reality) while correct and unrelated usage stays silent.
+    """
+
+    def test_warns_on_cameo_code_used_against_a_geo_column(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        with caplog.at_level(logging.WARNING):
+            FilteredSampler(
+                str(folder), GDELT_COLUMNS, filter_dict={"ActionGeo_CountryCode": ["USA"]}
+            )
+
+        assert "ActionGeo_CountryCode" in caplog.text
+        assert "USA" in caplog.text
+        assert "FIPS geo" in caplog.text
+
+    def test_warns_on_geo_code_used_against_an_actor_column(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        with caplog.at_level(logging.WARNING):
+            FilteredSampler(str(folder), GDELT_COLUMNS, filter_dict={"Actor1CountryCode": "US"})
+
+        assert "Actor1CountryCode" in caplog.text
+        assert "CAMEO actor" in caplog.text
+
+    def test_no_warning_for_correct_codes(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        with caplog.at_level(logging.WARNING):
+            FilteredSampler(
+                str(folder), GDELT_COLUMNS,
+                filter_dict={"ActionGeo_CountryCode": ["US", "BR"], "Actor1CountryCode": "USA"},
+            )
+
+        assert caplog.text == ""
+
+    def test_no_warning_for_columns_without_a_code_family(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        with caplog.at_level(logging.WARNING):
+            FilteredSampler(str(folder), GDELT_COLUMNS, filter_dict={"QuadClass": [1, 2]})
+
+        assert caplog.text == ""
+
+
 class TestFilterExpressions:
     def _filtered_ids(self, tmp_path, filter_dict):
         folder = tmp_path / "data"
@@ -262,7 +322,7 @@ class TestDedupLastWritePerSlot:
     """
 
     def test_dedups_to_last_occurrence_per_slot(self):
-        # positions 0,1,2,3,4 draw slots 5,3,5,3,5 -- slot 5 should keep
+        # positions 0,1,2,3,4 draw slots 5,3,5,3,5: slot 5 should keep
         # position 4 (last), slot 3 should keep position 3 (last).
         rand_slots = np.array([5, 3, 5, 3, 5])
         target_slots, source_pos = FilteredSampler._dedup_last_write_per_slot(

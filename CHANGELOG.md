@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `gdeltforge codes` command: lists valid CAMEO actor codes (`Actor1CountryCode`, `Actor2CountryCode`) and FIPS geo codes (`ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, `Actor2Geo_CountryCode`), with a `--search` filter. Needs no config file
+- `FilteredSampler` now warns (not raises) when a filter value on a country-code column isn't recognized for that column's code family, e.g. a 3-letter CAMEO code used against a 2-letter FIPS column
+
 ### Fixed
 - `FilteredSampler.get_random_sample`/`get_stratified_sample`'s reservoir replacement phase wrote one row at a time via `DataFrame.iloc`, an inherently slow pandas access pattern that made large filtered/stratified samples over the full archive impractically slow
 - The initial fix for the above (bulk-assigning all accepted rows in one indexed write) let pandas resolve same-batch slot collisions independently per column block, silently desyncing string columns from numeric ones when both were written together
