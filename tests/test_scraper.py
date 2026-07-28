@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from datetime import date
 
 import pytest
@@ -222,6 +223,23 @@ class TestDownloadOne:
 
         assert status == "failed"
         assert not (tmp_path / filename).exists()
+        assert not (tmp_path / (filename + ".tmp")).exists()
+
+    def test_warns_and_replaces_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+        content = b"hello gdelt"
+        filename = "20200101.export.CSV.zip"
+        (tmp_path / (filename + ".tmp")).write_bytes(b"partial garbage from a killed run")
+        file = GdeltFile(url=f"http://x/{filename}", md5=None)
+
+        with caplog.at_level(logging.WARNING):
+            status, filename = _download_one(
+                file, str(tmp_path), retries=1, timeout=5,
+                session=FakeSession(content),  # pyright: ignore[reportArgumentType]
+            )
+
+        assert status == "success"
+        assert "leftover incomplete download" in caplog.text
+        assert (tmp_path / filename).read_bytes() == content
         assert not (tmp_path / (filename + ".tmp")).exists()
 
     def test_skips_already_downloaded_file(self, tmp_path):

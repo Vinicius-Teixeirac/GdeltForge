@@ -1,5 +1,8 @@
+import os
 import zipfile
 from pathlib import Path
+
+import pandas as pd
 
 from gdeltforge.utils.logging import get_logger
 
@@ -12,6 +15,30 @@ def ensure_exists(path: str | Path, description: str) -> Path:
     if not p.exists():
         raise FileNotFoundError(f"{description} does not exist: {p}")
     return p
+
+
+def write_parquet_atomic(df: pd.DataFrame, out: str | Path) -> None:
+    """
+    Write a DataFrame to Parquet via a temp file plus an atomic rename, so a
+    process killed mid-write leaves either a complete file at the
+    destination path or no file at all there, never a corrupt or empty one.
+    """
+    out = Path(out)
+    tmp_path = out.with_name(out.name + ".tmp")
+
+    if tmp_path.exists():
+        logger.warning(
+            f"Found a leftover incomplete file from a previous interrupted "
+            f"run: {tmp_path}. It will be overwritten."
+        )
+
+    try:
+        df.to_parquet(tmp_path)
+        os.replace(tmp_path, out)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
 
 def unzip_file(zip_filepath: str | Path, extract_to_dir: str | Path | None = None) -> list[Path]:
     """
