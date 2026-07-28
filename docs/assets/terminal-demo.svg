@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 380" font-family="ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141a34"/>
+      <stop offset="1" stop-color="#0d1120"/>
+    </linearGradient>
+    <clipPath id="round">
+      <rect x="0" y="0" width="860" height="380" rx="14"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#round)">
+    <rect width="860" height="380" fill="url(#bg)"/>
+
+    <!-- title bar -->
+    <rect width="860" height="38" fill="#0a0e1c"/>
+    <circle cx="24" cy="19" r="6" fill="#c3654f"/>
+    <circle cx="46" cy="19" r="6" fill="#c3a463"/>
+    <circle cx="68" cy="19" r="6" fill="#6f8f6b"/>
+    <text x="430" y="24" fill="#5b6480" font-size="13" text-anchor="middle">gdeltforge</text>
+    <line x1="0" y1="38" x2="860" y2="38" stroke="#1f2540" stroke-width="1"/>
+
+    <!-- body -->
+    <g font-size="14.5">
+      <text x="28" y="72" fill="#c3a463">$ gdeltforge codes ActionGeo_CountryCode --search korea</text>
+      <text x="28" y="98" fill="#e8e4d8" xml:space="preserve">  KN  Korea, North</text>
+      <text x="28" y="120" fill="#e8e4d8" xml:space="preserve">  KS  Korea, South</text>
+      <text x="28" y="150" fill="#7c8399">2 code(s).</text>
+
+      <text x="28" y="196" fill="#c3a463">$ gdeltforge sample --mode indexed -n 20 --seed 7 --out demo_sample.parquet</text>
+      <text x="28" y="222" fill="#7c8399" xml:space="preserve">  [17:13:55] INFO   Running command: sample</text>
+      <text x="28" y="244" fill="#7c8399" xml:space="preserve">  [17:14:02] INFO   FileIndex: 4,748 files, 542,483,885 total rows</text>
+      <text x="28" y="266" fill="#7c8399" xml:space="preserve">  [17:14:02] INFO   Sampling 20 rows across 4,748 files</text>
+      <text x="28" y="296" fill="#9fd6a8" xml:space="preserve">  [17:14:03] INFO   Saved indexed sample (20 rows) -> demo_sample.parquet</text>
+
+      <text x="28" y="336" fill="#5b6480">$ █</text>
+    </g>
+  </g>
+
+  <rect x="0.5" y="0.5" width="859" height="379" rx="14" fill="none" stroke="#252b48" stroke-width="1"/>
+</svg>
