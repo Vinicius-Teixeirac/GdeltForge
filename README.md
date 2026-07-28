@@ -310,9 +310,9 @@ Drops rows with missing values in the columns defined in settings.yaml.
 
 ## 6.4 Sampling
 
-All sampling modes read from the filtered directory.
+All sampling modes read from the filtered directory by default. Pass `--source converted` to sample from raw converted Parquet instead, skipping the `filter` stage entirely.
 
-> Disclaimer: It's easy to adjust this behavior (look for run_sampling_cmd() first line), but I observe that the sampling methods are already as memory friendly as possible in the current setup and, despite that, they still demand lots of RAM, due to the huge data's volume. They would demand much more without the filtering step.
+> Note: sampling is already as memory-friendly as the underlying data volume allows, but `--source converted` will still use noticeably more RAM than the default, since it isn't working from data that's already had its missing-value rows dropped.
 
 ### 6.4.1 Indexed Sampling (Uniform Random)
 ```
