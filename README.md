@@ -2,17 +2,22 @@
 
 ### Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet
 
+[![CI](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/github/license/Vinicius-Teixeirac/GdeltForge)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/tag/Vinicius-Teixeirac/GdeltForge?label=release)](https://github.com/Vinicius-Teixeirac/GdeltForge/releases)
+
 📖 **[Full documentation](https://vinicius-teixeirac.github.io/GdeltForge/)**
 
-GdeltForge is a lightweight but scalable data pipeline to extract, transform, and load the entire **GDELT 2.0 Events Database**.
-It is designed for research workflows requiring:
+<p align="center">
+  <img src="docs/assets/terminal-demo.svg" alt="gdeltforge codes and gdeltforge sample running in a terminal, sampling 20 rows out of 542,483,885" width="640">
+</p>
 
-- Large-scale event data  
-- Efficient historical storage (**Parquet**)  
-- Reproducible sampling  
-- Transparent and modular data lineage  
+GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, filters, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history.
 
-The architecture emphasizes **simplicity**, **efficiency**, and **explicit execution**: each stage can be run independently or reused in larger workflows.
+- Full historical archive, not just the last 3 months the API allows
+- Efficient columnar storage (**Parquet**) instead of raw CSV/ZIP
+- Reproducible sampling: indexed, daily, filtered, and stratified modes
+- Each stage (`scrape`/`convert`/`filter`/`sample`) runs independently and inspectably
 
 ---
 
@@ -201,7 +206,7 @@ Available commands:
 The CLI intentionally does not chain stages automatically.
 You run each stage explicitly to maintain full control.
 
-By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable -- useful once GdeltForge is installed and invoked from outside the repo checkout.
+By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable, useful once GdeltForge is installed and invoked from outside the repo checkout.
 
 ---
 
