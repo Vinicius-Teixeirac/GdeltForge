@@ -1,4 +1,5 @@
 import argparse
+import sys
 
 import pandas as pd
 import pytest
@@ -182,3 +183,57 @@ class TestRunCodesCmd:
     def test_unknown_column_raises(self):
         with pytest.raises(ValueError, match="no country-code reference list"):
             cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))
+
+
+class TestMainErrorHandling:
+    """main() used to let any exception propagate as a raw traceback.
+    It should now print a clean one-line message to stderr and exit
+    non-zero, for any command, not just the one under test here."""
+
+    def test_exception_prints_clean_message_and_exits_1(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+
+        def boom(config):
+            raise RuntimeError("3 failed file(s)")
+
+        monkeypatch.setattr(cli, "run_convert_cmd", boom)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.strip() == "Error: 3 failed file(s)"
+        assert "Traceback" not in err
+
+    def test_keyboard_interrupt_prints_interrupted_and_exits_130(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+
+        def interrupted(config):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "run_convert_cmd", interrupted)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+        assert exc_info.value.code == 130
+        assert capsys.readouterr().err.strip() == "Interrupted."
+
+    def test_successful_command_does_not_exit(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setattr(cli, "run_convert_cmd", lambda config: None)
+
+        cli.main()  # should return normally, not raise SystemExit
+
+    def test_codes_command_errors_are_also_handled_cleanly(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "codes", "NotAColumn"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+        assert exc_info.value.code == 1
+        assert "no country-code reference list" in capsys.readouterr().err
