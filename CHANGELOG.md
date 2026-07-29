@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 - README hero section: real CI/license/release badges, a tighter pitch, and a terminal-demo screenshot of `codes` and `sample` running against the live dataset
+- The CLI now catches failures at the top level: any error prints `Error: <message>` and exits 1, and Ctrl+C prints `Interrupted.` and exits 130, instead of a raw Python traceback either way
 
 ### Fixed
 - `FilteredSampler.get_random_sample`/`get_stratified_sample`'s reservoir replacement phase wrote one row at a time via `DataFrame.iloc`, an inherently slow pandas access pattern that made large filtered/stratified samples over the full archive impractically slow
