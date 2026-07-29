@@ -7,8 +7,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Added
-- `gdeltforge codes` command: lists valid CAMEO actor codes (`Actor1CountryCode`, `Actor2CountryCode`) and FIPS geo codes (`ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, `Actor2Geo_CountryCode`), with a `--search` filter. Needs no config file
-- `FilteredSampler` now warns (not raises) when a filter value on a country-code column isn't recognized for that column's code family, e.g. a 3-letter CAMEO code used against a 2-letter FIPS column
+- `gdeltforge codes` command: looks up valid codes across six CAMEO/FIPS-coded column families (CAMEO actor-country, FIPS geo-country, CAMEO ethnic, CAMEO known-group, CAMEO religion, and CAMEO actor-type), with a `--search` filter. Needs no config file
+- `FilteredSampler` now warns (not raises) when a filter value on a CAMEO/FIPS-coded column isn't recognized for that column's code family, e.g. a 3-letter CAMEO code used against a 2-letter FIPS column. Covers all six families above, comparing case-insensitively since GDELT stores ethnic codes lowercase in real data while the source codebook uses uppercase
+- Bundled CAMEO/FIPS reference data verified against every distinct value across a full archive scan (~542M rows, all six families); added 7 previously-missing FIPS Pacific-island codes and 28 previously-missing CAMEO known-group codes for organizations absent from the public CAMEO manual, each confirmed against real actor names in the data rather than guessed
 - `gdeltforge sample --source {filtered,converted}`: sampling can now read from the raw converted Parquet directory instead of always requiring the `filter` stage first
 - `--columns` now applies to `indexed` and `daily` sampling too, not just `filtered`; both previously always read every column of every file they touched
 
