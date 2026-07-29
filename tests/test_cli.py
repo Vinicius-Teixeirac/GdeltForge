@@ -163,7 +163,7 @@ class TestRunCodesCmd:
         assert "Actor1CountryCode" in out
         assert "ActionGeo_CountryCode" in out
 
-    def test_bare_lists_all_six_code_families(self, capsys):
+    def test_bare_lists_all_seven_code_families(self, capsys):
         cli.run_codes_cmd(argparse.Namespace(column=None, search=None))
 
         out = capsys.readouterr().out
@@ -171,12 +171,14 @@ class TestRunCodesCmd:
         assert "Actor1KnownGroupCode" in out
         assert "Actor1Religion1Code" in out
         assert "Actor1Type1Code" in out
+        assert "EventCode" in out
         assert "CAMEO actor-country" in out
         assert "FIPS geo-country" in out
         assert "CAMEO ethnic" in out
         assert "CAMEO known-group" in out
         assert "CAMEO religion" in out
         assert "CAMEO actor-type" in out
+        assert "CAMEO event" in out
 
     def test_column_lists_its_codes(self, capsys):
         cli.run_codes_cmd(argparse.Namespace(column="ActionGeo_CountryCode", search=None))
@@ -191,6 +193,13 @@ class TestRunCodesCmd:
         out = capsys.readouterr().out
         assert "PLO" in out
         assert "Palestine Liberation Organization" in out
+
+    def test_column_lists_event_codes(self, capsys):
+        cli.run_codes_cmd(argparse.Namespace(column="EventRootCode", search=None))
+
+        out = capsys.readouterr().out
+        assert "01" in out
+        assert "MAKE PUBLIC STATEMENT" in out
 
     def test_search_filters_to_matching_codes(self, capsys):
         cli.run_codes_cmd(

@@ -1,9 +1,9 @@
 """
 cameo_codes.py
 
-Reference lookups for GDELT's CAMEO-coded actor and geo fields: short,
-fixed-vocabulary codes with a code -> name mapping, across six column
-families:
+Reference lookups for GDELT's CAMEO-coded actor, geo, and event fields:
+short, fixed-vocabulary codes with a code -> name mapping, across seven
+column families:
     - CAMEO actor-country codes (3-letter, e.g. "USA"): Actor1CountryCode,
       Actor2CountryCode
     - FIPS 10-4 geo-country codes (2-letter, e.g. "US"): ActionGeo_CountryCode,
@@ -15,6 +15,9 @@ families:
       Actor2Religion1Code, Actor2Religion2Code
     - CAMEO actor-type codes: Actor1Type1Code, Actor1Type2Code,
       Actor1Type3Code, Actor2Type1Code, Actor2Type2Code, Actor2Type3Code
+    - CAMEO event codes (2-digit root, 3-digit base, up to 4-digit fully
+      specified, all sharing one namespace): EventCode, EventBaseCode,
+      EventRootCode
 
 Sourced from GDELT's own CAMEO codebook, then cross-checked against every
 distinct value actually appearing across a full archive scan (~542M rows).
@@ -29,6 +32,23 @@ code rather than a known-group one), so those were confirmed individually
 against the actor names appearing alongside them in the real data instead
 (e.g. "FID" only ever appears next to "INTERNATIONAL FEDERATION OF HUMAN
 RIGHTS" / "FIDH").
+
+Event codes matched in full except two 4-digit leaf codes under "121:
+Reject material cooperation" (1213, 1214): the public CAMEO manual only
+documents that branch up to economic/military (1211/1212), not the
+judicial/intelligence continuation (X13/X14) it uses everywhere else
+(e.g. 0213/0214, 0313/0314, 1014). Confirmed both against the
+TABARI/PETRARCH verb-pattern dictionary GDELT's own event coder runs on
+(openeventdata/Dictionaries, CAMEO.verbpatterns.txt): 1213 appears
+repeatedly on extradition/tribunal/judge-order patterns (judicial), 1214
+on a records-related pattern (intelligence), consistent with the X13/X14
+convention rather than assumed from numbering alone.
+
+EventCode/EventBaseCode/EventRootCode also carry a small number of
+GDELT's own malformed-record markers ("X", "--", "---") for rows its
+event coder couldn't classify at all. These aren't CAMEO codes and are
+deliberately left out of the reference, so a filter on one of them will
+(correctly) still warn.
 
 None of this is exhaustive by construction, just by verification against
 one archive snapshot: FIPS 10-4 was retired as a standard in 2008 and the
@@ -58,6 +78,7 @@ CAMEO_TYPE_COLUMNS = frozenset({
     "Actor1Type1Code", "Actor1Type2Code", "Actor1Type3Code",
     "Actor2Type1Code", "Actor2Type2Code", "Actor2Type3Code",
 })
+CAMEO_EVENT_COLUMNS = frozenset({"EventCode", "EventBaseCode", "EventRootCode"})
 
 _FAMILY_KEY_FOR_COLUMN: dict[str, str] = {
     **dict.fromkeys(CAMEO_ACTOR_COUNTRY_COLUMNS, "ACTOR_COUNTRY_CODES"),
@@ -66,6 +87,7 @@ _FAMILY_KEY_FOR_COLUMN: dict[str, str] = {
     **dict.fromkeys(CAMEO_KNOWN_GROUP_COLUMNS, "ACTOR_KNOWN_GROUP_CODES"),
     **dict.fromkeys(CAMEO_RELIGION_COLUMNS, "ACTOR_RELIGION_CODES"),
     **dict.fromkeys(CAMEO_TYPE_COLUMNS, "ACTOR_TYPE_CODES"),
+    **dict.fromkeys(CAMEO_EVENT_COLUMNS, "EVENT_CODES"),
 }
 
 _FAMILY_DISPLAY_NAME: dict[str, str] = {
@@ -75,6 +97,7 @@ _FAMILY_DISPLAY_NAME: dict[str, str] = {
     "ACTOR_KNOWN_GROUP_CODES": "CAMEO known-group",
     "ACTOR_RELIGION_CODES": "CAMEO religion",
     "ACTOR_TYPE_CODES": "CAMEO actor-type",
+    "EVENT_CODES": "CAMEO event",
 }
 
 
@@ -112,6 +135,11 @@ def religion_codes() -> dict[str, str]:
 def type_codes() -> dict[str, str]:
     """CAMEO actor-type code -> type description."""
     return _load()["ACTOR_TYPE_CODES"]
+
+
+def event_codes() -> dict[str, str]:
+    """CAMEO event code (root, base, or fully specified) -> event description."""
+    return _load()["EVENT_CODES"]
 
 
 def code_family_for_column(column: str) -> dict[str, str] | None:

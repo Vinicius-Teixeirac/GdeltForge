@@ -160,9 +160,9 @@ This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-p
 
 ## `gdeltforge codes`
 
-Looks up valid codes for GDELT's CAMEO-coded actor and geo columns, so a filter value can be checked before running a sample. Needs no config file: it's a static reference lookup, usable before `settings.yaml` even exists.
+Looks up valid codes for GDELT's CAMEO-coded actor, geo, and event columns, so a filter value can be checked before running a sample. Needs no config file: it's a static reference lookup, usable before `settings.yaml` even exists.
 
-Covers six code families, each with its own reference list:
+Covers seven code families, each with its own reference list:
 
 | Family | Columns |
 |--------|---------|
@@ -172,8 +172,11 @@ Covers six code families, each with its own reference list:
 | CAMEO known-group (IGOs, NGOs, and similar organizations) | `Actor1KnownGroupCode`, `Actor2KnownGroupCode` |
 | CAMEO religion | `Actor1Religion1Code`, `Actor1Religion2Code`, `Actor2Religion1Code`, `Actor2Religion2Code` |
 | CAMEO actor-type | `Actor1Type1Code`, `Actor1Type2Code`, `Actor1Type3Code`, `Actor2Type1Code`, `Actor2Type2Code`, `Actor2Type3Code` |
+| CAMEO event (2-digit root, 3-digit base, up to 4-digit fully specified) | `EventCode`, `EventBaseCode`, `EventRootCode` |
 
 FIPS 10-4 country codes are a different scheme from CAMEO's own 3-letter actor-country codes (`UK` not `GBR`, `RS` not `RUS`), so a value valid on one family can be silently wrong on another; `gdeltforge codes <column>` disambiguates before you run a sample.
+
+A handful of real `EventCode`/`EventBaseCode`/`EventRootCode` values (`"X"`, `"--"`, `"---"`) are GDELT's own markers for rows its event coder couldn't classify, not CAMEO codes, so `gdeltforge codes` deliberately won't list them and a filter using one will still warn.
 
 List which columns have a reference list:
 

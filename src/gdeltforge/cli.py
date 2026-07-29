@@ -185,6 +185,7 @@ _CAMEO_COLUMN_GROUPS = [
     cameo_codes.CAMEO_KNOWN_GROUP_COLUMNS,
     cameo_codes.CAMEO_RELIGION_COLUMNS,
     cameo_codes.CAMEO_TYPE_COLUMNS,
+    cameo_codes.CAMEO_EVENT_COLUMNS,
 ]
 
 
