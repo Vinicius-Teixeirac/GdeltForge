@@ -8,7 +8,7 @@ from gdeltforge.conversion.converter import run_converter
 from gdeltforge.filtering.filter import run_filter
 
 # Samplers
-from gdeltforge.sampling import country_codes
+from gdeltforge.sampling import cameo_codes
 from gdeltforge.sampling.samplers import (
     DailySampler,
     FilteredSampler,
@@ -178,23 +178,33 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     raise ValueError(f"Unknown sampling mode: {args.mode}")
 
 
+_CAMEO_COLUMN_GROUPS = [
+    cameo_codes.CAMEO_ACTOR_COUNTRY_COLUMNS,
+    cameo_codes.FIPS_GEO_COLUMNS,
+    cameo_codes.CAMEO_ETHNIC_COLUMNS,
+    cameo_codes.CAMEO_KNOWN_GROUP_COLUMNS,
+    cameo_codes.CAMEO_RELIGION_COLUMNS,
+    cameo_codes.CAMEO_TYPE_COLUMNS,
+]
+
+
 def run_codes_cmd(args: argparse.Namespace) -> None:
     if args.column is None:
-        print("Country-code columns with a reference list:\n")
-        print("  CAMEO actor codes (3-letter):")
-        for c in sorted(country_codes.CAMEO_ACTOR_COLUMNS):
-            print(f"    {c}")
-        print("\n  FIPS geo codes (2-letter):")
-        for c in sorted(country_codes.FIPS_GEO_COLUMNS):
-            print(f"    {c}")
-        print("\nRun `gdeltforge codes <column>` to list that column's codes.")
+        print("CAMEO-coded columns with a reference list:\n")
+        for group in _CAMEO_COLUMN_GROUPS:
+            columns = sorted(group)
+            print(f"  {cameo_codes.family_name_for_column(columns[0])}:")
+            for c in columns:
+                print(f"    {c}")
+            print()
+        print("Run `gdeltforge codes <column>` to list that column's codes.")
         return
 
-    code_family = country_codes.code_family_for_column(args.column)
+    code_family = cameo_codes.code_family_for_column(args.column)
     if code_family is None:
-        known = sorted(country_codes.CAMEO_ACTOR_COLUMNS | country_codes.FIPS_GEO_COLUMNS)
+        known = sorted(c for group in _CAMEO_COLUMN_GROUPS for c in group)
         raise ValueError(
-            f"'{args.column}' has no country-code reference list. Known columns: "
+            f"'{args.column}' has no CAMEO code reference list. Known columns: "
             f"{', '.join(known)}"
         )
 
