@@ -88,6 +88,35 @@ class TestTypeCodes:
         assert codes["REB"].startswith("Rebels")
 
 
+class TestEventCodes:
+    def test_has_known_entries_at_each_specificity_level(self):
+        # Root (2-digit), base (3-digit), and fully specified (4-digit)
+        # codes all share one flat namespace.
+        codes = cameo_codes.event_codes()
+        assert codes["01"] == "MAKE PUBLIC STATEMENT"
+        assert codes["010"] == "Make statement, not specified below"
+        assert codes["190"] == "Use conventional military force, not specified below"
+
+    def test_has_codes_confirmed_via_verb_pattern_dictionary(self):
+        # Not listed in the public CAMEO manual's "121: Reject material
+        # cooperation" branch (which stops at economic/military); confirmed
+        # instead via the TABARI/PETRARCH verb-pattern dictionary GDELT's
+        # own event coder runs on, consistent with the judicial/intelligence
+        # continuation (X13/X14) used elsewhere in the scheme (e.g. 0213/0214).
+        codes = cameo_codes.event_codes()
+        assert codes["1213"] == "Reject judicial cooperation"
+        assert codes["1214"] == "Reject intelligence cooperation"
+
+    def test_malformed_record_markers_are_not_included(self):
+        # GDELT's own sentinels for rows its event coder couldn't classify
+        # at all, not real CAMEO codes; deliberately excluded so filtering
+        # on one still (correctly) warns.
+        codes = cameo_codes.event_codes()
+        assert "X" not in codes
+        assert "--" not in codes
+        assert "---" not in codes
+
+
 class TestCodeFamilyForColumn:
     def test_actor_country_columns_return_actor_country_family(self):
         for col in cameo_codes.CAMEO_ACTOR_COUNTRY_COLUMNS:
@@ -113,6 +142,10 @@ class TestCodeFamilyForColumn:
         for col in cameo_codes.CAMEO_TYPE_COLUMNS:
             assert cameo_codes.code_family_for_column(col) == cameo_codes.type_codes()
 
+    def test_event_columns_return_event_family(self):
+        for col in cameo_codes.CAMEO_EVENT_COLUMNS:
+            assert cameo_codes.code_family_for_column(col) == cameo_codes.event_codes()
+
     def test_unknown_column_returns_none(self):
         assert cameo_codes.code_family_for_column("GlobalEventID") is None
         assert cameo_codes.code_family_for_column("QuadClass") is None
@@ -126,6 +159,7 @@ class TestFamilyNameForColumn:
         assert cameo_codes.family_name_for_column("Actor1KnownGroupCode") == "CAMEO known-group"
         assert cameo_codes.family_name_for_column("Actor1Religion1Code") == "CAMEO religion"
         assert cameo_codes.family_name_for_column("Actor1Type1Code") == "CAMEO actor-type"
+        assert cameo_codes.family_name_for_column("EventCode") == "CAMEO event"
 
     def test_unknown_column_returns_none(self):
         assert cameo_codes.family_name_for_column("GlobalEventID") is None
@@ -149,3 +183,15 @@ class TestIsRecognizedCode:
         assert cameo_codes.is_recognized_code("Actor1EthnicCode", "aar") is True
         assert cameo_codes.is_recognized_code("Actor1EthnicCode", "AAR") is True
         assert cameo_codes.is_recognized_code("Actor1CountryCode", "usa") is True
+
+    def test_event_code_at_any_specificity_level_is_recognized(self):
+        assert cameo_codes.is_recognized_code("EventRootCode", "01") is True
+        assert cameo_codes.is_recognized_code("EventBaseCode", "010") is True
+        assert cameo_codes.is_recognized_code("EventCode", "1213") is True
+
+    def test_malformed_record_marker_is_not_recognized(self):
+        # A real value that occurs in real GDELT data (the event coder's
+        # own "couldn't classify this row" marker), correctly still flagged
+        # since it isn't a CAMEO code.
+        assert cameo_codes.is_recognized_code("EventCode", "X") is False
+        assert cameo_codes.is_recognized_code("EventRootCode", "--") is False
