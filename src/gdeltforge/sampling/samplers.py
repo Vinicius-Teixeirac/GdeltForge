@@ -56,8 +56,10 @@ class IndexedSampler:
         folder_path: str,
         historical_folder: str | None = None,
         random_state: int | None = 42,
+        columns: set[str] | None = None,
     ):
         self.folder = Path(folder_path)
+        self.columns = columns
         parquet_files = sorted(self.folder.glob("*.parquet"))
 
         if historical_folder:
@@ -92,9 +94,10 @@ class IndexedSampler:
         indices_by_file = self.index.group_indices_by_file(random_indices)
         logger.info("Mapped the indices to the correspondent files")
 
+        read_columns = list(self.columns) if self.columns else None
         sampled = []
         for file_path, relative_rows in tqdm(indices_by_file.items(), desc="Loading samples"):
-            df = pd.read_parquet(file_path)
+            df = pd.read_parquet(file_path, columns=read_columns)
             sampled.append(df.iloc[relative_rows])
 
         return pd.concat(sampled, ignore_index=True)
@@ -116,11 +119,13 @@ class DailySampler:
         folder_path: str,
         historical_folder: str | None = None,
         random_state: int | None = 42,
+        columns: set[str] | None = None,
     ):
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
             Path(historical_folder) if historical_folder else None
         )
+        self.columns = columns
         self.rng = ReproducibleRNG(random_state)
 
     def get_daily_samples(self, samples_per_day: int = 10) -> pd.DataFrame:
@@ -138,10 +143,15 @@ class DailySampler:
                 + (f" or {self.historical_folder}" if self.historical_folder else "")
             )
 
+        # "Day" drives the grouping below, so it has to be read even if the
+        # caller didn't ask for it in --columns, otherwise every file
+        # would silently look like it has no Day column and get skipped.
+        read_columns = list(self.columns | {"Day"}) if self.columns else None
+
         daily: dict[Any, list[pd.DataFrame]] = {}
 
         for file_path in tqdm(parquet_files, desc="Daily sampling"):
-            df = pd.read_parquet(file_path)
+            df = pd.read_parquet(file_path, columns=read_columns)
             if "Day" not in df.columns:
                 continue
 
