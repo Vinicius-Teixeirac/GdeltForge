@@ -163,12 +163,34 @@ class TestRunCodesCmd:
         assert "Actor1CountryCode" in out
         assert "ActionGeo_CountryCode" in out
 
+    def test_bare_lists_all_six_code_families(self, capsys):
+        cli.run_codes_cmd(argparse.Namespace(column=None, search=None))
+
+        out = capsys.readouterr().out
+        assert "Actor1EthnicCode" in out
+        assert "Actor1KnownGroupCode" in out
+        assert "Actor1Religion1Code" in out
+        assert "Actor1Type1Code" in out
+        assert "CAMEO actor-country" in out
+        assert "FIPS geo-country" in out
+        assert "CAMEO ethnic" in out
+        assert "CAMEO known-group" in out
+        assert "CAMEO religion" in out
+        assert "CAMEO actor-type" in out
+
     def test_column_lists_its_codes(self, capsys):
         cli.run_codes_cmd(argparse.Namespace(column="ActionGeo_CountryCode", search=None))
 
         out = capsys.readouterr().out
         assert "US" in out
         assert "United States" in out
+
+    def test_column_lists_codes_for_a_newly_covered_family(self, capsys):
+        cli.run_codes_cmd(argparse.Namespace(column="Actor1KnownGroupCode", search=None))
+
+        out = capsys.readouterr().out
+        assert "PLO" in out
+        assert "Palestine Liberation Organization" in out
 
     def test_search_filters_to_matching_codes(self, capsys):
         cli.run_codes_cmd(
@@ -181,7 +203,7 @@ class TestRunCodesCmd:
         assert "United States" not in out
 
     def test_unknown_column_raises(self):
-        with pytest.raises(ValueError, match="no country-code reference list"):
+        with pytest.raises(ValueError, match="no CAMEO code reference list"):
             cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))
 
 
@@ -236,4 +258,4 @@ class TestMainErrorHandling:
             cli.main()
 
         assert exc_info.value.code == 1
-        assert "no country-code reference list" in capsys.readouterr().err
+        assert "no CAMEO code reference list" in capsys.readouterr().err
