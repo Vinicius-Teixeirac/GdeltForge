@@ -80,9 +80,10 @@ class TestRunSamplingCmdSource:
         captured = {}
 
         class FakeIndexedSampler:
-            def __init__(self, folder_path, historical_folder, random_state):
+            def __init__(self, folder_path, historical_folder, random_state, columns=None):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
+                captured["columns"] = columns
 
             def get_random_sample(self, n):
                 return pd.DataFrame({"GlobalEventID": [1]})
@@ -91,6 +92,7 @@ class TestRunSamplingCmdSource:
 
         args = argparse.Namespace(
             mode="indexed", source=source, n=10, seed=42, out=str(tmp_path / "o.parquet"),
+            columns=None,
         )
         cli.run_sampling_cmd(self._config(), args)
         return captured
@@ -106,6 +108,50 @@ class TestRunSamplingCmdSource:
     def test_source_converted_uses_parquet_directory(self, tmp_path, monkeypatch):
         captured = self._run(tmp_path, monkeypatch, source="converted")
         assert captured["folder_path"] == "/converted"
+
+    def test_columns_arg_reaches_indexed_sampler(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+                captured["columns"] = columns
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        args = argparse.Namespace(
+            mode="indexed", source="filtered", n=10, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["columns"] == {"GlobalEventID", "QuadClass"}
+
+    def test_columns_arg_reaches_daily_sampler(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeDailySampler:
+            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+                captured["columns"] = columns
+
+            def get_daily_samples(self, samples_per_day):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "DailySampler", FakeDailySampler)
+
+        args = argparse.Namespace(
+            mode="daily", source="filtered", per_day=10, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["columns"] == {"GlobalEventID"}
 
 
 class TestRunCodesCmd:

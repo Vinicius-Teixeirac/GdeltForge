@@ -85,7 +85,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 | `--seed N` | all | RNG seed (default 42) |
 | `--per-day N` | daily | Rows per day (default 10) |
 | `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
-| `--columns COL [COL ...]` | filtered | Restrict output to these columns |
+| `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` |
 | `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set |
 | `--out PATH` | all | Output parquet file (default `sample.parquet`) |
