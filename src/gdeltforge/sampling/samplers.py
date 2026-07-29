@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 from gdeltforge.utils.logging import get_logger
 
-from . import country_codes
+from . import cameo_codes
 from .indexer import FileIndex
 from .rng import ReproducibleRNG
 
@@ -250,23 +250,21 @@ class FilteredSampler:
 
     def _warn_unrecognized_codes(self, column: str, cond: Any) -> None:
         """
-        Warn (never raise) when a filter value on a known country-code
+        Warn (never raise) when a filter value on a known CAMEO-coded
         column isn't in GDELT's reference list for that column's code
         family. Column, not just value, matters here: "USA" is a real
-        CAMEO actor code but not a real FIPS geo code, and vice versa --
-        see country_codes module docstring.
+        CAMEO actor-country code but not a real FIPS geo-country code, and
+        vice versa; see the cameo_codes module docstring for the full set
+        of families this covers.
         """
-        code_family = country_codes.code_family_for_column(column)
-        if code_family is None:
-            return
-
-        unrecognized = [v for v in self._condition_values(cond) if v not in code_family]
+        unrecognized = [
+            v for v in self._condition_values(cond)
+            if cameo_codes.is_recognized_code(column, v) is False
+        ]
         if unrecognized:
-            family_name = (
-                "CAMEO actor" if column in country_codes.CAMEO_ACTOR_COLUMNS else "FIPS geo"
-            )
+            family_name = cameo_codes.family_name_for_column(column)
             logger.warning(
-                f"{column}: {unrecognized} not recognized as {family_name} country "
+                f"{column}: {unrecognized} not recognized as {family_name} "
                 f"code(s). Could be a typo, or a legitimate code newer than this "
                 f"reference list. Run `gdeltforge codes {column}` to check."
             )

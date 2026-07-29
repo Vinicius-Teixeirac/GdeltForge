@@ -12,7 +12,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 | `convert` | Convert downloaded CSV files to Parquet |
 | `filter`  | Apply row-column filtering to Parquet files |
 | `sample`  | Efficient, reproducible sampling |
-| `codes`   | Look up valid country codes for filter values |
+| `codes`   | Look up valid CAMEO/FIPS codes for filter values |
 
 `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
 
@@ -160,7 +160,20 @@ This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-p
 
 ## `gdeltforge codes`
 
-Looks up valid country codes for the columns listed above, so a filter value can be checked before running a sample. Needs no config file: it's a static reference lookup, usable before `settings.yaml` even exists.
+Looks up valid codes for GDELT's CAMEO-coded actor and geo columns, so a filter value can be checked before running a sample. Needs no config file: it's a static reference lookup, usable before `settings.yaml` even exists.
+
+Covers six code families, each with its own reference list:
+
+| Family | Columns |
+|--------|---------|
+| CAMEO actor-country (3-letter) | `Actor1CountryCode`, `Actor2CountryCode` |
+| FIPS geo-country (2-letter) | `ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, `Actor2Geo_CountryCode` |
+| CAMEO ethnic | `Actor1EthnicCode`, `Actor2EthnicCode` |
+| CAMEO known-group (IGOs, NGOs, and similar organizations) | `Actor1KnownGroupCode`, `Actor2KnownGroupCode` |
+| CAMEO religion | `Actor1Religion1Code`, `Actor1Religion2Code`, `Actor2Religion1Code`, `Actor2Religion2Code` |
+| CAMEO actor-type | `Actor1Type1Code`, `Actor1Type2Code`, `Actor1Type3Code`, `Actor2Type1Code`, `Actor2Type2Code`, `Actor2Type3Code` |
+
+FIPS 10-4 country codes are a different scheme from CAMEO's own 3-letter actor-country codes (`UK` not `GBR`, `RS` not `RUS`), so a value valid on one family can be silently wrong on another; `gdeltforge codes <column>` disambiguates before you run a sample.
 
 List which columns have a reference list:
 
@@ -174,7 +187,7 @@ List every code for a column:
 gdeltforge codes ActionGeo_CountryCode
 ```
 
-Search within a column by code or country name (case-insensitive substring match):
+Search within a column by code or name (case-insensitive substring match):
 
 ```
 gdeltforge codes ActionGeo_CountryCode --search korea
@@ -182,7 +195,7 @@ gdeltforge codes ActionGeo_CountryCode --search korea
 
 | Flag | Description |
 |------|-------------|
-| `column` | Positional, optional. A country-code column, e.g. `ActionGeo_CountryCode` |
+| `column` | Positional, optional. A CAMEO/FIPS-coded column, e.g. `ActionGeo_CountryCode` |
 | `--search TERM` | Filter results to codes or names containing this substring |
 
 ## Full pipeline examples

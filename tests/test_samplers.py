@@ -245,6 +245,19 @@ class TestCountryCodeWarnings:
 
         assert caplog.text == ""
 
+    def test_no_warning_for_lowercase_code_against_uppercase_reference(self, tmp_path, caplog):
+        # Real GDELT data stores Actor1/2EthnicCode lowercase while the
+        # bundled reference uses uppercase keys; a filter value in either
+        # case against a real code should stay silent.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        with caplog.at_level(logging.WARNING):
+            FilteredSampler(str(folder), GDELT_COLUMNS, filter_dict={"Actor1CountryCode": "usa"})
+
+        assert caplog.text == ""
+
 
 class TestFilterExpressions:
     def _filtered_ids(self, tmp_path, filter_dict):
