@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -347,25 +348,33 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.command == "codes":
-        run_codes_cmd(args)
-        return
+    try:
+        if args.command == "codes":
+            run_codes_cmd(args)
+            return
 
-    config = load_config(args.config)
+        config = load_config(args.config)
 
-    logger.info(f"Running command: {args.command}")
+        logger.info(f"Running command: {args.command}")
 
-    if args.command == "scrape":
-        run_scrape_cmd(config, args)
+        if args.command == "scrape":
+            run_scrape_cmd(config, args)
 
-    elif args.command == "convert":
-        run_convert_cmd(config)
+        elif args.command == "convert":
+            run_convert_cmd(config)
 
-    elif args.command == "filter":
-        run_filter_cmd(config)
+        elif args.command == "filter":
+            run_filter_cmd(config)
 
-    elif args.command == "sample":
-        run_sampling_cmd(config, args)
+        elif args.command == "sample":
+            run_sampling_cmd(config, args)
+
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
