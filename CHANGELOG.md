@@ -10,6 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `gdeltforge codes` command: lists valid CAMEO actor codes (`Actor1CountryCode`, `Actor2CountryCode`) and FIPS geo codes (`ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, `Actor2Geo_CountryCode`), with a `--search` filter. Needs no config file
 - `FilteredSampler` now warns (not raises) when a filter value on a country-code column isn't recognized for that column's code family, e.g. a 3-letter CAMEO code used against a 2-letter FIPS column
 - `gdeltforge sample --source {filtered,converted}`: sampling can now read from the raw converted Parquet directory instead of always requiring the `filter` stage first
+- `--columns` now applies to `indexed` and `daily` sampling too, not just `filtered`; both previously always read every column of every file they touched
 
 ### Changed
 - README hero section: real CI/license/release badges, a tighter pitch, and a terminal-demo screenshot of `codes` and `sample` running against the live dataset

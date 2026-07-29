@@ -100,6 +100,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     hist_folder = _historical_folder(config, historical_key)
+    columns = set(args.columns) if args.columns else None
 
     # -----------------------------
     # Indexed Sampling
@@ -109,6 +110,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             folder_path=str(source_folder),
             historical_folder=hist_folder,
             random_state=args.seed,
+            columns=columns,
         )
         df = sampler.get_random_sample(args.n)
         write_parquet_atomic(df, out)
@@ -123,6 +125,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             folder_path=str(source_folder),
             historical_folder=hist_folder,
             random_state=args.seed,
+            columns=columns,
         )
         df = sampler.get_daily_samples(samples_per_day=args.per_day)
         write_parquet_atomic(df, out)
@@ -147,7 +150,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         sampler = FilteredSampler(
             folder_path=str(source_folder),
             gdelt_columns=config["columns"]["gdelt_event"],
-            columns=set(args.columns) if args.columns else None,
+            columns=columns,
             filter_dict=filter_dict,
             random_state=args.seed,
             historical_folder=hist_folder,
@@ -295,7 +298,8 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--columns",
         nargs="*",
-        help="Columns to include (filtered sampler)"
+        help="Restrict output to these columns (all modes); cuts both I/O "
+             "and memory use on the full archive"
     )
     sample.add_argument(
         "--stratify",
