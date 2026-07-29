@@ -75,6 +75,30 @@ class TestIndexedSampler:
         with pytest.raises(FileNotFoundError):
             IndexedSampler(str(folder), random_state=1)
 
+    def test_columns_restricts_output(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({
+            "GlobalEventID": range(20), "QuadClass": [1] * 20, "GoldsteinScale": [0.0] * 20,
+        }).to_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=42, columns={"GlobalEventID"})
+        df = sampler.get_random_sample(5)
+
+        assert list(df.columns) == ["GlobalEventID"]
+
+    def test_no_columns_arg_returns_everything(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({
+            "GlobalEventID": range(10), "QuadClass": [1] * 10,
+        }).to_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(5)
+
+        assert set(df.columns) == {"GlobalEventID", "QuadClass"}
+
 
 class TestDailySampler:
     def test_caps_at_samples_per_day(self, tmp_path):
@@ -113,6 +137,37 @@ class TestDailySampler:
         df = sampler.get_daily_samples(samples_per_day=5)
 
         assert df.empty
+
+    def test_columns_restricts_output(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({
+            "GlobalEventID": range(6), "Day": [20200101] * 6, "GoldsteinScale": [0.0] * 6,
+        }).to_parquet(folder / "a.parquet")
+
+        sampler = DailySampler(str(folder), random_state=1, columns={"GlobalEventID"})
+        df = sampler.get_daily_samples(samples_per_day=3)
+
+        # Day rides along even though it wasn't requested -- see
+        # test_day_is_kept_even_when_not_requested for why that's correct.
+        # GoldsteinScale, not requested and not needed for grouping, is
+        # the one that should actually be pruned.
+        assert set(df.columns) == {"GlobalEventID", "Day"}
+
+    def test_day_is_kept_even_when_not_requested(self, tmp_path):
+        # Day drives the grouping itself; omitting it from --columns must
+        # not silently make every file look like it has no Day column.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({
+            "GlobalEventID": range(6), "Day": [20200101] * 6, "GoldsteinScale": [0.0] * 6,
+        }).to_parquet(folder / "a.parquet")
+
+        sampler = DailySampler(str(folder), random_state=1, columns={"GlobalEventID"})
+        df = sampler.get_daily_samples(samples_per_day=3)
+
+        assert not df.empty
+        assert "Day" in df.columns
 
 
 class TestFilteredSamplerValidation:
