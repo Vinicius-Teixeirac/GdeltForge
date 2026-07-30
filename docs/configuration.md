@@ -57,7 +57,7 @@ Both methods return an identical set of URLs. `selenium` is kept purely as a fal
 
 ### Concurrency and checksum verification
 
-Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bound. Each download is also checksum-verified: the GDELT index publishes an MD5 per file, which the scraper captures and checks after each download completes. A mismatch is treated the same as a network failure -- the file is discarded and retried up to `retries` times before being reported as failed, so a corrupted or truncated download never silently ends up in the dataset.
+Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bound. Each download is also checksum-verified: the GDELT index publishes an MD5 per file, which the scraper captures and checks after each download completes. A mismatch is treated the same as a network failure: the file is discarded and retried up to `retries` times before being reported as failed, so a corrupted or truncated download never silently ends up in the dataset.
 
 ## `converter`
 
@@ -116,4 +116,4 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 |-----|-------------|
 | `columns_to_check` | Rows with a `NaN`/null value in any of these columns are dropped |
 
-This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis -- e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.
+This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.

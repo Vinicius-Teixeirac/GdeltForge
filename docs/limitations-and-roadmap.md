@@ -12,10 +12,6 @@ gdeltforge scrape convert sample
 
 You can run multiple stages at once with a shell script of your own: see [Recipes](recipes.md) for worked examples chaining `gdeltforge` calls together.
 
-## Data ingestion
-
-`scrape` only downloads GDELT files not already present locally. Use `--start-date`/`--end-date` to restrict the download window; without either flag, the entire available archive is downloaded.
-
 ## Format
 
 Only CSV -> Parquet is supported. The schema is preserved as-is, with no additional transformations beyond numeric coercion (see [Configuration](configuration.md#columns)).

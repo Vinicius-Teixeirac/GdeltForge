@@ -19,7 +19,7 @@ for n in 100000 150000 200000 250000 300000 350000 400000 450000 500000; do
 done
 ```
 
-**Reproducible run** -- the same seed always produces the same rows, useful for sharing a dataset others can regenerate exactly:
+**Reproducible run**: the same seed always produces the same rows, useful for sharing a dataset others can regenerate exactly:
 
 ```
 gdeltforge sample \
@@ -51,7 +51,7 @@ gdeltforge sample \
   --out samples/brazil_100k.parquet
 ```
 
-**Slim version** -- keep only the columns you actually need, which keeps memory use down on large samples:
+**Slim version**: keep only the columns you actually need, which keeps memory use down on large samples:
 
 ```
 gdeltforge sample \
@@ -64,9 +64,9 @@ gdeltforge sample \
 
 ## Stratified Samples
 
-Stratified sampling draws exactly N rows per distinct value of a chosen column, producing a class-balanced dataset regardless of natural event frequencies -- see [Filtered Sampling](filtered-sampling.md) for the full filter syntax these combine with.
+Stratified sampling draws exactly N rows per distinct value of a chosen column, producing a class-balanced dataset regardless of natural event frequencies; see [Filtered Sampling](filtered-sampling.md) for the full filter syntax these combine with.
 
-50k events per `QuadClass` (4 classes → 200k total rows):
+50k events per `QuadClass` (4 classes -> 200k total rows):
 
 ```
 gdeltforge sample \

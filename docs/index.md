@@ -26,16 +26,16 @@ gdeltforge sample --mode indexed -n 10000
 
 The GDELT Events Database is extremely rich, but getting the *full* archive through official channels is genuinely difficult:
 
-- **The GDELT API** is built for small, recent queries — tight time windows, a ~250-row cap per query, and rate limits that make pulling the full historical dataset impractical.
+- **The GDELT API** is built for small, recent queries: tight time windows, a ~250-row cap per query, and rate limits that make pulling the full historical dataset impractical.
 - **The BigQuery mirror** has full data, but free-tier quotas (1TB/month query, 10GB storage, 1GB egress) are far too small for the hundreds of GB involved, and full-table scans get expensive fast.
 - **The raw bulk archives** are available and complete, but they're thousands of individual ZIP files that need automated downloading, streaming/chunked processing, columnar storage, and memory-safe filtering and sampling before they're actually usable.
 
-GdeltForge automates that last path end-to-end: scrape → convert → filter → sample, each stage independent and re-runnable.
+GdeltForge automates that last path end-to-end: scrape -> convert -> filter -> sample, each stage independent and re-runnable.
 
 ## Where to go next
 
-- [Getting Started](getting-started.md) — install it and run your first pipeline
-- [CLI Reference](cli-reference.md) — every command, every flag, with real examples
-- [Configuration](configuration.md) — the full `settings.yaml` reference
-- [Architecture](architecture.md) — how the pipeline is put together, and why
-- [Limitations & Roadmap](limitations-and-roadmap.md) — what's not supported yet, and what's next
+- [Getting Started](getting-started.md): install it and run your first pipeline
+- [CLI Reference](cli-reference.md): every command, every flag, with real examples
+- [Configuration](configuration.md): the full `settings.yaml` reference
+- [Architecture](architecture.md): how the pipeline is put together, and why
+- [Limitations & Roadmap](limitations-and-roadmap.md): what's not supported yet, and what's next

@@ -58,7 +58,7 @@ All of the above apply to any numeric or categorical GDELT column.
 
 `filter_dict` can contain nested `AND` / `OR` blocks to build richer logic.
 
-**Top-level AND** (default behavior -- multiple keys are combined with AND)
+**Top-level AND** (default behavior: multiple keys are combined with AND)
 
 ```json
 {
