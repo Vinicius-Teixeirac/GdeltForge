@@ -24,9 +24,14 @@ def load_config(config_path: str | None = None) -> dict:
 
     path = Path(config_path)
     if not path.exists():
+        example_url = (
+            "https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/"
+            "config/settings.example.yaml"
+        )
         raise FileNotFoundError(
             f"Config file not found: {path}. "
-            f"Copy config/settings.example.yaml to config/settings.yaml and adjust the paths, "
+            f"Copy config/settings.example.yaml to config/settings.yaml and adjust the paths "
+            f"(no local clone? download it from {example_url}), "
             f"or point to an existing config via --config or the {CONFIG_ENV_VAR} "
             f"environment variable."
         )
