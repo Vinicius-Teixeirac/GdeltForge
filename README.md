@@ -3,6 +3,8 @@
 ### Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet
 
 [![CI](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with pyright](https://img.shields.io/badge/type--checked-pyright-blue)](https://microsoft.github.io/pyright/)
 [![License: Apache 2.0](https://img.shields.io/github/license/Vinicius-Teixeirac/GdeltForge)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/tag/Vinicius-Teixeirac/GdeltForge?label=release)](https://github.com/Vinicius-Teixeirac/GdeltForge/releases)
 
@@ -19,9 +21,23 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 - Reproducible sampling: indexed, daily, filtered, and stratified modes
 - Each stage (`scrape`/`convert`/`filter`/`sample`) runs independently and inspectably
 
+## Contents
+
+- [Challenges with Official Access Methods](#challenges-with-official-access-methods)
+- [Comparison to Other GDELT Tools](#comparison-to-other-gdelt-tools)
+- [Pipeline Design Principles](#pipeline-design-principles)
+- [Installation](#installation)
+- [Project Structure](#project-structure)
+- [Command Line Interface](#command-line-interface)
+- [Usage Examples](#usage-examples)
+- [Logging System](#logging-system)
+- [Limitations and Roadmap](#limitations-and-roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
 ---
 
-# Stack
+## Stack
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/uv-package_manager-DE5FE9?style=for-the-badge)](https://docs.astral.sh/uv/)
@@ -31,11 +47,12 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 [![Requests](https://img.shields.io/badge/Requests-web_scraping-000000?style=for-the-badge&logo=python&logoColor=white)](https://requests.readthedocs.io/)
 [![Selenium](https://img.shields.io/badge/Selenium-optional_fallback-43B02A?style=for-the-badge&logo=selenium&logoColor=white)](https://selenium-python.readthedocs.io/)
 
-# 1. Challenges with Official Access Methods
+## Challenges with Official Access Methods
 
 The GDELT Events Database is extremely rich, but extracting the full archive through official methods is difficult. This pipeline solves the following issues:
 
-## 1.1 GDELT API Limitations
+### GDELT API Limitations
+
 The standard GDELT APIs are optimized for *recent* and *small* queries. They impose strict limits on:
 
 - time windows (often only the last 3 months)
@@ -44,69 +61,67 @@ The standard GDELT APIs are optimized for *recent* and *small* queries. They imp
 
 These constraints make it effectively impossible to retrieve the **full historical dataset**.
 
-## 1.2 Google BigQuery Mirror Constraints
+### Google BigQuery Mirror Constraints
+
 While BigQuery provides full access, it suffers from practical issues:
 
 - free-tier quotas (1TB/month query, 10GB storage, 1GB egress) are far too small for the ~hundreds of GB required
 - full-table scans are expensive without billing
 - some researchers prefer *local* offline workflows
 
-## 1.3 Raw Bulk Downloads Are Available, But Hard to Use  
-The [raw GDELT 2.0 archives](https://data.gdeltproject.org/events/) contain **thousands of files**.  
-Processing them requires:
+### Raw Bulk Downloads Are Available, But Hard to Use
 
-- automated downloading  
-- streaming or chunked processing  
-- efficient columnar storage (Parquet)  
-- memory-safe filtering and sampling  
+The [raw GDELT 2.0 archives](https://data.gdeltproject.org/events/) contain **thousands of files**. Processing them requires:
+
+- automated downloading
+- streaming or chunked processing
+- efficient columnar storage (Parquet)
+- memory-safe filtering and sampling
 
 This pipeline automates these steps end-to-end.
 
----
+## Comparison to Other GDELT Tools
 
-# 2. Pipeline Design Principles
+GdeltForge's genuinely distinguishing feature is treating **reproducible sampling as a first-class pipeline stage**, not download-and-convert alone: seeded indexed, daily, filtered, and stratified reservoir sampling over the full archive in a single streaming pass.
 
-The pipeline follows a **single-responsibility, single-stage execution model**:
+See [Comparison to Other Tools](https://vinicius-teixeirac.github.io/GdeltForge/comparison/) for an honest breakdown of when GdeltForge fits and when a DOC API client, BigQuery, or an existing Spark/DuckDB pipeline is the better choice.
 
-Each command performs *exactly one* transformation.
+## Pipeline Design Principles
 
-### Stages
-scrape: download raw GDELT CSV files
-convert: transform CSV -> Parquet
-filter: remove rows with missing values
-sample: reproducibly sample from Parquet files
+The pipeline follows a **single-responsibility, single-stage execution model**. Each command performs *exactly one* transformation:
 
+| Stage | Does |
+|-------|------|
+| `scrape` | download raw GDELT CSV files |
+| `convert` | transform CSV -> Parquet |
+| `filter` | remove rows with missing values |
+| `sample` | reproducibly sample from Parquet files |
 
 This design is intentionally **transparent and low-magic**:
 
-- every operation is explicit  
-- no hidden steps  
-- each module is individually testable  
-- any stage can be re-run without affecting others  
+- every operation is explicit
+- no hidden steps
+- each module is individually testable
+- any stage can be re-run without affecting others
 
 ### High-Level Architecture
 
 ```
-┌─────────────┐      ┌────────────┐      ┌─────────────┐      ┌─────────────┐
-
-│   Scraper   │ ---> │ Converter  │ ---> │   Filter    │ ---> │   Sampler   │
-
-└─────────────┘      └────────────┘      └─────────────┘      └─────────────┘
-      CSV               Parquet            Cleaned data         Sampled data
-
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Scraper   │ ---> │  Converter  │ ---> │   Filter    │ ---> │   Sampler   │
+└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
+      CSV                Parquet            Cleaned data         Sampled data
 ```
 
 Each stage consumes the output of the previous one, enabling:
 
-- incremental execution  
-- streaming-friendly operations  
-- memory-efficient processing  
-- simple debugging  
-- reusable intermediate data  
+- incremental execution
+- streaming-friendly operations
+- memory-efficient processing
+- simple debugging
+- reusable intermediate data
 
----
-
-# 3. Installation
+## Installation
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management. `uv sync` builds and installs GdeltForge itself (editable), so the `gdeltforge` command becomes available inside the virtual environment.
 
@@ -133,7 +148,7 @@ Then copy the example config and adjust paths:
 cp config/settings.example.yaml config/settings.yaml
 ```
 
-### 3.1 Running Tests
+### Running Tests
 
 The test suite is pure unit tests (no network access, no browser, no real GDELT data required) covering the scraping and conversion logic.
 
@@ -142,9 +157,7 @@ uv sync --group dev
 uv run pytest
 ```
 
----
-
-# 4. Project Structure
+## Project Structure
 
 GdeltForge follows a standard `src/` package layout, installable via `uv sync` / `pip install`:
 
@@ -154,6 +167,7 @@ project_root/
 │ └── settings.yaml # Global configuration for all pipeline stages
 │
 ├── src/gdeltforge/
+│ ├── py.typed # PEP 561 marker: this package ships inline type hints
 │ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
 │ │
 │ ├── conversion/
@@ -182,9 +196,7 @@ project_root/
 └── README.md
 ```
 
----
-
-# 5. Command Line Interface (CLI)
+## Command Line Interface
 
 Run pipeline stages using the installed console script:
 
@@ -203,18 +215,15 @@ Available commands:
 | filter  | Apply row-column filtering to Parquet files |
 | sample  | Efficient, reproducible sampling |
 
-The CLI intentionally does not chain stages automatically.
-You run each stage explicitly to maintain full control.
+The CLI intentionally does not chain stages automatically. You run each stage explicitly to maintain full control.
 
 By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable, useful once GdeltForge is installed and invoked from outside the repo checkout.
 
----
-
-# 6. Usage Examples
+## Usage Examples
 
 Below are practical, beginner-friendly examples covering all common workflows.
 
-## 6.1 Scrape Raw Data
+### Scrape Raw Data
 
 Download the entire archive:
 ```
@@ -240,7 +249,7 @@ Files already present in the download directory are skipped regardless of the da
 
 Downloads run concurrently (`scraping.max_workers` in `config/settings.yaml`, default `8`) and are checksum-verified: the GDELT index publishes an MD5 per file, which the scraper captures and checks against each download after it completes. A mismatch is treated the same as a network failure: the file is discarded and retried up to `scraping.retries` times before being reported as failed, so a corrupted or truncated download never silently ends up in the dataset.
 
-### 6.1.1 Link Collection Method: `requests` vs `selenium`
+#### Link Collection Method: `requests` vs `selenium`
 
 The scraper needs to read the file index at `data.gdeltproject.org/events/` before it can download anything. That index turns out to be a plain, server-rendered HTML directory listing (not JS-rendered), so a headless browser is unnecessary overhead. `scraping.method` in `config/settings.yaml` controls which collector is used:
 
@@ -256,14 +265,14 @@ Both methods were verified to return an identical set of URLs (4,953 files). Tim
 
 The site's TLS certificate doesn't match its hostname (it's served off a GCS bucket cert), so both methods intentionally skip certificate verification for this one connection; the actual file downloads happen over plain `http://`, which sidesteps the issue entirely.
 
-## 6.2 Convert CSV -> Parquet
+### Convert CSV to Parquet
 
 ```
 gdeltforge convert
 ```
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet files. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers` in `config/settings.yaml`; `null`, the default, uses all available CPU cores).
 
-### 6.2.1 Optional: Hive Partitioning for Historical Data
+#### Optional: Hive Partitioning for Historical Data
 
 The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `1979.zip`, `200601.zip`) rather than daily files. When you are working with the full archive (1971-2025), keeping those as flat Parquet files means every query scans thousands of files. Enabling Hive partitioning routes those files into a structured directory tree, so filters on `Year` or `MonthYear` skip irrelevant files entirely.
 
@@ -307,31 +316,31 @@ Historical ZIPs that have already been converted are tracked with `.done` marker
 
 All downstream stages (`filter`, `sample`) detect the historical directory automatically from the config and include its data without any extra flags.
 
-## 6.3 Filter the Parquet Dataset
+### Filter the Parquet Dataset
 ```
 gdeltforge filter
 ```
 Drops rows with missing values in the columns defined in settings.yaml.
 
-## 6.4 Sampling
+### Sampling
 
 All sampling modes read from the filtered directory by default. Pass `--source converted` to sample from raw converted Parquet instead, skipping the `filter` stage entirely.
 
 > Note: sampling is already as memory-friendly as the underlying data volume allows, but `--source converted` will still use noticeably more RAM than the default, since it isn't working from data that's already had its missing-value rows dropped.
 
-### 6.4.1 Indexed Sampling (Uniform Random)
+#### Indexed Sampling (Uniform Random)
 ```
 gdeltforge sample --mode indexed -n 10000 --seed 123 --out sample.parquet
 ```
 This samples 10000 instances considering the entire data.
 
-### 6.4.2 Daily Sampling (N Rows Per Day)
+#### Daily Sampling (N Rows Per Day)
 ```
 gdeltforge sample --mode daily --per-day 20 --out daily.parquet
 ```
 This samples 20 instances per day from the entire period (1971 - 20xx)
 
-### 6.4.3 Filtered Sampling (Using JSON Filters)
+#### Filtered Sampling (Using JSON Filters)
 
 * Example: 5000 events whose QuadClass is in {1,2}:
 
@@ -363,7 +372,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
   ```
   It outputs 1000 instances following the same rule as before, but this time with only three columns.
 
-### 6.4.4 Stratified Sampling (Fixed N Per Group)
+#### Stratified Sampling (Fixed N Per Group)
 
 Combines a filter with stratified reservoir sampling: draws exactly `--n-per-group` rows for each distinct value of a chosen column.
 
@@ -380,22 +389,23 @@ This produces a balanced dataset with 500 USA events per QuadClass value, regard
 
 `--stratify` requires `--n-per-group`. The `-n` flag is ignored when `--stratify` is set.
 
-## 6.5 Full Pipeline Examples
-### 6.5.1 Full pipeline: sample 10,000 rows
+### Full Pipeline Examples
+
+#### Full pipeline: sample 10,000 rows
 ```
 gdeltforge scrape
 gdeltforge convert
 gdeltforge filter
 gdeltforge sample --mode indexed -n 10000
 ```
-### 6.5.2 Reproducible sampling
+#### Reproducible sampling
 ```
 gdeltforge scrape
 gdeltforge convert
 gdeltforge filter
 gdeltforge sample --mode indexed -n 5000 --seed 42
 ```
-### 6.5.3 USA-only events
+#### USA-only events
 ```
 gdeltforge scrape
 gdeltforge convert
@@ -406,7 +416,7 @@ gdeltforge sample \
     -n 3000
 ```
 
-### 6.5.4 30 Events Per Day
+#### 30 Events Per Day
 ```
 gdeltforge scrape
 gdeltforge convert
@@ -414,7 +424,7 @@ gdeltforge filter
 gdeltforge sample --mode daily --per-day 30
 ```
 
-### 6.5.5 Bash One-Liner
+#### Bash One-Liner
 ```
 gdeltforge scrape && \
 gdeltforge convert && \
@@ -422,7 +432,7 @@ gdeltforge filter && \
 gdeltforge sample --mode indexed -n 10000
 ```
 
-### 6.5.6 PowerShell Loop
+#### PowerShell Loop
 ```
 foreach ($c in "scrape", "convert", "filter") {
     gdeltforge $c
@@ -430,7 +440,7 @@ foreach ($c in "scrape", "convert", "filter") {
 gdeltforge sample --mode indexed -n 10000
 ```
 
-### 6.5.7 Date-restricted pipeline
+#### Date-restricted pipeline
 ```
 gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
 gdeltforge convert
@@ -439,10 +449,11 @@ gdeltforge sample --mode indexed -n 10000
 ```
 The date flags apply only to `scrape`. The subsequent stages operate on whatever files are already on disk.
 
-### 6.6 Bonus
-The complete filtered-sampling syntax reference and a full set of runnable recipes are in the [documentation](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/): see [Filtered Sampling](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/) and [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/).
+### Further Examples
 
-# 7. Logging System
+The complete filtered-sampling syntax reference and a full set of runnable recipes are in the documentation: see [Filtered Sampling](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/) and [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/).
+
+## Logging System
 
 Logging is enabled through a shared logger helper:
 
@@ -457,13 +468,13 @@ Logging to a file:
 logger = get_logger(__name__, log_to_file=True)
 ```
 
-# 8. Limitations & Roadmap
+## Limitations and Roadmap
 
 GdeltForge is intentionally simple: one pipeline stage per command (no automatic chaining or dependency resolution), CSV -> Parquet only, and `scrape`/`convert`/`filter` now exit non-zero if any individual file fails.
 
 The full, current list of limitations and the roadmap live in one place, the docs site, rather than duplicated here where they'd inevitably drift: see [Limitations & Roadmap](https://vinicius-teixeirac.github.io/GdeltForge/limitations-and-roadmap/).
 
-# 9. Contributing
+## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for dev setup, the branch/commit conventions this repo follows, and how to propose a change. Please also read the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
@@ -471,6 +482,6 @@ See [CHANGELOG.md](CHANGELOG.md) for a history of notable changes.
 
 Found a security issue? See [SECURITY.md](.github/SECURITY.md) rather than opening a public issue.
 
-# 10. License
+## License
 
-This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.

@@ -4,13 +4,13 @@
 
 ## Type of change
 
-- [ ] `feat` — new feature
-- [ ] `fix` — bug fix
-- [ ] `perf` — performance improvement
-- [ ] `docs` — documentation only
-- [ ] `refactor` — no behavior change
-- [ ] `test` — test-only change
-- [ ] `chore` / `ci` — tooling, dependencies, CI
+- [ ] `feat`: new feature
+- [ ] `fix`: bug fix
+- [ ] `perf`: performance improvement
+- [ ] `docs`: documentation only
+- [ ] `refactor`: no behavior change
+- [ ] `test`: test-only change
+- [ ] `chore` / `ci`: tooling, dependencies, CI
 
 ## Checklist
 

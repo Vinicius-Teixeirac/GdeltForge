@@ -41,6 +41,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Comparison to Other Tools: comparison.md
   - CLI Reference: cli-reference.md
   - Filtered Sampling: filtered-sampling.md
   - Recipes: recipes.md
