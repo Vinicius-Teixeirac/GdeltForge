@@ -81,6 +81,13 @@ packages = ["src/gdeltforge"]
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.version.raw-options]
+# PyPI/TestPyPI reject uploads whose version has a PEP 440 local version
+# segment (the default dev-build "+g<hash>" suffix) with a hard 400 - so
+# without this, no dev build (a TestPyPI rehearsal, or CI's own build-check)
+# can ever be uploaded anywhere, only an exact tagged commit.
+local_scheme = "no-local-version"
+
 [tool.hatch.build.hooks.vcs]
 version-file = "src/gdeltforge/_version.py"
 
