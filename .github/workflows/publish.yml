@@ -1,0 +1,78 @@
+name: Publish
+
+on:
+  release:
+    types: [released]   # non-prerelease only, a GitHub prerelease won't touch real PyPI
+  workflow_dispatch: {}   # manual trigger, used only for the TestPyPI rehearsal
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so hatch-vcs can see tags
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check package metadata (twine)
+        run: uvx twine check dist/*
+
+      - name: Install built wheel and smoke-test the CLI
+        run: |
+          uv venv .smoke-venv
+          source .smoke-venv/bin/activate
+          uv pip install dist/*.whl
+          gdeltforge --help
+          gdeltforge codes ActionGeo_CountryCode
+
+      - name: Upload built distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    # Manual rehearsal only, re-runnable any time via Actions -> Publish -> Run workflow.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/gdeltforge/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    # The real thing: fires only when a non-prerelease GitHub Release is published.
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gdeltforge/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
