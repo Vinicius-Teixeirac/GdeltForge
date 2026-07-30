@@ -53,3 +53,14 @@ jobs:
 
       - name: Verify the package builds
         run: uv build
+
+      - name: Check package metadata (twine)
+        run: uvx twine check dist/*
+
+      - name: Install built wheel and smoke-test the CLI
+        run: |
+          uv venv .smoke-venv
+          source .smoke-venv/bin/activate
+          uv pip install dist/*.whl
+          gdeltforge --help
+          gdeltforge codes ActionGeo_CountryCode
