@@ -40,7 +40,7 @@ See the [full documentation](https://vinicius-teixeirac.github.io/GdeltForge/) f
 3. **Keep commits atomic and typed**: one logical change per commit, with a conventional-commits-style prefix describing its nature:
    `feat`, `fix`, `perf`, `docs`, `chore`, `refactor`, `test`, or `ci`. Look at the existing git history for the style this repo follows.
 4. **Add or update tests** for any behavior change. `uv run pytest` should pass before you open a PR.
-5. **Update the docs** (`docs/`) if you're changing anything user-facing — a new CLI flag, a new config key, a changed default.
+5. **Update the docs** (`docs/`) if you're changing anything user-facing: a new CLI flag, a new config key, a changed default.
 6. **Open a pull request against `main`** using the PR template. CI (GitHub Actions) runs the test suite and a package build check on Python 3.10 and 3.12 automatically.
 
 ## Code style
