@@ -22,6 +22,18 @@ gdeltforge sample --mode indexed -n 10000
 !!! note
     GdeltForge isn't published to PyPI yet, so installation is from source for now (see [Getting Started](getting-started.md)). A `pip install gdeltforge` release is planned.
 
+## About GDELT
+
+[GDELT](https://www.gdeltproject.org/) (the Global Database of Events, Language, and Tone) monitors broadcast, print, and web news from nearly every country, in over 100 languages (translating 65 of them into English in realtime), processing it continuously with new records published every 15 minutes. It's one of the largest open datasets of global news activity available.
+
+GDELT actually publishes several distinct tables, not just Events:
+
+- **Events** *(what GdeltForge processes)*: structured, CAMEO-coded records of who-did-what-to-whom-where. Each row is a single event extracted from a news article: two actors, an action, a date, and a location.
+- **Global Knowledge Graph (GKG)**: themes, emotions (2,300+ dimensions via GDELT's GCAM sentiment engine), people, organizations, and imagery/video, extracted from the same articles.
+- **Mentions**: every re-report of an event by a different outlet over time, not just the first.
+
+GdeltForge is scoped to the Events table specifically, since it's the table best suited to the structured, tabular, seeded-sampling workflow GdeltForge is built around. GKG and Mentions support is on the [roadmap](limitations-and-roadmap.md#roadmap) but not built yet; see [Comparison to Other Tools](comparison.md) for what to reach for if you need them today.
+
 ## Why this exists
 
 The GDELT Events Database is extremely rich, but getting the *full* archive through official channels is genuinely difficult:
