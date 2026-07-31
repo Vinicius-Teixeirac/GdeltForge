@@ -19,10 +19,10 @@ This is intentionally transparent and low-magic:
 - any stage can be re-run without affecting the others
 
 ```
-┌─────────────┐      ┌────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Scraper   │ ---> │ Converter  │ ---> │   Filter    │ ---> │   Sampler   │
-└─────────────┘      └────────────┘      └─────────────┘      └─────────────┘
-      CSV               Parquet            Cleaned data         Sampled data
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Scraper   │ ---> │  Converter  │ ---> │   Filter    │ ---> │   Sampler   │
+└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
+      CSV                Parquet            Cleaned data         Sampled data
 ```
 
 Each stage consumes the previous stage's output, which gives you:
