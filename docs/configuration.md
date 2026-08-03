@@ -12,24 +12,37 @@ Start from the template:
 cp config/settings.example.yaml config/settings.yaml
 ```
 
+## Datasets and `--dataset`
+
+`convert`, `filter`, and `sample` (and, for GKG 2.1/Mentions, `scrape` too) accept `--dataset {events,gkg-v1,gkg-v2,mentions}`, defaulting to `events`. This selects which set of `columns`/`columns_numeric`/`filter.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
+
+| `--dataset` | Config key | Status |
+|---|---|---|
+| `events` | `gdelt_event` | Full support |
+| `gkg-v2` | `gdelt_gkg_v2` | Full support (GKG 2.1, the current format, live since Feb 2015) |
+| `mentions` | `gdelt_mentions` | Full support (the bridge table between Events and GKG; see [Comparison](comparison.md) for why) |
+| `gkg-v1` | `gdelt_gkg_v1` | Reserved, not yet implemented (legacy pre-2015 format) |
+
 ## `columns`
 
-`columns.gdelt_event` lists every column in the GDELT Events schema, in file order. It's used to name the otherwise-headerless columns when reading the raw CSVs, so it should match the [official GDELT 2.0 field list](https://www.gdeltproject.org/data/lookups/CSV.header.fieldids.xlsx) unless you know you're working with a modified schema.
+`columns.<dataset>` lists every column in that dataset's schema, in file order. It's used to name the otherwise-headerless columns when reading the raw CSVs, so it should match the official field list for that dataset unless you know you're working with a modified schema: [Events](https://www.gdeltproject.org/data/lookups/CSV.header.fieldids.xlsx), [GKG 2.1](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook-V2.1.pdf).
 
-`columns_numeric.gdelt_event` lists which of those columns should be coerced to numeric types (via `pd.to_numeric`, invalid values become `NaN`) rather than kept as strings. It's nested under the dataset name (mirroring `columns`) so each dataset GdeltForge supports keeps its own numeric-column list.
+`columns_numeric.<dataset>` lists which of those columns should be coerced to numeric types (via `pd.to_numeric`, invalid values become `NaN`) rather than kept as strings.
+
+GKG 2.1's own repeated/structured sub-fields (themes, persons, GCAM scores, and similar list-valued columns) are stored as their raw, still-delimited strings in the Parquet output. Parsing those into their own structured columns is a separate concern this version doesn't attempt.
 
 ## `paths`
 
-All directories the pipeline reads from or writes to. Absolute or relative paths both work.
+All directories the pipeline reads from or writes to. Absolute or relative paths both work. Events keeps its original, unprefixed keys; other datasets use a prefixed sibling key (`gkg_v2_*`, `mentions_*`) for the same four stages, since mixing different datasets' files in one directory would be a real correctness hazard, not just an organizational one.
 
-| Key | Used by | Purpose |
-|-----|---------|---------|
-| `downloaded_data_directory` | scrape | Where ZIP files land |
-| `unzipped_data_directory` | convert | Scratch space for extracted CSVs (cleaned up automatically unless `converter.keep_unzipped` is true) |
-| `parquet_data_directory` | convert, filter, sample | Flat (daily) Parquet output |
-| `filtered_data_directory` | filter, sample | Flat filtered Parquet output |
-| `parquet_historical_directory` | convert, filter, sample | Hive-partitioned Parquet for yearly/monthly source files. Only used when `converter.partitioning.enabled` is true. |
-| `filtered_historical_directory` | filter, sample | Filtered version of the historical Hive dataset. Only used when `converter.partitioning.enabled` is true. |
+| Key (Events) | Key (GKG 2.1 / Mentions) | Used by | Purpose |
+|-----|-----|---------|---------|
+| `downloaded_data_directory` | `gkg_v2_downloaded_data_directory` / `mentions_downloaded_data_directory` | scrape | Where ZIP files land |
+| `unzipped_data_directory` | `gkg_v2_unzipped_data_directory` / `mentions_unzipped_data_directory` | convert | Scratch space for extracted CSVs (cleaned up automatically unless `converter.keep_unzipped` is true) |
+| `parquet_data_directory` | `gkg_v2_parquet_data_directory` / `mentions_parquet_data_directory` | convert, filter, sample | Flat Parquet output |
+| `filtered_data_directory` | `gkg_v2_filtered_data_directory` / `mentions_filtered_data_directory` | filter, sample | Flat filtered Parquet output |
+| `parquet_historical_directory` | *(not applicable)* | convert, filter, sample | Hive-partitioned Parquet for yearly/monthly source files. Events-only; only used when `converter.partitioning.enabled` is true. GKG 2.1/Mentions have no pre-2013 archive to partition. |
+| `filtered_historical_directory` | *(not applicable)* | filter, sample | Filtered version of the historical Hive dataset. Events-only, same condition as above. |
 
 ## `scraping`
 
@@ -41,7 +54,11 @@ All directories the pipeline reads from or writes to. Absolute or relative paths
 | `chromedriver_path` | `null` | Only used when `method: selenium`. Absolute path to `chromedriver.exe`, for when automatic download is blocked by a firewall |
 | `max_workers` | `8` | Concurrent download workers |
 
-### `requests` vs `selenium`
+### GKG 2.1 / Mentions discovery is a different mechanism entirely
+
+`method`/`chromedriver_path` below only apply to `--dataset events`. GKG 2.1 and Mentions publish at 15-minute granularity (not daily) under `data.gdeltproject.org/gdeltv2/`, discovered via a single master file list rather than an HTML page to scrape: there's no `requests`-vs-`selenium` choice for them. Because of that granularity, a multi-year `--dataset gkg-v2`/`mentions` scrape can easily imply hundreds of thousands of small files; GdeltForge logs a warning (not a hard stop) before starting a scrape that large, and `max_workers` below is worth raising for that many-small-files workload.
+
+### `requests` vs `selenium` (Events only)
 
 The scraper needs to read the file index at `data.gdeltproject.org/events/` before it can download anything. That index is a plain, server-rendered HTML directory listing, not JS-rendered, so a headless browser is unnecessary overhead:
 
@@ -114,6 +131,6 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 
 | Key | Description |
 |-----|-------------|
-| `columns_to_check.gdelt_event` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
+| `columns_to_check.<dataset>` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.
