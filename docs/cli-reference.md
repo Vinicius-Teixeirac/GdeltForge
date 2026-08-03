@@ -42,11 +42,11 @@ gdeltforge scrape --end-date   2015-12-31          # up to date
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,gkg-v1,gkg-v2,mentions}` | Which GDELT dataset to scrape (default `events`; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
 
-`--dataset gkg-v2`/`mentions` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent Events scrape; see [`--dataset`](#-dataset) below.
+`--dataset gkg-v2`/`mentions` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent Events scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like Events, so this doesn't apply to them.
 
 The date filter applies to all three file types the GDELT archive provides:
 
@@ -80,12 +80,13 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 
 ## `--dataset`
 
-`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,gkg-v1,gkg-v2,mentions}` (default `events`).
+`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` (default `events`).
 
 - `events`: the daily/monthly/yearly Events archive, as always.
 - `gkg-v2`: GKG 2.1, the current, actively-produced Global Knowledge Graph (themes, tone, GCAM, people, organizations; see [Configuration](configuration.md#datasets-and-dataset)). Discovered and downloaded differently from Events under the hood (a 15-minute-interval master file list, not a directory listing); see [Configuration](configuration.md#gkg-21-mentions-discovery-is-a-different-mechanism-entirely).
 - `mentions`: every re-report of an Event by a different article over time, the bridge table a real Events↔GKG join goes through, since GKG 2.1 itself carries no event ID (see [Comparison](comparison.md)).
-- `gkg-v1`: reserved for the legacy pre-2015 GKG format, not yet implemented (see [Limitations & Roadmap](limitations-and-roadmap.md)).
+- `gkg-v1`: the legacy GKG format (April 2013 through February 2015 as the primary feed, still published daily since). Unlike GKG 2.1, each row carries `EventIds` directly, so it joins to Events without the two-hop trip through Mentions. Daily files, discovered the same way as Events but from a different URL (see [Configuration](configuration.md#gkg-10-uses-events-html-listing-mechanism-at-a-different-url)).
+- `gkg-v1-counts`: GKG 1.0's separate "Counts" file, one row per individual count mention (e.g. one row per "12 killed" statement) rather than one row per document.
 
 ## `gdeltforge sample`
 
@@ -93,7 +94,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
-| `--dataset {events,gkg-v1,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (default `events`; see `--dataset` above) |
+| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (default `events`; see `--dataset` above) |
 | `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
 | `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
