@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 - README hero section: real CI/license/release badges, a tighter pitch, and a terminal-demo screenshot of `codes` and `sample` running against the live dataset
 - The CLI now catches failures at the top level: any error prints `Error: <message>` and exits 1, and Ctrl+C prints `Interrupted.` and exits 130, instead of a raw Python traceback either way
+- **Breaking config change, foundational work for upcoming multi-dataset support (GKG, Mentions):** `columns_numeric` and `filter.columns_to_check` are now nested under the dataset name (`gdelt_event`), matching how `columns` was already structured, instead of being flat lists assuming a single dataset. Update `settings.yaml`: wrap your existing `columns_numeric:` list as `columns_numeric: {gdelt_event: [...]}`, and likewise for `filter.columns_to_check`. `convert`/`filter`/`sample` also gain a `--dataset` flag (default `events`, matching current behavior exactly); `gkg-v1`/`gkg-v2`/`mentions` are accepted but not yet functional, reserved for upcoming datasets
 
 ### Fixed
 - `FilteredSampler.get_random_sample`/`get_stratified_sample`'s reservoir replacement phase wrote one row at a time via `DataFrame.iloc`, an inherently slow pandas access pattern that made large filtered/stratified samples over the full archive impractically slow

@@ -17,7 +17,7 @@ from gdeltforge.sampling.samplers import (
 
 # Pipeline stages
 from gdeltforge.scraping.scraper import run_scraping_pipeline
-from gdeltforge.utils.config import load_config
+from gdeltforge.utils.config import dataset_path_key, load_config
 from gdeltforge.utils.io import ensure_exists, write_parquet_atomic
 from gdeltforge.utils.logging import get_logger
 
@@ -26,6 +26,20 @@ from gdeltforge.utils.logging import get_logger
 # ======================================================================
 
 logger = get_logger(__name__, log_to_file=True)
+
+# CLI-facing --dataset choices, mapped to the dataset keys used throughout
+# config (columns / columns_numeric / filter.columns_to_check / paths.*
+# via dataset_path_key). GKG's two format generations (pre-2015 "v1" and
+# the current, actively-produced "v2") are different schemas with
+# different files, so they're exposed as distinct choices rather than
+# one ambiguous "gkg".
+_DATASET_CHOICES = ["events", "gkg-v1", "gkg-v2", "mentions"]
+_DATASET_CLI_TO_CONFIG = {
+    "events": "gdelt_event",
+    "gkg-v1": "gdelt_gkg_v1",
+    "gkg-v2": "gdelt_gkg_v2",
+    "mentions": "gdelt_mentions",
+}
 
 
 def _historical_folder(config: dict, path_key: str) -> str | None:
@@ -64,9 +78,9 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
 
-def run_convert_cmd(config: dict) -> None:
+def run_convert_cmd(config: dict, dataset: str = "gdelt_event") -> None:
     logger.info("Starting conversion stage...")
-    outputs, failed = run_converter(config)
+    outputs, failed = run_converter(config, dataset=dataset)
     logger.info(f"Created {len(outputs)} parquet files.")
 
     if failed:
@@ -75,9 +89,9 @@ def run_convert_cmd(config: dict) -> None:
         )
 
 
-def run_filter_cmd(config: dict) -> None:
+def run_filter_cmd(config: dict, dataset: str = "gdelt_event") -> None:
     logger.info("Starting filtering stage...")
-    files_processed, files_failed = run_filter(config)
+    files_processed, files_failed = run_filter(config, dataset=dataset)
     logger.info("Filtering completed.")
 
     if files_failed:
@@ -88,11 +102,14 @@ def run_filter_cmd(config: dict) -> None:
 
 
 def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
+    dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     source_key, historical_key = (
         ("filtered_data_directory", "filtered_historical_directory")
         if args.source == "filtered"
         else ("parquet_data_directory", "parquet_historical_directory")
     )
+    source_key = dataset_path_key(dataset, source_key)
+    historical_key = dataset_path_key(dataset, historical_key)
     source_folder = ensure_exists(config["paths"][source_key], source_key)
 
     out = Path(args.out)
@@ -150,7 +167,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
 
         sampler = FilteredSampler(
             folder_path=str(source_folder),
-            gdelt_columns=config["columns"]["gdelt_event"],
+            gdelt_columns=config["columns"][dataset],
             columns=columns,
             filter_dict=filter_dict,
             random_state=args.seed,
@@ -262,12 +279,24 @@ def build_parser() -> argparse.ArgumentParser:
     # ----------------------------------------------------
     # convert
     # ----------------------------------------------------
-    subparsers.add_parser("convert", help="Convert raw data to parquet")
+    convert = subparsers.add_parser("convert", help="Convert raw data to parquet")
+    convert.add_argument(
+        "--dataset",
+        choices=_DATASET_CHOICES,
+        default="events",
+        help="Which GDELT dataset to convert (default: events)"
+    )
 
     # ----------------------------------------------------
     # filter
     # ----------------------------------------------------
-    subparsers.add_parser("filter", help="Filter parquet files")
+    filter_ = subparsers.add_parser("filter", help="Filter parquet files")
+    filter_.add_argument(
+        "--dataset",
+        choices=_DATASET_CHOICES,
+        default="events",
+        help="Which GDELT dataset to filter (default: events)"
+    )
 
     # ----------------------------------------------------
     # sample
@@ -276,6 +305,12 @@ def build_parser() -> argparse.ArgumentParser:
         "sample", help="Sampling utilities (indexed, filtered, daily)"
     )
 
+    sample.add_argument(
+        "--dataset",
+        choices=_DATASET_CHOICES,
+        default="events",
+        help="Which GDELT dataset to sample from (default: events)"
+    )
     sample.add_argument(
         "--mode",
         required=True,
@@ -372,10 +407,10 @@ def main() -> None:
             run_scrape_cmd(config, args)
 
         elif args.command == "convert":
-            run_convert_cmd(config)
+            run_convert_cmd(config, dataset=_DATASET_CLI_TO_CONFIG[args.dataset])
 
         elif args.command == "filter":
-            run_filter_cmd(config)
+            run_filter_cmd(config, dataset=_DATASET_CLI_TO_CONFIG[args.dataset])
 
         elif args.command == "sample":
             run_sampling_cmd(config, args)

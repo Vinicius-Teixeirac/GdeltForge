@@ -31,6 +31,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -278,7 +279,7 @@ class GDELTFilter:
 # RUN WRAPPER (used by main.py)
 # ======================================================================
 
-def run_filter(config: dict) -> tuple[int, int]:
+def run_filter(config: dict, dataset: str = "gdelt_event") -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
     """
@@ -286,13 +287,17 @@ def run_filter(config: dict) -> tuple[int, int]:
     historical_input = historical_output = None
 
     if part_cfg.get("enabled", False):
-        historical_input  = config["paths"].get("parquet_historical_directory")
-        historical_output = config["paths"].get("filtered_historical_directory")
+        historical_input = config["paths"].get(
+            dataset_path_key(dataset, "parquet_historical_directory")
+        )
+        historical_output = config["paths"].get(
+            dataset_path_key(dataset, "filtered_historical_directory")
+        )
 
     filterer = GDELTFilter(
-        input_folder=config["paths"]["parquet_data_directory"],
-        output_folder=config["paths"]["filtered_data_directory"],
-        columns_to_check=config["filter"]["columns_to_check"],
+        input_folder=config["paths"][dataset_path_key(dataset, "parquet_data_directory")],
+        output_folder=config["paths"][dataset_path_key(dataset, "filtered_data_directory")],
+        columns_to_check=config["filter"]["columns_to_check"][dataset],
         historical_input_folder=historical_input,
         historical_output_folder=historical_output,
     )
