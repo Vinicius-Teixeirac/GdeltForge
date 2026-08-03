@@ -169,6 +169,34 @@ class TestDailySampler:
         assert not df.empty
         assert "Day" in df.columns
 
+    def test_date_column_can_be_overridden_for_non_events_schemas(self, tmp_path):
+        # Events uses "Day"; other GDELT datasets (GKG, Mentions) use a
+        # differently-named date field, so the grouping column must be
+        # configurable rather than hardcoded.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({
+            "DocumentIdentifier": range(10),
+            "V21Date": [20200101] * 3 + [20200102] * 7,
+        }).to_parquet(folder / "a.parquet")
+
+        sampler = DailySampler(str(folder), random_state=1, date_column="V21Date")
+        df = sampler.get_daily_samples(samples_per_day=2)
+
+        counts = df.groupby("V21Date").size()
+        assert counts[20200101] == 2
+        assert counts[20200102] == 2
+
+    def test_default_date_column_is_still_day(self, tmp_path):
+        # Regression guard: the new date_column parameter must default to
+        # "Day" so existing Events callers are unaffected.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).to_parquet(folder / "a.parquet")
+
+        sampler = DailySampler(str(folder), random_state=1)
+        assert sampler.date_column == "Day"
+
 
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):

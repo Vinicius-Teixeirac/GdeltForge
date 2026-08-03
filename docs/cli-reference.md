@@ -73,7 +73,11 @@ See [Configuration](configuration.md#hive-partitioning-for-historical-data) for 
 gdeltforge filter
 ```
 
-Drops rows with missing values in the columns defined under `filter.columns_to_check` in `settings.yaml`.
+Drops rows with missing values in the columns defined under `filter.columns_to_check.gdelt_event` in `settings.yaml`.
+
+## `--dataset`
+
+`convert`, `filter`, and `sample` all accept `--dataset {events,gkg-v1,gkg-v2,mentions}` (default `events`). Only `events` is functional today; the others are reserved for upcoming GKG/Mentions support (see [Limitations & Roadmap](limitations-and-roadmap.md)).
 
 ## `gdeltforge sample`
 
@@ -81,6 +85,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
+| `--dataset {events,gkg-v1,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (default `events`; see `--dataset` above) |
 | `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
 | `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |

@@ -16,7 +16,7 @@ cp config/settings.example.yaml config/settings.yaml
 
 `columns.gdelt_event` lists every column in the GDELT Events schema, in file order. It's used to name the otherwise-headerless columns when reading the raw CSVs, so it should match the [official GDELT 2.0 field list](https://www.gdeltproject.org/data/lookups/CSV.header.fieldids.xlsx) unless you know you're working with a modified schema.
 
-`columns_numeric` lists which of those columns should be coerced to numeric types (via `pd.to_numeric`, invalid values become `NaN`) rather than kept as strings.
+`columns_numeric.gdelt_event` lists which of those columns should be coerced to numeric types (via `pd.to_numeric`, invalid values become `NaN`) rather than kept as strings. It's nested under the dataset name (mirroring `columns`) so each dataset GdeltForge supports keeps its own numeric-column list.
 
 ## `paths`
 
@@ -114,6 +114,6 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 
 | Key | Description |
 |-----|-------------|
-| `columns_to_check` | Rows with a `NaN`/null value in any of these columns are dropped |
+| `columns_to_check.gdelt_event` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.

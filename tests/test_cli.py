@@ -7,6 +7,39 @@ import pytest
 import gdeltforge.cli as cli
 
 
+class TestDatasetFlag:
+    def test_every_cli_choice_maps_to_a_config_key(self):
+        for choice in cli._DATASET_CHOICES:
+            assert choice in cli._DATASET_CLI_TO_CONFIG
+
+    def test_config_keys_match_dataset_path_key_s_known_datasets(self):
+        # The CLI's --dataset choices and dataset_path_key's prefix table
+        # must stay in lockstep, or a valid CLI choice would 500 on the
+        # very first paths.* lookup.
+        from gdeltforge.utils.config import _DATASET_PATH_PREFIXES
+
+        assert set(cli._DATASET_CLI_TO_CONFIG.values()) == set(_DATASET_PATH_PREFIXES)
+
+    def test_events_maps_to_gdelt_event(self):
+        assert cli._DATASET_CLI_TO_CONFIG["events"] == "gdelt_event"
+
+    def test_convert_filter_sample_subcommands_accept_dataset_flag(self):
+        parser = cli.build_parser()
+
+        for command in ("convert", "filter", "sample"):
+            extra = ["--mode", "indexed"] if command == "sample" else []
+            args = parser.parse_args([command, *extra])
+            assert args.dataset == "events"
+
+            args = parser.parse_args([command, "--dataset", "gkg-v2", *extra])
+            assert args.dataset == "gkg-v2"
+
+    def test_invalid_dataset_choice_is_rejected(self):
+        parser = cli.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["convert", "--dataset", "not-a-real-dataset"])
+
+
 class TestRunScrapeCmd:
     def test_raises_when_downloads_failed(self, monkeypatch):
         monkeypatch.setattr(
@@ -32,14 +65,16 @@ class TestRunScrapeCmd:
 
 class TestRunConvertCmd:
     def test_raises_when_conversions_failed(self, monkeypatch):
-        monkeypatch.setattr(cli, "run_converter", lambda config: (["a.parquet"], ["bad.zip"]))
+        monkeypatch.setattr(
+            cli, "run_converter", lambda config, dataset: (["a.parquet"], ["bad.zip"])
+        )
 
         with pytest.raises(RuntimeError, match="1 failed file"):
             cli.run_convert_cmd({})
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
-            cli, "run_converter", lambda config: (["a.parquet", "b.parquet"], [])
+            cli, "run_converter", lambda config, dataset: (["a.parquet", "b.parquet"], [])
         )
 
         cli.run_convert_cmd({})  # should not raise
@@ -47,13 +82,13 @@ class TestRunConvertCmd:
 
 class TestRunFilterCmd:
     def test_raises_when_filtering_failed(self, monkeypatch):
-        monkeypatch.setattr(cli, "run_filter", lambda config: (8, 2))
+        monkeypatch.setattr(cli, "run_filter", lambda config, dataset: (8, 2))
 
         with pytest.raises(RuntimeError, match="2 failed file"):
             cli.run_filter_cmd({})
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):
-        monkeypatch.setattr(cli, "run_filter", lambda config: (10, 0))
+        monkeypatch.setattr(cli, "run_filter", lambda config, dataset: (10, 0))
 
         cli.run_filter_cmd({})  # should not raise
 
@@ -92,8 +127,8 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
-            mode="indexed", source=source, n=10, seed=42, out=str(tmp_path / "o.parquet"),
-            columns=None,
+            dataset="events", mode="indexed", source=source, n=10, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=None,
         )
         cli.run_sampling_cmd(self._config(), args)
         return captured
@@ -125,7 +160,7 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
-            mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
         )
         cli.run_sampling_cmd(self._config(), args)
@@ -147,7 +182,7 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "DailySampler", FakeDailySampler)
 
         args = argparse.Namespace(
-            mode="daily", source="filtered", per_day=10, seed=42,
+            dataset="events", mode="daily", source="filtered", per_day=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
         )
         cli.run_sampling_cmd(self._config(), args)
@@ -225,7 +260,7 @@ class TestMainErrorHandling:
         monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
 
-        def boom(config):
+        def boom(config, dataset):
             raise RuntimeError("3 failed file(s)")
 
         monkeypatch.setattr(cli, "run_convert_cmd", boom)
@@ -242,7 +277,7 @@ class TestMainErrorHandling:
         monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
 
-        def interrupted(config):
+        def interrupted(config, dataset):
             raise KeyboardInterrupt
 
         monkeypatch.setattr(cli, "run_convert_cmd", interrupted)
@@ -256,7 +291,7 @@ class TestMainErrorHandling:
     def test_successful_command_does_not_exit(self, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
-        monkeypatch.setattr(cli, "run_convert_cmd", lambda config: None)
+        monkeypatch.setattr(cli, "run_convert_cmd", lambda config, dataset: None)
 
         cli.main()  # should return normally, not raise SystemExit
 
