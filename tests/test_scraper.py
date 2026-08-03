@@ -9,10 +9,12 @@ from gdeltforge.scraping.scraper import (
     GdeltFile,
     _download_one,
     _is_gdelt_dataset_file,
+    _warn_if_large_scrape,
     collect_gdelt_links,
     download_gdelt_files,
     filter_urls_by_date,
     parse_file_date,
+    parse_gdeltv2_file_date,
 )
 
 
@@ -37,6 +39,38 @@ class TestParseFileDate:
 
     def test_invalid_calendar_date(self):
         assert parse_file_date("20201332.export.CSV.zip") == (None, None)
+
+
+# ------------------------------------------------------------
+# parse_gdeltv2_file_date
+# ------------------------------------------------------------
+class TestParseGdeltv2FileDate:
+    def test_gkg_filename(self):
+        # Real GKG 2.1 filename, first batch ever published (Feb 18, 2015).
+        assert parse_gdeltv2_file_date("20150218233000.gkg.csv.zip") == (
+            date(2015, 2, 18), date(2015, 2, 18),
+        )
+
+    def test_mentions_filename(self):
+        # Real Mentions filename, same launch window.
+        assert parse_gdeltv2_file_date("20150218230000.mentions.CSV.zip") == (
+            date(2015, 2, 18), date(2015, 2, 18),
+        )
+
+    def test_unrecognized_filename(self):
+        assert parse_gdeltv2_file_date("masterfilelist.txt") == (None, None)
+
+    def test_too_short_timestamp_is_rejected(self):
+        # A daily Events-style 8-digit prefix must not be misread as a
+        # truncated 14-digit v2 timestamp.
+        assert parse_gdeltv2_file_date("20200315.export.CSV.zip") == (None, None)
+
+    def test_invalid_calendar_date(self):
+        assert parse_gdeltv2_file_date("20201332120000.gkg.csv.zip") == (None, None)
+
+    def test_invalid_time_of_day_is_rejected(self):
+        # Valid calendar date, garbage time; must not silently accept it.
+        assert parse_gdeltv2_file_date("20200315256199.gkg.csv.zip") == (None, None)
 
 
 # ------------------------------------------------------------
@@ -94,6 +128,17 @@ class TestFilterUrlsByDate:
         kept = filter_urls_by_date(self._files(), None, date(2019, 12, 31))
         assert {f.url for f in kept} == {"http://x/2019.zip"}
 
+    def test_date_parser_can_be_overridden_for_gdeltv2_filenames(self):
+        files = [
+            GdeltFile(url="http://x/20150218233000.gkg.csv.zip"),
+            GdeltFile(url="http://x/20200101000000.gkg.csv.zip"),
+        ]
+        kept = filter_urls_by_date(
+            files, date(2015, 1, 1), date(2015, 12, 31),
+            date_parser=parse_gdeltv2_file_date,
+        )
+        assert {f.url for f in kept} == {"http://x/20150218233000.gkg.csv.zip"}
+
 
 # ------------------------------------------------------------
 # _collect_gdelt_links_requests: MD5 parsing off the directory listing
@@ -128,6 +173,105 @@ class TestCollectLinksRequests:
 
 
 # ------------------------------------------------------------
+# _collect_gdeltv2_links: masterfilelist.txt parsing
+# ------------------------------------------------------------
+class TestCollectGdeltv2Links:
+    # Real lines, confirmed against the live master file list (this
+    # environment can't reach data.gdeltproject.org directly to fetch it
+    # itself): the very first GKG 2.1 and Mentions batches ever published,
+    # Feb 18, 2015. Note the differing "csv"/"CSV" capitalization between
+    # the two: that's real, not a typo, and exactly why the suffix match
+    # below is case-sensitive.
+    _MASTERFILELIST = (
+        "11279827 66b03e2efd7d51dabf916b1666910053 "
+        "http://data.gdeltproject.org/gdeltv2/20150218233000.gkg.csv.zip\n"
+        "318084 bb27f78ba45f69a17ea6ed7755e9f8ff "
+        "http://data.gdeltproject.org/gdeltv2/20150218230000.mentions.CSV.zip\n"
+        "58762123 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
+        "http://data.gdeltproject.org/gdeltv2/20150218233000.export.CSV.zip\n"
+        "\n"
+        "not a valid masterfilelist line\n"
+    )
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    def test_filters_to_the_requested_dataset_only(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper.requests, "get",
+            lambda *a, **kw: self.FakeResponse(self._MASTERFILELIST),
+        )
+
+        files = scraper._collect_gdeltv2_links({}, "gdelt_gkg_v2")
+
+        assert len(files) == 1
+        assert files[0].url == (
+            "http://data.gdeltproject.org/gdeltv2/20150218233000.gkg.csv.zip"
+        )
+        assert files[0].md5 == "66b03e2efd7d51dabf916b1666910053"
+        assert files[0].size == 11279827
+
+    def test_mentions_suffix_is_case_sensitive_and_distinct_from_gkg(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper.requests, "get",
+            lambda *a, **kw: self.FakeResponse(self._MASTERFILELIST),
+        )
+
+        files = scraper._collect_gdeltv2_links({}, "gdelt_mentions")
+
+        assert len(files) == 1
+        assert files[0].url.endswith("mentions.CSV.zip")
+        assert files[0].size == 318084
+
+    def test_malformed_lines_are_skipped_without_error(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper.requests, "get",
+            lambda *a, **kw: self.FakeResponse(self._MASTERFILELIST),
+        )
+
+        # Doesn't raise despite the blank line and the malformed line in
+        # the fixture; both are silently skipped rather than crashing the
+        # whole scrape over one bad line.
+        files = scraper._collect_gdeltv2_links({}, "gdelt_gkg_v2")
+        assert len(files) == 1
+
+
+# ------------------------------------------------------------
+# _warn_if_large_scrape
+# ------------------------------------------------------------
+class TestWarnIfLargeScrape:
+    def test_no_warning_below_threshold(self, caplog):
+        files = [GdeltFile(url=f"http://x/{i}.gkg.csv.zip") for i in range(10)]
+        with caplog.at_level(logging.WARNING):
+            _warn_if_large_scrape(files, "gdelt_gkg_v2")
+        assert caplog.text == ""
+
+    def test_warns_above_threshold_with_size_estimate(self, caplog):
+        files = [
+            GdeltFile(url=f"http://x/{i}.gkg.csv.zip", size=1_000_000)
+            for i in range(6_000)
+        ]
+        with caplog.at_level(logging.WARNING):
+            _warn_if_large_scrape(files, "gdelt_gkg_v2")
+
+        assert "6,000 files" in caplog.text
+        assert "GB total" in caplog.text
+        assert "every 15 minutes" in caplog.text
+
+    def test_warns_above_threshold_even_without_known_sizes(self, caplog):
+        files = [GdeltFile(url=f"http://x/{i}.gkg.csv.zip") for i in range(6_000)]
+        with caplog.at_level(logging.WARNING):
+            _warn_if_large_scrape(files, "gdelt_gkg_v2")
+
+        assert "6,000 files" in caplog.text
+        assert "GB total" not in caplog.text  # no size data to estimate from
+
+
+# ------------------------------------------------------------
 # collect_gdelt_links dispatcher
 # ------------------------------------------------------------
 class TestCollectGdeltLinksDispatch:
@@ -141,6 +285,21 @@ class TestCollectGdeltLinksDispatch:
         monkeypatch.setattr(scraper, "_collect_gdelt_links_selenium", lambda cfg: "selenium-result")
         cfg = {"scraping": {"method": "selenium"}}
         assert collect_gdelt_links(cfg) == "selenium-result"
+
+    def test_gkg_v2_dispatches_to_masterfilelist_collector(self, monkeypatch):
+        monkeypatch.setattr(scraper, "_collect_gdeltv2_links", lambda cfg, ds: f"v2-result-{ds}")
+        assert collect_gdelt_links({}, dataset="gdelt_gkg_v2") == "v2-result-gdelt_gkg_v2"
+
+    def test_mentions_dispatches_to_masterfilelist_collector(self, monkeypatch):
+        monkeypatch.setattr(scraper, "_collect_gdeltv2_links", lambda cfg, ds: f"v2-result-{ds}")
+        assert collect_gdelt_links({}, dataset="gdelt_mentions") == "v2-result-gdelt_mentions"
+
+    def test_unimplemented_dataset_raises_clearly_instead_of_scraping_events(self):
+        # Before this guard existed, an unrecognized dataset would silently
+        # fall through to the Events HTML-scraping path: a correctness
+        # bug, not just a missing feature.
+        with pytest.raises(NotImplementedError, match="gdelt_gkg_v1"):
+            collect_gdelt_links({}, dataset="gdelt_gkg_v1")
 
     def test_unknown_method_falls_back_to_requests(self, monkeypatch):
         monkeypatch.setattr(scraper, "_collect_gdelt_links_requests", lambda cfg: "requests-result")
@@ -298,3 +457,23 @@ class TestDownloadGdeltFiles:
         assert result["success"] == 3
         assert result["skipped"] == 1
         assert result["failed"] == ["3.export.CSV.zip"]
+
+    def test_non_events_dataset_reads_its_own_prefixed_download_directory(
+        self, monkeypatch, tmp_path
+    ):
+        gkg_dir = tmp_path / "gkg_raw"
+        file = GdeltFile(url="http://x/20150218233000.gkg.csv.zip")
+
+        def fake_download_one(file, download_dir, retries, timeout, session):
+            assert download_dir == str(gkg_dir)
+            return "success", "20150218233000.gkg.csv.zip"
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        config = {
+            "paths": {"gkg_v2_downloaded_data_directory": str(gkg_dir)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+        result = download_gdelt_files([file], config, dataset="gdelt_gkg_v2")
+
+        assert result["success"] == 1

@@ -42,8 +42,11 @@ gdeltforge scrape --end-date   2015-12-31          # up to date
 
 | Flag | Description |
 |------|-------------|
+| `--dataset {events,gkg-v1,gkg-v2,mentions}` | Which GDELT dataset to scrape (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
+
+`--dataset gkg-v2`/`mentions` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent Events scrape; see [`--dataset`](#-dataset) below.
 
 The date filter applies to all three file types the GDELT archive provides:
 
@@ -73,11 +76,16 @@ See [Configuration](configuration.md#hive-partitioning-for-historical-data) for 
 gdeltforge filter
 ```
 
-Drops rows with missing values in the columns defined under `filter.columns_to_check.gdelt_event` in `settings.yaml`.
+Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`.
 
 ## `--dataset`
 
-`convert`, `filter`, and `sample` all accept `--dataset {events,gkg-v1,gkg-v2,mentions}` (default `events`). Only `events` is functional today; the others are reserved for upcoming GKG/Mentions support (see [Limitations & Roadmap](limitations-and-roadmap.md)).
+`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,gkg-v1,gkg-v2,mentions}` (default `events`).
+
+- `events`: the daily/monthly/yearly Events archive, as always.
+- `gkg-v2`: GKG 2.1, the current, actively-produced Global Knowledge Graph (themes, tone, GCAM, people, organizations; see [Configuration](configuration.md#datasets-and-dataset)). Discovered and downloaded differently from Events under the hood (a 15-minute-interval master file list, not a directory listing); see [Configuration](configuration.md#gkg-21-mentions-discovery-is-a-different-mechanism-entirely).
+- `mentions`: every re-report of an Event by a different article over time, the bridge table a real Events↔GKG join goes through, since GKG 2.1 itself carries no event ID (see [Comparison](comparison.md)).
+- `gkg-v1`: reserved for the legacy pre-2015 GKG format, not yet implemented (see [Limitations & Roadmap](limitations-and-roadmap.md)).
 
 ## `gdeltforge sample`
 

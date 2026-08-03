@@ -44,11 +44,11 @@ class TestRunScrapeCmd:
     def test_raises_when_downloads_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date: {
+            lambda config, start_date, end_date, dataset: {
                 "success": 2, "skipped": 0, "failed": ["20200101.export.CSV.zip"],
             },
         )
-        args = argparse.Namespace(start_date=None, end_date=None)
+        args = argparse.Namespace(dataset="events", start_date=None, end_date=None)
 
         with pytest.raises(RuntimeError, match="1 failed download"):
             cli.run_scrape_cmd({}, args)
@@ -56,9 +56,11 @@ class TestRunScrapeCmd:
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date: {"success": 5, "skipped": 0, "failed": []},
+            lambda config, start_date, end_date, dataset: {
+                "success": 5, "skipped": 0, "failed": [],
+            },
         )
-        args = argparse.Namespace(start_date=None, end_date=None)
+        args = argparse.Namespace(dataset="events", start_date=None, end_date=None)
 
         cli.run_scrape_cmd({}, args)  # should not raise
 

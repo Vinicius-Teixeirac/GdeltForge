@@ -67,8 +67,11 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     if start_date and end_date and start_date > end_date:
         raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
 
+    dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting scraping stage...")
-    result = run_scraping_pipeline(config, start_date=start_date, end_date=end_date)
+    result = run_scraping_pipeline(
+        config, start_date=start_date, end_date=end_date, dataset=dataset
+    )
     logger.info("Scraping completed.")
 
     failed = result["failed"]
@@ -265,6 +268,12 @@ def build_parser() -> argparse.ArgumentParser:
     # scrape
     # ----------------------------------------------------
     scrape = subparsers.add_parser("scrape", help="Download and extract raw GDELT data")
+    scrape.add_argument(
+        "--dataset",
+        choices=_DATASET_CHOICES,
+        default="events",
+        help="Which GDELT dataset to scrape (default: events)"
+    )
     scrape.add_argument(
         "--start-date",
         metavar="YYYY-MM-DD",
