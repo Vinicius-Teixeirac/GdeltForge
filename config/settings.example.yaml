@@ -66,30 +66,32 @@ columns:
     - DATEADDED
     - SOURCEURL
 
-# Numeric columns 
+# Numeric columns, one list per dataset (matching the columns: section above).
+# Columns not listed here are read as plain strings.
 columns_numeric:
-  - GlobalEventID
-  - Day
-  - MonthYear
-  - Year
-  - FractionDate
-  - IsRootEvent
-  - QuadClass
-  - GoldsteinScale
-  - NumMentions
-  - NumSources
-  - NumArticles
-  - AvgTone
-  - Actor1Geo_Type
-  - Actor1Geo_Lat
-  - Actor1Geo_Long
-  - Actor2Geo_Type
-  - Actor2Geo_Lat
-  - Actor2Geo_Long
-  - ActionGeo_Type
-  - ActionGeo_Lat
-  - ActionGeo_Long
-  - DATEADDED
+  gdelt_event:
+    - GlobalEventID
+    - Day
+    - MonthYear
+    - Year
+    - FractionDate
+    - IsRootEvent
+    - QuadClass
+    - GoldsteinScale
+    - NumMentions
+    - NumSources
+    - NumArticles
+    - AvgTone
+    - Actor1Geo_Type
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor2Geo_Type
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
+    - ActionGeo_Type
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - DATEADDED
 
 # ================================
 #       DIRECTORY PATHS
@@ -168,17 +170,19 @@ converter:
         by: ["Year", "MonthYear"]
 
 # The user should customize this.
-# Provide columns so the filter drop instances with NAN values on them.
+# Provide columns so the filter drops instances with NaN values on them.
+# One list per dataset (matching columns: / columns_numeric: above).
 filter:
-  columns_to_check: # example
-    - GlobalEventID
-    - Actor1Name
-    - Actor2Name
-    - QuadClass
-    - Actor1Geo_Lat
-    - Actor1Geo_Long
-    - Actor2Geo_Lat
-    - Actor2Geo_Long
-    - ActionGeo_Lat
-    - ActionGeo_Long
-    - Day
+  columns_to_check:
+    gdelt_event: # example
+      - GlobalEventID
+      - Actor1Name
+      - Actor2Name
+      - QuadClass
+      - Actor1Geo_Lat
+      - Actor1Geo_Long
+      - Actor2Geo_Lat
+      - Actor2Geo_Long
+      - ActionGeo_Lat
+      - ActionGeo_Long
+      - Day

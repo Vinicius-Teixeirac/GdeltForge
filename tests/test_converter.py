@@ -15,7 +15,7 @@ def _make_config(tmp_path, **converter_overrides):
             "file_pattern": "*.zip",
         },
         "columns": {"gdelt_event": ["GlobalEventID", "Day"]},
-        "columns_numeric": ["GlobalEventID", "Day"],
+        "columns_numeric": {"gdelt_event": ["GlobalEventID", "Day"]},
     }
     cfg["converter"].update(converter_overrides)
     return cfg
@@ -47,3 +47,33 @@ class TestMaxWorkersConfig:
     def test_explicit_value_is_respected(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path, max_workers=2))
         assert converter.max_workers == 2
+
+
+class TestDatasetParameter:
+    def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
+        converter = GDELTConverter(_make_config(tmp_path))
+        assert converter.dataset == "gdelt_event"
+        assert converter.COLUMN_NAMES == ["GlobalEventID", "Day"]
+
+    def test_non_events_dataset_reads_its_own_columns_and_paths(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["columns"]["gdelt_gkg_v2"] = ["DocumentIdentifier", "V21Date"]
+        cfg["columns_numeric"]["gdelt_gkg_v2"] = ["V21Date"]
+        cfg["paths"]["gkg_v2_downloaded_data_directory"] = str(tmp_path / "gkg_raw")
+        cfg["paths"]["gkg_v2_unzipped_data_directory"] = str(tmp_path / "gkg_csv")
+        cfg["paths"]["gkg_v2_parquet_data_directory"] = str(tmp_path / "gkg_parquet")
+
+        converter = GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+        assert converter.COLUMN_NAMES == ["DocumentIdentifier", "V21Date"]
+        assert converter.NUMERIC_COLUMNS == ["V21Date"]
+        assert converter.input_folder == tmp_path / "gkg_raw"
+
+    def test_missing_dataset_path_key_raises_clearly(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["columns"]["gdelt_gkg_v2"] = ["DocumentIdentifier"]
+        cfg["columns_numeric"]["gdelt_gkg_v2"] = []
+        # No gkg_v2_*_directory paths configured.
+
+        with pytest.raises(KeyError):
+            GDELTConverter(cfg, dataset="gdelt_gkg_v2")

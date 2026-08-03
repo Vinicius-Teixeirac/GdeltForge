@@ -6,6 +6,34 @@ import yaml
 CONFIG_ENV_VAR = "GDELTFORGE_CONFIG"
 DEFAULT_CONFIG_PATH = "config/settings.yaml"
 
+# Maps each dataset's config key (under columns / columns_numeric) to the
+# prefix its paths.* keys use. Events keeps its original, unprefixed keys
+# (e.g. "downloaded_data_directory") for backward compatibility; other
+# datasets get a prefixed sibling key (e.g. "gkg_v2_downloaded_data_directory").
+_DATASET_PATH_PREFIXES = {
+    "gdelt_event": "",
+    "gdelt_gkg_v1": "gkg_v1_",
+    "gdelt_gkg_v2": "gkg_v2_",
+    "gdelt_mentions": "mentions_",
+}
+
+
+def dataset_path_key(dataset: str, base_key: str) -> str:
+    """
+    Map a dataset name and a base paths.* key (e.g. "downloaded_data_directory")
+    to that dataset's actual config key, e.g.
+    dataset_path_key("gdelt_gkg_v2", "downloaded_data_directory")
+    -> "gkg_v2_downloaded_data_directory".
+    """
+    try:
+        prefix = _DATASET_PATH_PREFIXES[dataset]
+    except KeyError:
+        raise ValueError(
+            f"Unknown dataset {dataset!r}. Known datasets: "
+            f"{', '.join(_DATASET_PATH_PREFIXES)}"
+        ) from None
+    return f"{prefix}{base_key}"
+
 
 def load_config(config_path: str | None = None) -> dict:
     """

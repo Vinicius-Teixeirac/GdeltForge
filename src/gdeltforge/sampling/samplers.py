@@ -120,12 +120,14 @@ class DailySampler:
         historical_folder: str | None = None,
         random_state: int | None = 42,
         columns: set[str] | None = None,
+        date_column: str = "Day",
     ):
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
             Path(historical_folder) if historical_folder else None
         )
         self.columns = columns
+        self.date_column = date_column
         self.rng = ReproducibleRNG(random_state)
 
     def get_daily_samples(self, samples_per_day: int = 10) -> pd.DataFrame:
@@ -143,19 +145,19 @@ class DailySampler:
                 + (f" or {self.historical_folder}" if self.historical_folder else "")
             )
 
-        # "Day" drives the grouping below, so it has to be read even if the
-        # caller didn't ask for it in --columns, otherwise every file
-        # would silently look like it has no Day column and get skipped.
-        read_columns = list(self.columns | {"Day"}) if self.columns else None
+        # date_column drives the grouping below, so it has to be read even
+        # if the caller didn't ask for it in --columns, otherwise every
+        # file would silently look like it has no date column and get skipped.
+        read_columns = list(self.columns | {self.date_column}) if self.columns else None
 
         daily: dict[Any, list[pd.DataFrame]] = {}
 
         for file_path in tqdm(parquet_files, desc="Daily sampling"):
             df = pd.read_parquet(file_path, columns=read_columns)
-            if "Day" not in df.columns:
+            if self.date_column not in df.columns:
                 continue
 
-            for day, group in df.groupby("Day"):
+            for day, group in df.groupby(self.date_column):
                 size = min(samples_per_day, len(group))
                 if size == 0:
                     continue
