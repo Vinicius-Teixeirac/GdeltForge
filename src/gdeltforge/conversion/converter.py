@@ -32,6 +32,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import unzip_file
 from gdeltforge.utils.logging import get_logger
 
@@ -55,20 +56,24 @@ class GDELTConverter:
     Configuration is INJECTED (not loaded internally).
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, dataset: str = "gdelt_event"):
         self.config = config
+        self.dataset = dataset
 
-        self.input_folder  = Path(config["paths"]["downloaded_data_directory"])
-        self.unzip_folder  = Path(config["paths"]["unzipped_data_directory"])
-        self.parquet_folder = Path(config["paths"]["parquet_data_directory"])
+        def path_for(base_key: str) -> str:
+            return config["paths"][dataset_path_key(dataset, base_key)]
+
+        self.input_folder  = Path(path_for("downloaded_data_directory"))
+        self.unzip_folder  = Path(path_for("unzipped_data_directory"))
+        self.parquet_folder = Path(path_for("parquet_data_directory"))
         self.keep_unzipped = config["converter"]["keep_unzipped"]
         self.pattern       = config["converter"].get("file_pattern", "*.zip")
         # None is a valid value here: ProcessPoolExecutor treats
         # max_workers=None as "use os.cpu_count()" on its own.
         self.max_workers: int | None = config["converter"].get("max_workers")
 
-        self.EVENT_COLUMNS  = config["columns"]["gdelt_event"]
-        self.NUMERIC_COLUMNS = config["columns_numeric"]
+        self.COLUMN_NAMES    = config["columns"][dataset]
+        self.NUMERIC_COLUMNS = config["columns_numeric"][dataset]
 
         part_cfg = config["converter"].get("partitioning", {})
         self._partitioning_enabled = part_cfg.get("enabled", False)
@@ -76,11 +81,12 @@ class GDELTConverter:
 
         self.historical_folder: Path | None = None
         if self._partitioning_enabled:
-            hist_path = config["paths"].get("parquet_historical_directory")
+            hist_key = dataset_path_key(dataset, "parquet_historical_directory")
+            hist_path = config["paths"].get(hist_key)
             if not hist_path:
                 raise ValueError(
-                    "converter.partitioning.enabled is true but "
-                    "paths.parquet_historical_directory is not set."
+                    f"converter.partitioning.enabled is true but "
+                    f"paths.{hist_key} is not set."
                 )
             self.historical_folder = Path(hist_path)
 
@@ -257,7 +263,7 @@ class GDELTConverter:
                 dtype=str,
                 encoding="utf-8",
                 low_memory=False,
-                names=self.EVENT_COLUMNS,
+                names=self.COLUMN_NAMES,
                 on_bad_lines="warn",
             )
 
@@ -373,13 +379,13 @@ class GDELTConverter:
 # ------------------------------------------------------------
 # WRAPPER
 # ------------------------------------------------------------
-def run_converter(config: dict) -> tuple[list[str], list[str]]:
+def run_converter(config: dict, dataset: str = "gdelt_event") -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
 
     Returns (outputs, failed): see GDELTConverter.process_all_files.
     """
-    converter = GDELTConverter(config)
+    converter = GDELTConverter(config, dataset=dataset)
     return converter.process_all_files()
 
 
