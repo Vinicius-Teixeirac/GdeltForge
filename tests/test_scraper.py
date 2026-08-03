@@ -14,6 +14,7 @@ from gdeltforge.scraping.scraper import (
     download_gdelt_files,
     filter_urls_by_date,
     parse_file_date,
+    parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
 
@@ -74,6 +75,39 @@ class TestParseGdeltv2FileDate:
 
 
 # ------------------------------------------------------------
+# parse_gdelt_gkg_v1_file_date
+# ------------------------------------------------------------
+class TestParseGdeltGkgV1FileDate:
+    def test_main_gkg_filename(self):
+        # April 1 2013: GKG 1.0's real start date.
+        assert parse_gdelt_gkg_v1_file_date("20130401.gkg.csv.zip") == (
+            date(2013, 4, 1), date(2013, 4, 1),
+        )
+
+    def test_counts_filename(self):
+        assert parse_gdelt_gkg_v1_file_date("20130401.gkgcounts.csv.zip") == (
+            date(2013, 4, 1), date(2013, 4, 1),
+        )
+
+    def test_unrecognized_filename(self):
+        assert parse_gdelt_gkg_v1_file_date("index.html") == (None, None)
+
+    def test_invalid_calendar_date(self):
+        assert parse_gdelt_gkg_v1_file_date("20131332.gkg.csv.zip") == (None, None)
+
+    def test_reads_only_the_leading_8_digits(self):
+        # Deliberately narrow contract: extracts whatever date the first 8
+        # characters encode, without validating the rest of the filename
+        # (that's _is_gdelt_gkg_v1_file's job, tested separately). A
+        # gdeltv2-style 14-digit timestamp still starts with a real date,
+        # so it parses. Discovery never hands this parser a v2 filename
+        # in practice, since collect_gdelt_links dispatches by dataset.
+        assert parse_gdelt_gkg_v1_file_date("20150218233000.gkg.csv.zip") == (
+            date(2015, 2, 18), date(2015, 2, 18),
+        )
+
+
+# ------------------------------------------------------------
 # _is_gdelt_dataset_file
 # ------------------------------------------------------------
 class TestIsGdeltDatasetFile:
@@ -92,6 +126,29 @@ class TestIsGdeltDatasetFile:
     )
     def test_cases(self, filename, expected):
         assert _is_gdelt_dataset_file(filename) == expected
+
+
+# ------------------------------------------------------------
+# _is_gdelt_gkg_v1_file
+# ------------------------------------------------------------
+class TestIsGdeltGkgV1File:
+    @pytest.mark.parametrize(
+        "filename,suffix,expected",
+        [
+            ("20130401.gkg.csv.zip", ".gkg.csv.zip", True),
+            ("20130401.gkgcounts.csv.zip", ".gkgcounts.csv.zip", True),
+            # Wrong suffix for the requested dataset.
+            ("20130401.gkgcounts.csv.zip", ".gkg.csv.zip", False),
+            ("20130401.gkg.csv.zip", ".gkgcounts.csv.zip", False),
+            # Translation mirror: ends with the suffix, but isn't a plain
+            # YYYYMMDD<suffix> filename, so it must not match on endswith alone.
+            ("20130401.translation.gkg.csv.zip", ".gkg.csv.zip", False),
+            ("index.html", ".gkg.csv.zip", False),
+            ("md5sums", ".gkg.csv.zip", False),
+        ],
+    )
+    def test_cases(self, filename, suffix, expected):
+        assert scraper._is_gdelt_gkg_v1_file(filename, suffix) == expected
 
 
 # ------------------------------------------------------------
@@ -241,6 +298,70 @@ class TestCollectGdeltv2Links:
 
 
 # ------------------------------------------------------------
+# _collect_gdelt_gkg_v1_links: GKG 1.0 HTML index parsing
+# ------------------------------------------------------------
+class TestCollectGdeltGkgV1Links:
+    """
+    NOTE: this HTML fixture is synthetic, built to match Events' confirmed
+    index markup (see TestCollectLinksRequests), not a live capture of
+    data.gdeltproject.org/gkg/index.html, since this sandbox can't reach
+    that domain (see _collect_gdelt_gkg_v1_links's docstring). These tests
+    prove the parsing logic is correct *if* the real page shares that
+    markup, which is inferred, not yet directly confirmed.
+    """
+
+    _INDEX_HTML = (
+        '<LI><A HREF="20130401.gkg.csv.zip">20130401.gkg.csv.zip</A> '
+        '(2.1MB) (MD5: be29fb979f2832a9cc3126352e27e0f6)\n'
+        '<LI><A HREF="20130401.gkgcounts.csv.zip">20130401.gkgcounts.csv.zip</A> '
+        '(0.3MB) (MD5: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n'
+        '<LI><A HREF="20130401.translation.gkg.csv.zip">20130401.translation.gkg.csv.zip</A> '
+        '(1.8MB) (MD5: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)\n'
+        '<LI><A HREF="index.html">index.html</A>\n'
+    )
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    def test_filters_to_the_main_gkg_file_only(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper.requests, "get",
+            lambda *a, **kw: self.FakeResponse(self._INDEX_HTML),
+        )
+
+        files = scraper._collect_gdelt_gkg_v1_links({}, "gdelt_gkg_v1")
+
+        assert len(files) == 1
+        assert files[0].url == "http://data.gdeltproject.org/gkg/20130401.gkg.csv.zip"
+        assert files[0].md5 == "be29fb979f2832a9cc3126352e27e0f6"
+
+    def test_filters_to_the_counts_file_only(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper.requests, "get",
+            lambda *a, **kw: self.FakeResponse(self._INDEX_HTML),
+        )
+
+        files = scraper._collect_gdelt_gkg_v1_links({}, "gdelt_gkg_v1_counts")
+
+        assert len(files) == 1
+        assert files[0].url == "http://data.gdeltproject.org/gkg/20130401.gkgcounts.csv.zip"
+        assert files[0].md5 == "a" * 32
+
+    def test_translation_mirror_is_excluded_from_both(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper.requests, "get",
+            lambda *a, **kw: self.FakeResponse(self._INDEX_HTML),
+        )
+
+        main_urls = {f.url for f in scraper._collect_gdelt_gkg_v1_links({}, "gdelt_gkg_v1")}
+        assert not any("translation" in url for url in main_urls)
+
+
+# ------------------------------------------------------------
 # _warn_if_large_scrape
 # ------------------------------------------------------------
 class TestWarnIfLargeScrape:
@@ -270,6 +391,16 @@ class TestWarnIfLargeScrape:
         assert "6,000 files" in caplog.text
         assert "GB total" not in caplog.text  # no size data to estimate from
 
+    def test_daily_dataset_warning_omits_the_15_minute_cadence_claim(self, caplog):
+        # GKG 1.0 is daily, the same cadence as Events; the 15-minute framing
+        # is specific to GKG 2.1/Mentions and would be misleading here.
+        files = [GdeltFile(url=f"http://x/{i}.gkg.csv.zip") for i in range(6_000)]
+        with caplog.at_level(logging.WARNING):
+            _warn_if_large_scrape(files, "gdelt_gkg_v1")
+
+        assert "6,000 files" in caplog.text
+        assert "every 15 minutes" not in caplog.text
+
 
 # ------------------------------------------------------------
 # collect_gdelt_links dispatcher
@@ -294,17 +425,49 @@ class TestCollectGdeltLinksDispatch:
         monkeypatch.setattr(scraper, "_collect_gdeltv2_links", lambda cfg, ds: f"v2-result-{ds}")
         assert collect_gdelt_links({}, dataset="gdelt_mentions") == "v2-result-gdelt_mentions"
 
+    def test_gkg_v1_dispatches_to_html_index_collector(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper, "_collect_gdelt_gkg_v1_links", lambda cfg, ds: f"v1-result-{ds}"
+        )
+        assert collect_gdelt_links({}, dataset="gdelt_gkg_v1") == "v1-result-gdelt_gkg_v1"
+
+    def test_gkg_v1_counts_dispatches_to_html_index_collector(self, monkeypatch):
+        monkeypatch.setattr(
+            scraper, "_collect_gdelt_gkg_v1_links", lambda cfg, ds: f"v1-result-{ds}"
+        )
+        assert (
+            collect_gdelt_links({}, dataset="gdelt_gkg_v1_counts")
+            == "v1-result-gdelt_gkg_v1_counts"
+        )
+
     def test_unimplemented_dataset_raises_clearly_instead_of_scraping_events(self):
         # Before this guard existed, an unrecognized dataset would silently
         # fall through to the Events HTML-scraping path: a correctness
-        # bug, not just a missing feature.
-        with pytest.raises(NotImplementedError, match="gdelt_gkg_v1"):
-            collect_gdelt_links({}, dataset="gdelt_gkg_v1")
+        # bug, not just a missing feature. Every real dataset is now wired
+        # up, so exercise the guard with a name that will never exist.
+        with pytest.raises(NotImplementedError, match="gdelt_nonexistent"):
+            collect_gdelt_links({}, dataset="gdelt_nonexistent")
 
     def test_unknown_method_falls_back_to_requests(self, monkeypatch):
         monkeypatch.setattr(scraper, "_collect_gdelt_links_requests", lambda cfg: "requests-result")
         cfg = {"scraping": {"method": "carrier-pigeon"}}
         assert collect_gdelt_links(cfg) == "requests-result"
+
+
+# ------------------------------------------------------------
+# _date_parser_for: picks the right filename convention per dataset
+# ------------------------------------------------------------
+class TestDateParserFor:
+    def test_events_uses_the_daily_monthly_yearly_parser(self):
+        assert scraper._date_parser_for("gdelt_event") is parse_file_date
+
+    def test_gkg_v2_and_mentions_use_the_15_minute_batch_parser(self):
+        assert scraper._date_parser_for("gdelt_gkg_v2") is parse_gdeltv2_file_date
+        assert scraper._date_parser_for("gdelt_mentions") is parse_gdeltv2_file_date
+
+    def test_gkg_v1_and_counts_use_the_daily_gkg_v1_parser(self):
+        assert scraper._date_parser_for("gdelt_gkg_v1") is parse_gdelt_gkg_v1_file_date
+        assert scraper._date_parser_for("gdelt_gkg_v1_counts") is parse_gdelt_gkg_v1_file_date
 
 
 # ------------------------------------------------------------

@@ -13,6 +13,7 @@ DEFAULT_CONFIG_PATH = "config/settings.yaml"
 _DATASET_PATH_PREFIXES = {
     "gdelt_event": "",
     "gdelt_gkg_v1": "gkg_v1_",
+    "gdelt_gkg_v1_counts": "gkg_v1_counts_",
     "gdelt_gkg_v2": "gkg_v2_",
     "gdelt_mentions": "mentions_",
 }

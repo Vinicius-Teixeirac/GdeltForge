@@ -2,17 +2,23 @@
 scraper.py
 
 Utilities for scraping GDELT data: the Events daily/monthly/yearly archive
-(https://data.gdeltproject.org/events/), and the GKG 2.1 / Mentions
-15-minute real-time feed (https://data.gdeltproject.org/gdeltv2/).
+(https://data.gdeltproject.org/events/), the GKG 2.1 / Mentions 15-minute
+real-time feed (https://data.gdeltproject.org/gdeltv2/), and the legacy
+GKG 1.0 daily archive (https://data.gdeltproject.org/gkg/), which predates
+the 15-minute architecture and still publishes daily for compatibility.
 
-These are two genuinely different discovery mechanisms, not one dataset
-with different columns: Events is an HTML directory listing scraped once
-per invocation; GKG 2.1/Mentions are looked up in a single master file
-list covering every 15-minute batch published since Feb 2015.
+Two discovery mechanisms, not three: Events and GKG 1.0 both scrape an
+HTML directory listing (same GCS-bucket-backed static index, and both
+paths hit the identical TLS cert mismatch documented below, strong
+evidence they're the same underlying serving infrastructure, just with a
+different base URL and filename shape); GKG 2.1/Mentions are looked up in
+a single master file list covering every 15-minute batch published since
+Feb 2015.
 
 Provides:
     - collect_gdelt_links: retrieves all downloadable file links for a dataset
-    - parse_file_date / parse_gdeltv2_file_date: extract the date period a filename covers
+    - parse_file_date / parse_gdeltv2_file_date / parse_gdelt_gkg_v1_file_date:
+      extract the date period a filename covers
     - filter_urls_by_date: narrows a URL list to a [start_date, end_date] window
     - download_gdelt_files: downloads the files returned by `collect_gdelt_links`
     - run_scraping_pipeline: high-level interface that runs the full scraping workflow
@@ -56,6 +62,18 @@ _GDELT_V2_SUFFIXES = {
     "gdelt_mentions": ".mentions.CSV.zip",
 }
 
+GDELT_GKG_V1_BASE_URL = "http://data.gdeltproject.org/gkg/"
+
+# GKG 1.0 predates GKG 2.1/Mentions' 15-minute masterfilelist.txt entirely
+# and is instead an HTML directory listing like Events, one daily file per
+# dataset. Suffixes confirmed against linwoodc3/gdeltPyR's _urlBuilder
+# (a real, working GDELT client) and cross-checked against GDELT's own
+# documentation: base + "gkg/" + YYYYMMDD + suffix.
+_GDELT_GKG_V1_SUFFIXES = {
+    "gdelt_gkg_v1": ".gkg.csv.zip",
+    "gdelt_gkg_v1_counts": ".gkgcounts.csv.zip",
+}
+
 _LARGE_SCRAPE_WARNING_THRESHOLD = 5_000
 
 # data.gdeltproject.org serves this page from a GCS bucket whose TLS cert
@@ -93,21 +111,22 @@ def _is_gdelt_dataset_file(filename: str) -> bool:
     return is_daily or is_monthly or is_yearly
 
 
-def _collect_gdelt_links_requests(config: dict) -> list[GdeltFile]:
+def _scrape_html_index(
+    index_url: str, config: dict, file_predicate: Callable[[str], bool]
+) -> list[GdeltFile]:
     """
-    Fetches the GDELT events directory listing with a plain HTTP GET and
-    parses the anchor hrefs (and, when present, the "(MD5: ...)" hash that
-    follows each entry) out of the HTML.
+    Fetches a GDELT HTML directory listing with a plain HTTP GET and parses
+    the anchor hrefs (and, when present, the "(MD5: ...)" hash that follows
+    each entry) out of the page.
 
-    The page is a static, server-rendered Apache-style index (not
-    JS-rendered), so no browser is required. This is the default and
-    recommended method: no Chrome/ChromeDriver dependency, no version
-    mismatches, and roughly an order of magnitude faster than Selenium.
+    Shared by every GDELT dataset served this way (Events, GKG 1.0): a
+    static, server-rendered Apache-style index, not JS-rendered, so no
+    browser is required. `file_predicate` decides which filenames in the
+    listing belong to the caller's dataset.
     """
-    logger.info("Collecting GDELT links using requests...")
     timeout = config.get("scraping", {}).get("timeout", 30)
 
-    response = requests.get(GDELT_EVENTS_URL, timeout=timeout, verify=False)
+    response = requests.get(index_url, timeout=timeout, verify=False)
     response.raise_for_status()
 
     lines = response.text.splitlines()
@@ -122,15 +141,61 @@ def _collect_gdelt_links_requests(config: dict) -> list[GdeltFile]:
     files = []
     for line, href in href_matches:
         filename = href.split("/")[-1]
-        if not _is_gdelt_dataset_file(filename):
+        if not file_predicate(filename):
             continue
 
-        full_url = urljoin(GDELT_EVENTS_URL, href).replace("https://", "http://", 1)
+        full_url = urljoin(index_url, href).replace("https://", "http://", 1)
         md5_match = _MD5_RE.search(line)
         files.append(GdeltFile(url=full_url, md5=md5_match.group(1).lower() if md5_match else None))
 
-    logger.info(f"Identified {len(files)} GDELT dataset URLs.")
+    return files
 
+
+def _collect_gdelt_links_requests(config: dict) -> list[GdeltFile]:
+    """
+    Fetches the GDELT events directory listing. This is the default and
+    recommended method: no Chrome/ChromeDriver dependency, no version
+    mismatches, and roughly an order of magnitude faster than Selenium.
+    """
+    logger.info("Collecting GDELT links using requests...")
+    files = _scrape_html_index(GDELT_EVENTS_URL, config, _is_gdelt_dataset_file)
+    logger.info(f"Identified {len(files)} GDELT dataset URLs.")
+    return files
+
+
+def _is_gdelt_gkg_v1_file(filename: str, suffix: str) -> bool:
+    """
+    True for exactly YYYYMMDD<suffix>: an 8-digit date immediately followed
+    by the dataset's suffix. Excludes GDELT's "translation" mirror files
+    (e.g. 20130401.translation.gkg.csv.zip), which end with the same suffix
+    but aren't in scope here: a plain .endswith(suffix) would wrongly
+    match them.
+    """
+    return filename[:8].isdigit() and filename[8:] == suffix
+
+
+def _collect_gdelt_gkg_v1_links(config: dict, dataset: str) -> list[GdeltFile]:
+    """
+    Fetches the GKG 1.0 HTML directory listing at data.gdeltproject.org/gkg/
+    and filters it down to the URLs for one dataset: the main GKG 1.0 file
+    or its separate, narrower Counts file (see module docstring).
+
+    NOTE: the markup match with Events' index page (same href/MD5 parsing
+    via _scrape_html_index) is inferred from both paths sharing the same
+    GCS-bucket TLS cert mismatch (see the module-level urllib3 comment
+    above). It's not yet directly confirmed against a live fetch of this
+    specific page, since this sandbox can't reach the domain at all.
+    Confirm against a real response before relying on this for a large
+    production scrape.
+    """
+    suffix = _GDELT_GKG_V1_SUFFIXES[dataset]
+    logger.info(f"Collecting GKG 1.0 links for {dataset}...")
+
+    files = _scrape_html_index(
+        GDELT_GKG_V1_BASE_URL, config, lambda filename: _is_gdelt_gkg_v1_file(filename, suffix)
+    )
+
+    logger.info(f"Identified {len(files)} {dataset} URLs.")
     return files
 
 
@@ -176,20 +241,24 @@ def _collect_gdeltv2_links(config: dict, dataset: str) -> list[GdeltFile]:
 def _warn_if_large_scrape(files: list[GdeltFile], dataset: str) -> None:
     """
     GKG 2.1 and Mentions publish every 15 minutes (~96 files/day) rather
-    than Events' 1/day, so a multi-year range can silently imply hundreds
-    of thousands of small downloads. Warn, don't block: the download's own
-    progress bar makes it easy to Ctrl+C once the scale is visible anyway.
+    than Events'/GKG 1.0's 1/day, so a multi-year range can silently imply
+    hundreds of thousands of small downloads. Warn, don't block: the
+    download's own progress bar makes it easy to Ctrl+C once the scale is
+    visible anyway.
     """
     if len(files) <= _LARGE_SCRAPE_WARNING_THRESHOLD:
         return
 
     total_bytes = sum(f.size for f in files if f.size is not None)
     size_note = f" (~{total_bytes / 1e9:.1f} GB total)" if total_bytes else ""
+    cadence_note = (
+        f"{dataset} publishes every 15 minutes, not daily like Events; "
+        if dataset in _GDELT_V2_SUFFIXES else ""
+    )
     logger.warning(
-        f"About to download {len(files):,} files{size_note}. {dataset} publishes "
-        f"every 15 minutes, not daily like Events; consider narrowing "
-        f"--start-date/--end-date, or raising scraping.max_workers in "
-        f"settings.yaml for many-small-files throughput."
+        f"About to download {len(files):,} files{size_note}. {cadence_note}"
+        f"Consider narrowing --start-date/--end-date, or raising "
+        f"scraping.max_workers in settings.yaml for many-small-files throughput."
     )
 
 
@@ -334,9 +403,10 @@ def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[Gdel
 
     Events dispatches to the method configured in scraping.method
     ("requests", default, or "selenium"). GKG 2.1 and Mentions use the v2
-    master file list instead (see _collect_gdeltv2_links): explicit
-    per-dataset dispatch, not a fallback, so an unimplemented dataset
-    (GKG 1.0) fails clearly instead of silently scraping Events data.
+    master file list instead (see _collect_gdeltv2_links), and GKG 1.0 uses
+    its own HTML index (see _collect_gdelt_gkg_v1_links): explicit
+    per-dataset dispatch, not a fallback, so an unimplemented dataset fails
+    clearly instead of silently scraping Events data.
     """
     if dataset == "gdelt_event":
         method = config.get("scraping", {}).get("method", "requests").lower()
@@ -351,6 +421,9 @@ def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[Gdel
 
     if dataset in _GDELT_V2_SUFFIXES:
         return _collect_gdeltv2_links(config, dataset)
+
+    if dataset in _GDELT_GKG_V1_SUFFIXES:
+        return _collect_gdelt_gkg_v1_links(config, dataset)
 
     raise NotImplementedError(f"Scraping for dataset {dataset!r} isn't implemented yet.")
 
@@ -423,6 +496,26 @@ def parse_gdeltv2_file_date(filename: str) -> tuple[date | None, date | None]:
         hour, minute, second = int(raw[8:10]), int(raw[10:12]), int(raw[12:14])
         if not (0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60):
             return None, None
+        return d, d
+    except ValueError:
+        return None, None
+
+
+def parse_gdelt_gkg_v1_file_date(filename: str) -> tuple[date | None, date | None]:
+    """
+    Return (period_start, period_end) for a GKG 1.0 filename, e.g.
+    20130401.gkg.csv.zip or 20130401.gkgcounts.csv.zip: an 8-digit
+    YYYYMMDD date, one calendar day per file (Events' own daily cadence,
+    unlike GKG 2.1/Mentions' 15-minute batches).
+
+    Returns (None, None) when the date cannot be determined.
+    """
+    raw = filename[:8]
+    if not (raw.isdigit() and len(raw) == 8):
+        return None, None
+
+    try:
+        d = date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
         return d, d
     except ValueError:
         return None, None
@@ -594,6 +687,14 @@ def download_gdelt_files(
 # ------------------------------------------------------------
 # PIPELINE INTERFACE
 # ------------------------------------------------------------
+def _date_parser_for(dataset: str) -> Callable[[str], tuple[date | None, date | None]]:
+    if dataset in _GDELT_V2_SUFFIXES:
+        return parse_gdeltv2_file_date
+    if dataset in _GDELT_GKG_V1_SUFFIXES:
+        return parse_gdelt_gkg_v1_file_date
+    return parse_file_date
+
+
 def run_scraping_pipeline(
     config: dict,
     start_date: date | None = None,
@@ -606,7 +707,7 @@ def run_scraping_pipeline(
     """
     files = collect_gdelt_links(config, dataset=dataset)
 
-    date_parser = parse_file_date if dataset == "gdelt_event" else parse_gdeltv2_file_date
+    date_parser = _date_parser_for(dataset)
     files = filter_urls_by_date(files, start_date, end_date, date_parser=date_parser)
 
     _warn_if_large_scrape(files, dataset)

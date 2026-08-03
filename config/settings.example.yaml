@@ -120,6 +120,46 @@ columns:
     - MentionDocLen
     - MentionDocTone
 
+  # GKG 1.0 (legacy format: the primary GKG feed April 2013 through February 2015,
+  # still published daily since then for backwards compatibility). Unlike
+  # GKG 2.1, each row carries EventIds directly, so it joins to Events
+  # without the two-hop trip through Mentions that GKG 2.1 needs.
+  # Column order confirmed against parseGkgV1 in aamend/spark-gdelt's
+  # GdeltParser.scala.
+  gdelt_gkg_v1:
+    - Date
+    - NumArticles
+    - Counts
+    - Themes
+    - Locations
+    - Persons
+    - Organizations
+    - Tone
+    - EventIds
+    - Sources
+    - SourceURLs
+
+  # GKG 1.0 Counts: a separate, narrower daily file, one row per individual
+  # count mention (e.g. one row per "12 killed" statement) rather than one
+  # row per document. Column order confirmed against parseGkgCountV1 in
+  # the same real parser.
+  gdelt_gkg_v1_counts:
+    - Date
+    - NumArticles
+    - CountType
+    - Count
+    - ObjectType
+    - Geo_Type
+    - Geo_FullName
+    - Geo_CountryCode
+    - Geo_ADM1Code
+    - Geo_Lat
+    - Geo_Long
+    - Geo_FeatureID
+    - EventIds
+    - Sources
+    - SourceURLs
+
 # Numeric columns, one list per dataset (matching the columns: section above).
 # Columns not listed here are read as plain strings.
 columns_numeric:
@@ -165,6 +205,18 @@ columns_numeric:
     - MentionDocLen
     - MentionDocTone
 
+  gdelt_gkg_v1:
+    - Date
+    - NumArticles
+
+  gdelt_gkg_v1_counts:
+    - Date
+    - NumArticles
+    - Count
+    - Geo_Type
+    - Geo_Lat
+    - Geo_Long
+
 # ================================
 #       DIRECTORY PATHS
 # ================================
@@ -207,6 +259,20 @@ paths:
   mentions_unzipped_data_directory: "./path_example/mentions_csv"
   mentions_parquet_data_directory: "./path_example/mentions_parquet"
   mentions_filtered_data_directory: "./path_example/mentions_filtered"
+
+  # GKG 1.0 (legacy) and its separate Counts file: same four stages, own
+  # directories. Unlike GKG 2.1/Mentions, GKG 1.0 publishes daily, the same
+  # cadence as Events, so it's kept separate purely to avoid mixing
+  # schemas, not because of a granularity mismatch.
+  gkg_v1_downloaded_data_directory: "./path_example/gkg_v1_raw"
+  gkg_v1_unzipped_data_directory: "./path_example/gkg_v1_csv"
+  gkg_v1_parquet_data_directory: "./path_example/gkg_v1_parquet"
+  gkg_v1_filtered_data_directory: "./path_example/gkg_v1_filtered"
+
+  gkg_v1_counts_downloaded_data_directory: "./path_example/gkg_v1_counts_raw"
+  gkg_v1_counts_unzipped_data_directory: "./path_example/gkg_v1_counts_csv"
+  gkg_v1_counts_parquet_data_directory: "./path_example/gkg_v1_counts_parquet"
+  gkg_v1_counts_filtered_data_directory: "./path_example/gkg_v1_counts_filtered"
 
 # ================================
 #          STAGE SETTINGS
@@ -282,3 +348,11 @@ filter:
       - GLOBALEVENTID
       - MentionIdentifier
       - MentionTimeDate
+    gdelt_gkg_v1: # example
+      - Date
+      - EventIds
+      - Themes
+    gdelt_gkg_v1_counts: # example
+      - Date
+      - EventIds
+      - Count
