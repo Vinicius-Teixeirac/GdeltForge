@@ -66,6 +66,60 @@ columns:
     - DATEADDED
     - SOURCEURL
 
+  # GKG 2.1 (the current, actively-produced format, live since Feb 2015).
+  # Column order confirmed against the real parser in aamend/spark-gdelt
+  # (GdeltParser.scala's parseGkgV2, not just the codebook), since this is
+  # a headerless CSV where order is load-bearing. Names follow the
+  # official codebook: http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook-V2.1.pdf
+  gdelt_gkg_v2:
+    - GKGRECORDID
+    - V2.1DATE
+    - V2SOURCECOLLECTIONIDENTIFIER
+    - V2SOURCECOMMONNAME
+    - V2DOCUMENTIDENTIFIER
+    - V1COUNTS
+    - V2.1COUNTS
+    - V1THEMES
+    - V2ENHANCEDTHEMES
+    - V1LOCATIONS
+    - V2ENHANCEDLOCATIONS
+    - V1PERSONS
+    - V2ENHANCEDPERSONS
+    - V1ORGANIZATIONS
+    - V2ENHANCEDORGANIZATIONS
+    - V1.5TONE
+    - V2.1ENHANCEDDATES
+    - V2GCAM
+    - V2.1SHARINGIMAGE
+    - V2.1RELATEDIMAGES
+    - V2.1SOCIALIMAGEEMBEDS
+    - V2.1SOCIALVIDEOEMBEDS
+    - V2.1QUOTATIONS
+    - V2.1ALLNAMES
+    - V2.1AMOUNTS
+    - V2.1TRANSLATIONINFO
+    - V2EXTRASXML
+
+  # Mentions: every re-report of an Event by a different article over
+  # time (the bridge table between Events and GKG: see the Comparison
+  # docs page for why a direct Events<->GKG join isn't possible).
+  # Column order confirmed against parseMentionV2 in the same real parser.
+  gdelt_mentions:
+    - GLOBALEVENTID
+    - EventTimeDate
+    - MentionTimeDate
+    - MentionType
+    - MentionSourceName
+    - MentionIdentifier
+    - SentenceID
+    - Actor1CharOffset
+    - Actor2CharOffset
+    - ActionCharOffset
+    - InRawText
+    - Confidence
+    - MentionDocLen
+    - MentionDocTone
+
 # Numeric columns, one list per dataset (matching the columns: section above).
 # Columns not listed here are read as plain strings.
 columns_numeric:
@@ -93,6 +147,24 @@ columns_numeric:
     - ActionGeo_Long
     - DATEADDED
 
+  gdelt_gkg_v2:
+    - V2.1DATE
+    - V2SOURCECOLLECTIONIDENTIFIER
+
+  gdelt_mentions:
+    - GLOBALEVENTID
+    - EventTimeDate
+    - MentionTimeDate
+    - MentionType
+    - SentenceID
+    - Actor1CharOffset
+    - Actor2CharOffset
+    - ActionCharOffset
+    - InRawText
+    - Confidence
+    - MentionDocLen
+    - MentionDocTone
+
 # ================================
 #       DIRECTORY PATHS
 # ================================
@@ -119,6 +191,22 @@ paths:
   # Filtered version of the historical Hive dataset.
   # Only used when converter.partitioning.enabled is true.
   filtered_historical_directory: "./path_example/filtered_historical"
+
+  # GKG 2.1 and Mentions: same four stages as Events (download / unzip /
+  # convert / filter), but their own directories; these publish at
+  # 15-minute granularity, not daily, so keeping them separate from
+  # Events' paths avoids ever mixing the two archives' files together.
+  # No Hive-partitioned historical variant: unlike Events, GKG 2.1 and
+  # Mentions have no pre-2013 yearly/monthly archive to partition.
+  gkg_v2_downloaded_data_directory: "./path_example/gkg_v2_raw"
+  gkg_v2_unzipped_data_directory: "./path_example/gkg_v2_csv"
+  gkg_v2_parquet_data_directory: "./path_example/gkg_v2_parquet"
+  gkg_v2_filtered_data_directory: "./path_example/gkg_v2_filtered"
+
+  mentions_downloaded_data_directory: "./path_example/mentions_raw"
+  mentions_unzipped_data_directory: "./path_example/mentions_csv"
+  mentions_parquet_data_directory: "./path_example/mentions_parquet"
+  mentions_filtered_data_directory: "./path_example/mentions_filtered"
 
 # ================================
 #          STAGE SETTINGS
@@ -186,3 +274,11 @@ filter:
       - ActionGeo_Lat
       - ActionGeo_Long
       - Day
+    gdelt_gkg_v2: # example
+      - GKGRECORDID
+      - V2.1DATE
+      - V2DOCUMENTIDENTIFIER
+    gdelt_mentions: # example
+      - GLOBALEVENTID
+      - MentionIdentifier
+      - MentionTimeDate
