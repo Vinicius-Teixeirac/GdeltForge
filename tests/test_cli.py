@@ -1,5 +1,6 @@
 import argparse
 import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -190,6 +191,141 @@ class TestRunSamplingCmdSource:
         cli.run_sampling_cmd(self._config(), args)
 
         assert captured["columns"] == {"GlobalEventID"}
+
+
+class TestRunCrossrefCmd:
+    """The join logic itself (crossref_events_gkg_v1/v2) has its own
+    dedicated tests in test_crossref.py; these only check that the CLI
+    resolves the right config paths/columns and dispatches to the right
+    function, since both join functions are stubbed out here."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "gkg_v1_filtered_data_directory": "/gkg_v1_filtered",
+                "gkg_v1_parquet_data_directory": "/gkg_v1_converted",
+                "gkg_v1_counts_filtered_data_directory": "/gkg_v1_counts_filtered",
+                "gkg_v2_filtered_data_directory": "/gkg_v2_filtered",
+                "mentions_filtered_data_directory": "/mentions_filtered",
+            },
+            "columns": {
+                "gdelt_gkg_v1": ["Date", "EventIds"],
+                "gdelt_gkg_v1_counts": ["Date", "EventIds"],
+                "gdelt_gkg_v2": ["V2DOCUMENTIDENTIFIER"],
+            },
+        }
+
+    @staticmethod
+    def _events_path(tmp_path):
+        events = tmp_path / "events.parquet"
+        pd.DataFrame({"GlobalEventID": [1]}).to_parquet(events)
+        return str(events)
+
+    def _args(self, tmp_path, **overrides):
+        defaults = dict(
+            events=self._events_path(tmp_path), gkg_version="v1", source="filtered",
+            columns=None, out=str(tmp_path / "o.parquet"),
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_v1_reads_gkg_v1_filtered_folder(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None: captured.update(
+                folder=folder, gkg_columns=cols, columns=columns
+            ) or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1"))
+
+        assert captured["folder"] == "/gkg_v1_filtered"
+        assert captured["gkg_columns"] == ["Date", "EventIds"]
+
+    def test_v1_counts_reads_its_own_filtered_folder(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None: captured.update(folder=folder)
+            or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1-counts"))
+
+        assert captured["folder"] == "/gkg_v1_counts_filtered"
+
+    def test_v2_reads_both_mentions_and_gkg_v2_filtered_folders(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v2",
+            lambda events_df, mentions_folder, gkg_folder, cols, columns=None: captured.update(
+                mentions_folder=mentions_folder, gkg_folder=gkg_folder
+            ) or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v2"))
+
+        assert captured["mentions_folder"] == "/mentions_filtered"
+        assert captured["gkg_folder"] == "/gkg_v2_filtered"
+
+    def test_source_converted_uses_parquet_directory(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None: captured.update(folder=folder)
+            or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(
+            self._config(), self._args(tmp_path, gkg_version="v1", source="converted")
+        )
+
+        assert captured["folder"] == "/gkg_v1_converted"
+
+    def test_columns_arg_becomes_a_set(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None: captured.update(columns=columns)
+            or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(
+            self._config(), self._args(tmp_path, gkg_version="v1", columns=["Date"])
+        )
+
+        assert captured["columns"] == {"Date"}
+
+    def test_output_written_via_write_parquet_atomic(self, tmp_path, monkeypatch):
+        written = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(
+            cli, "write_parquet_atomic",
+            lambda df, out: written.update(df=df, out=out),
+        )
+        expected = pd.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None: expected,
+        )
+
+        out_path = str(tmp_path / "o.parquet")
+        cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1", out=out_path))
+
+        assert written["out"] == Path(out_path)
+        assert written["df"] is expected
 
 
 class TestRunCodesCmd:
