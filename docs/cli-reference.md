@@ -12,6 +12,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 | `convert` | Convert downloaded CSV files to Parquet |
 | `filter`  | Apply row-column filtering to Parquet files |
 | `sample`  | Efficient, reproducible sampling |
+| `crossref` | Enrich a sampled Events output with GKG (themes, tone, people, organizations) |
 | `codes`   | Look up valid CAMEO/FIPS codes for filter values |
 
 `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
@@ -171,6 +172,34 @@ gdeltforge sample \
 ```
 
 This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
+
+## `gdeltforge crossref`
+
+Enriches a sampled Events output with GKG: themes, tone, people, organizations extracted from the news coverage of each event. Takes a Parquet file (the output of `gdeltforge sample`) rather than the full archive, since joining against the entire Events dataset by default would be a much heavier operation than enriching a bounded sample.
+
+```
+gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parquet
+```
+
+| Flag | Description |
+|------|-------------|
+| `--events PATH` | Parquet file of Events rows to enrich (required) |
+| `--gkg-version {v1,v1-counts,v2}` | Which GKG generation to join against (required, see below) |
+| `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
+| `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless |
+| `--out PATH` | Output parquet file (default `crossref.parquet`) |
+
+GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Comparison](comparison.md) for why a direct Events<->GKG 2.1 join isn't possible):
+
+- **`v1`** and **`v1-counts`**: GKG 1.0 (and its separate Counts file) carry `EventIds` directly on each row, a semicolon-delimited list, so this is a direct join.
+- **`v2`**: GKG 2.1 carries no event id at all, only the source article's URL, so this is a two-hop join through Mentions: Events -> Mentions (on `GlobalEventID`) -> GKG 2.1 (on that URL).
+
+Both preserve the underlying many-to-many structure rather than collapsing it: one event can produce several output rows (several articles covered it, each contributing its own GKG data), and one article covering several events contributes one row per event, not one merged row. An event with no GKG match contributes no rows at all, rather than a row full of nulls. GKG-side output columns are prefixed `GKG_` (and, for `v2`, Mentions bridge fields `Mention_`) to avoid colliding with an identically-named Events column, e.g. `NumArticles` exists on both Events and GKG 1.0.
+
+```
+gdeltforge sample --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
+gdeltforge crossref --events us_events.parquet --gkg-version v2 --out us_events_enriched.parquet
+```
 
 ## `gdeltforge codes`
 
