@@ -4,7 +4,10 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
+
 from gdeltforge.conversion.converter import run_converter
+from gdeltforge.crossref.crossref import crossref_events_gkg_v1, crossref_events_gkg_v2
 from gdeltforge.filtering.filter import run_filter
 
 # Samplers
@@ -40,6 +43,14 @@ _DATASET_CLI_TO_CONFIG = {
     "gkg-v1-counts": "gdelt_gkg_v1_counts",
     "gkg-v2": "gdelt_gkg_v2",
     "mentions": "gdelt_mentions",
+}
+
+# crossref's own choices: a GKG generation to join against, not a dataset
+# to read directly (v2 pulls in Mentions internally as the join bridge).
+_CROSSREF_GKG_CHOICES = ["v1", "v1-counts", "v2"]
+_CROSSREF_GKG_TO_CONFIG = {
+    "v1": "gdelt_gkg_v1",
+    "v1-counts": "gdelt_gkg_v1_counts",
 }
 
 
@@ -197,6 +208,46 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         return
 
     raise ValueError(f"Unknown sampling mode: {args.mode}")
+
+
+def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
+    events_df = pd.read_parquet(args.events)
+    columns = set(args.columns) if args.columns else None
+    source_key = (
+        "filtered_data_directory" if args.source == "filtered" else "parquet_data_directory"
+    )
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.gkg_version == "v2":
+        mentions_folder = ensure_exists(
+            config["paths"][dataset_path_key("gdelt_mentions", source_key)],
+            "Mentions directory",
+        )
+        gkg_v2_folder = ensure_exists(
+            config["paths"][dataset_path_key("gdelt_gkg_v2", source_key)],
+            "GKG 2.1 directory",
+        )
+        result = crossref_events_gkg_v2(
+            events_df,
+            str(mentions_folder),
+            str(gkg_v2_folder),
+            config["columns"]["gdelt_gkg_v2"],
+            columns=columns,
+        )
+    else:
+        dataset = _CROSSREF_GKG_TO_CONFIG[args.gkg_version]
+        gkg_folder = ensure_exists(
+            config["paths"][dataset_path_key(dataset, source_key)],
+            f"{args.gkg_version} directory",
+        )
+        result = crossref_events_gkg_v1(
+            events_df, str(gkg_folder), config["columns"][dataset], columns=columns,
+        )
+
+    write_parquet_atomic(result, out)
+    logger.info(f"Saved cross-referenced sample ({len(result)} rows) -> {out}")
 
 
 _CAMEO_COLUMN_GROUPS = [
@@ -376,6 +427,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ----------------------------------------------------
+    # crossref
+    # ----------------------------------------------------
+    crossref = subparsers.add_parser(
+        "crossref", help="Cross-reference a sampled Events output against GKG"
+    )
+    crossref.add_argument(
+        "--events",
+        required=True,
+        metavar="PATH",
+        help="Parquet file of Events rows to enrich, e.g. the output of `gdeltforge sample`"
+    )
+    crossref.add_argument(
+        "--gkg-version",
+        required=True,
+        choices=_CROSSREF_GKG_CHOICES,
+        help="Which GKG generation to join against: v1 (direct join on EventIds, main GKG "
+             "1.0 file), v1-counts (same join, GKG 1.0's separate Counts file), or v2 "
+             "(two-hop join through Mentions, GKG 2.1)"
+    )
+    crossref.add_argument(
+        "--source",
+        choices=["filtered", "converted"],
+        default="filtered",
+        help="Which stage's GKG/Mentions output to read from (default: filtered)"
+    )
+    crossref.add_argument(
+        "--columns",
+        nargs="*",
+        help="Restrict GKG-side output to these columns; cuts I/O and memory. The join key "
+             "column is always included regardless"
+    )
+    crossref.add_argument(
+        "--out",
+        default="crossref.parquet",
+        help="Output parquet file"
+    )
+
+    # ----------------------------------------------------
     # codes
     # ----------------------------------------------------
     codes = subparsers.add_parser(
@@ -424,6 +513,9 @@ def main() -> None:
 
         elif args.command == "sample":
             run_sampling_cmd(config, args)
+
+        elif args.command == "crossref":
+            run_crossref_cmd(config, args)
 
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
