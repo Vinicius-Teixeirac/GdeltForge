@@ -11,17 +11,14 @@ GdeltForge is a lightweight but scalable data pipeline to extract, transform, an
 - Transparent, modular data lineage: every stage is explicit, nothing runs "automagically"
 
 ```
-git clone https://github.com/Vinicius-Teixeirac/GdeltForge.git
-cd GdeltForge
-uv sync
+pip install gdeltforge
 gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
 gdeltforge convert
 gdeltforge filter
 gdeltforge sample --mode indexed -n 10000
 ```
 
-!!! note
-    GdeltForge isn't published to PyPI yet, so installation is from source for now (see [Getting Started](getting-started.md)). A `pip install gdeltforge` release is planned.
+See [Getting Started](getting-started.md) for configuration and an installation-from-source option, useful if you're contributing to GdeltForge itself.
 
 ## About GDELT
 
