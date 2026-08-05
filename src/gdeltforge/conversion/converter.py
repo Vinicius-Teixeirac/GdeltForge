@@ -25,6 +25,7 @@ import glob
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import unzip_file, write_parquet_atomic
 from gdeltforge.utils.logging import get_logger
@@ -62,9 +64,17 @@ class GDELTConverter:
     Configuration is INJECTED (not loaded internally).
     """
 
-    def __init__(self, config: dict, dataset: str = "gdelt_event"):
+    def __init__(
+        self,
+        config: dict,
+        dataset: str = "gdelt_event",
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ):
         self.config = config
         self.dataset = dataset
+        self.start_date = start_date
+        self.end_date = end_date
 
         def path_for(base_key: str) -> str:
             return config["paths"][dataset_path_key(dataset, base_key)]
@@ -155,6 +165,13 @@ class GDELTConverter:
             logger.warning(
                 f"No zip files found in {self.input_folder} with pattern '{self.pattern}'"
             )
+            return [], []
+
+        zip_files = filter_paths_by_date(
+            zip_files, self.start_date, self.end_date, date_parser=date_parser_for(self.dataset)
+        )
+        if not zip_files:
+            logger.info("Nothing to convert; no files in the given date range.")
             return [], []
 
         to_process = []
@@ -401,13 +418,18 @@ class GDELTConverter:
 # ------------------------------------------------------------
 # WRAPPER
 # ------------------------------------------------------------
-def run_converter(config: dict, dataset: str = "gdelt_event") -> tuple[list[str], list[str]]:
+def run_converter(
+    config: dict,
+    dataset: str = "gdelt_event",
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
 
     Returns (outputs, failed): see GDELTConverter.process_all_files.
     """
-    converter = GDELTConverter(config, dataset=dataset)
+    converter = GDELTConverter(config, dataset=dataset, start_date=start_date, end_date=end_date)
     return converter.process_all_files()
 
 

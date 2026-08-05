@@ -69,6 +69,12 @@ gdeltforge convert
 
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores).
 
+Accepts the same `--start-date`/`--end-date` as `scrape` (see above), narrowing which already-downloaded ZIPs get converted instead of which get downloaded:
+
+```
+gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
+```
+
 See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
 
 ## `gdeltforge filter`
@@ -78,6 +84,8 @@ gdeltforge filter
 ```
 
 Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
+
+Also accepts `--start-date`/`--end-date`, narrowing which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
 ## `--dataset`
 
