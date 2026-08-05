@@ -1,6 +1,9 @@
+import zipfile
+
+import pandas as pd
 import pytest
 
-from gdeltforge.conversion.converter import GDELTConverter
+from gdeltforge.conversion.converter import GDELTConverter, run_converter
 
 
 def _make_config(tmp_path, **converter_overrides):
@@ -77,3 +80,100 @@ class TestDatasetParameter:
 
         with pytest.raises(KeyError):
             GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+
+def _write_gkg_v1_zip(tmp_path, filename="20130401.gkg.csv.zip"):
+    """A real ZIP containing a literal GKG 1.0 header line followed by one
+    tab-separated data row, matching a real downloaded file byte for byte
+    in shape (confirmed 2026-08-04 against a live 20200101.gkg.csv.zip):
+    a header row Events/GKG 2.1/Mentions don't have, and a comma-delimited
+    (not semicolon) EventIds field."""
+    csv_path = tmp_path / "20130401.gkg.csv"
+    header = "\t".join(["DATE", "NUMARTS", "COUNTS", "THEMES", "CAMEOEVENTIDS"])
+    row = "\t".join([
+        "20130401", "5", "KILL#10#1", "TAX_FNCACT;GENERAL_GOVERNMENT",
+        "123456,789012",
+    ])
+    csv_path.write_text(header + "\n" + row + "\n")
+
+    zip_path = tmp_path / filename
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.write(csv_path, arcname="20130401.gkg.csv")
+    return zip_path
+
+
+class TestConvertsNonEventsSchemaEndToEnd:
+    """Regression coverage for the actual CSV -> Parquet conversion path on
+    a non-Events schema, not just constructor wiring (see
+    TestDatasetParameter above): tab-split, column naming, numeric
+    coercion, and header-row handling all need to work correctly against a
+    real GKG-shaped file, and the comma-delimited EventIds field must
+    survive as a raw string rather than being coerced or truncated."""
+
+    @staticmethod
+    def _config(tmp_path):
+        return {
+            "paths": {
+                "gkg_v1_downloaded_data_directory": str(tmp_path / "raw"),
+                "gkg_v1_unzipped_data_directory": str(tmp_path / "csv"),
+                "gkg_v1_parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+            "columns": {
+                "gdelt_gkg_v1": ["Date", "NumArticles", "Counts", "Themes", "EventIds"],
+            },
+            "columns_numeric": {"gdelt_gkg_v1": ["Date", "NumArticles"]},
+        }
+
+    def test_process_single_file_parses_gkg_v1_row_correctly(self, tmp_path):
+        cfg = self._config(tmp_path)
+        zip_path = _write_gkg_v1_zip(tmp_path)
+
+        converter = GDELTConverter(cfg, dataset="gdelt_gkg_v1")
+        outputs = converter.process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        df = pd.read_parquet(outputs[0])
+        # Exactly one row: the header line must be consumed as a header,
+        # not misread as a second, garbage data row.
+        assert len(df) == 1
+        assert list(df.columns) == ["Date", "NumArticles", "Counts", "Themes", "EventIds"]
+        assert df["Date"].iloc[0] == 20130401
+        assert df["NumArticles"].iloc[0] == 5
+        # Numeric coercion must be scoped to columns_numeric only: EventIds
+        # is a comma-delimited list, not a scalar, and must survive untouched.
+        assert df["EventIds"].iloc[0] == "123456,789012"
+        assert df["Themes"].iloc[0] == "TAX_FNCACT;GENERAL_GOVERNMENT"
+
+    def test_run_converter_wrapper_processes_a_non_events_dataset(self, tmp_path):
+        cfg = self._config(tmp_path)
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        _write_gkg_v1_zip(raw_dir)
+
+        outputs, failed = run_converter(cfg, dataset="gdelt_gkg_v1")
+
+        assert failed == []
+        assert len(outputs) == 1
+        out_df = pd.read_parquet(outputs[0])
+        assert len(out_df) == 1
+        assert out_df["EventIds"].iloc[0] == "123456,789012"
+
+    def test_events_schema_stays_headerless(self, tmp_path):
+        # Regression guard for _DATASETS_WITH_HEADER_ROW: Events (and, by
+        # the same code path, GKG 2.1/Mentions) must never have their
+        # first real data row swallowed as a phantom header.
+        cfg = _make_config(tmp_path)
+        csv_path = tmp_path / "20200101.export.csv"
+        # columns are ["GlobalEventID", "Day"], in that order.
+        csv_path.write_text("1\t20200101\n2\t20200102\n")
+        zip_path = tmp_path / "20200101.export.CSV.zip"
+        with zipfile.ZipFile(zip_path, "w") as z:
+            z.write(csv_path, arcname="20200101.export.csv")
+
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        df = pd.read_parquet(outputs[0])
+        assert len(df) == 2
+        assert df["Day"].tolist() == [20200101, 20200102]
