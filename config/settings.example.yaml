@@ -234,25 +234,33 @@ columns_numeric:
 # Use absolute or relative paths.
 
 paths:
+  # Every dataset gets its own directory, with the same four/six stage
+  # names nested underneath (raw / csv / parquet / filtered, plus
+  # historical / filtered_historical for Events). Events used to live
+  # unprefixed at the top level while GKG/Mentions each got their own
+  # directory; nesting Events the same way keeps the layout uniform,
+  # e.g. data/events/raw next to data/gkg_v2/raw instead of a bare
+  # data/raw next to data/gkg_v2_raw.
+
   # Directory where the pipeline will download ZIP files
-  downloaded_data_directory: "./path_example/raw_data" # choose your own directory
+  downloaded_data_directory: "./path_example/events/raw" # choose your own directory
 
   # Directory for extracted CSV files
-  unzipped_data_directory: "./path_example/csv"
+  unzipped_data_directory: "./path_example/events/csv"
 
   # Directory for Parquet output
-  parquet_data_directory: "./path_example/parquet"
+  parquet_data_directory: "./path_example/events/parquet"
 
   # Directory for filtered Parquet files
-  filtered_data_directory: "./path_example/filtered"
+  filtered_data_directory: "./path_example/events/filtered"
 
   # Hive-partitioned Parquet for historical files (yearly / monthly ZIPs).
   # Only used when converter.partitioning.enabled is true.
-  parquet_historical_directory: "./path_example/parquet_historical"
+  parquet_historical_directory: "./path_example/events/historical"
 
   # Filtered version of the historical Hive dataset.
   # Only used when converter.partitioning.enabled is true.
-  filtered_historical_directory: "./path_example/filtered_historical"
+  filtered_historical_directory: "./path_example/events/filtered_historical"
 
   # GKG 2.1 and Mentions: same four stages as Events (download / unzip /
   # convert / filter), but their own directories; these publish at
@@ -260,29 +268,29 @@ paths:
   # Events' paths avoids ever mixing the two archives' files together.
   # No Hive-partitioned historical variant: unlike Events, GKG 2.1 and
   # Mentions have no pre-2013 yearly/monthly archive to partition.
-  gkg_v2_downloaded_data_directory: "./path_example/gkg_v2_raw"
-  gkg_v2_unzipped_data_directory: "./path_example/gkg_v2_csv"
-  gkg_v2_parquet_data_directory: "./path_example/gkg_v2_parquet"
-  gkg_v2_filtered_data_directory: "./path_example/gkg_v2_filtered"
+  gkg_v2_downloaded_data_directory: "./path_example/gkg_v2/raw"
+  gkg_v2_unzipped_data_directory: "./path_example/gkg_v2/csv"
+  gkg_v2_parquet_data_directory: "./path_example/gkg_v2/parquet"
+  gkg_v2_filtered_data_directory: "./path_example/gkg_v2/filtered"
 
-  mentions_downloaded_data_directory: "./path_example/mentions_raw"
-  mentions_unzipped_data_directory: "./path_example/mentions_csv"
-  mentions_parquet_data_directory: "./path_example/mentions_parquet"
-  mentions_filtered_data_directory: "./path_example/mentions_filtered"
+  mentions_downloaded_data_directory: "./path_example/mentions/raw"
+  mentions_unzipped_data_directory: "./path_example/mentions/csv"
+  mentions_parquet_data_directory: "./path_example/mentions/parquet"
+  mentions_filtered_data_directory: "./path_example/mentions/filtered"
 
   # GKG 1.0 (legacy) and its separate Counts file: same four stages, own
   # directories. Unlike GKG 2.1/Mentions, GKG 1.0 publishes daily, the same
   # cadence as Events, so it's kept separate purely to avoid mixing
   # schemas, not because of a granularity mismatch.
-  gkg_v1_downloaded_data_directory: "./path_example/gkg_v1_raw"
-  gkg_v1_unzipped_data_directory: "./path_example/gkg_v1_csv"
-  gkg_v1_parquet_data_directory: "./path_example/gkg_v1_parquet"
-  gkg_v1_filtered_data_directory: "./path_example/gkg_v1_filtered"
+  gkg_v1_downloaded_data_directory: "./path_example/gkg_v1/raw"
+  gkg_v1_unzipped_data_directory: "./path_example/gkg_v1/csv"
+  gkg_v1_parquet_data_directory: "./path_example/gkg_v1/parquet"
+  gkg_v1_filtered_data_directory: "./path_example/gkg_v1/filtered"
 
-  gkg_v1_counts_downloaded_data_directory: "./path_example/gkg_v1_counts_raw"
-  gkg_v1_counts_unzipped_data_directory: "./path_example/gkg_v1_counts_csv"
-  gkg_v1_counts_parquet_data_directory: "./path_example/gkg_v1_counts_parquet"
-  gkg_v1_counts_filtered_data_directory: "./path_example/gkg_v1_counts_filtered"
+  gkg_v1_counts_downloaded_data_directory: "./path_example/gkg_v1_counts/raw"
+  gkg_v1_counts_unzipped_data_directory: "./path_example/gkg_v1_counts/csv"
+  gkg_v1_counts_parquet_data_directory: "./path_example/gkg_v1_counts/parquet"
+  gkg_v1_counts_filtered_data_directory: "./path_example/gkg_v1_counts/filtered"
 
 # ================================
 #          STAGE SETTINGS

@@ -281,8 +281,8 @@ The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `19
 ```yaml
 paths:
   # existing paths ...
-  parquet_historical_directory: "./data/parquet_historical"
-  filtered_historical_directory: "./data/filtered_historical"
+  parquet_historical_directory: "./data/events/historical"
+  filtered_historical_directory: "./data/events/filtered_historical"
 
 converter:
   partitioning:
