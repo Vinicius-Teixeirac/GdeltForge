@@ -97,3 +97,40 @@ gdeltforge sample \
   --n-per-group 50000 \
   --out samples/verbal_stratified_rootflag.parquet
 ```
+
+## GKG-Enriched Events
+
+Sample Events, then enrich the sample with GKG (themes, tone, people, organizations) via `crossref`. GKG 2.1, the current format, carries no event ID at all, only the source article's URL, so it needs Mentions too, as the bridge to Events; legacy GKG 1.0 carries `EventIds` directly, so it skips straight to GKG. See [Comparison](comparison.md#what-gdeltforge-actually-does-differently) for why that two-hop join is worth a dedicated command rather than a one-line pandas merge.
+
+**GKG 2.1** (live since Feb 2015, updated every 15 minutes):
+
+```bash
+gdeltforge scrape --dataset gkg-v2 --start-date 2020-01-01 --end-date 2020-01-31
+gdeltforge scrape --dataset mentions --start-date 2020-01-01 --end-date 2020-01-31
+gdeltforge convert --dataset gkg-v2
+gdeltforge convert --dataset mentions
+gdeltforge filter --dataset gkg-v2
+gdeltforge filter --dataset mentions
+
+gdeltforge sample --mode indexed -n 5000 --seed 42 --out samples/events_5k.parquet
+
+gdeltforge crossref \
+  --events samples/events_5k.parquet \
+  --gkg-version v2 \
+  --out samples/events_gkg_5k.parquet
+```
+
+**GKG 1.0** (legacy: the primary feed April 2013 through February 2015, still published daily since for backwards compatibility) is a direct join, no Mentions needed:
+
+```bash
+gdeltforge scrape --dataset gkg-v1 --start-date 2020-01-01 --end-date 2020-01-31
+gdeltforge convert --dataset gkg-v1
+gdeltforge filter --dataset gkg-v1
+
+gdeltforge crossref \
+  --events samples/events_5k.parquet \
+  --gkg-version v1 \
+  --out samples/events_gkgv1_5k.parquet
+```
+
+Both preserve the real many-to-many structure rather than collapsing it: one event can produce several output rows (one per article that covered it), and one article covering several events contributes one row per event.

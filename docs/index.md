@@ -1,11 +1,12 @@
 # GdeltForge
 
-**Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet.**
+**Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet.**
 
-GdeltForge is a lightweight but scalable data pipeline to extract, transform, and load the entire [GDELT 2.0 Events Database](https://www.gdeltproject.org/). It's designed for research workflows that need:
+GdeltForge is a lightweight but scalable data pipeline to extract, transform, and load [GDELT 2.0](https://www.gdeltproject.org/): the Events table, the Global Knowledge Graph (both the current GKG 2.1 and the legacy GKG 1.0), and Mentions, the bridge table between them. It's designed for research workflows that need:
 
 - Large-scale event data, from the 1979 historical backfill through today
-- Efficient columnar storage (**Parquet**), with optional Hive partitioning for historical data
+- Events enriched with GKG (themes, tone, people, organizations), via a dedicated cross-reference stage that preserves the real many-to-many relationship instead of silently collapsing it
+- Efficient columnar storage (**Parquet**), with optional Hive partitioning for historical Events data
 - Reproducible sampling (indexed, daily, filtered, stratified)
 - Transparent, modular data lineage: every stage is explicit, nothing runs "automagically"
 
@@ -26,23 +27,23 @@ gdeltforge sample --mode indexed -n 10000
 
 [GDELT](https://www.gdeltproject.org/) (the Global Database of Events, Language, and Tone) monitors broadcast, print, and web news from nearly every country, in over 100 languages (translating 65 of them into English in realtime), processing it continuously with new records published every 15 minutes. It's one of the largest open datasets of global news activity available.
 
-GDELT actually publishes several distinct tables, not just Events:
+GDELT actually publishes several distinct tables, all of which GdeltForge processes:
 
-- **Events** *(what GdeltForge processes)*: structured, CAMEO-coded records of who-did-what-to-whom-where. Each row is a single event extracted from a news article: two actors, an action, a date, and a location.
-- **Global Knowledge Graph (GKG)**: themes, emotions (2,300+ dimensions via GDELT's GCAM sentiment engine), people, organizations, and imagery/video, extracted from the same articles.
-- **Mentions**: every re-report of an event by a different outlet over time, not just the first.
+- **Events**: structured, CAMEO-coded records of who-did-what-to-whom-where. Each row is a single event extracted from a news article: two actors, an action, a date, and a location.
+- **Global Knowledge Graph (GKG)**: themes, emotions (2,300+ dimensions via GDELT's GCAM sentiment engine), people, organizations, and imagery/video, extracted from the same articles. GDELT has published two generations: **GKG 2.1**, the current format (live since Feb 2015, updated every 15 minutes), and legacy **GKG 1.0** (the primary feed April 2013 through February 2015, still published daily since for backwards compatibility).
+- **Mentions**: every re-report of an Event by a different article over time, not just the first. It's the bridge table between Events and GKG 2.1: GKG 2.1 carries no event ID of its own, only the source article's URL, so joining it to Events means going through Mentions.
 
-GdeltForge is scoped to the Events table specifically, since it's the table best suited to the structured, tabular, seeded-sampling workflow GdeltForge is built around. GKG and Mentions support is on the [roadmap](limitations-and-roadmap.md#roadmap) but not built yet; see [Comparison to Other Tools](comparison.md) for what to reach for if you need them today.
+`gdeltforge crossref` enriches a sampled Events output with GKG data, picking the right join strategy for the GKG generation you're using: GKG 1.0 carries `EventIds` directly (a direct join), while GKG 2.1 needs the two-hop join through Mentions. Both preserve the real many-to-many structure GDELT's data actually has, rather than silently collapsing it: one event can be covered by many articles, and one article can cover many events. See [CLI Reference](cli-reference.md#gdeltforge-crossref) for the full command, and [Comparison to Other Tools](comparison.md) for how this stacks up against other GDELT clients.
 
 ## Why this exists
 
-The GDELT Events Database is extremely rich, but getting the *full* archive through official channels is genuinely difficult:
+GDELT is extremely rich, but getting the *full* archive through official channels is genuinely difficult:
 
 - **The GDELT API** is built for small, recent queries: tight time windows, a ~250-row cap per query, and rate limits that make pulling the full historical dataset impractical.
 - **The BigQuery mirror** has full data, but free-tier quotas (1TB/month query, 10GB storage, 1GB egress) are far too small for the hundreds of GB involved, and full-table scans get expensive fast.
-- **The raw bulk archives** are available and complete, but they're thousands of individual ZIP files that need automated downloading, streaming/chunked processing, columnar storage, and memory-safe filtering and sampling before they're actually usable.
+- **The raw bulk archives** are available and complete, but they're thousands (for GKG 2.1/Mentions' 15-minute cadence, hundreds of thousands) of individual files that need automated downloading, streaming/chunked processing, columnar storage, and memory-safe filtering and sampling before they're actually usable.
 
-GdeltForge automates that last path end-to-end: scrape -> convert -> filter -> sample, each stage independent and re-runnable.
+GdeltForge automates that last path end-to-end: scrape -> convert -> filter -> sample, each stage independent and re-runnable, plus `crossref` to join a sampled Events output back to GKG once you have both.
 
 ## Where to go next
 

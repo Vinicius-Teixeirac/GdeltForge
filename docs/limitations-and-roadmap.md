@@ -34,7 +34,7 @@ Supported modes: indexed random, daily, filtered, and stratified. Sampling is wi
 - [ ] Publish to PyPI (`pip install gdeltforge`), planned once the above has settled
 - [ ] Docker image, for running the pipeline without a local Python/uv setup
 - [ ] Parallel execution of filtering and sampling
-- [ ] Support for additional GDELT datasets (GKG, Mentions) alongside Events
+- [x] Support for additional GDELT datasets (GKG, Mentions) alongside Events
 - [ ] CLI pipelines (e.g., `gdeltforge run all`)
 - [ ] GPU-aware sampling (cuDF / RAPIDS)
 - [ ] More advanced sampling techniques
