@@ -40,3 +40,5 @@ Supported modes: indexed random, daily, filtered, and stratified. Sampling is wi
 - [ ] GPU-aware sampling (cuDF / RAPIDS)
 - [ ] More advanced sampling techniques
 - [ ] Evaluate migrating performance-critical DataFrame code (CSV parsing in `convert`, row filtering in `filter`) from pandas to Polars
+- [ ] Evaluate a different Parquet compression codec than the current snappy default; pyarrow already ships zstd, gzip, brotli, and lz4, so this needs no new dependency, just changing `compression="snappy"` at the write call sites
+- [ ] Evaluate a different Parquet writer library altogether (fastparquet, DuckDB, Polars' own writer) instead of pyarrow; most relevant bundled with the pandas -> Polars evaluation above rather than adopted on its own
