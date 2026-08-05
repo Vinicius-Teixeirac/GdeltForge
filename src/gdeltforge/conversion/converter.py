@@ -49,6 +49,12 @@ _DAILY_PAT   = re.compile(r'^\d{8}\..+\.zip$',    re.IGNORECASE)
 # Applies to both flat and historical writes for a consistent union schema.
 _DATE_INT_COLS = ("Year", "MonthYear", "Day")
 
+# GKG 1.0 (both the main file and its separate Counts file) ships with a
+# literal header line (DATE\tNUMARTS\t...); Events, GKG 2.1, and Mentions
+# are all genuinely headerless. Confirmed by downloading and inspecting one
+# real file per dataset, not assumed from the codebook/parser source alone.
+_DATASETS_WITH_HEADER_ROW = frozenset({"gdelt_gkg_v1", "gdelt_gkg_v1_counts"})
+
 
 class GDELTConverter:
     """
@@ -256,10 +262,14 @@ class GDELTConverter:
     # ------------------------------------------------------------
     def _read_csv(self, csv_path: str | Path) -> pd.DataFrame:
         try:
+            # header=0 + names=... together mean "the first line is a real
+            # header, skip it, then use our own names instead of its literal
+            # text" -- not "there's no header at all" (that's header=None).
+            header = 0 if self.dataset in _DATASETS_WITH_HEADER_ROW else None
             df = pd.read_csv(
                 csv_path,
                 sep="\t",
-                header=None,
+                header=header,
                 dtype=str,
                 encoding="utf-8",
                 low_memory=False,
