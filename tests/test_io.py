@@ -31,6 +31,24 @@ class TestWriteParquetAtomic:
         assert pd.read_parquet(out)["GlobalEventID"].tolist() == [1, 2, 3]
         assert not tmp_path_leftover.exists()
 
+    def test_extra_kwargs_are_passed_through_to_to_parquet(self, tmp_path, monkeypatch):
+        out = tmp_path / "sample.parquet"
+        captured = {}
+
+        real_to_parquet = pd.DataFrame.to_parquet
+
+        def spy(self, path, **kwargs):
+            captured.update(kwargs)
+            return real_to_parquet(self, path, **kwargs)
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", spy)
+
+        write_parquet_atomic(
+            pd.DataFrame({"a": [1]}), out, engine="pyarrow", compression="snappy", index=False,
+        )
+
+        assert captured == {"engine": "pyarrow", "compression": "snappy", "index": False}
+
     def test_cleans_up_tmp_and_reraises_on_write_failure(self, tmp_path, monkeypatch):
         out = tmp_path / "sample.parquet"
 

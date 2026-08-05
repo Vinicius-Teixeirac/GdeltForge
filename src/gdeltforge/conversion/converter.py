@@ -33,7 +33,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gdeltforge.utils.config import dataset_path_key
-from gdeltforge.utils.io import unzip_file
+from gdeltforge.utils.io import unzip_file, write_parquet_atomic
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -304,8 +304,8 @@ class GDELTConverter:
                 if col in df.columns and pd.api.types.is_float_dtype(df[col]):
                     df[col] = df[col].astype("Int64")
 
-            df.to_parquet(
-                parquet_path,
+            write_parquet_atomic(
+                df, parquet_path,
                 engine="pyarrow",
                 compression="snappy",
                 index=False,
@@ -364,8 +364,20 @@ class GDELTConverter:
             out_dir.mkdir(parents=True, exist_ok=True)
 
             out_path = out_dir / f"{zip_path.stem}.parquet"
+            tmp_path = out_path.with_name(out_path.name + ".tmp")
             table = pa.Table.from_pandas(group, preserve_index=False)
-            pq.write_table(table, out_path, compression="snappy")
+            try:
+                pq.write_table(table, tmp_path, compression="snappy")
+                os.replace(tmp_path, out_path)
+            except Exception:
+                # Same atomic tmp-then-rename guarantee as _save_parquet's
+                # write_parquet_atomic, just against pq.write_table's Table
+                # API instead of DataFrame.to_parquet: a kill or crash
+                # mid-write must never leave a truncated file at out_path,
+                # since nothing here would ever detect or clean it up later.
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise
             created.append(out_path)
             logger.debug(f"Written: {out_path}")
 

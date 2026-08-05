@@ -17,11 +17,15 @@ def ensure_exists(path: str | Path, description: str) -> Path:
     return p
 
 
-def write_parquet_atomic(df: pd.DataFrame, out: str | Path) -> None:
+def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs) -> None:
     """
     Write a DataFrame to Parquet via a temp file plus an atomic rename, so a
     process killed mid-write leaves either a complete file at the
     destination path or no file at all there, never a corrupt or empty one.
+
+    to_parquet_kwargs are passed straight through to DataFrame.to_parquet
+    (e.g. engine, compression), for callers that need more control than
+    the pandas default.
     """
     out = Path(out)
     tmp_path = out.with_name(out.name + ".tmp")
@@ -33,7 +37,7 @@ def write_parquet_atomic(df: pd.DataFrame, out: str | Path) -> None:
         )
 
     try:
-        df.to_parquet(tmp_path)
+        df.to_parquet(tmp_path, **to_parquet_kwargs)
         os.replace(tmp_path, out)
     except Exception:
         tmp_path.unlink(missing_ok=True)
