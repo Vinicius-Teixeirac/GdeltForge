@@ -33,8 +33,10 @@ Supported modes: indexed random, daily, filtered, and stratified. Sampling is wi
 - [x] Unit test coverage for the filtering, sampling, indexing, and RNG modules
 - [x] Publish to PyPI (`pip install gdeltforge`)
 - [ ] Docker image, for running the pipeline without a local Python/uv setup
-- [ ] Parallel execution of filtering and sampling
+- [x] Parallel execution of filtering (`filter.max_workers`, matching `converter.max_workers`)
+- [ ] Parallel execution of sampling
 - [x] Support for additional GDELT datasets (GKG, Mentions) alongside Events
 - [ ] CLI pipelines (e.g., `gdeltforge run all`)
 - [ ] GPU-aware sampling (cuDF / RAPIDS)
 - [ ] More advanced sampling techniques
+- [ ] Evaluate migrating performance-critical DataFrame code (CSV parsing in `convert`, row filtering in `filter`) from pandas to Polars
