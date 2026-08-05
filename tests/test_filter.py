@@ -1,10 +1,25 @@
 import pandas as pd
+import pyarrow.parquet as pq
+import pytest
 
+import gdeltforge.filtering.filter as filter_module
 from gdeltforge.filtering.filter import GDELTFilter, run_filter
 
 
 def _write_parquet(path, data):
     pd.DataFrame(data).to_parquet(path)
+
+
+class TestMaxWorkersConfig:
+    def test_defaults_to_none_so_executor_uses_cpu_count(self, tmp_path):
+        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        assert filt.max_workers is None
+
+    def test_explicit_value_is_respected(self, tmp_path):
+        filt = GDELTFilter(
+            str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=2
+        )
+        assert filt.max_workers == 2
 
 
 class TestFilterSingleFile:
@@ -78,6 +93,25 @@ class TestFilterAllFiles:
 
         assert processed == 0
         assert failed == 1
+
+    def test_one_corrupt_file_does_not_abort_the_others(self, tmp_path):
+        # Now that files run across a worker pool (see TestMaxWorkersConfig),
+        # this is the same guarantee test_counts_a_corrupt_file_as_failed
+        # checks in isolation, but proven alongside files that must still
+        # succeed, mirroring the scraper/converter batch-isolation tests.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(
+            input_dir / "good.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, None]}
+        )
+        (input_dir / "bad.parquet").write_bytes(b"not a real parquet file")
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"], max_workers=2)
+        processed, failed = filt.filter_all_files()
+
+        assert (processed, failed) == (1, 1)
+        out = pd.read_parquet(tmp_path / "out" / "good_filtered.parquet")
+        assert out["GlobalEventID"].tolist() == [1]
 
     def test_preserves_historical_directory_structure(self, tmp_path):
         flat_in = tmp_path / "flat_in"
@@ -182,3 +216,80 @@ class TestRunFilterDatasetParameter:
         out_dir = cfg["paths"]["gkg_v2_filtered_data_directory"]
         out = pd.read_parquet(out_dir + "/a_filtered.parquet")
         assert out["GKGRECORDID"].tolist() == ["r1"]
+
+    def test_passes_max_workers_through_to_the_filterer(self, tmp_path, monkeypatch):
+        cfg, events_in, _ = self._config(tmp_path)
+        cfg["filter"]["max_workers"] = 3
+        pd.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).to_parquet(events_in / "a.parquet")
+
+        captured = {}
+        real_init = GDELTFilter.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(GDELTFilter, "__init__", spy_init)
+
+        run_filter(cfg)
+
+        assert captured["max_workers"] == 3
+
+    def test_missing_max_workers_key_defaults_to_none(self, tmp_path):
+        # config["filter"] historically had no max_workers key at all
+        # (pre-dating this feature); run_filter must not KeyError on it.
+        cfg, events_in, _ = self._config(tmp_path)
+        pd.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).to_parquet(events_in / "a.parquet")
+
+        processed, failed = run_filter(cfg)
+
+        assert (processed, failed) == (1, 0)
+
+
+class TestFilterSingleFileAtomicity:
+    """filter_single_file used to write straight to output_path via a
+    streaming ParquetWriter. Now that filter_all_files runs files across a
+    worker pool (TestMaxWorkersConfig), a killed worker is a real,
+    reachable failure mode, not just a hypothetical -- a truncated file
+    left at output_path would be silently picked up by anything reading
+    the filtered directory afterwards. Now writes through a temp file and
+    only renames into place once the stream completes, matching the same
+    pattern already used for converter output."""
+
+    def test_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        def boom(self, table, **kwargs):
+            raise OSError("simulated crash mid-write")
+
+        monkeypatch.setattr(filter_module.pq.ParquetWriter, "write_table", boom)
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+
+        with pytest.raises(OSError):
+            filt.filter_single_file(src, out_path)
+
+        assert not out_path.exists()
+        assert not out_path.with_name(out_path.name + ".tmp").exists()
+
+    def test_successful_write_leaves_no_tmp_behind(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        assert out_path.exists()
+        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert pq.read_table(out_path).num_rows == 2
