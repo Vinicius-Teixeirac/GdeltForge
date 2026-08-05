@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-05
+
 ### Added
 - `gdeltforge codes` command: looks up valid codes across seven CAMEO/FIPS-coded column families (CAMEO actor-country, FIPS geo-country, CAMEO ethnic, CAMEO known-group, CAMEO religion, CAMEO actor-type, and CAMEO event), with a `--search` filter. Needs no config file
 - `FilteredSampler` now warns (not raises) when a filter value on a CAMEO/FIPS-coded column isn't recognized for that column's code family, e.g. a 3-letter CAMEO code used against a 2-letter FIPS column. Covers all seven families above, comparing case-insensitively since GDELT stores ethnic codes lowercase in real data while the source codebook uses uppercase
