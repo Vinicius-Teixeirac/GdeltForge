@@ -36,6 +36,8 @@ GKG's own repeated/structured sub-fields (themes, persons, GCAM scores, `EventId
 
 All directories the pipeline reads from or writes to. Absolute or relative paths both work. Events keeps its original, unprefixed keys; every other dataset uses a prefixed sibling key for the same four stages, since mixing different datasets' files in one directory would be a real correctness hazard, not just an organizational one. The actual config key is `<prefix><base key>`, e.g. `gkg_v1_counts_` + `downloaded_data_directory` = `gkg_v1_counts_downloaded_data_directory`.
 
+The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/filtered`, ...) rather than a flat `data/<dataset>_<stage>`, so the five datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
+
 | `--dataset` | Path prefix |
 |---|---|
 | `events` | *(none, unprefixed)* |
@@ -109,8 +111,8 @@ The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `19
 ```yaml
 paths:
   # existing paths ...
-  parquet_historical_directory: "./data/parquet_historical"
-  filtered_historical_directory: "./data/filtered_historical"
+  parquet_historical_directory: "./data/events/historical"
+  filtered_historical_directory: "./data/events/filtered_historical"
 
 converter:
   partitioning:
