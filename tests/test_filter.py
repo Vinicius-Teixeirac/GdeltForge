@@ -1,6 +1,6 @@
 import pandas as pd
 
-from gdeltforge.filtering.filter import GDELTFilter
+from gdeltforge.filtering.filter import GDELTFilter, run_filter
 
 
 def _write_parquet(path, data):
@@ -120,3 +120,65 @@ class TestValidateColumns:
         result = filt.validate_columns()
 
         assert "error" in result
+
+
+class TestRunFilterDatasetParameter:
+    """run_filter (not GDELTFilter itself, which is already dataset-agnostic)
+    is what resolves dataset-specific paths.* and filter.columns_to_check
+    keys; this end-to-end coverage is what's new here, constructor-level
+    resolution alone can't prove the right directory gets read/written or
+    the right check-list gets enforced."""
+
+    @staticmethod
+    def _config(tmp_path):
+        events_in, events_out = tmp_path / "events_in", tmp_path / "events_out"
+        gkg_in, gkg_out = tmp_path / "gkg_v2_in", tmp_path / "gkg_v2_out"
+        events_in.mkdir()
+        gkg_in.mkdir()
+        return {
+            "paths": {
+                "parquet_data_directory": str(events_in),
+                "filtered_data_directory": str(events_out),
+                "gkg_v2_parquet_data_directory": str(gkg_in),
+                "gkg_v2_filtered_data_directory": str(gkg_out),
+            },
+            "filter": {
+                "columns_to_check": {
+                    "gdelt_event": ["Actor1Name"],
+                    "gdelt_gkg_v2": ["V2DOCUMENTIDENTIFIER"],
+                },
+            },
+            "converter": {"partitioning": {"enabled": False}},
+        }, events_in, gkg_in
+
+    def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
+        cfg, events_in, _ = self._config(tmp_path)
+        pd.DataFrame({
+            "GlobalEventID": [1, 2], "Actor1Name": ["A", None],
+        }).to_parquet(events_in / "a.parquet")
+
+        processed, failed = run_filter(cfg)
+
+        assert (processed, failed) == (1, 0)
+        out = pd.read_parquet(cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet")
+        assert out["GlobalEventID"].tolist() == [1]
+
+    def test_non_events_dataset_reads_its_own_directory_and_check_list(self, tmp_path):
+        # Actor1Name (gdelt_event's own check column) doesn't exist on the
+        # GKG side at all; if run_filter ever fell back to gdelt_event's
+        # columns_to_check by mistake, GDELTFilter's "missing columns are
+        # skipped, not fatal" behavior would silently pass both rows
+        # through unfiltered instead of enforcing V2DOCUMENTIDENTIFIER, so
+        # a wrong dataset resolution here would show up as len(out) == 2.
+        cfg, _, gkg_in = self._config(tmp_path)
+        pd.DataFrame({
+            "GKGRECORDID": ["r1", "r2"],
+            "V2DOCUMENTIDENTIFIER": ["http://a.com", None],
+        }).to_parquet(gkg_in / "a.parquet")
+
+        processed, failed = run_filter(cfg, dataset="gdelt_gkg_v2")
+
+        assert (processed, failed) == (1, 0)
+        out_dir = cfg["paths"]["gkg_v2_filtered_data_directory"]
+        out = pd.read_parquet(out_dir + "/a_filtered.parquet")
+        assert out["GKGRECORDID"].tolist() == ["r1"]
