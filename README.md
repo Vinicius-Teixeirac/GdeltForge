@@ -297,11 +297,11 @@ converter:
 With partitioning enabled, running `gdeltforge convert` produces two separate output areas:
 
 ```
-data/
-├── parquet/                        # daily files (2013-present), unchanged
+data/events/
+├── parquet/                  # daily files (2013-present), unchanged
 │   ├── 20130401.export.parquet
 │   └── ...
-└── parquet_historical/             # yearly/monthly files, Hive-organized
+└── historical/               # yearly/monthly files, Hive-organized
     ├── Year=1979/
     │   └── 1979.parquet
     ├── Year=2006/
@@ -316,11 +316,17 @@ Historical ZIPs that have already been converted are tracked with `.done` marker
 
 All downstream stages (`filter`, `sample`) detect the historical directory automatically from the config and include its data without any extra flags.
 
+`convert` also accepts `--start-date`/`--end-date`, same as `scrape`, narrowing which already-downloaded ZIPs get converted:
+
+```
+gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
+```
+
 ### Filter the Parquet Dataset
 ```
 gdeltforge filter
 ```
-Drops rows with missing values in the columns defined in settings.yaml.
+Drops rows with missing values in the columns defined in settings.yaml. Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
 
 ### Sampling
 
