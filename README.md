@@ -127,11 +127,21 @@ Each stage consumes the output of the previous one, enabling:
 
 ## Installation
 
-This project uses [uv](https://docs.astral.sh/uv/) for dependency management. `uv sync` builds and installs GdeltForge itself (editable), so the `gdeltforge` command becomes available inside the virtual environment.
+```
+pip install gdeltforge
+gdeltforge --help
+```
+
+### Installing from source
+
+For contributing to GdeltForge itself, or an editable install. This project uses [uv](https://docs.astral.sh/uv/) for dependency management; `uv sync` builds and installs GdeltForge itself (editable), so the `gdeltforge` command becomes available inside the virtual environment.
 
 ```
 # Install uv (if not already installed)
 pip install uv
+
+git clone https://github.com/Vinicius-Teixeirac/GdeltForge.git
+cd GdeltForge
 
 # Create virtual environment, install dependencies, and install GdeltForge itself
 uv sync

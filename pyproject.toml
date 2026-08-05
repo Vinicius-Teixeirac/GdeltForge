@@ -1,7 +1,7 @@
 [project]
 name = "gdeltforge"
 dynamic = ["version"]
-description = "Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet datasets"
+description = "Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
