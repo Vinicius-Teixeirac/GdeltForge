@@ -26,13 +26,16 @@ Provides:
 
 import glob
 import os
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, parse_file_date
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
@@ -53,6 +56,9 @@ class GDELTFilter:
         historical_input_folder: str | None = None,
         historical_output_folder: str | None = None,
         max_workers: int | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -67,6 +73,14 @@ class GDELTFilter:
         # None is a valid value here: ProcessPoolExecutor treats
         # max_workers=None as "use os.cpu_count()" on its own.
         self.max_workers = max_workers
+        # GDELTFilter stays dataset-agnostic (it never sees a dataset name,
+        # only already-resolved paths/columns, see run_filter below), so
+        # the caller resolves which filename convention date_parser needs
+        # to understand rather than GDELTFilter guessing from a dataset it
+        # doesn't have.
+        self.start_date = start_date
+        self.end_date = end_date
+        self.date_parser = date_parser
 
         self.output_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Filter output folder ensured: {self.output_folder}")
@@ -91,6 +105,13 @@ class GDELTFilter:
             list(self.historical_input_folder.rglob("*.parquet"))
             if self.historical_input_folder and self.historical_input_folder.exists()
             else []
+        )
+
+        flat_files = filter_paths_by_date(
+            flat_files, self.start_date, self.end_date, date_parser=self.date_parser
+        )
+        historical_files = filter_paths_by_date(
+            historical_files, self.start_date, self.end_date, date_parser=self.date_parser
         )
 
         all_files = [(Path(p), False) for p in flat_files] + \
@@ -308,7 +329,12 @@ class GDELTFilter:
 # RUN WRAPPER (used by main.py)
 # ======================================================================
 
-def run_filter(config: dict, dataset: str = "gdelt_event") -> tuple[int, int]:
+def run_filter(
+    config: dict,
+    dataset: str = "gdelt_event",
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
     """
@@ -330,5 +356,8 @@ def run_filter(config: dict, dataset: str = "gdelt_event") -> tuple[int, int]:
         historical_input_folder=historical_input,
         historical_output_folder=historical_output,
         max_workers=config["filter"].get("max_workers"),
+        start_date=start_date,
+        end_date=end_date,
+        date_parser=date_parser_for(dataset),
     )
     return filterer.filter_all_files()
