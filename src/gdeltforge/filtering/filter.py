@@ -15,6 +15,22 @@ filter:
 The GDELTFilter class will then remove all rows where any of the specified columns
 contain NaN.
 
+Optionally, a dataset can also be projected down to a subset of columns on write,
+and given its own compression codec, independent of row-filtering:
+
+filter:
+  output_columns:
+    gdelt_gkg_v2:
+      - GKGRECORDID
+      - V2.1DATE
+      - V2DOCUMENTIDENTIFIER
+      - V1THEMES
+  compression:
+    gdelt_gkg_v2: zstd
+
+Both are opt-in per dataset; omitting them keeps every column at the previous
+default (snappy), so existing configs behave exactly as before.
+
 When converter.partitioning.enabled is true the historical Hive-partitioned dataset
 (under parquet_historical_directory) is filtered in addition to the flat daily files.
 The Hive directory structure is preserved in filtered_historical_directory.
@@ -59,10 +75,19 @@ class GDELTFilter:
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
+        output_columns: list[str] | None = None,
+        compression: str = "snappy",
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
         self.columns_to_check = columns_to_check
+        # Optional column projection applied after row-filtering, so wide
+        # datasets (GKG's free-text fields in particular) don't have to be
+        # written out in full just to reach the columns a downstream
+        # consumer actually reads. None keeps every column, matching the
+        # behavior before this existed.
+        self.output_columns = output_columns
+        self.compression = compression
 
         self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
@@ -234,10 +259,25 @@ class GDELTFilter:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_name(output_path.name + ".tmp")
 
+        # Same existing/missing split as columns_to_check above: a
+        # configured output column that isn't in this file's schema is
+        # dropped rather than treated as fatal, since schemas can drift
+        # release to release the same way they already can for row-filters.
+        keep_columns = (
+            [c for c in self.output_columns if c in schema_cols]
+            if self.output_columns is not None
+            else None
+        )
+        write_schema = (
+            pf.schema_arrow
+            if keep_columns is None
+            else pa.schema([pf.schema_arrow.field(c) for c in keep_columns])
+        )
+
         rows_before = 0
         rows_after  = 0
 
-        writer = pq.ParquetWriter(tmp_path, pf.schema_arrow, compression="snappy")
+        writer = pq.ParquetWriter(tmp_path, write_schema, compression=self.compression)
         try:
             for batch in pf.iter_batches(batch_size=64_000):
                 df_batch = batch.to_pandas()
@@ -247,9 +287,10 @@ class GDELTFilter:
                 rows_after += len(df_clean)
 
                 if not df_clean.empty:
-                    writer.write_table(
-                        pa.Table.from_pandas(df_clean, preserve_index=False)
-                    )
+                    table = pa.Table.from_pandas(df_clean, preserve_index=False)
+                    if keep_columns is not None:
+                        table = table.select(keep_columns)
+                    writer.write_table(table)
         except Exception:
             writer.close()
             if tmp_path.exists():
@@ -359,5 +400,7 @@ def run_filter(
         start_date=start_date,
         end_date=end_date,
         date_parser=date_parser_for(dataset),
+        output_columns=config["filter"].get("output_columns", {}).get(dataset),
+        compression=config["filter"].get("compression", {}).get(dataset, "snappy"),
     )
     return filterer.filter_all_files()
