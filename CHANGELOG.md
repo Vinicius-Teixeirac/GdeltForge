@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+- README, `docs/index.md`, and `docs/getting-started.md` now lead with `pip install gdeltforge` instead of "install from a clone," now that 0.4.0 is actually on PyPI; the clone/`uv sync` path is kept as a clearly-labeled "installing from source" option for contributors. Checked off the PyPI roadmap item, and fixed a leftover `↔` in `docs/cli-reference.md` (should have been `<->`, missed in the arrow-notation pass this session). `pyproject.toml`'s `description` was also still the old Events-only tagline; fixed for the next release, though it won't retroactively change what's already published for 0.4.0
+
 ## [0.4.0] - 2026-08-05
 
 ### Added

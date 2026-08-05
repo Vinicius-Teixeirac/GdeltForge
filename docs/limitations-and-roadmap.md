@@ -31,7 +31,7 @@ Supported modes: indexed random, daily, filtered, and stratified. Sampling is wi
 - [x] Linting and type-checking (ruff + pyright) enforced in CI
 - [x] Community health files: Code of Conduct, Contributing guide, Security policy, issue/PR templates
 - [x] Unit test coverage for the filtering, sampling, indexing, and RNG modules
-- [ ] Publish to PyPI (`pip install gdeltforge`), planned once the above has settled
+- [x] Publish to PyPI (`pip install gdeltforge`)
 - [ ] Docker image, for running the pipeline without a local Python/uv setup
 - [ ] Parallel execution of filtering and sampling
 - [x] Support for additional GDELT datasets (GKG, Mentions) alongside Events
