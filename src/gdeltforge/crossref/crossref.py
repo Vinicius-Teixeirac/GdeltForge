@@ -15,7 +15,7 @@ Two join strategies, because GKG 1.0 and GKG 2.1 relate to Events
 differently (see docs/comparison.md):
 
     - crossref_events_gkg_v1: GKG 1.0 (and its separate Counts file) carry
-      EventIds directly on each row, a semicolon-delimited string, so this
+      EventIds directly on each row, a comma-delimited string, so this
       is a direct join. Not expressible as a pyarrow filter-pushdown
       predicate (EventIds is a packed string, not a scalar column), so the
       GKG dataset is scanned with column projection only, and the id list
@@ -78,7 +78,9 @@ def crossref_events_gkg_v1(
     """
     Direct join: events_df x a GKG 1.0-family dataset (the main file or
     its separate Counts file, both carry EventIds the same way, so this
-    works for either) on EventIds.
+    works for either) on EventIds, a comma-delimited string (confirmed
+    2026-08-04 against a real downloaded file; the codebook doesn't spell
+    out the exact delimiter).
 
     GKG-side output columns are prefixed "GKG_" to avoid colliding with
     an identically-named Events column (NumArticles exists on both sides).
@@ -106,7 +108,7 @@ def crossref_events_gkg_v1(
             continue
 
         exploded = df_batch.assign(
-            _matched_event_id=df_batch["EventIds"].fillna("").str.split(";")
+            _matched_event_id=df_batch["EventIds"].fillna("").str.split(",")
         ).explode("_matched_event_id")
         exploded["_matched_event_id"] = exploded["_matched_event_id"].str.strip()
         exploded = exploded[exploded["_matched_event_id"].isin(event_id_set)]
@@ -162,7 +164,7 @@ def crossref_events_gkg_v2(
     event_id_set = set(event_id_col)
 
     # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
-    # column unlike GKG 1.0's semicolon-packed EventIds, so this narrows
+    # column unlike GKG 1.0's comma-packed EventIds, so this narrows
     # the scan at the row-group level instead of reading everything.
     logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
     mentions_filter = pc.field("GLOBALEVENTID").isin(list(event_id_set))

@@ -25,7 +25,7 @@ class TestCrossrefEventsGkgV1:
         folder.mkdir()
         pd.DataFrame({
             "Date": [20130401, 20130401],
-            "EventIds": ["1001;1002", "9999"],
+            "EventIds": ["1001,1002", "9999"],
             "NumArticles": [10, 2],
             "Themes": ["TAX_FNCACT", "UNRELATED"],
         }).to_parquet(folder / "20130401.gkg.parquet")
@@ -41,8 +41,8 @@ class TestCrossrefEventsGkgV1:
         folder = self._write_gkg_v1(tmp_path)
         result = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
 
-        # Event 1001 matches "1001;1002" (batch 1) AND "1001" (batch 2) -> 2 rows.
-        # Event 1002 matches "1001;1002" only -> 1 row.
+        # Event 1001 matches "1001,1002" (batch 1) AND "1001" (batch 2) -> 2 rows.
+        # Event 1002 matches "1001,1002" only -> 1 row.
         # Event 1003 matches nothing -> 0 rows.
         assert len(result) == 3
         assert sorted(result["GlobalEventID"]) == [1001, 1001, 1002]
@@ -57,9 +57,9 @@ class TestCrossrefEventsGkgV1:
         folder = self._write_gkg_v1(tmp_path)
         result = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
 
-        # The "1001;1002" row must produce two separate output rows (one
+        # The "1001,1002" row must produce two separate output rows (one
         # per event), sharing the same GKG-side data, not one merged row.
-        shared = result[result["GKG_EventIds"] == "1001;1002"]
+        shared = result[result["GKG_EventIds"] == "1001,1002"]
         assert sorted(shared["GlobalEventID"]) == [1001, 1002]
         assert len(set(shared["GKG_Themes"])) == 1
 
@@ -77,7 +77,7 @@ class TestCrossrefEventsGkgV1:
         result = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
 
         row = result[
-            (result["GlobalEventID"] == 1001) & (result["GKG_EventIds"] == "1001;1002")
+            (result["GlobalEventID"] == 1001) & (result["GKG_EventIds"] == "1001,1002")
         ].iloc[0]
         assert row["NumArticles"] == 5       # Events' own NumArticles
         assert row["GKG_NumArticles"] == 10  # GKG's NumArticles, untouched
