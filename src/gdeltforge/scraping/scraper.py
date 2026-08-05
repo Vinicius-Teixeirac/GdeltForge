@@ -19,7 +19,11 @@ Provides:
     - collect_gdelt_links: retrieves all downloadable file links for a dataset
     - parse_file_date / parse_gdeltv2_file_date / parse_gdelt_gkg_v1_file_date:
       extract the date period a filename covers
-    - filter_urls_by_date: narrows a URL list to a [start_date, end_date] window
+    - date_parser_for: picks the right parser above for a given dataset
+    - filter_urls_by_date: narrows a GdeltFile list to a [start_date, end_date]
+      window (scrape, working from a remote listing)
+    - filter_paths_by_date: same window, for local file paths (convert/filter,
+      working against a directory already on disk)
     - download_gdelt_files: downloads the files returned by `collect_gdelt_links`
     - run_scraping_pipeline: high-level interface that runs the full scraping workflow
 """
@@ -33,7 +37,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
-from typing import TypedDict
+from pathlib import Path
+from typing import TypedDict, TypeVar
 from urllib.parse import urljoin
 
 import requests
@@ -440,10 +445,15 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
       - Monthly YYYYMM.zip               -> full calendar month
       - Yearly  YYYY.zip                 -> full calendar year
 
+    Also matches the equivalent already-converted Parquet names
+    (YYYYMMDD.export.parquet, YYYYMM.parquet, YYYY.parquet): convert only
+    ever sees the raw .zip form, but filter operates on converted output,
+    which keeps the source file's stem and swaps the extension.
+
     Returns (None, None) when the date cannot be determined.
     """
-    # Daily: 20150218.export.CSV.zip
-    if filename.endswith(".export.CSV.zip"):
+    # Daily: 20150218.export.CSV.zip (raw) or 20150218.export.parquet (converted)
+    if filename.endswith(".export.CSV.zip") or filename.endswith(".export.parquet"):
         raw = filename[:8]
         if raw.isdigit() and len(raw) == 8:
             try:
@@ -453,8 +463,11 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
                 pass
         return None, None
 
-    # Monthly: YYYYMM.zip (10 chars)
-    if filename[:6].isdigit() and len(filename) == 10 and filename.endswith(".zip"):
+    # Monthly: YYYYMM.zip (10 chars) or YYYYMM.parquet (14 chars)
+    if filename[:6].isdigit() and (
+        (len(filename) == 10 and filename.endswith(".zip"))
+        or (len(filename) == 14 and filename.endswith(".parquet"))
+    ):
         try:
             year, month = int(filename[:4]), int(filename[4:6])
             start = date(year, month, 1)
@@ -463,8 +476,11 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
         except ValueError:
             return None, None
 
-    # Yearly: YYYY.zip (8 chars)
-    if filename[:4].isdigit() and len(filename) == 8 and filename.endswith(".zip"):
+    # Yearly: YYYY.zip (8 chars) or YYYY.parquet (12 chars)
+    if filename[:4].isdigit() and (
+        (len(filename) == 8 and filename.endswith(".zip"))
+        or (len(filename) == 12 and filename.endswith(".parquet"))
+    ):
         try:
             year = int(filename[:4])
             return date(year, 1, 1), date(year, 12, 31)
@@ -562,6 +578,68 @@ def filter_urls_by_date(
         f"Date filter [{start_date} - {end_date}]: "
         f"{len(kept)} URLs kept, {len(files) - len(kept) - skipped} excluded, "
         f"{skipped} skipped (unparseable filename)."
+    )
+
+    return kept
+
+
+_PathT = TypeVar("_PathT", str, Path)
+
+
+def filter_paths_by_date(
+    paths: list[_PathT],
+    start_date: date | None,
+    end_date: date | None,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+) -> list[_PathT]:
+    """
+    Keep local file paths (convert/filter, working against a directory the
+    user already fully controls) whose filename's period overlaps
+    [start_date, end_date]. Same overlap semantics as filter_urls_by_date,
+    for plain path strings instead of GdeltFile objects from a remote
+    listing.
+
+    Unlike filter_urls_by_date, a path whose date can't be parsed is KEPT
+    rather than excluded: filter_urls_by_date skips what it can't parse
+    because a remote listing entry like that is usually garbage (an md5
+    checksum listing, an index page); a local directory can also hold
+    pre-daily historical archives (1979.parquet, 200601.parquet) that
+    carry no single day to filter by, and silently dropping those just
+    because --start-date/--end-date was set would be a surprising side
+    effect, not the intended scope of this flag.
+
+    Either bound may be None (open-ended). If both are None the full list
+    is returned unchanged so existing behaviour is preserved.
+    """
+    if start_date is None and end_date is None:
+        return paths
+
+    kept = []
+    excluded = 0
+    unparseable = 0
+
+    for path in paths:
+        filename = Path(path).name
+        file_start, file_end = date_parser(filename)
+
+        if file_start is None or file_end is None:
+            kept.append(path)
+            unparseable += 1
+            continue
+
+        if start_date and file_end < start_date:
+            excluded += 1
+            continue
+        if end_date and file_start > end_date:
+            excluded += 1
+            continue
+
+        kept.append(path)
+
+    logger.info(
+        f"Date filter [{start_date} - {end_date}]: {len(kept)} file(s) kept "
+        f"({unparseable} without a parseable date, kept regardless), "
+        f"{excluded} excluded."
     )
 
     return kept
@@ -710,7 +788,7 @@ def download_gdelt_files(
 # ------------------------------------------------------------
 # PIPELINE INTERFACE
 # ------------------------------------------------------------
-def _date_parser_for(dataset: str) -> Callable[[str], tuple[date | None, date | None]]:
+def date_parser_for(dataset: str) -> Callable[[str], tuple[date | None, date | None]]:
     if dataset in _GDELT_V2_SUFFIXES:
         return parse_gdeltv2_file_date
     if dataset in _GDELT_GKG_V1_SUFFIXES:
@@ -730,7 +808,7 @@ def run_scraping_pipeline(
     """
     files = collect_gdelt_links(config, dataset=dataset)
 
-    date_parser = _date_parser_for(dataset)
+    date_parser = date_parser_for(dataset)
     files = filter_urls_by_date(files, start_date, end_date, date_parser=date_parser)
 
     _warn_if_large_scrape(files, dataset)

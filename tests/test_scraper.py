@@ -41,6 +41,16 @@ class TestParseFileDate:
     def test_invalid_calendar_date(self):
         assert parse_file_date("20201332.export.CSV.zip") == (None, None)
 
+    def test_daily_converted_parquet(self):
+        # filter operates on already-converted output, not the raw zip.
+        assert parse_file_date("20200315.export.parquet") == (date(2020, 3, 15), date(2020, 3, 15))
+
+    def test_monthly_converted_parquet(self):
+        assert parse_file_date("202003.parquet") == (date(2020, 3, 1), date(2020, 3, 31))
+
+    def test_yearly_converted_parquet(self):
+        assert parse_file_date("2020.parquet") == (date(2020, 1, 1), date(2020, 12, 31))
+
 
 # ------------------------------------------------------------
 # parse_gdeltv2_file_date
@@ -195,6 +205,76 @@ class TestFilterUrlsByDate:
             date_parser=parse_gdeltv2_file_date,
         )
         assert {f.url for f in kept} == {"http://x/20150218233000.gkg.csv.zip"}
+
+
+# ------------------------------------------------------------
+# filter_paths_by_date: convert/filter's local-path equivalent of
+# filter_urls_by_date, used against a directory already on disk
+# ------------------------------------------------------------
+class TestFilterPathsByDate:
+    def _paths(self):
+        return [
+            "/data/20200101.export.parquet",
+            "/data/20200601.export.parquet",
+            "/data/20190815.export.parquet",
+            "/data/README.txt",  # genuinely unparseable, not a GDELT filename
+        ]
+
+    def test_no_bounds_returns_unchanged(self):
+        paths = self._paths()
+        assert scraper.filter_paths_by_date(paths, None, None, parse_file_date) == paths
+
+    def test_range_keeps_overlapping_daily_files(self):
+        kept = scraper.filter_paths_by_date(
+            self._paths(), date(2020, 1, 1), date(2020, 12, 31), parse_file_date,
+        )
+        assert set(kept) == {
+            "/data/20200101.export.parquet",
+            "/data/20200601.export.parquet",
+            "/data/README.txt",  # unparseable, kept regardless (see test below)
+        }
+
+    def test_unparseable_date_is_kept_not_excluded(self):
+        # Unlike filter_urls_by_date, a name the parser can't date at all
+        # is kept rather than dropped: a local directory the user already
+        # controls can legitimately hold files this feature has no opinion
+        # about, and silently excluding them would be a surprising side
+        # effect of setting --start-date/--end-date, not the intended scope.
+        kept = scraper.filter_paths_by_date(
+            self._paths(), date(2020, 1, 1), date(2020, 12, 31), parse_file_date,
+        )
+        assert "/data/README.txt" in kept
+
+    def test_yearly_parquet_is_parsed_and_filtered_on_its_merits(self):
+        # A pre-daily historical archive (1979.parquet) DOES have a
+        # parseable period once converted; it's correctly excluded here
+        # for being the wrong year, not because it's unparseable.
+        kept = scraper.filter_paths_by_date(
+            ["/data/1979.parquet", "/data/2020.parquet"],
+            date(2020, 1, 1), date(2020, 12, 31), parse_file_date,
+        )
+        assert kept == ["/data/2020.parquet"]
+
+    def test_open_ended_start(self):
+        kept = scraper.filter_paths_by_date(
+            self._paths(), date(2020, 1, 1), None, parse_file_date,
+        )
+        assert "/data/20190815.export.parquet" not in kept
+        assert "/data/20200101.export.parquet" in kept
+
+    def test_open_ended_end(self):
+        kept = scraper.filter_paths_by_date(
+            self._paths(), None, date(2019, 12, 31), parse_file_date,
+        )
+        assert set(kept) == {"/data/20190815.export.parquet", "/data/README.txt"}
+
+    def test_date_parser_can_be_overridden_for_gdeltv2_filenames(self):
+        paths = ["/data/20150218233000.gkg.parquet", "/data/20200101000000.gkg.parquet"]
+        kept = scraper.filter_paths_by_date(
+            paths, date(2015, 1, 1), date(2015, 12, 31),
+            date_parser=parse_gdeltv2_file_date,
+        )
+        assert kept == ["/data/20150218233000.gkg.parquet"]
 
 
 # ------------------------------------------------------------
@@ -455,19 +535,19 @@ class TestCollectGdeltLinksDispatch:
 
 
 # ------------------------------------------------------------
-# _date_parser_for: picks the right filename convention per dataset
+# date_parser_for: picks the right filename convention per dataset
 # ------------------------------------------------------------
 class TestDateParserFor:
     def test_events_uses_the_daily_monthly_yearly_parser(self):
-        assert scraper._date_parser_for("gdelt_event") is parse_file_date
+        assert scraper.date_parser_for("gdelt_event") is parse_file_date
 
     def test_gkg_v2_and_mentions_use_the_15_minute_batch_parser(self):
-        assert scraper._date_parser_for("gdelt_gkg_v2") is parse_gdeltv2_file_date
-        assert scraper._date_parser_for("gdelt_mentions") is parse_gdeltv2_file_date
+        assert scraper.date_parser_for("gdelt_gkg_v2") is parse_gdeltv2_file_date
+        assert scraper.date_parser_for("gdelt_mentions") is parse_gdeltv2_file_date
 
     def test_gkg_v1_and_counts_use_the_daily_gkg_v1_parser(self):
-        assert scraper._date_parser_for("gdelt_gkg_v1") is parse_gdelt_gkg_v1_file_date
-        assert scraper._date_parser_for("gdelt_gkg_v1_counts") is parse_gdelt_gkg_v1_file_date
+        assert scraper.date_parser_for("gdelt_gkg_v1") is parse_gdelt_gkg_v1_file_date
+        assert scraper.date_parser_for("gdelt_gkg_v1_counts") is parse_gdelt_gkg_v1_file_date
 
 
 # ------------------------------------------------------------
