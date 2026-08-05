@@ -25,6 +25,8 @@ Provides:
 """
 
 import glob
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import pyarrow as pa
@@ -50,6 +52,7 @@ class GDELTFilter:
         columns_to_check: list[str],
         historical_input_folder: str | None = None,
         historical_output_folder: str | None = None,
+        max_workers: int | None = None,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -61,6 +64,9 @@ class GDELTFilter:
         self.historical_output_folder: Path | None = (
             Path(historical_output_folder) if historical_output_folder else None
         )
+        # None is a valid value here: ProcessPoolExecutor treats
+        # max_workers=None as "use os.cpu_count()" on its own.
+        self.max_workers = max_workers
 
         self.output_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Filter output folder ensured: {self.output_folder}")
@@ -99,37 +105,50 @@ class GDELTFilter:
 
         logger.info(
             f"Filtering {len(flat_files)} flat file(s) "
-            f"and {len(historical_files)} historical file(s)."
+            f"and {len(historical_files)} historical file(s) using "
+            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
         )
 
         total_rows_before = 0
         total_rows_after  = 0
         files_processed   = 0
         files_failed      = 0
-        n_total           = len(all_files)
 
-        for idx, (parquet_path, is_historical) in tqdm(
-            enumerate(all_files, start=1),
-            total=n_total,
-            desc="Filtering parquet files"
-        ):
-            try:
-                output_path = self._output_path_for(parquet_path, is_historical)
-                rows_before, rows_after = self.filter_single_file(parquet_path, output_path)
+        # Each file is filtered independently (its own read, own output
+        # path), so file-level parallelism across processes is safe --
+        # this is CPU-bound (per-batch pandas dropna + parquet write), so
+        # ProcessPoolExecutor beats threads here, matching GDELTConverter's
+        # identical reasoning for process_all_files.
+        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self.filter_single_file,
+                    parquet_path,
+                    self._output_path_for(parquet_path, is_historical),
+                ): parquet_path
+                for parquet_path, is_historical in all_files
+            }
 
-                total_rows_before += rows_before
-                total_rows_after  += rows_after
-                files_processed   += 1
+            for future in tqdm(
+                as_completed(futures), total=len(futures), desc="Filtering parquet files"
+            ):
+                parquet_path = futures[future]
+                try:
+                    rows_before, rows_after = future.result()
 
-                rate = (rows_after / rows_before * 100) if rows_before else 0
-                logger.info(
-                    f"[{idx}/{n_total}] {parquet_path.name}: "
-                    f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
-                )
+                    total_rows_before += rows_before
+                    total_rows_after  += rows_after
+                    files_processed   += 1
 
-            except Exception as e:
-                files_failed += 1
-                logger.error(f"Failed to filter {parquet_path.name}: {e}")
+                    rate = (rows_after / rows_before * 100) if rows_before else 0
+                    logger.info(
+                        f"{parquet_path.name}: "
+                        f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
+                    )
+
+                except Exception as e:
+                    files_failed += 1
+                    logger.error(f"Failed to filter {parquet_path.name}: {e}")
 
         logger.info("===============================================")
         logger.info("FILTERING SUMMARY")
@@ -158,7 +177,10 @@ class GDELTFilter:
     ) -> tuple[int, int]:
         """
         Filter a single parquet file and return (rows_before, rows_after).
-        Streams the file in batches to keep peak RAM bounded.
+        Streams the file in batches to keep peak RAM bounded, and writes
+        through a temp file + atomic rename so a worker process killed
+        mid-write leaves nothing at output_path rather than a truncated
+        file, matching the pattern already used for converter output.
 
         output_path overrides the default flat naming convention; used to
         preserve Hive subdirectory structure for historical files.
@@ -189,11 +211,12 @@ class GDELTFilter:
             output_path = self.output_folder / f"{file_path.stem}_filtered.parquet"
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output_path.with_name(output_path.name + ".tmp")
 
         rows_before = 0
         rows_after  = 0
 
-        writer = pq.ParquetWriter(output_path, pf.schema_arrow, compression="snappy")
+        writer = pq.ParquetWriter(tmp_path, pf.schema_arrow, compression="snappy")
         try:
             for batch in pf.iter_batches(batch_size=64_000):
                 df_batch = batch.to_pandas()
@@ -206,8 +229,14 @@ class GDELTFilter:
                     writer.write_table(
                         pa.Table.from_pandas(df_clean, preserve_index=False)
                     )
-        finally:
+        except Exception:
             writer.close()
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+        else:
+            writer.close()
+            os.replace(tmp_path, output_path)
 
         logger.debug(f"Saved filtered file -> {output_path}")
         return rows_before, rows_after
@@ -300,5 +329,6 @@ def run_filter(config: dict, dataset: str = "gdelt_event") -> tuple[int, int]:
         columns_to_check=config["filter"]["columns_to_check"][dataset],
         historical_input_folder=historical_input,
         historical_output_folder=historical_output,
+        max_workers=config["filter"].get("max_workers"),
     )
     return filterer.filter_all_files()
