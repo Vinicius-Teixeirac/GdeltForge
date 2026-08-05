@@ -1,6 +1,6 @@
 # <img src="docs/assets/emblem.png" alt="GdeltForge emblem: a world map globe resting on an anvil" width="50" align="center"> GdeltForge
 
-### Forges the raw GDELT 2.0 Events archive into clean, reproducibly-sampled Parquet
+### Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet
 
 [![CI](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
@@ -14,12 +14,13 @@
   <img src="docs/assets/terminal-demo.svg" alt="gdeltforge codes and gdeltforge sample running in a terminal, sampling 20 rows out of 542,483,885" width="640">
 </p>
 
-GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, filters, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history.
+GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, filters, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history. It also scrapes the Global Knowledge Graph (both current GKG 2.1 and legacy GKG 1.0) and Mentions, and can cross-reference a sampled Events output back onto GKG (themes, tone, people, organizations) with `crossref`.
 
 - Full historical archive, not just the last 3 months the API allows
+- Events enriched with GKG via `crossref`, preserving the real many-to-many structure instead of collapsing it
 - Efficient columnar storage (**Parquet**) instead of raw CSV/ZIP
 - Reproducible sampling: indexed, daily, filtered, and stratified modes
-- Each stage (`scrape`/`convert`/`filter`/`sample`) runs independently and inspectably
+- Each stage (`scrape`/`convert`/`filter`/`sample`/`crossref`) runs independently and inspectably
 
 ## Contents
 
@@ -82,7 +83,7 @@ This pipeline automates these steps end-to-end.
 
 ## Comparison to Other GDELT Tools
 
-GdeltForge's genuinely distinguishing feature is treating **reproducible sampling as a first-class pipeline stage**, not download-and-convert alone: seeded indexed, daily, filtered, and stratified reservoir sampling over the full archive in a single streaming pass.
+GdeltForge's genuinely distinguishing feature is treating **reproducible sampling as a first-class pipeline stage**, not download-and-convert alone: seeded indexed, daily, filtered, and stratified reservoir sampling over the full archive in a single streaming pass. The other is `crossref`: GKG 2.1 carries no event ID at all, only the source article's URL, so joining it to Events means a two-hop trip through Mentions that's easy to get subtly wrong; `crossref` does that join with filter pushdown and keeps the real many-to-many structure intact instead of silently collapsing it.
 
 See [Comparison to Other Tools](https://vinicius-teixeirac.github.io/GdeltForge/comparison/) for an honest breakdown of when GdeltForge fits and when a DOC API client, BigQuery, or an existing Spark/DuckDB pipeline is the better choice.
 
@@ -92,10 +93,11 @@ The pipeline follows a **single-responsibility, single-stage execution model**. 
 
 | Stage | Does |
 |-------|------|
-| `scrape` | download raw GDELT CSV files |
+| `scrape` | download raw GDELT CSV files (Events, GKG 2.1, GKG 1.0, or Mentions) |
 | `convert` | transform CSV -> Parquet |
 | `filter` | remove rows with missing values |
 | `sample` | reproducibly sample from Parquet files |
+| `crossref` | join a sampled Events output back onto GKG |
 
 This design is intentionally **transparent and low-magic**:
 
@@ -107,11 +109,13 @@ This design is intentionally **transparent and low-magic**:
 ### High-Level Architecture
 
 ```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Scraper   │ ---> │  Converter  │ ---> │   Filter    │ ---> │   Sampler   │
-└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
-      CSV                Parquet            Cleaned data         Sampled data
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Scraper   │ ---> │  Converter  │ ---> │   Filter    │ ---> │   Sampler   │ ---> │  Crossref   │
+└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
+      CSV                Parquet            Cleaned data         Sampled data      Sample + GKG data
 ```
+
+The same four stages (scrape/convert/filter) run independently per dataset (`--dataset events`, `gkg-v2`, `mentions`, ...); `crossref` is the one stage that reads two datasets at once, joining a sampled Events output against a GKG dataset processed the same way.
 
 Each stage consumes the output of the previous one, enabling:
 
@@ -173,16 +177,20 @@ project_root/
 │ ├── conversion/
 │ │ └── converter.py # CSV -> Parquet conversion logic
 │ │
+│ ├── crossref/
+│ │ └── crossref.py # Events<->GKG join (direct for GKG 1.0, two-hop via Mentions for GKG 2.1)
+│ │
 │ ├── filtering/
 │ │ └── filter.py # Filtering logic (drop invalid rows)
 │ │
 │ ├── sampling/
+│ │ ├── cameo_codes.py # Bundled CAMEO/FIPS reference data, backs the `codes` command
 │ │ ├── indexer.py # File indexing for reproducible sampling
 │ │ ├── rng.py # Random number generation helpers
 │ │ └── samplers.py # Indexed, daily, and filtered sampling
 │ │
 │ ├── scraping/
-│ │ └── scraper.py # Downloader for raw GDELT event files
+│ │ └── scraper.py # Downloader for Events, GKG 2.1, GKG 1.0, and Mentions
 │ │
 │ └── utils/
 │   ├── config.py # Config resolution (--config / env var / CWD) and YAML loading
@@ -214,6 +222,8 @@ Available commands:
 | convert | Convert downloaded CSV files to Parquet |
 | filter  | Apply row-column filtering to Parquet files |
 | sample  | Efficient, reproducible sampling |
+| crossref | Join a sampled Events output back onto GKG |
+| codes   | Look up valid CAMEO/FIPS codes across seven column families |
 
 The CLI intentionally does not chain stages automatically. You run each stage explicitly to maintain full control.
 
@@ -394,6 +404,26 @@ gdeltforge sample \
 This produces a balanced dataset with 500 USA events per QuadClass value, regardless of the natural class distribution.
 
 `--stratify` requires `--n-per-group`. The `-n` flag is ignored when `--stratify` is set.
+
+### Cross-Referencing Events with GKG
+
+`crossref` enriches a sampled Events output with GKG (themes, tone, people, organizations). `--gkg-version` picks the join strategy: GKG 1.0 carries `EventIds` directly (a direct join), while GKG 2.1 carries no event ID at all and needs a two-hop join through Mentions on the source article's URL. Both preserve the real many-to-many structure (one event can produce several output rows, one article covering several events contributes one row per event) instead of collapsing it.
+
+```
+gdeltforge scrape --dataset gkg-v2
+gdeltforge scrape --dataset mentions
+gdeltforge convert --dataset gkg-v2
+gdeltforge convert --dataset mentions
+gdeltforge filter --dataset gkg-v2
+gdeltforge filter --dataset mentions
+
+gdeltforge crossref \
+    --events sample.parquet \
+    --gkg-version v2 \
+    --out sample_with_gkg.parquet
+```
+
+See [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/#gkg-enriched-events) for the GKG 1.0 direct-join variant and more detail.
 
 ### Full Pipeline Examples
 
