@@ -191,7 +191,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 
 GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Comparison](comparison.md) for why a direct Events<->GKG 2.1 join isn't possible):
 
-- **`v1`** and **`v1-counts`**: GKG 1.0 (and its separate Counts file) carry `EventIds` directly on each row, a semicolon-delimited list, so this is a direct join.
+- **`v1`** and **`v1-counts`**: GKG 1.0 (and its separate Counts file) carry `EventIds` directly on each row, a comma-delimited list, so this is a direct join.
 - **`v2`**: GKG 2.1 carries no event id at all, only the source article's URL, so this is a two-hop join through Mentions: Events -> Mentions (on `GlobalEventID`) -> GKG 2.1 (on that URL).
 
 Both preserve the underlying many-to-many structure rather than collapsing it: one event can produce several output rows (several articles covered it, each contributing its own GKG data), and one article covering several events contributes one row per event, not one merged row. An event with no GKG match contributes no rows at all, rather than a row full of nulls. GKG-side output columns are prefixed `GKG_` (and, for `v2`, Mentions bridge fields `Mention_`) to avoid colliding with an identically-named Events column, e.g. `NumArticles` exists on both Events and GKG 1.0.
