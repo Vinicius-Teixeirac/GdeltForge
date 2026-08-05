@@ -2,7 +2,19 @@
 
 ## Installation
 
-GdeltForge isn't on PyPI yet, so install it from a clone using [uv](https://docs.astral.sh/uv/):
+```
+pip install gdeltforge
+```
+
+Or, with [uv](https://docs.astral.sh/uv/): `uv pip install gdeltforge`. Verify it installed:
+
+```
+gdeltforge --help
+```
+
+### Installing from source
+
+If you're contributing to GdeltForge itself, or want an editable install:
 
 ```
 # Install uv (if not already installed)
@@ -26,7 +38,7 @@ source .venv/bin/activate
 gdeltforge --help
 ```
 
-`python main.py <command>` also works as a backward-compatible alias for the `gdeltforge` command, in case you have existing scripts built around it.
+`python main.py <command>` also works as a backward-compatible alias for the `gdeltforge` command, in case you have existing scripts built around it. This alias is only present in a source checkout, not in the PyPI package.
 
 ## Configuration
 
