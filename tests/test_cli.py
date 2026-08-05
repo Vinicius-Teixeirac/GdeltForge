@@ -1,5 +1,6 @@
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -69,31 +70,89 @@ class TestRunScrapeCmd:
 class TestRunConvertCmd:
     def test_raises_when_conversions_failed(self, monkeypatch):
         monkeypatch.setattr(
-            cli, "run_converter", lambda config, dataset: (["a.parquet"], ["bad.zip"])
+            cli, "run_converter",
+            lambda config, dataset, start_date, end_date: (["a.parquet"], ["bad.zip"]),
         )
+        args = argparse.Namespace(dataset="events", start_date=None, end_date=None)
 
         with pytest.raises(RuntimeError, match="1 failed file"):
-            cli.run_convert_cmd({})
+            cli.run_convert_cmd({}, args)
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
-            cli, "run_converter", lambda config, dataset: (["a.parquet", "b.parquet"], [])
+            cli, "run_converter",
+            lambda config, dataset, start_date, end_date: (["a.parquet", "b.parquet"], []),
         )
+        args = argparse.Namespace(dataset="events", start_date=None, end_date=None)
 
-        cli.run_convert_cmd({})  # should not raise
+        cli.run_convert_cmd({}, args)  # should not raise
+
+    def test_date_strings_are_parsed_and_passed_through(self, monkeypatch):
+        captured = {}
+
+        def fake_run_converter(config, dataset, start_date, end_date):
+            captured["start_date"] = start_date
+            captured["end_date"] = end_date
+            return [], []
+
+        monkeypatch.setattr(cli, "run_converter", fake_run_converter)
+        args = argparse.Namespace(dataset="events", start_date="2020-01-01", end_date="2020-12-31")
+
+        cli.run_convert_cmd({}, args)
+
+        assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
+
+    def test_invalid_date_string_raises_clearly(self):
+        args = argparse.Namespace(dataset="events", start_date="not-a-date", end_date=None)
+
+        with pytest.raises(ValueError, match="Invalid date for --start-date"):
+            cli.run_convert_cmd({}, args)
+
+    def test_start_after_end_is_rejected(self):
+        args = argparse.Namespace(dataset="events", start_date="2020-12-31", end_date="2020-01-01")
+
+        with pytest.raises(ValueError, match="must not be after"):
+            cli.run_convert_cmd({}, args)
 
 
 class TestRunFilterCmd:
     def test_raises_when_filtering_failed(self, monkeypatch):
-        monkeypatch.setattr(cli, "run_filter", lambda config, dataset: (8, 2))
+        monkeypatch.setattr(
+            cli, "run_filter", lambda config, dataset, start_date, end_date: (8, 2)
+        )
+        args = argparse.Namespace(dataset="events", start_date=None, end_date=None)
 
         with pytest.raises(RuntimeError, match="2 failed file"):
-            cli.run_filter_cmd({})
+            cli.run_filter_cmd({}, args)
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):
-        monkeypatch.setattr(cli, "run_filter", lambda config, dataset: (10, 0))
+        monkeypatch.setattr(
+            cli, "run_filter", lambda config, dataset, start_date, end_date: (10, 0)
+        )
+        args = argparse.Namespace(dataset="events", start_date=None, end_date=None)
 
-        cli.run_filter_cmd({})  # should not raise
+        cli.run_filter_cmd({}, args)  # should not raise
+
+    def test_date_strings_are_parsed_and_passed_through(self, monkeypatch):
+        captured = {}
+
+        def fake_run_filter(config, dataset, start_date, end_date):
+            captured["start_date"] = start_date
+            captured["end_date"] = end_date
+            return 0, 0
+
+        monkeypatch.setattr(cli, "run_filter", fake_run_filter)
+        args = argparse.Namespace(dataset="events", start_date="2020-01-01", end_date="2020-12-31")
+
+        cli.run_filter_cmd({}, args)
+
+        assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
+
+    def test_start_after_end_is_rejected(self):
+        args = argparse.Namespace(dataset="events", start_date="2020-12-31", end_date="2020-01-01")
+
+        with pytest.raises(ValueError, match="must not be after"):
+            cli.run_filter_cmd({}, args)
 
 
 class TestRunSamplingCmdSource:
