@@ -77,7 +77,7 @@ See [Configuration](configuration.md#hive-partitioning-for-historical-data) for 
 gdeltforge filter
 ```
 
-Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`.
+Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
 
 ## `--dataset`
 

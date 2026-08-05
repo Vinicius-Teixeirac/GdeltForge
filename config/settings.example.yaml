@@ -337,6 +337,13 @@ converter:
 # Provide columns so the filter drops instances with NaN values on them.
 # One list per dataset (matching columns: / columns_numeric: above).
 filter:
+  # Concurrent filter worker processes, same tradeoffs as converter.max_workers
+  # above: CPU-bound (per-batch pandas dropna + parquet write), so this
+  # defaults to the machine's core count. Lower it if filtering competes
+  # with other work, or if you've had to lower converter.max_workers for
+  # the same reason.
+  max_workers: null  # null = os.cpu_count()
+
   columns_to_check:
     gdelt_event: # example
       - GlobalEventID
