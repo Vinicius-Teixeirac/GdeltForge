@@ -103,7 +103,15 @@ columns:
   # Mentions: every re-report of an Event by a different article over
   # time (the bridge table between Events and GKG: see the Comparison
   # docs page for why a direct Events<->GKG join isn't possible).
-  # Column order confirmed against parseMentionV2 in the same real parser.
+  # 16 real columns, confirmed 2026-08-04 against the official GDELT
+  # Event Codebook V2.0's MENTIONS TABLE section (a live download, not
+  # just the parser source). parseMentionV2 in aamend/spark-gdelt (the
+  # source originally used here) only reads the first 14: the last two,
+  # MentionDocTranslationInfo and Extras, are real trailing columns that
+  # parser's case class simply never mapped, so verifying against it
+  # alone silently missed them, pandas' names=<14 names> against a
+  # 16-column file absorbs the two leading columns into an unnamed
+  # index instead of raising, so this was a real, silent bug.
   gdelt_mentions:
     - GLOBALEVENTID
     - EventTimeDate
@@ -119,6 +127,8 @@ columns:
     - Confidence
     - MentionDocLen
     - MentionDocTone
+    - MentionDocTranslationInfo
+    - Extras
 
   # GKG 1.0 (legacy format: the primary GKG feed April 2013 through February 2015,
   # still published daily since then for backwards compatibility). Unlike
