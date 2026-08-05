@@ -20,6 +20,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - README hero section: real CI/license/release badges, a tighter pitch, and a terminal-demo screenshot of `codes` and `sample` running against the live dataset
 - The CLI now catches failures at the top level: any error prints `Error: <message>` and exits 1, and Ctrl+C prints `Interrupted.` and exits 130, instead of a raw Python traceback either way
 - **Breaking config change, foundational work for multi-dataset support (GKG, Mentions):** `columns_numeric` and `filter.columns_to_check` are now nested under the dataset name (`gdelt_event`), matching how `columns` was already structured, instead of being flat lists assuming a single dataset. Update `settings.yaml`: wrap your existing `columns_numeric:` list as `columns_numeric: {gdelt_event: [...]}`, and likewise for `filter.columns_to_check`. `scrape`/`convert`/`filter`/`sample` also gain a `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` flag (default `events`, matching current behavior exactly)
+- `filter` now runs across a worker pool (config: `filter.max_workers`, same shape and default as `converter.max_workers`) instead of processing files one at a time. Found running a real full historical Events archive through `filter`: 4,748 files, 866M rows, over an hour single-threaded, despite `scrape` and `convert` already being parallel
 
 ### Fixed
 - GKG 1.0 and its Counts file both ship with a literal header row (`DATE\tNUMARTS\t...`); the converter read every dataset as headerless unconditionally, so that line was misread as a garbage data row on every converted file. Found by converting a real downloaded file rather than only a synthetic fixture
@@ -30,6 +31,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The initial fix for the above (bulk-assigning all accepted rows in one indexed write) let pandas resolve same-batch slot collisions independently per column block, silently desyncing string columns from numeric ones when both were written together
 - A later fix for that (per-column assignment via `DataFrame.iloc`) still relied on pandas' setter, which was itself the dominant cost on GDELT's ~58-column schema; the reservoir is now held as plain per-column numpy arrays during the scan and converted to a DataFrame once at the end, which is both correct and substantially faster
 - Getting there also surfaced that plain numpy assignment doesn't raise when a batch row's `NaN` lands in a column that's been `int64` so far: it silently casts to `INT64_MIN` with only a `RuntimeWarning`, unlike pandas' `TypeError`. The reservoir writer now checks the correct common dtype up front and upcasts before writing, rather than reacting to a write that already corrupted data
+- `filter_single_file`'s streaming `ParquetWriter` wrote straight to its final path, the same corruption-on-interrupt risk already fixed above for the converter, and more reachable now that `filter` runs across a worker pool. Now writes through a temp file and atomic rename, matching the same pattern
 
 ## [0.3.0] - 2026-07-28
 
