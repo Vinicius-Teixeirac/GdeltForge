@@ -93,9 +93,18 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
 
-def run_convert_cmd(config: dict, dataset: str = "gdelt_event") -> None:
+def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
+    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
+    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
+
+    if start_date and end_date and start_date > end_date:
+        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+
+    dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting conversion stage...")
-    outputs, failed = run_converter(config, dataset=dataset)
+    outputs, failed = run_converter(
+        config, dataset=dataset, start_date=start_date, end_date=end_date
+    )
     logger.info(f"Created {len(outputs)} parquet files.")
 
     if failed:
@@ -104,9 +113,18 @@ def run_convert_cmd(config: dict, dataset: str = "gdelt_event") -> None:
         )
 
 
-def run_filter_cmd(config: dict, dataset: str = "gdelt_event") -> None:
+def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
+    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
+    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
+
+    if start_date and end_date and start_date > end_date:
+        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+
+    dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting filtering stage...")
-    files_processed, files_failed = run_filter(config, dataset=dataset)
+    files_processed, files_failed = run_filter(
+        config, dataset=dataset, start_date=start_date, end_date=end_date
+    )
     logger.info("Filtering completed.")
 
     if files_failed:
@@ -347,6 +365,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="events",
         help="Which GDELT dataset to convert (default: events)"
     )
+    convert.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        help="Only convert files whose period starts on or after this date",
+    )
+    convert.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        help="Only convert files whose period ends on or before this date",
+    )
 
     # ----------------------------------------------------
     # filter
@@ -357,6 +385,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=_DATASET_CHOICES,
         default="events",
         help="Which GDELT dataset to filter (default: events)"
+    )
+    filter_.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        help="Only filter files whose period starts on or after this date",
+    )
+    filter_.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        help="Only filter files whose period ends on or before this date",
     )
 
     # ----------------------------------------------------
@@ -506,10 +544,10 @@ def main() -> None:
             run_scrape_cmd(config, args)
 
         elif args.command == "convert":
-            run_convert_cmd(config, dataset=_DATASET_CLI_TO_CONFIG[args.dataset])
+            run_convert_cmd(config, args)
 
         elif args.command == "filter":
-            run_filter_cmd(config, dataset=_DATASET_CLI_TO_CONFIG[args.dataset])
+            run_filter_cmd(config, args)
 
         elif args.command == "sample":
             run_sampling_cmd(config, args)
