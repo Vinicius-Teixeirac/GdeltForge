@@ -1,8 +1,10 @@
 import zipfile
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
+import gdeltforge.conversion.converter as converter_module
 from gdeltforge.conversion.converter import GDELTConverter, run_converter
 
 
@@ -177,3 +179,58 @@ class TestConvertsNonEventsSchemaEndToEnd:
         df = pd.read_parquet(outputs[0])
         assert len(df) == 2
         assert df["Day"].tolist() == [20200101, 20200102]
+
+
+class TestSaveParquetAtomicity:
+    """_save_parquet/_save_historical_parquet used to write straight to
+    their final path. Found for real: a process killed mid-write while
+    converting a real ~3,000-file GKG 2.1 batch left two truncated,
+    corrupt parquet files sitting at their final paths, with nothing in
+    the pipeline able to detect or clean them up later (filter/sample
+    would just fail confusingly whenever they got read). Both now write
+    through a temp-file-then-rename, so a kill leaves either a complete
+    file or nothing, matching the pattern already used for downloads and
+    sample output."""
+
+    def test_save_parquet_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        cfg = _make_config(tmp_path)
+        converter = GDELTConverter(cfg)
+
+        def boom(self, path, **kwargs):
+            Path(path).write_bytes(b"partial write before a simulated crash")
+            raise OSError("simulated crash mid-write")
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+
+        df = pd.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+        result = converter._save_parquet(df, "20200101")
+
+        assert result is None
+        out_path = tmp_path / "parquet" / "20200101.parquet"
+        assert not out_path.exists()
+        assert not out_path.with_name(out_path.name + ".tmp").exists()
+
+    def test_save_historical_parquet_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={
+                "enabled": True,
+                "rules": [{"file_type": "yearly", "by": ["Year"]}],
+            },
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        converter = GDELTConverter(cfg)
+
+        def boom(table, path, **kwargs):
+            Path(path).write_bytes(b"partial write before a simulated crash")
+            raise OSError("simulated crash mid-write")
+
+        monkeypatch.setattr(converter_module.pq, "write_table", boom)
+
+        df = pd.DataFrame({"GlobalEventID": [1], "Day": [20200101], "Year": [2020]})
+        with pytest.raises(OSError):
+            converter._save_historical_parquet(df, Path("2020.zip"), "yearly")
+
+        out_path = tmp_path / "historical" / "Year=2020" / "2020.parquet"
+        assert not out_path.exists()
+        assert not out_path.with_name(out_path.name + ".tmp").exists()
