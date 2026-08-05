@@ -591,6 +591,32 @@ class TestDownloadOne:
         assert status == "failed"
         assert len(session.calls) == 2  # one attempt per retry
 
+    def test_cleanup_failure_does_not_abort_the_retry_loop(self, tmp_path, monkeypatch, caplog):
+        # Seen on a real ~4,850-file scrape: a brief Windows file lock
+        # (real-time antivirus scanning the just-written .tmp file) made
+        # os.remove raise on top of the original failure. That must not
+        # propagate and abort the whole retry loop, let alone the batch.
+        # An MD5 mismatch is used to force the failure *after* tmp_path is
+        # actually written (unlike an HTTP-layer failure, which never
+        # creates the file at all, so os.remove would never even run).
+        monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
+
+        def _raise_os_error(path):
+            raise OSError("WinError 32: file in use by another process")
+
+        monkeypatch.setattr(scraper.os, "remove", _raise_os_error)
+        content = b"hello gdelt"
+        file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5="0" * 32)
+
+        with caplog.at_level(logging.WARNING):
+            status, filename = _download_one(
+                file, str(tmp_path), retries=2, timeout=5,
+                session=FakeSession(content),  # pyright: ignore[reportArgumentType]
+            )
+
+        assert status == "failed"
+        assert "Could not remove leftover" in caplog.text
+
 
 # ------------------------------------------------------------
 # download_gdelt_files: aggregation over the (mocked) per-file results
@@ -640,3 +666,29 @@ class TestDownloadGdeltFiles:
         result = download_gdelt_files([file], config, dataset="gdelt_gkg_v2")
 
         assert result["success"] == 1
+
+    def test_unexpected_exception_in_one_task_does_not_abort_the_batch(
+        self, monkeypatch, tmp_path
+    ):
+        # Defense in depth for the same real-world failure the
+        # _download_one cleanup fix addresses: even if some exception
+        # still escapes a single download task, the rest of the batch
+        # must keep going, and the failure must be attributed to the
+        # right file rather than crashing the whole scrape.
+        files = [GdeltFile(url=f"http://x/{i}.export.CSV.zip") for i in range(3)]
+
+        def fake_download_one(file, download_dir, retries, timeout, session):
+            if file.url.endswith("1.export.CSV.zip"):
+                raise OSError("simulated unexpected failure")
+            return "success", file.url.split("/")[-1]
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+        result = download_gdelt_files(files, config)
+
+        assert result["success"] == 2
+        assert result["failed"] == ["1.export.CSV.zip"]

@@ -619,8 +619,19 @@ def _download_one(
 
         except Exception as e:
             logger.warning(f"Attempt {attempt + 1} failed for {filename}: {e}")
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError as cleanup_error:
+                # Seen in practice on Windows: a brief file lock (real-time
+                # antivirus scanning a just-written .tmp file) can make
+                # os.replace above raise, then this cleanup raise too. If
+                # this propagated, it would abort the retry loop entirely
+                # instead of just failing this one attempt, and on a large
+                # scrape it takes the whole batch down with it (this is
+                # exactly what happened downloading a real ~4,850-file GKG
+                # 1.0 history: one transient lock crashed the entire run).
+                logger.warning(f"Could not remove leftover {tmp_path}: {cleanup_error}")
             if attempt < retries - 1:
                 time.sleep(1)
 
@@ -659,15 +670,27 @@ def download_gdelt_files(
         session.mount("https://", adapter)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(_download_one, file, download_dir, retries, timeout, session)
+            futures = {
+                executor.submit(_download_one, file, download_dir, retries, timeout, session): file
                 for file in files
-            ]
+            }
             for future in tqdm(
                 as_completed(futures), total=len(futures),
                 desc="Downloading GDELT files", unit="file",
             ):
-                status, filename = future.result()
+                try:
+                    status, filename = future.result()
+                except Exception as e:
+                    # Defense in depth against the same class of issue
+                    # _download_one's own retry loop now guards against:
+                    # one file's unexpected failure must not take the
+                    # whole batch down, matching process_all_files'
+                    # equivalent per-future try/except in converter.py.
+                    filename = futures[future].url.split("/")[-1]
+                    logger.error(f"Unexpected error downloading {filename}: {e}")
+                    failed.append(filename)
+                    continue
+
                 if status == "success":
                     success += 1
                 elif status == "skipped":
