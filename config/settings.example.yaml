@@ -329,6 +329,38 @@ converter:
   # count. Lower it if the conversion stage competes with other work.
   max_workers: null  # null = os.cpu_count()
 
+  # Optional, per dataset: overrides the scalar max_workers above for one
+  # dataset only. Worthwhile because a worker count safe for one dataset
+  # is not necessarily safe for another; a wide, free-text-heavy dataset
+  # like GKG 2.1 can exhaust memory at a worker count a narrower dataset
+  # handles fine, and output_columns below changes that math per dataset
+  # too. See the capacity planning reference in configuration.md for real
+  # measured numbers this was benchmarked against.
+  max_workers_by_dataset:
+    gdelt_gkg_v2: 8 # example
+
+  # Optional, per dataset: restricts CSV parsing to just these columns
+  # instead of every column the dataset defines (see columns.<dataset>
+  # above). names is still the full column list, matching each raw
+  # position on files with no header row, but pandas only allocates and
+  # decodes the columns listed here. Worth doing for GKG 2.1 in particular:
+  # most of its columns are free-text fields (quotations, all-names, GCAM,
+  # extras XML, image/video embeds) a themes/tone/persons/orgs crossref
+  # never reads, and cutting them sped up real measured conversion by
+  # roughly 3x at the same worker count, before even raising max_workers.
+  output_columns:
+    gdelt_gkg_v2: # example: keep only the crossref join key + ML-relevant fields
+      - GKGRECORDID
+      - V2.1DATE
+      - V2DOCUMENTIDENTIFIER
+      - V1THEMES
+      - V2ENHANCEDTHEMES
+      - V1PERSONS
+      - V2ENHANCEDPERSONS
+      - V1ORGANIZATIONS
+      - V2ENHANCEDORGANIZATIONS
+      - V1.5TONE
+
   # Optional Hive partitioning for pre-daily (yearly / monthly) source files.
   # When enabled, yearly and monthly ZIPs are written as a Hive-partitioned
   # dataset under parquet_historical_directory instead of flat files.
