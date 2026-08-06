@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
@@ -134,6 +136,96 @@ class TestFilterAllFiles:
         assert (tmp_path / "hist_out" / "Year=1979" / "1979_filtered.parquet").exists()
 
 
+class TestOutputColumns:
+    def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
+        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        assert filt.output_columns is None
+
+    def test_projects_to_the_configured_subset(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {
+            "GlobalEventID": [1, 2],
+            "Actor1Name": ["A", "B"],
+            "QuadClass": [1, 2],
+        })
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            output_columns=["GlobalEventID", "QuadClass"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        result = pd.read_parquet(out_path)
+        assert list(result.columns) == ["GlobalEventID", "QuadClass"]
+
+    def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(self, tmp_path):
+        # Mirrors columns_to_check's existing/missing split: schema drift
+        # (a column absent from one file) shouldn't crash the whole run.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            output_columns=["GlobalEventID", "DoesNotExist"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        result = pd.read_parquet(out_path)
+        assert list(result.columns) == ["GlobalEventID"]
+
+    def test_row_filtering_is_unaffected_by_column_projection(self, tmp_path):
+        # Row-drop decisions must still be based on columns_to_check even
+        # when one of them is projected out of the final output.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {
+            "GlobalEventID": [1, 2, 3],
+            "Actor1Name": ["A", None, "C"],
+            "QuadClass": [1, 2, 3],
+        })
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["Actor1Name"],
+            output_columns=["GlobalEventID", "QuadClass"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        rows_before, rows_after = filt.filter_single_file(src, out_path)
+
+        assert (rows_before, rows_after) == (3, 2)
+        result = pd.read_parquet(out_path)
+        assert sorted(result["GlobalEventID"].tolist()) == [1, 3]
+        assert "Actor1Name" not in result.columns
+
+
+class TestCompressionConfig:
+    def test_defaults_to_snappy(self, tmp_path):
+        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        assert filt.compression == "snappy"
+
+    def test_explicit_codec_is_used_on_write(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"], compression="zstd",
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        metadata = pq.ParquetFile(out_path).metadata
+        codec = metadata.row_group(0).column(0).compression
+        assert codec.lower() == "zstd"
+
+
 class TestValidateColumns:
     def test_reports_existing_and_missing_columns(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -248,6 +340,43 @@ class TestRunFilterDatasetParameter:
         processed, failed = run_filter(cfg)
 
         assert (processed, failed) == (1, 0)
+
+    def test_missing_output_columns_and_compression_keys_default_to_full_snappy(self, tmp_path):
+        # Same backward-compatibility guarantee as max_workers above: configs
+        # that pre-date output_columns/compression must not KeyError, and
+        # must keep writing every column at snappy as before.
+        cfg, events_in, _ = self._config(tmp_path)
+        pd.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).to_parquet(events_in / "a.parquet")
+
+        processed, failed = run_filter(cfg)
+
+        assert (processed, failed) == (1, 0)
+        out = pd.read_parquet(cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet")
+        assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
+
+    def test_output_columns_and_compression_are_resolved_per_dataset(self, tmp_path):
+        cfg, _, gkg_in = self._config(tmp_path)
+        cfg["filter"]["output_columns"] = {
+            "gdelt_gkg_v2": ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"],
+        }
+        cfg["filter"]["compression"] = {"gdelt_gkg_v2": "zstd"}
+        pd.DataFrame({
+            "GKGRECORDID": ["r1", "r2"],
+            "V2DOCUMENTIDENTIFIER": ["http://a.com", "http://b.com"],
+            "V2GCAM": ["unused", "unused"],
+        }).to_parquet(gkg_in / "a.parquet")
+
+        processed, failed = run_filter(cfg, dataset="gdelt_gkg_v2")
+
+        assert (processed, failed) == (1, 0)
+        out_path = Path(cfg["paths"]["gkg_v2_filtered_data_directory"]) / "a_filtered.parquet"
+        out = pd.read_parquet(out_path)
+        assert list(out.columns) == ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"]
+
+        codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
+        assert codec.lower() == "zstd"
 
 
 class TestFilterSingleFileAtomicity:

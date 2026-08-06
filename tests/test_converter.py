@@ -54,6 +54,82 @@ class TestMaxWorkersConfig:
         assert converter.max_workers == 2
 
 
+class TestMaxWorkersByDataset:
+    def test_falls_back_to_the_scalar_default_when_unset(self, tmp_path):
+        converter = GDELTConverter(_make_config(tmp_path, max_workers=4))
+        assert converter.max_workers == 4
+
+    def test_dataset_override_takes_precedence(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg["columns"]["gdelt_gkg_v2"] = ["DocumentIdentifier"]
+        cfg["columns_numeric"]["gdelt_gkg_v2"] = []
+        cfg["paths"]["gkg_v2_downloaded_data_directory"] = str(tmp_path / "gkg_raw")
+        cfg["paths"]["gkg_v2_unzipped_data_directory"] = str(tmp_path / "gkg_csv")
+        cfg["paths"]["gkg_v2_parquet_data_directory"] = str(tmp_path / "gkg_parquet")
+        cfg["converter"]["max_workers"] = 4
+        cfg["converter"]["max_workers_by_dataset"] = {"gdelt_gkg_v2": 8}
+
+        events = GDELTConverter(cfg)
+        gkg = GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+        assert events.max_workers == 4
+        assert gkg.max_workers == 8
+
+    def test_missing_key_does_not_error(self, tmp_path):
+        # Configs written before this option existed have no
+        # max_workers_by_dataset key at all.
+        converter = GDELTConverter(_make_config(tmp_path, max_workers=2))
+        assert converter.max_workers == 2
+
+
+class TestOutputColumnsConfig:
+    def test_defaults_to_none_so_every_column_is_parsed(self, tmp_path):
+        converter = GDELTConverter(_make_config(tmp_path))
+        assert converter.output_columns is None
+
+    def test_explicit_value_is_respected(self, tmp_path):
+        converter = GDELTConverter(_make_config(tmp_path, output_columns={
+            "gdelt_event": ["Day"],
+        }))
+        assert converter.output_columns == ["Day"]
+
+    def test_projects_columns_during_csv_parsing(self, tmp_path):
+        # Proves the pruning actually reaches pandas' read_csv (usecols),
+        # not just that the config value is stored: the resulting parquet
+        # must carry only the configured subset, in COLUMN_NAMES' relative
+        # order, with numeric coercion still applied to whichever of those
+        # columns is in columns_numeric.
+        cfg = _make_config(tmp_path, output_columns={"gdelt_event": ["Day"]})
+        csv_path = tmp_path / "20200101.export.csv"
+        csv_path.write_text("1\t20200101\n2\t20200102\n")
+        zip_path = tmp_path / "20200101.export.CSV.zip"
+        with zipfile.ZipFile(zip_path, "w") as z:
+            z.write(csv_path, arcname="20200101.export.csv")
+
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        df = pd.read_parquet(outputs[0])
+        assert list(df.columns) == ["Day"]
+        assert df["Day"].tolist() == [20200101, 20200102]
+
+    def test_a_configured_column_not_in_this_dataset_is_skipped_not_fatal(self, tmp_path):
+        cfg = _make_config(
+            tmp_path, output_columns={"gdelt_event": ["Day", "DoesNotExist"]}
+        )
+        csv_path = tmp_path / "20200101.export.csv"
+        csv_path.write_text("1\t20200101\n")
+        zip_path = tmp_path / "20200101.export.CSV.zip"
+        with zipfile.ZipFile(zip_path, "w") as z:
+            z.write(csv_path, arcname="20200101.export.csv")
+
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        df = pd.read_parquet(outputs[0])
+        assert list(df.columns) == ["Day"]
+
+
 class TestDatasetParameter:
     def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))
