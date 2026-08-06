@@ -98,9 +98,13 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | `keep_unzipped` | `false` | Keep extracted CSVs after conversion instead of deleting them |
 | `file_pattern` | `"*.zip"` | Glob pattern for which files in `downloaded_data_directory` to convert |
 | `max_workers` | `null` | Worker processes for conversion. `null` uses `os.cpu_count()` |
+| `max_workers_by_dataset.<dataset>` | none | Overrides `max_workers` for one dataset. See "Capacity planning" below: a worker count safe for one dataset isn't necessarily safe for another, since it depends on peak per-worker memory |
+| `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `names` is still passed in full to `pandas.read_csv` (it's what maps each raw position to a name on files with no header row), but pandas skips allocating/decoding whatever isn't in `output_columns` |
 | `partitioning` | see below | Optional Hive partitioning for historical (pre-daily) files |
 
 Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`.
+
+`output_columns` is worth setting for GKG 2.1 in particular: most of its columns are free-text fields (quotations, all-names, GCAM, extras XML, image/video embeds) that a themes/tone/persons/orgs crossref never reads. See "Capacity planning" below for what dropping them and raising `max_workers_by_dataset` measurably bought on real data.
 
 ### Hive partitioning for historical data
 
@@ -148,5 +152,53 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 |-----|-------------|
 | `max_workers` | Worker processes for filtering, same tradeoffs as `converter.max_workers`. `null` (default) uses `os.cpu_count()` |
 | `columns_to_check.<dataset>` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
+| `output_columns.<dataset>` | Projects the filtered output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed |
+| `compression.<dataset>` | Parquet codec for the filtered output. Unset stays `snappy`. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.
+
+## Capacity planning: real measured numbers
+
+Everything below was measured against real GDELT data (not synthetic benchmarks), on GKG 2.1, since it's the dataset these knobs matter most for: mostly free-text fields, and 15-minute-interval files means a multi-year pull is hundreds of thousands of files. Treat these as a starting point for sizing your own pull, not a guarantee: your mix of news volume, disk, and CPU will shift the numbers.
+
+**Compression codec**, one real day (120,728 rows, all 27 columns, previously `snappy`-only):
+
+| Codec | Size | Write time | vs. snappy |
+|-------|------|------------|------------|
+| `snappy` (previous default) | 744.7 MB | 11.0s | baseline |
+| `gzip` | 422.3 MB | 514.0s | 1.8x smaller, ~47x slower to write |
+| `zstd` (recommended) | 410.8 MB | 14.3s | 1.8x smaller, same order of write time |
+| `brotli` | 284.2 MB | 87.7s | 2.6x smaller, ~8x slower to write |
+| `zstd`, level 19 | 232.6 MB | slow | 3.2x smaller, not worth it once columns are pruned (below) |
+
+`gzip` and `zstd` level 19 both cost far more write time than they're worth here; plain `zstd` is the pick, which is what `filter.compression` defaults `gdelt_gkg_v2` to.
+
+**Column pruning**, same day, `output_columns` set to the join key plus themes/tone/persons/orgs (10 of 27 columns):
+
+| Variant | Size | vs. snappy/all-columns |
+|---------|------|------------------------|
+| 10 columns, `snappy` | 97.1 MB | 7.0x smaller |
+| 10 columns, `zstd` | 54.7 MB | 12.4x smaller |
+
+Column pruning did most of the work; the codec switch on top was a smaller, roughly 1.8x bonus. A second real day (2023-06-01, a heavier news day at 200,740 rows) landed at 94 MB pruned+`zstd`, consistent with the same ratio, so expect day-to-day variance of roughly 55-95 MB/day for GKG 2.1 rather than a single fixed number.
+
+**Conversion worker count**, same 96-file day, `output_columns` active:
+
+| `max_workers` | Time | Rate | Notes |
+|----------------|------|------|-------|
+| 4, no pruning | 30.2s | 3.1 files/s | previous default, previous behavior |
+| 4, pruned | 21.4s | 4.5 files/s | pruning alone, same worker count |
+| 8, pruned | 10.7s | 9.0 files/s | new `max_workers_by_dataset` default for `gdelt_gkg_v2` |
+| 12, pruned | 10.1s | 9.5 files/s | marginal gain over 8, less headroom |
+| 20, pruned | 11.4s | 8.5 files/s | previously crashed unpruned at this count; completed cleanly pruned, but no faster |
+
+8 workers was picked over 12: nearly identical throughput with more memory headroom, since the original crash at `os.cpu_count()` was never root-caused, only reproduced and then avoided by pruning.
+
+**Putting it together**: projecting to the full ~385,728-file GKG 2.1 archive (15-minute files, 2015-present) at these measured rates, with `mentions` (needed for the crossref join) excluded since it is small enough not to move these numbers much:
+
+| Scope | Files | Wall-clock (scrape + convert + filter) | Disk |
+|-------|-------|------------------------------------------|------|
+| Previous approach (no pruning, 4 workers, `snappy`) | 385,728 | ~103 hours (~4.3 days) | ~2.9 TB |
+| Pruned + `zstd` + 8 workers | 385,728 | ~46 hours (~1.9 days) | ~220-380 GB |
+
+Scrape throughput (~4.2 files/s) is network-bound against `data.gdeltproject.org` and unaffected by any of the above; convert is where pruning and worker count actually move the number, from the previous bottleneck (~71 hours) down to roughly 12 hours.
