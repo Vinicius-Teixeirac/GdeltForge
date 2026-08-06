@@ -86,10 +86,29 @@ class GDELTConverter:
         self.pattern       = config["converter"].get("file_pattern", "*.zip")
         # None is a valid value here: ProcessPoolExecutor treats
         # max_workers=None as "use os.cpu_count()" on its own.
-        self.max_workers: int | None = config["converter"].get("max_workers")
+        # max_workers_by_dataset overrides the scalar default for one
+        # dataset when set: worker-count safety is dataset-specific (it
+        # depends on peak per-worker memory, which output_columns above
+        # changes a lot for wide datasets like GKG 2.1), so a value safe
+        # for one dataset isn't necessarily safe for another.
+        self.max_workers: int | None = config["converter"].get(
+            "max_workers_by_dataset", {}
+        ).get(dataset, config["converter"].get("max_workers"))
 
         self.COLUMN_NAMES    = config["columns"][dataset]
         self.NUMERIC_COLUMNS = config["columns_numeric"][dataset]
+        # Optional, per dataset: restrict pandas to materializing only these
+        # columns while parsing the CSV. self.COLUMN_NAMES is still passed
+        # to read_csv in full, since that is what maps each tab-separated
+        # position to a name on files that carry no header row. pandas' C
+        # parser still skips allocating and decoding the columns left out
+        # of usecols, though, which is where GKG 2.1's free-text fields
+        # (quotations, all-names, GCAM, extras XML, image/video embeds)
+        # cost the most CPU and RAM.
+        # None (the default) parses every column, matching prior behavior.
+        self.output_columns: list[str] | None = config["converter"].get(
+            "output_columns", {}
+        ).get(dataset)
 
         part_cfg = config["converter"].get("partitioning", {})
         self._partitioning_enabled = part_cfg.get("enabled", False)
@@ -283,6 +302,17 @@ class GDELTConverter:
             # header, skip it, then use our own names instead of its literal
             # text", not "there's no header at all" (that's header=None).
             header = 0 if self.dataset in _DATASETS_WITH_HEADER_ROW else None
+            # usecols must reference names from the full COLUMN_NAMES list
+            # (pandas resolves position -> name from `names` first, then
+            # applies usecols), and drops any configured name that isn't
+            # actually one of this dataset's columns rather than erroring,
+            # matching how columns_to_check/output_columns are handled
+            # elsewhere in the pipeline.
+            usecols = (
+                [c for c in self.output_columns if c in self.COLUMN_NAMES]
+                if self.output_columns is not None
+                else None
+            )
             df = pd.read_csv(
                 csv_path,
                 sep="\t",
@@ -291,6 +321,7 @@ class GDELTConverter:
                 encoding="utf-8",
                 low_memory=False,
                 names=self.COLUMN_NAMES,
+                usecols=usecols,
                 on_bad_lines="warn",
             )
 
