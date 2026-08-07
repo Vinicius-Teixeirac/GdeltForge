@@ -84,6 +84,41 @@ def _require_column(df_columns, name: str, df_desc: str) -> None:
         raise ValueError(f"{df_desc} must include a {name!r} column")
 
 
+def warn_if_output_columns_drops_join_key(
+    logger, stage: str, dataset: str, output_columns: list[str] | None
+) -> None:
+    """
+    Shared by convert.py's run_converter and filter.py's run_filter, both
+    of which expose an output_columns knob that can prune away a column
+    this module's REQUIRED_JOIN_COLUMNS says a dataset needs. Nothing
+    about picking a lean column set for disk/CPU reasons hints that one
+    of those columns is also load-bearing for a later `crossref` run;
+    _require_column above already raises a clear error if the key is
+    actually missing at join time, but by then convert, filter, and
+    possibly sample have all already run to completion without it, only
+    for the failure to surface downstream. Warn here instead, at the
+    point output_columns is configured, while it's still cheap to fix.
+
+    logger is passed in rather than used from this module, so the
+    warning is correctly attributed to whichever stage actually emitted
+    it. Only fires when output_columns is actually set (None means every
+    column survives, so nothing to warn about) and the dataset is one
+    crossref cares about at all (Events, both GKG generations, Mentions).
+    """
+    if output_columns is None:
+        return
+    required = REQUIRED_JOIN_COLUMNS.get(dataset)
+    if not required:
+        return
+    missing = [c for c in required if c not in output_columns]
+    if missing:
+        logger.warning(
+            f"{stage}.output_columns.{dataset} omits {missing}, required for "
+            f"`gdeltforge crossref` to join this dataset. {stage.capitalize()} will "
+            f"proceed, but crossref will fail on this output unless {missing} is added back."
+        )
+
+
 def crossref_events_gkg_v1(
     events_df: pd.DataFrame,
     gkg_folder: str,
