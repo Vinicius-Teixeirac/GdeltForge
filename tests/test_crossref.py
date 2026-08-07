@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from gdeltforge.crossref.crossref import (
+    OPTIONAL_MENTIONS_PAYLOAD_COLUMNS,
     REQUIRED_JOIN_COLUMNS,
     crossref_events_gkg_v1,
     crossref_events_gkg_v2,
@@ -33,6 +34,15 @@ class TestRequiredJoinColumns:
         assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1_counts"] == ("EventIds",)
         assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v2"] == ("V2DOCUMENTIDENTIFIER",)
         assert REQUIRED_JOIN_COLUMNS["gdelt_mentions"] == ("GLOBALEVENTID", "MentionIdentifier")
+
+    def test_optional_mentions_payload_columns_are_disjoint_from_required(self):
+        # MentionTimeDate/Confidence must never end up in both sets: that
+        # would make a column simultaneously join-breaking-if-missing
+        # (REQUIRED_JOIN_COLUMNS) and gracefully-omittable-if-missing
+        # (OPTIONAL_MENTIONS_PAYLOAD_COLUMNS), a contradiction.
+        assert set(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]).isdisjoint(
+            OPTIONAL_MENTIONS_PAYLOAD_COLUMNS
+        )
 
 
 class TestWarnIfOutputColumnsDropsJoinKey:
@@ -305,6 +315,46 @@ class TestCrossrefEventsGkgV2:
         )
         assert "Mention_MentionTimeDate" in result.columns
         assert "Mention_Confidence" in result.columns
+
+    def test_missing_optional_payload_column_is_omitted_not_fatal(self, tmp_path):
+        # MentionTimeDate and Confidence are payload, not join keys
+        # (only GLOBALEVENTID and MentionIdentifier are); a Mentions
+        # dataset missing one must still join successfully, just without
+        # that Mention_<name> column in the output.
+        folder = tmp_path / "mentions_no_confidence"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [2001, 2002],
+            "MentionIdentifier": ["http://a.com/article1", "http://a.com/article1"],
+            "MentionTimeDate": [20200101120000, 20200101130000],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+        )
+
+        assert len(result) == 2
+        assert "Mention_MentionTimeDate" in result.columns
+        assert "Mention_Confidence" not in result.columns
+
+    def test_missing_both_optional_payload_columns_still_joins(self, tmp_path):
+        folder = tmp_path / "mentions_bare"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionIdentifier": ["http://a.com/article1"],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+        )
+
+        assert len(result) == 1
+        assert result["GlobalEventID"].iloc[0] == 2001
+        assert "Mention_MentionTimeDate" not in result.columns
+        assert "Mention_Confidence" not in result.columns
 
     def test_columns_restricts_gkg_side_output(self, tmp_path):
         mentions_folder = self._write_mentions(tmp_path)

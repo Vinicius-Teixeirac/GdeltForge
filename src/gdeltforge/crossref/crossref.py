@@ -62,6 +62,14 @@ REQUIRED_JOIN_COLUMNS: dict[str, tuple[str, ...]] = {
     "gdelt_mentions": ("GLOBALEVENTID", "MentionIdentifier"),
 }
 
+# Mentions columns crossref_events_gkg_v2 carries through as payload
+# (renamed "Mention_<name>") when present, but doesn't require the way
+# REQUIRED_JOIN_COLUMNS's "gdelt_mentions" entry does: neither one
+# participates in matching a mention to an event or an article, so a
+# Mentions dataset missing one just means that field is absent from the
+# output, not a failed join.
+OPTIONAL_MENTIONS_PAYLOAD_COLUMNS: tuple[str, ...] = ("MentionTimeDate", "Confidence")
+
 
 def _dataset(folder: str) -> ds.Dataset:
     files = list(Path(folder).glob("*.parquet"))
@@ -192,7 +200,11 @@ def crossref_events_gkg_v2(
     Events -[GlobalEventID]-> Mentions -[document URL]-> GKG 2.1.
 
     GKG-side output columns are prefixed "GKG_"; the Mentions bridge
-    fields carried through are prefixed "Mention_". Returns one row per
+    fields carried through are prefixed "Mention_" (see
+    OPTIONAL_MENTIONS_PAYLOAD_COLUMNS: present ones are carried through,
+    a missing one just means its Mention_<name> column isn't in the
+    output, not a failed join, unlike REQUIRED_JOIN_COLUMNS's
+    GLOBALEVENTID/MentionIdentifier). Returns one row per
     (event, mention, GKG row) triple: an event mentioned by several
     articles contributes several rows, and an article covering several
     events contributes one row per event, not one collapsed row.
@@ -223,14 +235,20 @@ def crossref_events_gkg_v2(
     for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
         _require_column(mentions_schema_names, required, "mentions_folder")
 
+    # Same existing/missing split as columns_to_check and output_columns
+    # elsewhere in the pipeline: read whichever optional payload columns
+    # this Mentions dataset actually has, and simply carry through fewer
+    # Mention_* fields for the ones it doesn't, rather than failing.
+    mentions_payload_columns = [
+        c for c in OPTIONAL_MENTIONS_PAYLOAD_COLUMNS if c in mentions_schema_names
+    ]
+    mentions_read_columns = list(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]) + mentions_payload_columns
+
     logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
     mentions_filter = pc.field("GLOBALEVENTID").isin(list(event_id_set))
     bridge_df = (
         mentions_dataset
-        .to_table(
-            columns=["GLOBALEVENTID", "MentionIdentifier", "MentionTimeDate", "Confidence"],
-            filter=mentions_filter,
-        )
+        .to_table(columns=mentions_read_columns, filter=mentions_filter)
         .to_pandas()
     )
 
@@ -256,12 +274,7 @@ def crossref_events_gkg_v2(
     gkg_df = gkg_df.drop_duplicates(subset=["V2DOCUMENTIDENTIFIER"], keep="last")
     gkg_df = gkg_df.rename(columns={c: f"GKG_{c}" for c in gkg_df.columns})
 
-    bridge_df = bridge_df.rename(
-        columns={
-            "MentionTimeDate": "Mention_MentionTimeDate",
-            "Confidence": "Mention_Confidence",
-        }
-    )
+    bridge_df = bridge_df.rename(columns={c: f"Mention_{c}" for c in mentions_payload_columns})
 
     joined = bridge_df.merge(
         gkg_df, left_on="MentionIdentifier", right_on="GKG_V2DOCUMENTIDENTIFIER", how="inner"
