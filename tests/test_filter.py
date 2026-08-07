@@ -529,6 +529,92 @@ class TestRunFilterDatasetParameter:
         assert gkg_schema.field("Tone").type == pa.float32()
 
 
+class TestCrossrefJoinKeyWarning:
+    """output_columns makes it easy to prune a dataset's crossref join
+    key by accident (see gdeltforge.crossref.crossref.REQUIRED_JOIN_COLUMNS);
+    run_filter should warn about it at filter time rather than let the
+    failure surface only when `crossref` is run later, possibly after an
+    expensive sample pass in between."""
+
+    def test_warns_when_output_columns_omits_the_join_key(self, tmp_path, caplog):
+        cfg, _, gkg_in = TestRunFilterDatasetParameter._config(tmp_path)
+        cfg["filter"]["output_columns"] = {
+            # Missing V2DOCUMENTIDENTIFIER, gdelt_gkg_v2's join key.
+            "gdelt_gkg_v2": ["GKGRECORDID"],
+        }
+        pd.DataFrame({
+            "GKGRECORDID": ["r1"],
+            "V2DOCUMENTIDENTIFIER": ["http://a.com"],
+        }).to_parquet(gkg_in / "a.parquet")
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, dataset="gdelt_gkg_v2")
+
+        assert any(
+            "V2DOCUMENTIDENTIFIER" in r.message and "crossref" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_when_the_join_key_is_kept(self, tmp_path, caplog):
+        cfg, _, gkg_in = TestRunFilterDatasetParameter._config(tmp_path)
+        cfg["filter"]["output_columns"] = {
+            "gdelt_gkg_v2": ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"],
+        }
+        pd.DataFrame({
+            "GKGRECORDID": ["r1"],
+            "V2DOCUMENTIDENTIFIER": ["http://a.com"],
+        }).to_parquet(gkg_in / "a.parquet")
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, dataset="gdelt_gkg_v2")
+
+        assert not any("crossref" in r.message for r in caplog.records)
+
+    def test_no_warning_when_output_columns_is_unset(self, tmp_path, caplog):
+        # output_columns=None means every column survives; nothing to warn
+        # about even though gdelt_gkg_v2 does have a required join key.
+        cfg, _, gkg_in = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({
+            "GKGRECORDID": ["r1"],
+            "V2DOCUMENTIDENTIFIER": ["http://a.com"],
+        }).to_parquet(gkg_in / "a.parquet")
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, dataset="gdelt_gkg_v2")
+
+        assert not any("crossref" in r.message for r in caplog.records)
+
+    def test_warns_for_gkg_v1_counts_too(self, tmp_path, caplog):
+        # gdelt_gkg_v1_counts is a real, distinct crossref target (the
+        # `crossref --gkg-version v1-counts` path) with its own entry in
+        # REQUIRED_JOIN_COLUMNS, not just an alias of gdelt_gkg_v1.
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        cfg["paths"]["gkg_v1_counts_parquet_data_directory"] = str(events_in)
+        cfg["paths"]["gkg_v1_counts_filtered_data_directory"] = str(tmp_path / "out")
+        cfg["filter"]["columns_to_check"]["gdelt_gkg_v1_counts"] = ["Date"]
+        # Missing EventIds, gdelt_gkg_v1_counts' join key.
+        cfg["filter"]["output_columns"] = {"gdelt_gkg_v1_counts": ["Date"]}
+        pd.DataFrame({"Date": [20130401], "EventIds": ["1,2"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, dataset="gdelt_gkg_v1_counts")
+
+        assert any(
+            "EventIds" in r.message and "crossref" in r.message for r in caplog.records
+        )
+
+    def test_unrecognized_dataset_name_neither_warns_nor_errors(self):
+        # REQUIRED_JOIN_COLUMNS only covers the five real pipeline
+        # datasets; .get() returning None for anything else must be a
+        # silent no-op, not a KeyError, so this stays forward-compatible
+        # with any future dataset that isn't crossref-relevant.
+        filter_module._warn_if_crossref_join_key_pruned(
+            "gdelt_some_future_dataset", ["SomeColumn"]
+        )
+
+
 class TestFilterSingleFileAtomicity:
     """filter_single_file used to write straight to output_path via a
     streaming ParquetWriter. Now that filter_all_files runs files across a
