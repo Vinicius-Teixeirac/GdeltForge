@@ -158,6 +158,21 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.
 
+### `output_columns` and `crossref`: four columns you can't prune away
+
+If you plan to run `gdeltforge crossref` on a dataset later, `output_columns` for that dataset must keep the column the join actually runs on, no matter how aggressively you trim everything else:
+
+| Dataset | Required column | Used by |
+|---------|------------------|---------|
+| `gdelt_event` | `GlobalEventID` | Both join paths |
+| `gdelt_gkg_v1` / `gdelt_gkg_v1_counts` | `EventIds` | Direct join (`crossref --gkg-version v1` / `v1-counts`) |
+| `gdelt_gkg_v2` | `V2DOCUMENTIDENTIFIER` | Two-hop join (`crossref --gkg-version v2`) |
+| `gdelt_mentions` | `GLOBALEVENTID`, `MentionIdentifier` | The bridge hop itself, needed only for the `v2` path |
+
+Note that `SOURCEURL` is *not* on this list: the two-hop join to GKG 2.1 goes through Mentions' `MentionIdentifier` (which captures every article that mentioned an event), not through Events' own `SOURCEURL` (which only ever holds one representative article). Pruning `SOURCEURL` doesn't affect crossref at all.
+
+Dropping one of the columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `filter` and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. `filter` now warns proactively instead, at the point where `output_columns` is configured, if it detects a dataset's join key isn't in the kept column list, so you find out before those later steps run rather than after.
+
 ## Capacity planning: real measured numbers
 
 Everything below was measured against real GDELT data (not synthetic benchmarks), on GKG 2.1, since it's the dataset these knobs matter most for: mostly free-text fields, and 15-minute-interval files means a multi-year pull is hundreds of thousands of files. Treat these as a starting point for sizing your own pull, not a guarantee: your mix of news volume, disk, and CPU will shift the numbers.

@@ -67,6 +67,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from gdeltforge.crossref.crossref import REQUIRED_JOIN_COLUMNS
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, parse_file_date
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
@@ -445,6 +446,9 @@ def run_filter(
             dataset_path_key(dataset, "filtered_historical_directory")
         )
 
+    output_columns = config["filter"].get("output_columns", {}).get(dataset)
+    _warn_if_crossref_join_key_pruned(dataset, output_columns)
+
     filterer = GDELTFilter(
         input_folder=config["paths"][dataset_path_key(dataset, "parquet_data_directory")],
         output_folder=config["paths"][dataset_path_key(dataset, "filtered_data_directory")],
@@ -455,8 +459,38 @@ def run_filter(
         start_date=start_date,
         end_date=end_date,
         date_parser=date_parser_for(dataset),
-        output_columns=config["filter"].get("output_columns", {}).get(dataset),
+        output_columns=output_columns,
         compression=config["filter"].get("compression", {}).get(dataset, "zstd"),
         float32_columns=config["filter"].get("float32_columns", {}).get(dataset),
     )
     return filterer.filter_all_files()
+
+
+def _warn_if_crossref_join_key_pruned(dataset: str, output_columns: list[str] | None) -> None:
+    """
+    A dataset's crossref join key (see gdeltforge.crossref.crossref's
+    REQUIRED_JOIN_COLUMNS) is easy to prune by accident now that
+    output_columns exists: nothing about picking a lean column set for
+    disk/CPU reasons hints that one of those columns is also load-bearing
+    for a later `crossref` run. crossref itself already raises a clear
+    error if the key is actually missing at join time, but by then a
+    `filter` (and possibly `sample`) pass has already run to completion
+    without it, only for the failure to surface downstream. Warn here
+    instead, at filter time, while it's still cheap to fix.
+
+    Only fires when output_columns is actually set (None means every
+    column survives, so nothing to warn about) and the dataset is one
+    crossref cares about at all (Events, both GKG generations, Mentions).
+    """
+    if output_columns is None:
+        return
+    required = REQUIRED_JOIN_COLUMNS.get(dataset)
+    if not required:
+        return
+    missing = [c for c in required if c not in output_columns]
+    if missing:
+        logger.warning(
+            f"filter.output_columns.{dataset} omits {missing}, required for "
+            f"`gdeltforge crossref` to join this dataset. Filtering will proceed, "
+            f"but crossref will fail on this output unless {missing} is added back."
+        )
