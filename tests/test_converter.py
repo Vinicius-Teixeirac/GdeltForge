@@ -130,6 +130,46 @@ class TestOutputColumnsConfig:
         assert list(df.columns) == ["Day"]
 
 
+class TestRunConverterWarnsAboutCrossrefJoinKey:
+    """run_converter shares the same output_columns/crossref hazard as
+    run_filter (see test_filter.py's TestCrossrefJoinKeyWarning) and the
+    exact same fix: warn at configure time via
+    gdeltforge.crossref.crossref.warn_if_output_columns_drops_join_key,
+    shared between both wrappers rather than reimplemented. The warning
+    fires from config resolution alone, before any zip is processed, so
+    these tests don't need a real zip fixture."""
+
+    def test_warns_when_output_columns_omits_the_join_key(self, tmp_path, caplog):
+        # _make_config's own columns.gdelt_event is ["GlobalEventID", "Day"];
+        # pruning to just "Day" drops the join key.
+        cfg = _make_config(tmp_path, output_columns={"gdelt_event": ["Day"]})
+
+        with caplog.at_level("WARNING"):
+            run_converter(cfg)
+
+        assert any(
+            "GlobalEventID" in r.message and "crossref" in r.message for r in caplog.records
+        )
+
+    def test_no_warning_when_the_join_key_is_kept(self, tmp_path, caplog):
+        cfg = _make_config(
+            tmp_path, output_columns={"gdelt_event": ["GlobalEventID", "Day"]}
+        )
+
+        with caplog.at_level("WARNING"):
+            run_converter(cfg)
+
+        assert not any("crossref" in r.message for r in caplog.records)
+
+    def test_no_warning_when_output_columns_is_unset(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            run_converter(cfg)
+
+        assert not any("crossref" in r.message for r in caplog.records)
+
+
 class TestDatasetParameter:
     def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))
