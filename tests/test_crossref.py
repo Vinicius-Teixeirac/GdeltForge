@@ -1,10 +1,88 @@
+import logging
+
 import pandas as pd
 import pytest
 
-from gdeltforge.crossref.crossref import crossref_events_gkg_v1, crossref_events_gkg_v2
+from gdeltforge.crossref.crossref import (
+    REQUIRED_JOIN_COLUMNS,
+    crossref_events_gkg_v1,
+    crossref_events_gkg_v2,
+    warn_if_output_columns_drops_join_key,
+)
 
 GKG_V1_COLUMNS = ["Date", "EventIds", "NumArticles", "Themes"]
 GKG_V2_COLUMNS = ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V1THEMES"]
+
+
+class TestRequiredJoinColumns:
+    """REQUIRED_JOIN_COLUMNS is imported by both converter.py's
+    run_converter and filter.py's run_filter to power a proactive
+    output_columns warning (see test_converter.py / test_filter.py), so
+    its keys and values are a real cross-module contract, not just
+    internal detail."""
+
+    def test_covers_every_dataset_a_crossref_path_touches(self):
+        assert set(REQUIRED_JOIN_COLUMNS) == {
+            "gdelt_event", "gdelt_gkg_v1", "gdelt_gkg_v1_counts",
+            "gdelt_gkg_v2", "gdelt_mentions",
+        }
+
+    def test_matches_the_columns_actually_enforced_by_require_column(self):
+        assert REQUIRED_JOIN_COLUMNS["gdelt_event"] == ("GlobalEventID",)
+        assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"] == ("EventIds",)
+        assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1_counts"] == ("EventIds",)
+        assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v2"] == ("V2DOCUMENTIDENTIFIER",)
+        assert REQUIRED_JOIN_COLUMNS["gdelt_mentions"] == ("GLOBALEVENTID", "MentionIdentifier")
+
+
+class TestWarnIfOutputColumnsDropsJoinKey:
+    """Core logic shared by run_converter and run_filter; each module's
+    own tests only need to prove they call this with the right
+    arguments, not re-verify the logic itself."""
+
+    def test_warns_when_the_join_key_is_missing(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_output_columns_drops_join_key(
+                logging.getLogger("test"), "convert", "gdelt_event", ["Actor1Name"]
+            )
+        assert any(
+            "GlobalEventID" in r.message and "crossref" in r.message for r in caplog.records
+        )
+
+    def test_no_warning_when_the_join_key_is_present(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_output_columns_drops_join_key(
+                logging.getLogger("test"), "convert", "gdelt_event",
+                ["GlobalEventID", "Actor1Name"],
+            )
+        assert caplog.records == []
+
+    def test_no_warning_when_output_columns_is_none(self, caplog):
+        # None means every column survives; nothing to warn about.
+        with caplog.at_level(logging.WARNING):
+            warn_if_output_columns_drops_join_key(
+                logging.getLogger("test"), "convert", "gdelt_event", None
+            )
+        assert caplog.records == []
+
+    def test_unrecognized_dataset_name_neither_warns_nor_errors(self, caplog):
+        # REQUIRED_JOIN_COLUMNS only covers the five real pipeline
+        # datasets; .get() returning None for anything else must be a
+        # silent no-op, not a KeyError, so this stays forward-compatible
+        # with any future dataset that isn't crossref-relevant.
+        with caplog.at_level(logging.WARNING):
+            warn_if_output_columns_drops_join_key(
+                logging.getLogger("test"), "convert", "gdelt_some_future_dataset",
+                ["SomeColumn"],
+            )
+        assert caplog.records == []
+
+    def test_stage_name_is_attributed_correctly_in_the_message(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_output_columns_drops_join_key(
+                logging.getLogger("test"), "convert", "gdelt_event", []
+            )
+        assert any("convert.output_columns.gdelt_event" in r.message for r in caplog.records)
 
 
 # ------------------------------------------------------------
@@ -263,6 +341,40 @@ class TestCrossrefEventsGkgV2:
         with pytest.raises(ValueError, match="V2DOCUMENTIDENTIFIER"):
             crossref_events_gkg_v2(
                 self._events_df(), mentions_folder, gkg_folder, ["GKGRECORDID"]
+            )
+
+    def test_missing_global_event_id_in_mentions_schema_raises_cleanly(self, tmp_path):
+        # Previously this reached pyarrow's own to_table(columns=[...])
+        # call unchecked, surfacing a raw pyarrow error instead of the
+        # same clean, consistent ValueError every other required column
+        # gets.
+        folder = tmp_path / "mentions_missing_event_id"
+        folder.mkdir()
+        pd.DataFrame({
+            "MentionIdentifier": ["http://a.com/article1"],
+            "MentionTimeDate": [20200101120000],
+            "Confidence": [80],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        with pytest.raises(ValueError, match="GLOBALEVENTID"):
+            crossref_events_gkg_v2(
+                self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+            )
+
+    def test_missing_mention_identifier_in_mentions_schema_raises_cleanly(self, tmp_path):
+        folder = tmp_path / "mentions_missing_identifier"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionTimeDate": [20200101120000],
+            "Confidence": [80],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        with pytest.raises(ValueError, match="MentionIdentifier"):
+            crossref_events_gkg_v2(
+                self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
             )
 
     def test_no_matching_mentions_returns_empty_dataframe(self, tmp_path):
