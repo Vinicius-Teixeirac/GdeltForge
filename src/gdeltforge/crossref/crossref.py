@@ -47,6 +47,21 @@ from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# The column(s) each dataset must retain for crossref to be possible at
+# all: the join key on the Events side, and each dataset's half of the
+# bridge on the GKG/Mentions side. Single source of truth for both the
+# _require_column checks below (which enforce it here, with a clear
+# error) and filter.output_columns' proactive warning (which flags it
+# earlier, at filter time, before a sample/crossref run downstream
+# discovers the column is already gone).
+REQUIRED_JOIN_COLUMNS: dict[str, tuple[str, ...]] = {
+    "gdelt_event": ("GlobalEventID",),
+    "gdelt_gkg_v1": ("EventIds",),
+    "gdelt_gkg_v1_counts": ("EventIds",),
+    "gdelt_gkg_v2": ("V2DOCUMENTIDENTIFIER",),
+    "gdelt_mentions": ("GLOBALEVENTID", "MentionIdentifier"),
+}
+
 
 def _dataset(folder: str) -> ds.Dataset:
     files = list(Path(folder).glob("*.parquet"))
@@ -69,6 +84,41 @@ def _require_column(df_columns, name: str, df_desc: str) -> None:
         raise ValueError(f"{df_desc} must include a {name!r} column")
 
 
+def warn_if_output_columns_drops_join_key(
+    logger, stage: str, dataset: str, output_columns: list[str] | None
+) -> None:
+    """
+    Shared by convert.py's run_converter and filter.py's run_filter, both
+    of which expose an output_columns knob that can prune away a column
+    this module's REQUIRED_JOIN_COLUMNS says a dataset needs. Nothing
+    about picking a lean column set for disk/CPU reasons hints that one
+    of those columns is also load-bearing for a later `crossref` run;
+    _require_column above already raises a clear error if the key is
+    actually missing at join time, but by then convert, filter, and
+    possibly sample have all already run to completion without it, only
+    for the failure to surface downstream. Warn here instead, at the
+    point output_columns is configured, while it's still cheap to fix.
+
+    logger is passed in rather than used from this module, so the
+    warning is correctly attributed to whichever stage actually emitted
+    it. Only fires when output_columns is actually set (None means every
+    column survives, so nothing to warn about) and the dataset is one
+    crossref cares about at all (Events, both GKG generations, Mentions).
+    """
+    if output_columns is None:
+        return
+    required = REQUIRED_JOIN_COLUMNS.get(dataset)
+    if not required:
+        return
+    missing = [c for c in required if c not in output_columns]
+    if missing:
+        logger.warning(
+            f"{stage}.output_columns.{dataset} omits {missing}, required for "
+            f"`gdeltforge crossref` to join this dataset. {stage.capitalize()} will "
+            f"proceed, but crossref will fail on this output unless {missing} is added back."
+        )
+
+
 def crossref_events_gkg_v1(
     events_df: pd.DataFrame,
     gkg_folder: str,
@@ -89,8 +139,8 @@ def crossref_events_gkg_v1(
     contributes no rows; a GKG row naming several events contributes one
     row per event, not one collapsed row.
     """
-    _require_column(events_df.columns, "GlobalEventID", "events_df")
-    _require_column(gkg_columns, "EventIds", "gkg_columns")
+    _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
+    _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
 
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
@@ -152,8 +202,10 @@ def crossref_events_gkg_v2(
     document URL, keeping the most recently seen one, so each article
     contributes exactly one GKG row to the join.
     """
-    _require_column(events_df.columns, "GlobalEventID", "events_df")
-    _require_column(gkg_v2_columns, "V2DOCUMENTIDENTIFIER", "gkg_v2_columns")
+    _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
+    _require_column(
+        gkg_v2_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v2"][0], "gkg_v2_columns"
+    )
 
     columns = _validate_columns(columns, gkg_v2_columns)
     read_gkg_columns = list(
@@ -166,10 +218,15 @@ def crossref_events_gkg_v2(
     # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
     # column unlike GKG 1.0's comma-packed EventIds, so this narrows
     # the scan at the row-group level instead of reading everything.
+    mentions_dataset = _dataset(mentions_folder)
+    mentions_schema_names = mentions_dataset.schema.names
+    for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
+        _require_column(mentions_schema_names, required, "mentions_folder")
+
     logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
     mentions_filter = pc.field("GLOBALEVENTID").isin(list(event_id_set))
     bridge_df = (
-        _dataset(mentions_folder)
+        mentions_dataset
         .to_table(
             columns=["GLOBALEVENTID", "MentionIdentifier", "MentionTimeDate", "Confidence"],
             filter=mentions_filter,
