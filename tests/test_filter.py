@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -205,25 +206,140 @@ class TestOutputColumns:
 
 
 class TestCompressionConfig:
-    def test_defaults_to_snappy(self, tmp_path):
+    def test_defaults_to_zstd(self, tmp_path):
+        # zstd became the default 2026-08-07: measured ~30% smaller than
+        # snappy on real GDELT data at comparable or faster write speed,
+        # and it's lossless, so there's no accuracy tradeoff to weigh.
         filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
-        assert filt.compression == "snappy"
+        assert filt.compression == "zstd"
 
-    def test_explicit_codec_is_used_on_write(self, tmp_path):
+    def test_default_codec_is_used_on_write(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(
-            str(input_dir), str(tmp_path / "out"), ["QuadClass"], compression="zstd",
-        )
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
         out_path = tmp_path / "out" / "data_filtered.parquet"
         filt.filter_single_file(src, out_path)
 
         metadata = pq.ParquetFile(out_path).metadata
         codec = metadata.row_group(0).column(0).compression
         assert codec.lower() == "zstd"
+
+    def test_explicit_codec_overrides_the_default(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"], compression="snappy",
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        metadata = pq.ParquetFile(out_path).metadata
+        codec = metadata.row_group(0).column(0).compression
+        assert codec.lower() == "snappy"
+
+
+class TestFloat32Columns:
+    def test_defaults_to_none_and_keeps_float64(self, tmp_path):
+        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        assert filt.float32_columns is None
+
+    def test_configured_columns_are_narrowed_to_float32(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        # A value with more significant figures than float32 can hold
+        # (~7), so the round-trip actually changes something observable
+        # rather than the test passing by coincidence.
+        _write_parquet(src, {
+            "GlobalEventID": [1, 2],
+            "QuadClass": [1, 2],
+            "AvgTone": [0.0284010224368077, -1.234567891234],
+        })
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            float32_columns=["AvgTone"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        schema = pq.ParquetFile(out_path).schema_arrow
+        assert schema.field("AvgTone").type == pa.float32()
+        assert schema.field("QuadClass").type != pa.float32()
+
+        result = pd.read_parquet(out_path)
+        # The value actually changed under float32 rounding, proving the
+        # cast ran rather than the column merely being typed float32 on
+        # an unchanged 64-bit value. float() is required here, not
+        # incidental: comparing a numpy float32 directly against a Python
+        # float silently compares at float32 precision (numpy downcasts
+        # the Python float rather than upcasting the float32), which
+        # would make this assertion pass even without narrowing at all.
+        assert float(result["AvgTone"].iloc[0]) != 0.0284010224368077
+
+    def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1], "QuadClass": [1]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            float32_columns=["DoesNotExist"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        # Must not raise even though the configured column isn't present.
+        filt.filter_single_file(src, out_path)
+        assert out_path.exists()
+
+    def test_a_configured_non_float_column_is_skipped_not_fatal(self, tmp_path):
+        # QuadClass is an int64 column; asking to float32-narrow it is a
+        # misconfiguration (stale config pointed at the wrong name, a
+        # renamed/retyped column, etc.), not something to force-cast.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1], "QuadClass": [1]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            float32_columns=["QuadClass"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        schema = pq.ParquetFile(out_path).schema_arrow
+        assert schema.field("QuadClass").type == pa.int64()
+
+    def test_interacts_correctly_with_output_columns_projection(self, tmp_path):
+        # The float32 cast must survive column projection, whichever order
+        # a reader might assume they interact in.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {
+            "GlobalEventID": [1],
+            "QuadClass": [1],
+            "AvgTone": [0.0284010224368077],
+        })
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            output_columns=["GlobalEventID", "AvgTone"],
+            float32_columns=["AvgTone"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt.filter_single_file(src, out_path)
+
+        schema = pq.ParquetFile(out_path).schema_arrow
+        assert list(schema.names) == ["GlobalEventID", "AvgTone"]
+        assert schema.field("AvgTone").type == pa.float32()
 
 
 class TestValidateColumns:
@@ -341,10 +457,12 @@ class TestRunFilterDatasetParameter:
 
         assert (processed, failed) == (1, 0)
 
-    def test_missing_output_columns_and_compression_keys_default_to_full_snappy(self, tmp_path):
+    def test_missing_output_columns_and_compression_keys_default_to_full_zstd(self, tmp_path):
         # Same backward-compatibility guarantee as max_workers above: configs
-        # that pre-date output_columns/compression must not KeyError, and
-        # must keep writing every column at snappy as before.
+        # that pre-date output_columns/compression/float32_columns must not
+        # KeyError, must keep writing every column, and get zstd (the
+        # current default) rather than erroring for lack of an explicit
+        # per-dataset override.
         cfg, events_in, _ = self._config(tmp_path)
         pd.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
@@ -353,8 +471,11 @@ class TestRunFilterDatasetParameter:
         processed, failed = run_filter(cfg)
 
         assert (processed, failed) == (1, 0)
-        out = pd.read_parquet(cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet")
+        out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        out = pd.read_parquet(out_path)
         assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
+        codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
+        assert codec.lower() == "zstd"
 
     def test_output_columns_and_compression_are_resolved_per_dataset(self, tmp_path):
         cfg, _, gkg_in = self._config(tmp_path)
@@ -377,6 +498,35 @@ class TestRunFilterDatasetParameter:
 
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
         assert codec.lower() == "zstd"
+
+    def test_float32_columns_is_resolved_per_dataset(self, tmp_path):
+        cfg, events_in, gkg_in = self._config(tmp_path)
+        cfg["filter"]["float32_columns"] = {"gdelt_gkg_v2": ["Tone"]}
+        pd.DataFrame({
+            "GKGRECORDID": ["r1"],
+            "V2DOCUMENTIDENTIFIER": ["http://a.com"],
+            "Tone": [1.5],
+        }).to_parquet(gkg_in / "a.parquet")
+        pd.DataFrame({
+            "GlobalEventID": [1], "Actor1Name": ["A"], "GoldsteinScale": [2.8],
+        }).to_parquet(events_in / "a.parquet")
+
+        # events_in has no float32_columns entry configured for it, so it
+        # must be unaffected by gdelt_gkg_v2's setting.
+        processed_events, _ = run_filter(cfg)
+        processed_gkg, failed_gkg = run_filter(cfg, dataset="gdelt_gkg_v2")
+
+        assert (processed_events, processed_gkg, failed_gkg) == (1, 1, 0)
+
+        events_schema = pq.ParquetFile(
+            cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        ).schema_arrow
+        assert events_schema.field("GoldsteinScale").type != pa.float32()
+
+        gkg_schema = pq.ParquetFile(
+            Path(cfg["paths"]["gkg_v2_filtered_data_directory"]) / "a_filtered.parquet"
+        ).schema_arrow
+        assert gkg_schema.field("Tone").type == pa.float32()
 
 
 class TestFilterSingleFileAtomicity:
