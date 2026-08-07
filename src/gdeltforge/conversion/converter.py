@@ -33,6 +33,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from tqdm import tqdm
 
+from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import unzip_file, write_parquet_atomic
@@ -460,6 +461,9 @@ def run_converter(
 
     Returns (outputs, failed): see GDELTConverter.process_all_files.
     """
+    output_columns = config["converter"].get("output_columns", {}).get(dataset)
+    warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
+
     converter = GDELTConverter(config, dataset=dataset, start_date=start_date, end_date=end_date)
     return converter.process_all_files()
 
