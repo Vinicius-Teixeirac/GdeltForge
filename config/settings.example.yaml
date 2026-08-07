@@ -348,6 +348,14 @@ converter:
   # extras XML, image/video embeds) a themes/tone/persons/orgs crossref
   # never reads, and cutting them sped up real measured conversion by
   # roughly 3x at the same worker count, before even raising max_workers.
+  #
+  # If crossref is part of your plan, keep each dataset's join key no
+  # matter what else you prune here: GlobalEventID (gdelt_event), EventIds
+  # (gdelt_gkg_v1 / gdelt_gkg_v1_counts), V2DOCUMENTIDENTIFIER
+  # (gdelt_gkg_v2), or GLOBALEVENTID + MentionIdentifier (gdelt_mentions).
+  # convert warns if one of these is missing from a configured
+  # output_columns list, same as filter does for its own output_columns
+  # below; see configuration.md for the full explanation.
   output_columns:
     gdelt_gkg_v2: # example: keep only the crossref join key + ML-relevant fields
       - GKGRECORDID
@@ -414,18 +422,22 @@ filter:
       - EventIds
       - Count
 
-  # Optional, per dataset, both independent of columns_to_check above.
+  # Optional, per dataset, all independent of columns_to_check above.
   # output_columns projects the written file down to a subset of columns
   # (row-filtering still runs against the full columns_to_check first); a
   # dataset left out of this map keeps every column, matching pre-existing
-  # configs. compression overrides the write codec per dataset (pyarrow
-  # ships zstd/gzip/brotli/lz4 alongside the snappy default, no extra
-  # dependency needed). Both are worth setting for GKG in particular: most
-  # of its columns are free-text fields (quotations, all-names, GCAM,
-  # extras XML, image/video embeds) that a themes/tone/persons/orgs
-  # crossref never reads, and dropping them plus switching to zstd cuts
-  # real measured disk usage by roughly 12x over the snappy/all-columns
-  # default.
+  # configs. Worth setting for GKG in particular: most of its columns are
+  # free-text fields (quotations, all-names, GCAM, extras XML, image/video
+  # embeds) that a themes/tone/persons/orgs crossref never reads, and
+  # dropping them cuts real measured disk usage by roughly 7x.
+  #
+  # If crossref is part of your plan, keep each dataset's join key no
+  # matter what else you prune: GlobalEventID (gdelt_event), EventIds
+  # (gdelt_gkg_v1 / gdelt_gkg_v1_counts), V2DOCUMENTIDENTIFIER
+  # (gdelt_gkg_v2), or GLOBALEVENTID + MentionIdentifier (gdelt_mentions).
+  # filter warns if one of these is missing from a configured
+  # output_columns list; see configuration.md for the full explanation,
+  # including why SOURCEURL is not on this list despite looking related.
   output_columns:
     gdelt_gkg_v2: # example: keep only the crossref join key + ML-relevant fields
       - GKGRECORDID
@@ -439,5 +451,27 @@ filter:
       - V2ENHANCEDORGANIZATIONS
       - V1.5TONE
 
+  # Write codec per dataset. pyarrow ships zstd/gzip/brotli/lz4 alongside
+  # snappy, no extra dependency needed. Defaults to zstd when a dataset
+  # has no entry here (measured roughly 30% smaller than snappy on real
+  # GDELT Events data, at comparable or faster write speed, and fully
+  # lossless, so there's no accuracy tradeoff in taking the default).
+  # Override to a specific codec per dataset here if ever needed.
   compression:
-    gdelt_gkg_v2: zstd # example
+    gdelt_gkg_v2: snappy # example override away from the zstd default
+
+  # Opt-in, per dataset: narrows these float64 columns to float32 on
+  # write. A dataset left out of this map (the default) keeps every float
+  # column at full float64 precision.
+  #
+  # Unlike compression above, this is a real precision change, not free
+  # storage: real GDELT float columns, AvgTone especially, have been
+  # observed with up to 15 significant figures in source data, well past
+  # float32's ~7. Casting a column here means the values it holds will
+  # measurably change on read, not just take up less space on disk. Only
+  # enable it for specific columns where that tradeoff is acceptable for
+  # your use case, and never as a blanket setting.
+  float32_columns:
+    gdelt_event: # example
+      - Actor1Geo_Lat
+      - Actor1Geo_Long
