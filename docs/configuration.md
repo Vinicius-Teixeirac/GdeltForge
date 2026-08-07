@@ -99,7 +99,7 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | `file_pattern` | `"*.zip"` | Glob pattern for which files in `downloaded_data_directory` to convert |
 | `max_workers` | `null` | Worker processes for conversion. `null` uses `os.cpu_count()` |
 | `max_workers_by_dataset.<dataset>` | none | Overrides `max_workers` for one dataset. See "Capacity planning" below: a worker count safe for one dataset isn't necessarily safe for another, since it depends on peak per-worker memory |
-| `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `names` is still passed in full to `pandas.read_csv` (it's what maps each raw position to a name on files with no header row), but pandas skips allocating/decoding whatever isn't in `output_columns` |
+| `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `names` is still passed in full to `pandas.read_csv` (it's what maps each raw position to a name on files with no header row), but pandas skips allocating/decoding whatever isn't in `output_columns`. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
 | `partitioning` | see below | Optional Hive partitioning for historical (pre-daily) files |
 
 Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`.
@@ -152,7 +152,7 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 |-----|-------------|
 | `max_workers` | Worker processes for filtering, same tradeoffs as `converter.max_workers`. `null` (default) uses `os.cpu_count()` |
 | `columns_to_check.<dataset>` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
-| `output_columns.<dataset>` | Projects the filtered output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed |
+| `output_columns.<dataset>` | Projects the filtered output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
 | `compression.<dataset>` | Parquet codec for the filtered output. Unset defaults to `zstd`. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
 | `float32_columns.<dataset>` | Narrows these float64 columns to float32 on write. Unset keeps every float column at full float64 precision. See "Capacity planning" below before using this: it's a real precision change, not free compression |
 
@@ -160,16 +160,22 @@ This is the one section you should always customize: the example values are illu
 
 ### `output_columns` and `crossref`: four columns you can't prune away
 
-If you plan to run `gdeltforge crossref` on a dataset later, `output_columns` for that dataset must keep the column the join actually runs on, no matter how aggressively you trim everything else:
+Both `converter.output_columns` and `filter.output_columns` share this same hazard: if you plan to run `gdeltforge crossref` on a dataset later, whichever stage you prune it in must keep the column the join actually runs on, no matter how aggressively you trim everything else:
 
 | Dataset | Required column | Used by |
 |---------|------------------|---------|
 | `gdelt_event` | `GlobalEventID` | Both join paths |
 | `gdelt_gkg_v1` / `gdelt_gkg_v1_counts` | `EventIds` | Direct join (`crossref --gkg-version v1` / `v1-counts`) |
-| `gdelt_gkg_v2` | `V2DOCUMENTIDENTIFIER` | Two-hop join (`crossref --gkg-version v2`) |
-| `gdelt_mentions` | `GLOBALEVENTID`, `MentionIdentifier` | The bridge hop itself, needed only for the `v2` path |
+| `gdelt_gkg_v2` | `V2DOCUMENTIDENTIFIER` | Two-hop join (`crossref --gkg-version v2`)[^gdelt2] |
+| `gdelt_mentions` | `GLOBALEVENTID`, `MentionIdentifier` | The bridge hop itself, needed only for the `v2` path[^gdelt2] |
+
+[^gdelt2]: The `v2` path has nothing to join before 2015-02-18: Mentions and GKG 2.1 didn't exist until GDELT 2.0 launched that day. `v1`/`v1-counts` reaches back further, to April 2013.
 
 Note that `SOURCEURL` is *not* on this list: the two-hop join to GKG 2.1 goes through Mentions' `MentionIdentifier` (which captures every article that mentioned an event), not through Events' own `SOURCEURL` (which only ever holds one representative article). Pruning `SOURCEURL` doesn't affect crossref at all.
+
+Dropping one of the required columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `convert`, `filter`, and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. Both `run_converter` and `run_filter` warn proactively instead, at the point `output_columns` is configured for either stage, against a single `REQUIRED_JOIN_COLUMNS` mapping shared with `crossref.py` itself so the two can't drift apart.
+
+Scraping has no equivalent warning, and can't: `scrape` downloads whole files, it never parses or selects individual columns, so there's no column-level decision to warn about at that stage. The closest real analog at the scrape stage is a coarser, dataset-level one, not choosing a column: `crossref --gkg-version v2` needs Mentions data to exist locally at all, so scraping GKG 2.1 without ever also scraping Mentions produces the same downstream failure for a different reason. Nothing currently warns about that either.
 
 Dropping one of the columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `filter` and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. `filter` now warns proactively instead, at the point where `output_columns` is configured, if it detects a dataset's join key isn't in the kept column list, so you find out before those later steps run rather than after.
 

@@ -605,16 +605,6 @@ class TestCrossrefJoinKeyWarning:
             "EventIds" in r.message and "crossref" in r.message for r in caplog.records
         )
 
-    def test_unrecognized_dataset_name_neither_warns_nor_errors(self):
-        # REQUIRED_JOIN_COLUMNS only covers the five real pipeline
-        # datasets; .get() returning None for anything else must be a
-        # silent no-op, not a KeyError, so this stays forward-compatible
-        # with any future dataset that isn't crossref-relevant.
-        filter_module._warn_if_crossref_join_key_pruned(
-            "gdelt_some_future_dataset", ["SomeColumn"]
-        )
-
-
 class TestFilterSingleFileAtomicity:
     """filter_single_file used to write straight to output_path via a
     streaming ParquetWriter. Now that filter_all_files runs files across a

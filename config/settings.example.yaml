@@ -348,6 +348,14 @@ converter:
   # extras XML, image/video embeds) a themes/tone/persons/orgs crossref
   # never reads, and cutting them sped up real measured conversion by
   # roughly 3x at the same worker count, before even raising max_workers.
+  #
+  # If crossref is part of your plan, keep each dataset's join key no
+  # matter what else you prune here: GlobalEventID (gdelt_event), EventIds
+  # (gdelt_gkg_v1 / gdelt_gkg_v1_counts), V2DOCUMENTIDENTIFIER
+  # (gdelt_gkg_v2), or GLOBALEVENTID + MentionIdentifier (gdelt_mentions).
+  # convert warns if one of these is missing from a configured
+  # output_columns list, same as filter does for its own output_columns
+  # below; see configuration.md for the full explanation.
   output_columns:
     gdelt_gkg_v2: # example: keep only the crossref join key + ML-relevant fields
       - GKGRECORDID
