@@ -153,7 +153,8 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 | `max_workers` | Worker processes for filtering, same tradeoffs as `converter.max_workers`. `null` (default) uses `os.cpu_count()` |
 | `columns_to_check.<dataset>` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
 | `output_columns.<dataset>` | Projects the filtered output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed |
-| `compression.<dataset>` | Parquet codec for the filtered output. Unset stays `snappy`. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
+| `compression.<dataset>` | Parquet codec for the filtered output. Unset defaults to `zstd`. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
+| `float32_columns.<dataset>` | Narrows these float64 columns to float32 on write. Unset keeps every float column at full float64 precision. See "Capacity planning" below before using this: it's a real precision change, not free compression |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.
 
@@ -202,3 +203,26 @@ Column pruning did most of the work; the codec switch on top was a smaller, roug
 | Pruned + `zstd` + 8 workers | 385,728 | ~46 hours (~1.9 days) | ~220-380 GB |
 
 Scrape throughput (~4.2 files/s) is network-bound against `data.gdeltproject.org` and unaffected by any of the above; convert is where pruning and worker count actually move the number, from the previous bottleneck (~71 hours) down to roughly 12 hours.
+
+### Dtype narrowing: where it does and doesn't pay off
+
+A natural next question after the above is whether narrowing individual column types saves more. The answer depends entirely on whether the column is low-cardinality or genuinely continuous, and the two cases point in opposite directions.
+
+**Low-cardinality integers (`Actor1Geo_Type`, `QuadClass`, ...): narrowing barely helps.** `Actor1Geo_Type`/`Actor2Geo_Type`/`ActionGeo_Type` have exactly 6 distinct values in practice (0-5, confirmed against 8.3M real Events rows), and `QuadClass` has 4. The intuitive expectation is that declaring these as `uint8` instead of `int64` should save close to 8x. It doesn't: Parquet already dictionary-encodes low-cardinality integer columns by default regardless of the declared Arrow type, so a 6-value column gets stored as small bit-packed dictionary indices either way. Measured on a real 5M-row sample, `int64` to `uint8` gave a 1.00-1.01x change (noise level) for every one of these columns. `IsRootEvent` to `bool` was the one exception, a real 17% reduction on that column specifically, since Parquet's native boolean bit-packing beats even dictionary-encoded `int64` for a 2-value column, but that column is too small a slice of a full row (these five candidate columns combined are only ~2% of a full Events file) for it to be worth a config option on its own. This was investigated but not implemented for that reason.
+
+**Continuous floats (`AvgTone`, lat/long, ...): narrowing to float32 saves real space, but is not lossless.** Dictionary encoding can't compress a column with hundreds of thousands of distinct values the way it compresses a 6-value one, so `float64` to `float32` does save real space here: `AvgTone` measured 1.30-1.33x smaller, lat/long columns 1.02-1.03x.
+
+The first pass at this reasoned "float32's ~7 significant digits should be plenty for a tone score" without checking GDELT's actual emitted precision. That assumption was wrong. A real downloaded Events file (`20130401.export.CSV.zip`) shows `AvgTone` values with up to 16 decimal places and 15 significant figures in source data, e.g. `0.0284010224368077`, and a direct round-trip test (cast to float32, back to float64, compare to the original) against 6.5M real rows confirms the practical effect: the value changes on 31% of rows for `GoldsteinScale`, 96% for `AvgTone`, and literally 100% for `FractionDate`. Each individual change is tiny (on the order of float32's ~1.19e-7 relative precision floor), but it is a genuine, measurable change to the value, not just a smaller encoding of the same one.
+
+That's exactly why `filter.float32_columns` exists as an explicit, per-dataset, per-column opt-in rather than a blanket setting or a new default: it's available for anyone who has decided that tradeoff is acceptable for their use case, but nothing is cast to float32 unless a column is named there.
+
+### Why compression defaults to zstd now, for every dataset
+
+The GKG 2.1 codec numbers earlier in this page don't automatically transfer to Events, since it's a different content mix (mostly short codes, names, and dates rather than GKG's free text). Measured directly on 5.8M real Events rows, all 58 columns:
+
+| Codec | Size | bytes/row | Write time |
+|-------|------|-----------|------------|
+| `snappy` (previous default) | 471.6 MB | 81.1 | 64.0s |
+| `zstd` (current default) | 330.4 MB | 56.8 | 50.5s |
+
+Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, this isn't a tradeoff to weigh the way `float32_columns` is: there's no case where `snappy` is the better default. `filter.compression` defaults to `zstd` for every dataset as of 2026-08-07; `compression.<dataset>` remains available to override to a specific codec if one is ever needed.
