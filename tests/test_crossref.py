@@ -4,10 +4,13 @@ import pandas as pd
 import pytest
 
 from gdeltforge.crossref.crossref import (
+    GKG_V1_COVERAGE_START,
+    GKG_V2_COVERAGE_START,
     OPTIONAL_MENTIONS_PAYLOAD_COLUMNS,
     REQUIRED_JOIN_COLUMNS,
     crossref_events_gkg_v1,
     crossref_events_gkg_v2,
+    warn_if_events_predate_gkg_coverage,
     warn_if_output_columns_drops_join_key,
 )
 
@@ -93,6 +96,64 @@ class TestWarnIfOutputColumnsDropsJoinKey:
                 logging.getLogger("test"), "convert", "gdelt_event", []
             )
         assert any("convert.output_columns.gdelt_event" in r.message for r in caplog.records)
+
+
+class TestWarnIfEventsPredateGkgCoverage:
+    """Core logic shared by crossref_events_gkg_v1 and _v2; each join
+    function's own tests only need to prove they call this with the
+    right arguments, not re-verify the logic itself."""
+
+    def test_coverage_start_constants_match_gdelt_s_real_file_listings(self):
+        # Verified 2026-08-07 against real GDELT file listings, not the
+        # codebook alone: GKG 1.0's earliest published file is
+        # 20130401.gkg.csv.zip; the earliest file in
+        # gdeltv2/masterfilelist.txt for GKG 2.1, the 15-minute Events
+        # feed, and Mentions alike is 20150218230000.
+        assert GKG_V1_COVERAGE_START == 20130401
+        assert GKG_V2_COVERAGE_START == 20150218
+
+    def test_no_warning_when_all_events_are_within_coverage(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20200101, 20200102]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert caplog.records == []
+
+    def test_warns_when_all_events_predate_coverage(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20100101, 20120101]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert any(
+            "All 2" in r.message and "GKG 1.0" in r.message and "20130401" in r.message
+            for r in caplog.records
+        )
+
+    def test_warns_with_a_partial_count_when_only_some_events_predate_coverage(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20100101, 20200101, 20200102]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert any("1 of 3" in r.message for r in caplog.records)
+
+    def test_no_warning_when_dateadded_column_is_absent(self, caplog):
+        # A sample built with --columns that excluded DATEADDED: this is
+        # a diagnostic on top of the join, not something the join itself
+        # depends on, so it must degrade silently, not error.
+        events_df = pd.DataFrame({"GlobalEventID": [1, 2]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert caplog.records == []
+
+    def test_no_warning_on_empty_dateadded(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": pd.Series([], dtype="float64")})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert caplog.records == []
+
+    def test_null_dateadded_values_are_excluded_from_the_count(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20100101, None, 20200101]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        # 1 real pre-coverage row out of 2 non-null rows, not 3.
+        assert any("1 of 2" in r.message for r in caplog.records)
 
 
 # ------------------------------------------------------------
@@ -205,6 +266,24 @@ class TestCrossrefEventsGkgV1:
         events_df = pd.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
         result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
         assert result.empty
+
+    def test_warns_when_some_events_predate_gkg_v1_coverage(self, tmp_path, caplog):
+        # Event 1001 (real match, DATEADDED within coverage) must still
+        # join normally alongside event 1002 (pre-coverage, gets warned
+        # about): the warning is a diagnostic, not a filter.
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [1001, 1002],
+            "DATEADDED": [20130401, 20120101],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
+
+        assert any(
+            "1 of 2" in r.message and "GKG 1.0" in r.message for r in caplog.records
+        )
+        assert 1001 in set(result["GlobalEventID"])
 
 
 # ------------------------------------------------------------
@@ -433,3 +512,24 @@ class TestCrossrefEventsGkgV2:
         events_df = pd.DataFrame({"GlobalEventID": [424242]})
         result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
         assert result.empty
+
+    def test_warns_when_some_events_predate_gdelt_2_coverage(self, tmp_path, caplog):
+        # Event 2001 (real match, DATEADDED within coverage) must still
+        # join normally alongside event 2002 (pre-coverage, gets warned
+        # about): the warning is a diagnostic, not a filter.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [2001, 2002],
+            "DATEADDED": [20200101, 20140101],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_v2(
+                events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            )
+
+        assert any(
+            "1 of 2" in r.message and "GDELT 2.0" in r.message for r in caplog.records
+        )
+        assert 2001 in set(result["GlobalEventID"])
