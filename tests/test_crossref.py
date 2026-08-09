@@ -4,9 +4,14 @@ import pandas as pd
 import pytest
 
 from gdeltforge.crossref.crossref import (
+    GKG_V1_COVERAGE_START,
+    GKG_V2_COVERAGE_START,
+    OPTIONAL_MENTIONS_PAYLOAD_COLUMNS,
     REQUIRED_JOIN_COLUMNS,
+    crossref_events_gkg_auto,
     crossref_events_gkg_v1,
     crossref_events_gkg_v2,
+    warn_if_events_predate_gkg_coverage,
     warn_if_output_columns_drops_join_key,
 )
 
@@ -33,6 +38,15 @@ class TestRequiredJoinColumns:
         assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1_counts"] == ("EventIds",)
         assert REQUIRED_JOIN_COLUMNS["gdelt_gkg_v2"] == ("V2DOCUMENTIDENTIFIER",)
         assert REQUIRED_JOIN_COLUMNS["gdelt_mentions"] == ("GLOBALEVENTID", "MentionIdentifier")
+
+    def test_optional_mentions_payload_columns_are_disjoint_from_required(self):
+        # MentionTimeDate/Confidence must never end up in both sets: that
+        # would make a column simultaneously join-breaking-if-missing
+        # (REQUIRED_JOIN_COLUMNS) and gracefully-omittable-if-missing
+        # (OPTIONAL_MENTIONS_PAYLOAD_COLUMNS), a contradiction.
+        assert set(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]).isdisjoint(
+            OPTIONAL_MENTIONS_PAYLOAD_COLUMNS
+        )
 
 
 class TestWarnIfOutputColumnsDropsJoinKey:
@@ -83,6 +97,64 @@ class TestWarnIfOutputColumnsDropsJoinKey:
                 logging.getLogger("test"), "convert", "gdelt_event", []
             )
         assert any("convert.output_columns.gdelt_event" in r.message for r in caplog.records)
+
+
+class TestWarnIfEventsPredateGkgCoverage:
+    """Core logic shared by crossref_events_gkg_v1 and _v2; each join
+    function's own tests only need to prove they call this with the
+    right arguments, not re-verify the logic itself."""
+
+    def test_coverage_start_constants_match_gdelt_s_real_file_listings(self):
+        # Verified 2026-08-07 against real GDELT file listings, not the
+        # codebook alone: GKG 1.0's earliest published file is
+        # 20130401.gkg.csv.zip; the earliest file in
+        # gdeltv2/masterfilelist.txt for GKG 2.1, the 15-minute Events
+        # feed, and Mentions alike is 20150218230000.
+        assert GKG_V1_COVERAGE_START == 20130401
+        assert GKG_V2_COVERAGE_START == 20150218
+
+    def test_no_warning_when_all_events_are_within_coverage(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20200101, 20200102]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert caplog.records == []
+
+    def test_warns_when_all_events_predate_coverage(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20100101, 20120101]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert any(
+            "All 2" in r.message and "GKG 1.0" in r.message and "20130401" in r.message
+            for r in caplog.records
+        )
+
+    def test_warns_with_a_partial_count_when_only_some_events_predate_coverage(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20100101, 20200101, 20200102]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert any("1 of 3" in r.message for r in caplog.records)
+
+    def test_no_warning_when_dateadded_column_is_absent(self, caplog):
+        # A sample built with --columns that excluded DATEADDED: this is
+        # a diagnostic on top of the join, not something the join itself
+        # depends on, so it must degrade silently, not error.
+        events_df = pd.DataFrame({"GlobalEventID": [1, 2]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert caplog.records == []
+
+    def test_no_warning_on_empty_dateadded(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": pd.Series([], dtype="float64")})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        assert caplog.records == []
+
+    def test_null_dateadded_values_are_excluded_from_the_count(self, caplog):
+        events_df = pd.DataFrame({"DATEADDED": [20100101, None, 20200101]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+        # 1 real pre-coverage row out of 2 non-null rows, not 3.
+        assert any("1 of 2" in r.message for r in caplog.records)
 
 
 # ------------------------------------------------------------
@@ -196,6 +268,24 @@ class TestCrossrefEventsGkgV1:
         result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
         assert result.empty
 
+    def test_warns_when_some_events_predate_gkg_v1_coverage(self, tmp_path, caplog):
+        # Event 1001 (real match, DATEADDED within coverage) must still
+        # join normally alongside event 1002 (pre-coverage, gets warned
+        # about): the warning is a diagnostic, not a filter.
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [1001, 1002],
+            "DATEADDED": [20130401, 20120101],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
+
+        assert any(
+            "1 of 2" in r.message and "GKG 1.0" in r.message for r in caplog.records
+        )
+        assert 1001 in set(result["GlobalEventID"])
+
 
 # ------------------------------------------------------------
 # crossref_events_gkg_v2: two-hop join through Mentions
@@ -306,6 +396,46 @@ class TestCrossrefEventsGkgV2:
         assert "Mention_MentionTimeDate" in result.columns
         assert "Mention_Confidence" in result.columns
 
+    def test_missing_optional_payload_column_is_omitted_not_fatal(self, tmp_path):
+        # MentionTimeDate and Confidence are payload, not join keys
+        # (only GLOBALEVENTID and MentionIdentifier are); a Mentions
+        # dataset missing one must still join successfully, just without
+        # that Mention_<name> column in the output.
+        folder = tmp_path / "mentions_no_confidence"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [2001, 2002],
+            "MentionIdentifier": ["http://a.com/article1", "http://a.com/article1"],
+            "MentionTimeDate": [20200101120000, 20200101130000],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+        )
+
+        assert len(result) == 2
+        assert "Mention_MentionTimeDate" in result.columns
+        assert "Mention_Confidence" not in result.columns
+
+    def test_missing_both_optional_payload_columns_still_joins(self, tmp_path):
+        folder = tmp_path / "mentions_bare"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionIdentifier": ["http://a.com/article1"],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+        )
+
+        assert len(result) == 1
+        assert result["GlobalEventID"].iloc[0] == 2001
+        assert "Mention_MentionTimeDate" not in result.columns
+        assert "Mention_Confidence" not in result.columns
+
     def test_columns_restricts_gkg_side_output(self, tmp_path):
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
@@ -383,3 +513,198 @@ class TestCrossrefEventsGkgV2:
         events_df = pd.DataFrame({"GlobalEventID": [424242]})
         result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
         assert result.empty
+
+    def test_warns_when_some_events_predate_gdelt_2_coverage(self, tmp_path, caplog):
+        # Event 2001 (real match, DATEADDED within coverage) must still
+        # join normally alongside event 2002 (pre-coverage, gets warned
+        # about): the warning is a diagnostic, not a filter.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [2001, 2002],
+            "DATEADDED": [20200101, 20140101],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_v2(
+                events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            )
+
+        assert any(
+            "1 of 2" in r.message and "GDELT 2.0" in r.message for r in caplog.records
+        )
+        assert 2001 in set(result["GlobalEventID"])
+
+
+# ------------------------------------------------------------
+# crossref_events_gkg_auto: routes each event to v1 or v2 by DATEADDED
+# ------------------------------------------------------------
+class TestCrossrefEventsGkgAuto:
+    @staticmethod
+    def _write_gkg_v1(tmp_path):
+        folder = tmp_path / "gkg_v1"
+        folder.mkdir()
+        pd.DataFrame({
+            "Date": [20130401],
+            "EventIds": ["1001"],
+            "Themes": ["TAX_FNCACT"],
+        }).to_parquet(folder / "20130401.gkg.parquet")
+        return str(folder)
+
+    @staticmethod
+    def _write_mentions(tmp_path):
+        folder = tmp_path / "mentions"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionIdentifier": ["http://a.com/article1"],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        return str(folder)
+
+    @staticmethod
+    def _write_gkg_v2(tmp_path):
+        folder = tmp_path / "gkg_v2"
+        folder.mkdir()
+        pd.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://a.com/article1"],
+            "V1THEMES": ["THEME_X"],
+        }).to_parquet(folder / "20200101000000.gkg.parquet")
+        return str(folder)
+
+    def _paths(self, tmp_path):
+        return {
+            "gkg_v1_folder": self._write_gkg_v1(tmp_path),
+            "gkg_v1_columns": ["Date", "EventIds", "Themes"],
+            "mentions_folder": self._write_mentions(tmp_path),
+            "gkg_v2_folder": self._write_gkg_v2(tmp_path),
+            "gkg_v2_columns": ["V2DOCUMENTIDENTIFIER", "V1THEMES"],
+        }
+
+    def test_v1_era_event_is_routed_to_gkg_v1(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert len(result) == 1
+        assert result["CrossrefSource"].iloc[0] == "v1"
+        assert result["GKG_Themes"].iloc[0] == "TAX_FNCACT"
+
+    def test_v2_era_event_is_routed_to_gkg_v2(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20200101]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert len(result) == 1
+        assert result["CrossrefSource"].iloc[0] == "v2"
+        assert result["GKG_V1THEMES"].iloc[0] == "THEME_X"
+
+    def test_mixed_sample_gets_both_sources_in_one_result(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [1001, 2001],
+            "DATEADDED": [20130401, 20200101],
+        })
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert len(result) == 2
+        assert set(result["CrossrefSource"]) == {"v1", "v2"}
+        # Neither schema's GKG-side columns overlap: a v1 row must carry
+        # NaN for the v2-only column and vice versa, not raise or drop it.
+        v1_row = result[result["CrossrefSource"] == "v1"].iloc[0]
+        v2_row = result[result["CrossrefSource"] == "v2"].iloc[0]
+        assert pd.isna(v1_row["GKG_V1THEMES"])
+        assert pd.isna(v2_row["GKG_Themes"])
+
+    def test_events_before_gkg_v1_coverage_are_skipped_and_warned(self, tmp_path, caplog):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"GlobalEventID": [999], "DATEADDED": [20100101]})
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_auto(
+                events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+                paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            )
+
+        assert result.empty
+        assert any(
+            "1 of 1" in r.message and "20130401" in r.message for r in caplog.records
+        )
+
+    def test_partial_pre_coverage_still_routes_the_valid_events(self, tmp_path, caplog):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [999, 1001],
+            "DATEADDED": [20100101, 20130401],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_auto(
+                events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+                paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            )
+
+        assert len(result) == 1
+        assert result["GlobalEventID"].iloc[0] == 1001
+        assert any("1 of 2" in r.message for r in caplog.records)
+
+    def test_missing_dateadded_raises(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"GlobalEventID": [1001]})
+
+        with pytest.raises(ValueError, match="DATEADDED"):
+            crossref_events_gkg_auto(
+                events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+                paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            )
+
+    def test_missing_global_event_id_raises(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"DATEADDED": [20130401]})
+
+        with pytest.raises(ValueError, match="GlobalEventID"):
+            crossref_events_gkg_auto(
+                events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+                paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            )
+
+    def test_no_matches_in_either_path_returns_empty_dataframe(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [424242, 434343],
+            "DATEADDED": [20130401, 20200101],
+        })
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert result.empty
+
+    def test_v1_columns_and_v2_columns_restrict_each_path_independently(self, tmp_path):
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [1001, 2001],
+            "DATEADDED": [20130401, 20200101],
+        })
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            v1_columns={"EventIds"}, v2_columns={"V2DOCUMENTIDENTIFIER"},
+        )
+
+        assert "GKG_Themes" not in result.columns
+        assert "GKG_V1THEMES" not in result.columns

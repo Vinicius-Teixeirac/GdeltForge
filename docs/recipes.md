@@ -134,3 +134,34 @@ gdeltforge crossref \
 ```
 
 Both preserve the real many-to-many structure rather than collapsing it: one event can produce several output rows (one per article that covered it), and one article covering several events contributes one row per event.
+
+## GKG-Enriched Events Across the 2013-2015 Boundary
+
+GKG 2.1 and Mentions don't exist before GDELT 2.0 launched, 2015-02-18; GKG 1.0 has been live since 2013-04-01 and is still published today. A sample spanning that boundary can't use a single `--gkg-version` for the whole thing: `v1` alone misses GKG 2.1's richer per-article fields for the post-2015 portion, and `v2` alone finds nothing at all for the pre-2015 portion. `--gkg-version auto` routes each event to whichever generation actually covers it instead.
+
+```bash
+# GKG 1.0 covers the whole window; GKG 2.1 + Mentions only from 2015-02-18 on.
+gdeltforge scrape --dataset gkg-v1 --start-date 2014-01-01 --end-date 2016-01-01
+gdeltforge convert --dataset gkg-v1
+gdeltforge filter --dataset gkg-v1
+
+gdeltforge scrape --dataset gkg-v2 --start-date 2015-02-18 --end-date 2016-01-01
+gdeltforge scrape --dataset mentions --start-date 2015-02-18 --end-date 2016-01-01
+gdeltforge convert --dataset gkg-v2
+gdeltforge convert --dataset mentions
+gdeltforge filter --dataset gkg-v2
+gdeltforge filter --dataset mentions
+
+gdeltforge filter --dataset events --start-date 2014-01-01 --end-date 2016-01-01
+gdeltforge sample \
+    --mode filtered \
+    --filter '{"DATEADDED": {"op": "between", "min": 20140101, "max": 20160101}}' \
+    -n 5000 --out samples/gap_events_5k.parquet
+
+gdeltforge crossref \
+    --events samples/gap_events_5k.parquet \
+    --gkg-version auto \
+    --out samples/gap_events_enriched_5k.parquet
+```
+
+Output carries a `CrossrefSource` column (`v1` or `v2`) marking which generation actually enriched each row: events dated before 2015-02-18 always come from GKG 1.0's coarser, day-aggregated fields (`GKG_Themes`, `GKG_Date`, ...); events from that date on come from GKG 2.1's richer, per-article fields instead (`GKG_V1THEMES`, `GKG_V2ENHANCEDTHEMES`, ...). The two schemas don't overlap at all, so a row carries `NaN` for whichever set its source generation didn't produce, not a forced or incorrect merge. Any event in the sample dated before 2013-04-01 has no match in either generation and is skipped with a warning rather than silently dropped.

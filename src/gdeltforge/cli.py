@@ -7,7 +7,11 @@ from pathlib import Path
 import pandas as pd
 
 from gdeltforge.conversion.converter import run_converter
-from gdeltforge.crossref.crossref import crossref_events_gkg_v1, crossref_events_gkg_v2
+from gdeltforge.crossref.crossref import (
+    crossref_events_gkg_auto,
+    crossref_events_gkg_v1,
+    crossref_events_gkg_v2,
+)
 from gdeltforge.filtering.filter import run_filter
 
 # Samplers
@@ -47,7 +51,10 @@ _DATASET_CLI_TO_CONFIG = {
 
 # crossref's own choices: a GKG generation to join against, not a dataset
 # to read directly (v2 pulls in Mentions internally as the join bridge).
-_CROSSREF_GKG_CHOICES = ["v1", "v1-counts", "v2"]
+# "auto" routes each event to v1 or v2 by its own DATEADDED instead of
+# requiring one version for the whole sample; see
+# crossref_events_gkg_auto's docstring and configuration.md.
+_CROSSREF_GKG_CHOICES = ["v1", "v1-counts", "v2", "auto"]
 _CROSSREF_GKG_TO_CONFIG = {
     "v1": "gdelt_gkg_v1",
     "v1-counts": "gdelt_gkg_v1_counts",
@@ -238,7 +245,36 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.gkg_version == "v2":
+    if args.gkg_version == "auto":
+        if columns:
+            raise ValueError(
+                "--columns isn't supported with --gkg-version auto, since GKG 1.0 and "
+                "GKG 2.1 use different column names for equivalent fields, so one column "
+                "set can't validly restrict both. Use --gkg-version v1 or v2 directly to "
+                "restrict columns, or call crossref_events_gkg_auto with its own "
+                "v1_columns/v2_columns to restrict each path independently."
+            )
+        gkg_v1_folder = ensure_exists(
+            config["paths"][dataset_path_key("gdelt_gkg_v1", source_key)],
+            "GKG 1.0 directory",
+        )
+        mentions_folder = ensure_exists(
+            config["paths"][dataset_path_key("gdelt_mentions", source_key)],
+            "Mentions directory",
+        )
+        gkg_v2_folder = ensure_exists(
+            config["paths"][dataset_path_key("gdelt_gkg_v2", source_key)],
+            "GKG 2.1 directory",
+        )
+        result = crossref_events_gkg_auto(
+            events_df,
+            str(gkg_v1_folder),
+            config["columns"]["gdelt_gkg_v1"],
+            str(mentions_folder),
+            str(gkg_v2_folder),
+            config["columns"]["gdelt_gkg_v2"],
+        )
+    elif args.gkg_version == "v2":
         mentions_folder = ensure_exists(
             config["paths"][dataset_path_key("gdelt_mentions", source_key)],
             "Mentions directory",
@@ -481,8 +517,10 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=_CROSSREF_GKG_CHOICES,
         help="Which GKG generation to join against: v1 (direct join on EventIds, main GKG "
-             "1.0 file), v1-counts (same join, GKG 1.0's separate Counts file), or v2 "
-             "(two-hop join through Mentions, GKG 2.1)"
+             "1.0 file), v1-counts (same join, GKG 1.0's separate Counts file), v2 "
+             "(two-hop join through Mentions, GKG 2.1), or auto (routes each event to v1 "
+             "or v2 by its own DATEADDED, e.g. for a sample spanning the 2013-2015 window "
+             "where only GKG 1.0 exists; --columns isn't supported with auto)"
     )
     crossref.add_argument(
         "--source",
@@ -494,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--columns",
         nargs="*",
         help="Restrict GKG-side output to these columns; cuts I/O and memory. The join key "
-             "column is always included regardless"
+             "column is always included regardless. Not supported with --gkg-version auto"
     )
     crossref.add_argument(
         "--out",
