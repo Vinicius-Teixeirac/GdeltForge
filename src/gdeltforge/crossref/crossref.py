@@ -37,12 +37,22 @@ predates the target GKG generation's real coverage start
 find a match no matter how anything is configured: the target dataset has
 no rows from before it existed.
 
+A third function, crossref_events_gkg_auto, picks a version per event
+instead of requiring the caller to: it routes each event to GKG 1.0 or
+GKG 2.1 based on its own DATEADDED against GKG_V2_COVERAGE_START, so a
+sample spanning both eras (e.g. covering the 2013-2015 window where only
+GKG 1.0 exists, alongside more recent events) gets the richest available
+enrichment for every event rather than forcing one version for the whole
+sample.
+
 Provides:
     - crossref_events_gkg_v1
     - crossref_events_gkg_v2
+    - crossref_events_gkg_auto
 """
 
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pyarrow.compute as pc
@@ -354,3 +364,102 @@ def crossref_events_gkg_v2(
         joined, left_on="_GlobalEventID_int64", right_on="GLOBALEVENTID", how="inner"
     )
     return result.drop(columns=["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier"])
+
+
+def crossref_events_gkg_auto(
+    events_df: pd.DataFrame,
+    gkg_v1_folder: str,
+    gkg_v1_columns: list[str],
+    mentions_folder: str,
+    gkg_v2_folder: str,
+    gkg_v2_columns: list[str],
+    v1_columns: set[str] | None = None,
+    v2_columns: set[str] | None = None,
+) -> pd.DataFrame:
+    """
+    Routes each sampled event to whichever crossref path actually has
+    data for it, splitting on DATEADDED against GKG_V2_COVERAGE_START
+    (2015-02-18) rather than requiring the caller to know GKG's coverage
+    history: events before it can only ever match through GKG 1.0
+    (crossref_events_gkg_v1, the only source with any data that far
+    back, live and daily from GKG_V1_COVERAGE_START, 2013-04-01),
+    so they're routed there. Events at or after it are routed to
+    crossref_events_gkg_v2 instead: GKG 2.1's one-row-per-article join
+    is richer than GKG 1.0's day-aggregated one, and it's the one worth
+    preferring whenever it's actually available, not because GKG 1.0
+    stops existing (it doesn't; it's still published daily alongside
+    GKG 2.1). Events before GKG_V1_COVERAGE_START are skipped and
+    logged, since neither generation has any data for them at all.
+
+    This is the one entry point in the module that genuinely needs
+    events_df to carry DATEADDED, since routing is the whole point;
+    raises rather than silently skipping the split if it's absent,
+    unlike the optional, best-effort warning the two single-version
+    functions run.
+
+    Returns a single DataFrame, both paths' results concatenated with a
+    new "CrossrefSource" column ("v1" or "v2") marking which one
+    produced each row. The two schemas' GKG-side columns don't overlap
+    (GKG 1.0's 11 fields vs GKG 2.1's 27, different names throughout,
+    e.g. THEMES vs V1THEMES), so this never tries to unify them: a
+    concatenated row simply carries NaN for whichever set of GKG-side
+    columns its source path didn't produce, rather than silently
+    misaligning two incompatible schemas into one.
+
+    v1_columns/v2_columns restrict each path's own GKG-side output
+    independently (each validated against that path's own schema, same
+    as the "columns" parameter on crossref_events_gkg_v1/_v2 directly);
+    there is no single "columns" covering both, since a column name
+    meaningful for one schema is usually meaningless for the other.
+    """
+    _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
+    if "DATEADDED" not in events_df.columns:
+        raise ValueError(
+            "events_df must include a 'DATEADDED' column: crossref_events_gkg_auto "
+            "needs it to route each event to whichever GKG generation actually covers "
+            "it. Call crossref_events_gkg_v1 or crossref_events_gkg_v2 directly instead "
+            "if DATEADDED isn't available in this sample."
+        )
+
+    date_added = events_df["DATEADDED"]
+
+    too_old = date_added < GKG_V1_COVERAGE_START
+    if too_old.any():
+        logger.warning(
+            f"{int(too_old.sum())} of {len(events_df)} sampled event(s) have DATEADDED "
+            f"before {GKG_V1_COVERAGE_START}, when GKG 1.0 coverage begins; neither GKG "
+            f"generation has any data for them, so crossref_events_gkg_auto skips them."
+        )
+
+    v1_mask = (date_added >= GKG_V1_COVERAGE_START) & (date_added < GKG_V2_COVERAGE_START)
+    v2_mask = date_added >= GKG_V2_COVERAGE_START
+
+    results: list[pd.DataFrame] = []
+
+    if v1_mask.any():
+        logger.info(
+            f"crossref_events_gkg_auto: routing {int(v1_mask.sum())} event(s) to GKG 1.0 "
+            f"(DATEADDED before {GKG_V2_COVERAGE_START})."
+        )
+        v1_result = crossref_events_gkg_v1(
+            cast(pd.DataFrame, events_df[v1_mask]), gkg_v1_folder, gkg_v1_columns,
+            columns=v1_columns,
+        )
+        if not v1_result.empty:
+            results.append(v1_result.assign(CrossrefSource="v1"))
+
+    if v2_mask.any():
+        logger.info(
+            f"crossref_events_gkg_auto: routing {int(v2_mask.sum())} event(s) to GKG 2.1 "
+            f"(DATEADDED on or after {GKG_V2_COVERAGE_START})."
+        )
+        v2_result = crossref_events_gkg_v2(
+            cast(pd.DataFrame, events_df[v2_mask]), mentions_folder, gkg_v2_folder,
+            gkg_v2_columns, columns=v2_columns,
+        )
+        if not v2_result.empty:
+            results.append(v2_result.assign(CrossrefSource="v2"))
+
+    if not results:
+        return pd.DataFrame()
+    return pd.concat(results, ignore_index=True, sort=False)
