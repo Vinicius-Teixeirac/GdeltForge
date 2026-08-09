@@ -192,21 +192,29 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | Flag | Description |
 |------|-------------|
 | `--events PATH` | Parquet file of Events rows to enrich (required) |
-| `--gkg-version {v1,v1-counts,v2}` | Which GKG generation to join against (required, see below) |
+| `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
-| `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless |
+| `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless. Not supported with `--gkg-version auto` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
 
 GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Comparison](comparison.md) for why a direct Events<->GKG 2.1 join isn't possible):
 
-- **`v1`** and **`v1-counts`**: GKG 1.0 (and its separate Counts file) carry `EventIds` directly on each row, a comma-delimited list, so this is a direct join.
-- **`v2`**: GKG 2.1 carries no event id at all, only the source article's URL, so this is a two-hop join through Mentions: Events -> Mentions (on `GlobalEventID`) -> GKG 2.1 (on that URL).
+- **`v1`** and **`v1-counts`**: GKG 1.0 (and its separate Counts file) carry `EventIds` directly on each row, a comma-delimited list, so this is a direct join. GKG 1.0 has been live and daily since 2013-04-01.
+- **`v2`**: GKG 2.1 carries no event id at all, only the source article's URL, so this is a two-hop join through Mentions: Events -> Mentions (on `GlobalEventID`) -> GKG 2.1 (on that URL). GKG 2.1 and Mentions didn't exist before GDELT 2.0 launched, 2015-02-18.
+- **`auto`**: routes each event to `v1` or `v2` individually, by its own `DATEADDED`, instead of requiring one version for the whole sample. Events before 2015-02-18 go through `v1` (the only source with any data that far back); events from that date on go through `v2` instead, since its one-row-per-article join is richer whenever it's actually available. This is the one to reach for when a sample spans both eras, e.g. a broad historical sample that includes the 2013-2015 window where only GKG 1.0 exists. Output carries a `CrossrefSource` column (`v1` or `v2`) marking which path produced each row, since the two schemas' GKG-side columns don't overlap at all (11 GKG 1.0 fields vs 27 GKG 2.1 fields, different names throughout) and aren't unified: a row carries `NaN` for whichever set its source path didn't produce. Events before 2013-04-01 have no match in either generation and are skipped with a warning, not silently dropped.
 
-Both preserve the underlying many-to-many structure rather than collapsing it: one event can produce several output rows (several articles covered it, each contributing its own GKG data), and one article covering several events contributes one row per event, not one merged row. An event with no GKG match contributes no rows at all, rather than a row full of nulls. GKG-side output columns are prefixed `GKG_` (and, for `v2`, Mentions bridge fields `Mention_`) to avoid colliding with an identically-named Events column, e.g. `NumArticles` exists on both Events and GKG 1.0.
+Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure rather than collapsing it: one event can produce several output rows (several articles covered it, each contributing its own GKG data), and one article covering several events contributes one row per event, not one merged row. An event with no GKG match contributes no rows at all, rather than a row full of nulls. GKG-side output columns are prefixed `GKG_` (and, for `v2`, Mentions bridge fields `Mention_`) to avoid colliding with an identically-named Events column, e.g. `NumArticles` exists on both Events and GKG 1.0.
 
 ```
 gdeltforge sample --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
 gdeltforge crossref --events us_events.parquet --gkg-version v2 --out us_events_enriched.parquet
+```
+
+For a sample spanning the 2013-2015 window specifically (see [Recipes](recipes.md) for the full worked example):
+
+```
+gdeltforge sample --mode filtered --filter '{"DATEADDED": {"op": "between", "min": 20130101, "max": 20160101}}' -n 5000 --out gap_events.parquet
+gdeltforge crossref --events gap_events.parquet --gkg-version auto --out gap_events_enriched.parquet
 ```
 
 ## `gdeltforge codes`
