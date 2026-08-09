@@ -335,6 +335,33 @@ class TestRunCrossrefCmd:
         assert captured["mentions_folder"] == "/mentions_filtered"
         assert captured["gkg_folder"] == "/gkg_v2_filtered"
 
+    def test_auto_reads_gkg_v1_mentions_and_gkg_v2_folders_all_three(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_auto",
+            lambda events_df, gkg_v1_folder, gkg_v1_cols, mentions_folder, gkg_v2_folder,
+            gkg_v2_cols: captured.update(
+                gkg_v1_folder=gkg_v1_folder, mentions_folder=mentions_folder,
+                gkg_v2_folder=gkg_v2_folder,
+            ) or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="auto"))
+
+        assert captured["gkg_v1_folder"] == "/gkg_v1_filtered"
+        assert captured["mentions_folder"] == "/mentions_filtered"
+        assert captured["gkg_v2_folder"] == "/gkg_v2_filtered"
+
+    def test_auto_with_columns_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        with pytest.raises(ValueError, match="--columns isn't supported with --gkg-version auto"):
+            cli.run_crossref_cmd(
+                self._config(),
+                self._args(tmp_path, gkg_version="auto", columns=["Themes"]),
+            )
+
     def test_source_converted_uses_parquet_directory(self, tmp_path, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
