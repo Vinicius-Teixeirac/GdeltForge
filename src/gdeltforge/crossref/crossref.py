@@ -31,6 +31,12 @@ Both preserve the underlying many-to-many structure rather than collapsing
 it: one event can join to several GKG rows (several articles covered it),
 and one GKG row/article can join to several events (it covered several).
 
+Both join functions also warn (not error) when some or all of events_df
+predates the target GKG generation's real coverage start
+(GKG_V1_COVERAGE_START / GKG_V2_COVERAGE_START), since those events cannot
+find a match no matter how anything is configured: the target dataset has
+no rows from before it existed.
+
 Provides:
     - crossref_events_gkg_v1
     - crossref_events_gkg_v2
@@ -69,6 +75,18 @@ REQUIRED_JOIN_COLUMNS: dict[str, tuple[str, ...]] = {
 # Mentions dataset missing one just means that field is absent from the
 # output, not a failed join.
 OPTIONAL_MENTIONS_PAYLOAD_COLUMNS: tuple[str, ...] = ("MentionTimeDate", "Confidence")
+
+# When each GKG generation's real data actually begins, as YYYYMMDD ints
+# matching Events' own DATEADDED format. Verified against GDELT's real
+# file listings, not the codebook alone: GKG 1.0's earliest published file
+# is 20130401.gkg.csv.zip; GDELT 2.0 (GKG 2.1, the 15-minute Events feed,
+# and Mentions, all launched together) first appears at 2015-02-18
+# (20150218230000 is the earliest file in gdeltv2/masterfilelist.txt for
+# all three). Events sampled from before the relevant date cannot find a
+# match through that crossref path no matter how columns are configured,
+# since the target dataset has no rows at all for that period.
+GKG_V1_COVERAGE_START = 20130401
+GKG_V2_COVERAGE_START = 20150218
 
 
 def _dataset(folder: str) -> ds.Dataset:
@@ -127,6 +145,51 @@ def warn_if_output_columns_drops_join_key(
         )
 
 
+def warn_if_events_predate_gkg_coverage(
+    gkg_label: str, coverage_start: int, events_df: pd.DataFrame
+) -> None:
+    """
+    Warn (not error) when some or all of events_df predates a GKG
+    generation's real coverage start (GKG_V1_COVERAGE_START /
+    GKG_V2_COVERAGE_START above): those specific events cannot find a
+    match through this crossref path no matter what, since the target
+    dataset simply has no rows from before it existed.
+
+    Checked against DATEADDED, not Day: Day is when an event is reported
+    to have occurred, which can be far in the past for retrospective
+    reporting (a 2003 event can appear in a 2013 daily file), while
+    DATEADDED is when GDELT actually processed the record, matching the
+    daily file's own date by construction. Mentions/GKG rows are
+    generated from that same processing pass, so DATEADDED is what
+    actually determines whether a corresponding GKG/Mentions record
+    could exist, not the event's own reported date. Silently skipped if
+    events_df has no DATEADDED column (e.g. a sample built with
+    --columns that excluded it): this is a diagnostic on top of the
+    join, not something crossref itself depends on.
+    """
+    if "DATEADDED" not in events_df.columns:
+        return
+    date_added = events_df["DATEADDED"].dropna()
+    if date_added.empty:
+        return
+    total = len(date_added)
+    too_old = int((date_added < coverage_start).sum())
+    if too_old == 0:
+        return
+    if too_old == total:
+        logger.warning(
+            f"All {total} sampled event(s) have DATEADDED before {coverage_start}, "
+            f"when {gkg_label} coverage begins; this crossref will find nothing."
+        )
+    else:
+        logger.warning(
+            f"{too_old} of {total} sampled event(s) have DATEADDED before "
+            f"{coverage_start}, when {gkg_label} coverage begins; those specific "
+            f"events cannot find a match through this crossref path regardless of "
+            f"configuration."
+        )
+
+
 def crossref_events_gkg_v1(
     events_df: pd.DataFrame,
     gkg_folder: str,
@@ -149,6 +212,7 @@ def crossref_events_gkg_v1(
     """
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
+    warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
 
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
@@ -217,6 +281,9 @@ def crossref_events_gkg_v2(
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     _require_column(
         gkg_v2_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v2"][0], "gkg_v2_columns"
+    )
+    warn_if_events_predate_gkg_coverage(
+        "GDELT 2.0 (GKG 2.1 / Mentions)", GKG_V2_COVERAGE_START, events_df
     )
 
     columns = _validate_columns(columns, gkg_v2_columns)
