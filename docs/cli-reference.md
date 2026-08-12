@@ -75,6 +75,8 @@ Accepts the same `--start-date`/`--end-date` as `scrape` (see above), narrowing 
 gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
+Already-converted files are skipped on a rerun, the same way `scrape` skips already-downloaded files; an interrupted run resumes rather than starting over. See [Configuration](configuration.md#resumability) for how that marker also tracks `output_columns`/`compression`, so a config change is reprocessed rather than skipped.
+
 See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
 
 ## `gdeltforge filter`
@@ -86,6 +88,8 @@ gdeltforge filter
 Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
 
 Also accepts `--start-date`/`--end-date`, narrowing which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
+
+Already-filtered files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#filter) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
 
 ## `--dataset`
 
