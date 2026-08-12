@@ -7,14 +7,19 @@ from CSV inside ZIP archives to Parquet format.
 All GDELT event files are distributed as compressed ZIP archives containing CSVs, which
 are less efficient and less memory-friendly than Parquet for large tabular datasets.
 
-Source files come in three granularities, each identified by filename pattern:
-  - Yearly  : 1979.zip, 2005.zip          (one file per year, up to ~2005)
-  - Monthly : 200601.zip, 201303.zip      (one file per month, 2006-early 2013)
-  - Daily   : 20130401.export.CSV.zip     (one file per day, April 2013-present)
+Source files come in four granularities, each identified by filename pattern:
+  - Yearly         : 1979.zip, 2005.zip                      (one file per year, up to ~2005)
+  - Monthly        : 200601.zip, 201303.zip                  (one file per month, 2006-early 2013)
+  - Daily          : 20130401.export.CSV.zip                 (one file per day, April 2013-present)
+  - Quarter-hourly : 20150219080000.mentions.CSV.zip          (one file per 15 minutes,
+                      GKG 2.1/Mentions, February 2015-present)
 
-When converter.partitioning.enabled is true, yearly and monthly ZIPs are written
-as a Hive-partitioned dataset under parquet_historical_directory. Daily ZIPs
-always go to parquet_data_directory as flat files (unchanged behavior).
+When converter.partitioning.enabled is true, a granularity with a matching entry
+in converter.partitioning.rules is written as a Hive-partitioned dataset under
+parquet_historical_directory (yearly and monthly are the only ones any real
+config defines a rule for). Everything else, daily and quarter-hourly included,
+goes to parquet_data_directory as flat files, same as when partitioning is off
+entirely.
 
 This module provides:
     - GDELTConverter: class responsible for performing file-by-file conversion
@@ -50,9 +55,17 @@ logger = get_logger(__name__)
 # ------------------------------------------------------------------
 # Source file-type patterns
 # ------------------------------------------------------------------
-_YEARLY_PAT  = re.compile(r'^\d{4}\.zip$',        re.IGNORECASE)
-_MONTHLY_PAT = re.compile(r'^\d{6}\.zip$',        re.IGNORECASE)
-_DAILY_PAT   = re.compile(r'^\d{8}\..+\.zip$',    re.IGNORECASE)
+_YEARLY_PAT         = re.compile(r'^\d{4}\.zip$',           re.IGNORECASE)
+_MONTHLY_PAT        = re.compile(r'^\d{6}\.zip$',           re.IGNORECASE)
+_DAILY_PAT          = re.compile(r'^\d{8}\..+\.zip$',       re.IGNORECASE)
+# YYYYMMDDHHMMSS, GKG 2.1/Mentions' 15-minute cadence. Distinct from
+# _DAILY_PAT (8 digits then a literal dot) rather than a variant of it:
+# a 14-digit prefix never satisfies "8 digits then a dot", so a real
+# quarter-hourly filename matched none of the three original patterns at
+# all and _detect_file_type would have returned "unknown" for one, had
+# anything ever actually called it on such a name (see process_single_file
+# below for why nothing did).
+_QUARTER_HOURLY_PAT = re.compile(r'^\d{14}\..+\.zip$',      re.IGNORECASE)
 
 # Columns that are semantically integers; cast from float64 after pd.to_numeric.
 # Applies to both flat and historical writes for a consistent union schema.
@@ -165,6 +178,8 @@ class GDELTConverter:
     # ------------------------------------------------------------------
 
     def _detect_file_type(self, zip_name: str) -> str:
+        if _QUARTER_HOURLY_PAT.match(zip_name):
+            return "quarter_hourly"
         if _DAILY_PAT.match(zip_name):
             return "daily"
         if _MONTHLY_PAT.match(zip_name):
@@ -184,8 +199,9 @@ class GDELTConverter:
     # .done marker helpers
     #
     # Applies to every file type, not just historical (Hive-partitioned)
-    # ones: flat/daily writes used to have no resumability at all, so a
-    # process killed mid-conversion redid every already-converted file
+    # ones: flat writes (daily, quarter-hourly, or partitioning off
+    # entirely) used to have no resumability at all, so a process killed
+    # mid-conversion redid every already-converted file
     # from scratch on the next relaunch, unlike scrape (which skips
     # already-downloaded files). Confirmed for real against a 30,137-file
     # Mentions batch: two consecutive kills each independently died around
@@ -296,10 +312,24 @@ class GDELTConverter:
         logger.info(f"Processing ZIP: {zip_p.name}")
         created_parquets = []
 
+        # "flat" is a routing shortcut, not a real granularity: it means
+        # partitioning is off entirely, so nothing needs classifying, not
+        # that this particular file is daily-cadence. When partitioning
+        # is on, file_type is the real detected granularity, and whether
+        # that specific granularity actually goes to the historical path
+        # is decided below by whether a partitioning.rules entry exists
+        # for it, not by comparing file_type against any one hardcoded
+        # value: rules are typically only defined for yearly/monthly, so
+        # daily and quarter_hourly correctly fall through to a flat write
+        # the same as when partitioning is off, without a per-file "no
+        # partition rule" warning for every single one of them.
         file_type = (
             self._detect_file_type(zip_p.name)
             if self._partitioning_enabled
-            else "daily"
+            else "flat"
+        )
+        partition_rule = (
+            self._partition_rule_for(file_type) if self._partitioning_enabled else None
         )
 
         extracted_files = unzip_file(zip_path, self.unzip_folder)
@@ -317,7 +347,7 @@ class GDELTConverter:
                 if df.empty:
                     continue
 
-                if self._partitioning_enabled and file_type != "daily":
+                if partition_rule is not None:
                     written = self._save_historical_parquet(df, zip_p, file_type)
                     created_parquets.extend(str(p) for p in written)
                 else:
@@ -376,7 +406,7 @@ class GDELTConverter:
             return pd.DataFrame()
 
     # ------------------------------------------------------------
-    # SAVE PARQUET  (flat daily files)
+    # SAVE PARQUET  (flat files)
     # ------------------------------------------------------------
     def _save_parquet(self, df: pd.DataFrame, base_name: str) -> Path | None:
         if df.empty:
@@ -433,7 +463,7 @@ class GDELTConverter:
             return []
 
         # Cast partition columns to int for clean directory names and
-        # consistent Arrow schema with the flat daily files.
+        # consistent Arrow schema with the flat files.
         for col in by:
             df_clean[col] = df_clean[col].astype("Int64")
 

@@ -38,11 +38,66 @@ class TestDetectFileType:
             ("20200315.export.CSV.zip", "daily"),
             ("202003.zip", "monthly"),
             ("2020.zip", "yearly"),
+            # GKG 2.1/Mentions' real 15-minute cadence: a 14-digit prefix,
+            # not 8. Regression guard for a gap found for real: this used
+            # to fall through every pattern (including _DAILY_PAT, whose
+            # 8-digits-then-a-dot requirement a 14-digit prefix never
+            # satisfies) and come back "unknown" had anything ever called
+            # _detect_file_type on one, which nothing did in practice
+            # (see process_single_file's own "flat" shortcut).
+            ("20150219080000.mentions.CSV.zip", "quarter_hourly"),
             ("GDELT.MASTERREDUCEDV2.1979-2013.zip", "unknown"),
         ],
     )
     def test_cases(self, converter, filename, expected):
         assert converter._detect_file_type(filename) == expected
+
+
+class TestPartitionRuleRouting:
+    """Whether a file goes to the historical (Hive-partitioned) path is
+    decided by whether converter.partitioning.rules actually defines an
+    entry for its detected file_type, not by comparing file_type against
+    a hardcoded "daily" string. Real configs only ever define rules for
+    yearly/monthly, so daily and quarter_hourly files must still flat
+    write when partitioning is enabled for the dataset, the same as they
+    do when it's off entirely, and without a spurious "no partition rule"
+    warning firing for every single one of them."""
+
+    def test_a_daily_file_flat_writes_without_a_warning_when_only_yearly_has_a_rule(
+        self, tmp_path, caplog
+    ):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(tmp_path / "raw")
+
+        with caplog.at_level("WARNING"):
+            outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        assert (tmp_path / "parquet" / "20200101.export.parquet").exists()
+        assert not any("No partition rule" in r.message for r in caplog.records)
+
+    def test_a_quarter_hourly_file_flat_writes_without_a_warning(self, tmp_path, caplog):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(
+            tmp_path / "raw",
+            filename="20150219080000.mentions.CSV.zip",
+            rows="1\t20150219\n",
+        )
+
+        with caplog.at_level("WARNING"):
+            outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        assert (tmp_path / "parquet" / "20150219080000.mentions.parquet").exists()
+        assert not any("No partition rule" in r.message for r in caplog.records)
 
 
 class TestMaxWorkersConfig:
