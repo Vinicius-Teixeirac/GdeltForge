@@ -44,6 +44,59 @@ def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs)
         raise
 
 
+def _fingerprint_value(value: object) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return ",".join(sorted(value))
+    return str(value)
+
+
+def config_fingerprint(**fields: object) -> str:
+    """
+    Build a stable, human-readable fingerprint string from the config
+    values that determine a pipeline stage's output shape or content (e.g.
+    which columns are kept, which are cast to float32).
+
+    Used together with is_marked_done/mark_done below so a resumed run
+    treats a source file as done only if it was already processed under
+    the exact same configuration this run is about to use, not merely
+    that a marker exists. A run started after a relevant setting changed
+    (columns_to_check, output_columns, ...) must reprocess every file
+    rather than silently serving output produced under the old config.
+
+    Field order is fixed (sorted by name) so the same fields always
+    produce the same string regardless of call-site kwarg order. List
+    values are sorted too, so reordering a column list without changing
+    its membership doesn't look like a change.
+    """
+    return "\n".join(
+        f"{name}={_fingerprint_value(value)}" for name, value in sorted(fields.items())
+    )
+
+
+def _done_marker_path(source_path: str | Path) -> Path:
+    source_path = Path(source_path)
+    return source_path.parent / (source_path.name + ".done")
+
+
+def is_marked_done(source_path: str | Path, fingerprint: str) -> bool:
+    """
+    True if source_path has a sibling .done marker whose stored fingerprint
+    matches the given one, meaning it was already processed under the
+    current configuration. A marker left by a differently-configured run,
+    or no marker at all (including a pre-fingerprint empty marker from
+    before this existed), returns False so the file gets (re)processed.
+    """
+    marker = _done_marker_path(source_path)
+    return marker.exists() and marker.read_text() == fingerprint
+
+
+def mark_done(source_path: str | Path, fingerprint: str) -> None:
+    """Record source_path as done under the given config fingerprint."""
+    _done_marker_path(source_path).write_text(fingerprint)
+
+
 def unzip_file(zip_filepath: str | Path, extract_to_dir: str | Path | None = None) -> list[Path]:
     """
     Unzips a zip file and returns a list of extracted file paths.
