@@ -100,6 +100,7 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | `max_workers` | `null` | Worker processes for conversion. `null` uses `os.cpu_count()` |
 | `max_workers_by_dataset.<dataset>` | none | Overrides `max_workers` for one dataset. See "Capacity planning" below: a worker count safe for one dataset isn't necessarily safe for another, since it depends on peak per-worker memory |
 | `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `names` is still passed in full to `pandas.read_csv` (it's what maps each raw position to a name on files with no header row), but pandas skips allocating/decoding whatever isn't in `output_columns`. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
+| `compression.<dataset>` | `zstd` | Parquet codec for converter's own output (`parquet_data_directory`), independent of `filter.compression` below for the filtered output that follows it. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
 | `partitioning` | see below | Optional Hive partitioning for historical (pre-daily) files |
 
 Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`.
@@ -253,3 +254,5 @@ The GKG 2.1 codec numbers earlier in this page don't automatically transfer to E
 | `zstd` (current default) | 330.4 MB | 56.8 | 50.5s |
 
 Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, this isn't a tradeoff to weigh the way `float32_columns` is: there's no case where `snappy` is the better default. `filter.compression` defaults to `zstd` for every dataset as of 2026-08-07; `compression.<dataset>` remains available to override to a specific codec if one is ever needed.
+
+`converter.compression` defaults to `zstd` too, for the same reason: it wasn't independently re-measured against converter's own (unfiltered, wider-row-count) output, but a lossless codec with no measured downside on real GDELT data has no case for defaulting to `snappy` there either. It was previously hardcoded to `snappy` with no way to change it; it's now a normal per-dataset setting, same shape as `filter.compression`.
