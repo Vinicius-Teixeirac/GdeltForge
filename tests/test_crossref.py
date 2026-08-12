@@ -537,7 +537,9 @@ class TestCrossrefEventsGkgV2:
 
 
 # ------------------------------------------------------------
-# crossref_events_gkg_auto: routes each event to v1 or v2 by DATEADDED
+# crossref_events_gkg_auto: attempts every eligible event against both
+# GKG generations, DATEADDED only decides eligibility, not which single
+# path is allowed to match
 # ------------------------------------------------------------
 class TestCrossrefEventsGkgAuto:
     @staticmethod
@@ -580,7 +582,7 @@ class TestCrossrefEventsGkgAuto:
             "gkg_v2_columns": ["V2DOCUMENTIDENTIFIER", "V1THEMES"],
         }
 
-    def test_v1_era_event_is_routed_to_gkg_v1(self, tmp_path):
+    def test_v1_era_event_with_only_a_v1_match_gets_a_v1_row(self, tmp_path):
         paths = self._paths(tmp_path)
         events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
 
@@ -589,13 +591,41 @@ class TestCrossrefEventsGkgAuto:
             paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
         )
 
+        # Event 1001 is also attempted against GKG 2.1/Mentions (which
+        # only ever has event 2001 in this fixture), finds nothing there,
+        # and ends up with exactly the one v1 row.
         assert len(result) == 1
         assert result["CrossrefSource"].iloc[0] == "v1"
         assert result["GKG_Themes"].iloc[0] == "TAX_FNCACT"
 
-    def test_v2_era_event_is_routed_to_gkg_v2(self, tmp_path):
+    def test_v2_era_event_with_only_a_v2_match_gets_a_v2_row(self, tmp_path):
         paths = self._paths(tmp_path)
         events_df = pd.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20200101]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        # Event 2001 is also attempted against GKG 1.0 (which only ever
+        # has event 1001 in this fixture), finds nothing there, and ends
+        # up with exactly the one v2 row.
+        assert len(result) == 1
+        assert result["CrossrefSource"].iloc[0] == "v2"
+        assert result["GKG_V1THEMES"].iloc[0] == "THEME_X"
+
+    def test_an_old_event_with_a_real_v2_only_match_now_finds_it(self, tmp_path):
+        # The actual gap this module used to have, confirmed against real
+        # data before this fix: an event with DATEADDED in the GKG 1.0
+        # era used to be routed to GKG 1.0 only and never attempted
+        # against GKG 2.1/Mentions at all, even when a real v2 match
+        # existed (a real 2019-origin event was found referenced by an
+        # actual Mentions row dated 2020, well after its own DATEADDED).
+        # Event 2001 here has a GKG-1.0-era DATEADDED but its
+        # GlobalEventID is the one present in the fixture's Mentions/GKG
+        # 2.1 data, not GKG 1.0's.
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20130401]})
 
         result = crossref_events_gkg_auto(
             events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
@@ -606,7 +636,75 @@ class TestCrossrefEventsGkgAuto:
         assert result["CrossrefSource"].iloc[0] == "v2"
         assert result["GKG_V1THEMES"].iloc[0] == "THEME_X"
 
+    def test_a_new_event_with_a_real_v1_only_match_now_finds_it(self, tmp_path):
+        # Symmetric case: GKG 1.0 remains live and daily-published today,
+        # so a recent event isn't guaranteed to be GKG-2.1-only either.
+        # Event 1001 here has a GKG-2.1-era DATEADDED but its
+        # GlobalEventID is the one present in the fixture's GKG 1.0 data.
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20200101]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert len(result) == 1
+        assert result["CrossrefSource"].iloc[0] == "v1"
+        assert result["GKG_Themes"].iloc[0] == "TAX_FNCACT"
+
+    def test_a_single_event_matching_both_paths_contributes_a_row_to_each(self, tmp_path):
+        # The other real shape the old routing couldn't produce at all:
+        # one event, genuinely covered by both a GKG 1.0 record and a
+        # GKG 2.1/Mentions record, must appear twice in the output, once
+        # per source, not merged into one row or arbitrarily dropped
+        # down to a single path.
+        gkg_v1_folder = tmp_path / "gkg_v1"
+        gkg_v1_folder.mkdir()
+        pd.DataFrame({
+            "Date": [20130401], "EventIds": ["1001"], "Themes": ["TAX_FNCACT"],
+        }).to_parquet(gkg_v1_folder / "20130401.gkg.parquet")
+
+        mentions_folder = tmp_path / "mentions"
+        mentions_folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [1001],
+            "MentionIdentifier": ["http://a.com/article1"],
+        }).to_parquet(mentions_folder / "20200101120000.mentions.parquet")
+
+        gkg_v2_folder = tmp_path / "gkg_v2"
+        gkg_v2_folder.mkdir()
+        pd.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://a.com/article1"], "V1THEMES": ["THEME_X"],
+        }).to_parquet(gkg_v2_folder / "20200101000000.gkg.parquet")
+
+        # DATEADDED in the GKG 1.0 era; the same GlobalEventID also has a
+        # real Mentions/GKG 2.1 match, exactly the shape of the confirmed
+        # real-world case (an old event re-mentioned much later).
+        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+
+        result = crossref_events_gkg_auto(
+            events_df, str(gkg_v1_folder), ["Date", "EventIds", "Themes"],
+            str(mentions_folder), str(gkg_v2_folder), ["V2DOCUMENTIDENTIFIER", "V1THEMES"],
+        )
+
+        assert len(result) == 2
+        assert set(result["CrossrefSource"]) == {"v1", "v2"}
+        assert set(result["GlobalEventID"]) == {1001}
+        v1_row = result[result["CrossrefSource"] == "v1"].iloc[0]
+        v2_row = result[result["CrossrefSource"] == "v2"].iloc[0]
+        assert v1_row["GKG_Themes"] == "TAX_FNCACT"
+        assert v2_row["GKG_V1THEMES"] == "THEME_X"
+        # Each row still carries NaN for the other schema's columns.
+        assert pd.isna(v1_row["GKG_V1THEMES"])
+        assert pd.isna(v2_row["GKG_Themes"])
+
     def test_mixed_sample_gets_both_sources_in_one_result(self, tmp_path):
+        # Two different events, each with a real match in only one path
+        # (1001 in GKG 1.0 only, 2001 in GKG 2.1/Mentions only): both
+        # still end up in the same result, one row each. See
+        # test_a_single_event_matching_both_paths_contributes_a_row_to_each
+        # for the case of one event matching both.
         paths = self._paths(tmp_path)
         events_df = pd.DataFrame({
             "GlobalEventID": [1001, 2001],
