@@ -37,13 +37,18 @@ predates the target GKG generation's real coverage start
 find a match no matter how anything is configured: the target dataset has
 no rows from before it existed.
 
-A third function, crossref_events_gkg_auto, picks a version per event
-instead of requiring the caller to: it routes each event to GKG 1.0 or
-GKG 2.1 based on its own DATEADDED against GKG_V2_COVERAGE_START, so a
-sample spanning both eras (e.g. covering the 2013-2015 window where only
-GKG 1.0 exists, alongside more recent events) gets the richest available
-enrichment for every event rather than forcing one version for the whole
-sample.
+A third function, crossref_events_gkg_auto, attempts every eligible event
+against both GKG generations instead of requiring the caller to pick one
+for the whole sample: DATEADDED only decides whether an event is within
+either generation's coverage window at all (before GKG_V1_COVERAGE_START,
+neither has any data), not which single path is allowed to match it. A
+Mentions row is timestamped by when it was created, not by its event's
+DATEADDED, so an event from the GKG 1.0 era can still have a real GKG 2.1
+match created much later, and GKG 1.0 remains live today, so a recent
+event isn't guaranteed to be GKG-2.1-only either. A sample spanning both
+eras (e.g. covering the 2013-2015 window where only GKG 1.0 exists,
+alongside more recent events) gets the richest available enrichment for
+every event this way, including an event that genuinely matches both.
 
 Provides:
     - crossref_events_gkg_v1
@@ -377,23 +382,34 @@ def crossref_events_gkg_auto(
     v2_columns: set[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Routes each sampled event to whichever crossref path actually has
-    data for it, splitting on DATEADDED against GKG_V2_COVERAGE_START
-    (2015-02-18) rather than requiring the caller to know GKG's coverage
-    history: events before it can only ever match through GKG 1.0
-    (crossref_events_gkg_v1, the only source with any data that far
-    back, live and daily from GKG_V1_COVERAGE_START, 2013-04-01),
-    so they're routed there. Events at or after it are routed to
-    crossref_events_gkg_v2 instead: GKG 2.1's one-row-per-article join
-    is richer than GKG 1.0's day-aggregated one, and it's the one worth
-    preferring whenever it's actually available, not because GKG 1.0
-    stops existing (it doesn't; it's still published daily alongside
-    GKG 2.1). Events before GKG_V1_COVERAGE_START are skipped and
-    logged, since neither generation has any data for them at all.
+    Attempts every sampled event against both GKG generations rather than
+    picking exactly one per event by DATEADDED, so a caller doesn't have
+    to know GKG's coverage history or which generation is "supposed to"
+    cover a given event.
+
+    This used to route each event to exactly one path, on the reasoning
+    that an event with DATEADDED before GKG_V2_COVERAGE_START (2015-02-18)
+    could only ever match through GKG 1.0. That reasoning doesn't hold:
+    a Mentions row is timestamped by when the mention was created, not by
+    the event's own DATEADDED, and confirmed for real against live data,
+    a Mentions row can reference an event from well over a year before it
+    (a 2019-origin event was referenced by a real Mentions row dated
+    2020). Routing that event to GKG 1.0 only meant a real GKG 2.1 match
+    was never even attempted. The same asymmetry runs the other
+    direction too: GKG 1.0 remains live and daily-published today (it
+    never stopped when GKG 2.1 launched), so a recent event isn't
+    guaranteed to be GKG-2.1-only either. Every event within either
+    generation's coverage window (DATEADDED >= GKG_V1_COVERAGE_START,
+    2013-04-01) is now attempted against both; a real match through
+    either path is kept, and an event that genuinely matches both
+    contributes one row per path, not one merged or arbitrarily-chosen
+    row. Events before GKG_V1_COVERAGE_START are still skipped and
+    logged: that's a genuine absence of any data at all, not a routing
+    choice, so trying either path for them would only waste the attempt.
 
     This is the one entry point in the module that genuinely needs
-    events_df to carry DATEADDED, since routing is the whole point;
-    raises rather than silently skipping the split if it's absent,
+    events_df to carry DATEADDED, since it's what decides eligibility;
+    raises rather than silently skipping the check if it's absent,
     unlike the optional, best-effort warning the two single-version
     functions run.
 
@@ -416,9 +432,10 @@ def crossref_events_gkg_auto(
     if "DATEADDED" not in events_df.columns:
         raise ValueError(
             "events_df must include a 'DATEADDED' column: crossref_events_gkg_auto "
-            "needs it to route each event to whichever GKG generation actually covers "
-            "it. Call crossref_events_gkg_v1 or crossref_events_gkg_v2 directly instead "
-            "if DATEADDED isn't available in this sample."
+            "needs it to determine which events are within either GKG generation's "
+            "coverage window at all. Call crossref_events_gkg_v1 or "
+            "crossref_events_gkg_v2 directly instead if DATEADDED isn't available "
+            "in this sample."
         )
 
     date_added = events_df["DATEADDED"]
@@ -431,31 +448,27 @@ def crossref_events_gkg_auto(
             f"generation has any data for them, so crossref_events_gkg_auto skips them."
         )
 
-    v1_mask = (date_added >= GKG_V1_COVERAGE_START) & (date_added < GKG_V2_COVERAGE_START)
-    v2_mask = date_added >= GKG_V2_COVERAGE_START
+    eligible_mask = date_added >= GKG_V1_COVERAGE_START
+    eligible_events = cast(pd.DataFrame, events_df[eligible_mask])
 
     results: list[pd.DataFrame] = []
 
-    if v1_mask.any():
+    if not eligible_events.empty:
         logger.info(
-            f"crossref_events_gkg_auto: routing {int(v1_mask.sum())} event(s) to GKG 1.0 "
-            f"(DATEADDED before {GKG_V2_COVERAGE_START})."
+            f"crossref_events_gkg_auto: attempting {len(eligible_events)} event(s) "
+            f"against both GKG 1.0 and GKG 2.1; a DATEADDED before "
+            f"{GKG_V2_COVERAGE_START} does not rule out a real GKG 2.1 match, so "
+            f"neither path is skipped based on it alone."
         )
         v1_result = crossref_events_gkg_v1(
-            cast(pd.DataFrame, events_df[v1_mask]), gkg_v1_folder, gkg_v1_columns,
-            columns=v1_columns,
+            eligible_events, gkg_v1_folder, gkg_v1_columns, columns=v1_columns,
         )
         if not v1_result.empty:
             results.append(v1_result.assign(CrossrefSource="v1"))
 
-    if v2_mask.any():
-        logger.info(
-            f"crossref_events_gkg_auto: routing {int(v2_mask.sum())} event(s) to GKG 2.1 "
-            f"(DATEADDED on or after {GKG_V2_COVERAGE_START})."
-        )
         v2_result = crossref_events_gkg_v2(
-            cast(pd.DataFrame, events_df[v2_mask]), mentions_folder, gkg_v2_folder,
-            gkg_v2_columns, columns=v2_columns,
+            eligible_events, mentions_folder, gkg_v2_folder, gkg_v2_columns,
+            columns=v2_columns,
         )
         if not v2_result.empty:
             results.append(v2_result.assign(CrossrefSource="v2"))

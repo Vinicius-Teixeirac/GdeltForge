@@ -417,7 +417,7 @@ This produces a balanced dataset with 500 USA events per QuadClass value, regard
 
 ### Cross-Referencing Events with GKG
 
-`crossref` enriches a sampled Events output with GKG (themes, tone, people, organizations). `--gkg-version` picks the join strategy: GKG 1.0 carries `EventIds` directly (a direct join), while GKG 2.1 carries no event ID at all and needs a two-hop join through Mentions on the source article's URL. `--gkg-version auto` picks per event instead of for the whole sample, useful for a sample spanning both eras (GKG 2.1/Mentions don't exist before 2015-02-18; GKG 1.0 has covered everything since 2013-04-01). All preserve the real many-to-many structure (one event can produce several output rows, one article covering several events contributes one row per event) instead of collapsing it.
+`crossref` enriches a sampled Events output with GKG (themes, tone, people, organizations). `--gkg-version` picks the join strategy: GKG 1.0 carries `EventIds` directly (a direct join), while GKG 2.1 carries no event ID at all and needs a two-hop join through Mentions on the source article's URL. `--gkg-version auto` attempts every eligible event against both generations instead of requiring one for the whole sample, useful for a sample spanning both eras (GKG 2.1/Mentions don't exist before 2015-02-18; GKG 1.0 has covered everything since 2013-04-01, and remains live today). All preserve the real many-to-many structure (one event can produce several output rows, one article covering several events contributes one row per event) instead of collapsing it.
 
 ```
 gdeltforge scrape --dataset gkg-v2
