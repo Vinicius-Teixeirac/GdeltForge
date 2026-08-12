@@ -36,7 +36,13 @@ from tqdm import tqdm
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date
 from gdeltforge.utils.config import dataset_path_key
-from gdeltforge.utils.io import unzip_file, write_parquet_atomic
+from gdeltforge.utils.io import (
+    config_fingerprint,
+    is_marked_done,
+    mark_done,
+    unzip_file,
+    write_parquet_atomic,
+)
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -126,6 +132,14 @@ class GDELTConverter:
                 )
             self.historical_folder = Path(hist_path)
 
+        # Determines whether a .done marker from a previous run is still
+        # valid: output_columns is the one converter setting a user
+        # plausibly reruns with a different value, and changing it changes
+        # what the output parquet actually contains. A marker written
+        # under a different output_columns must not cause this run to
+        # skip reprocessing that file.
+        self._config_fingerprint = config_fingerprint(output_columns=self.output_columns)
+
         self._create_folders()
 
     def _create_folders(self):
@@ -161,12 +175,19 @@ class GDELTConverter:
     #
     # Applies to every file type, not just historical (Hive-partitioned)
     # ones: flat/daily writes used to have no resumability at all, so a
-    # process killed mid-conversion lost 100% of that run's work on the
-    # next attempt, unlike scrape (which skips already-downloaded files).
-    # Confirmed for real against a 30,137-file Mentions batch: two
-    # consecutive kills each independently died around the same ~51%
-    # mark with zero parquet output ever finalized, because every
-    # relaunch reprocessed every zip from file 1.
+    # process killed mid-conversion redid every already-converted file
+    # from scratch on the next relaunch, unlike scrape (which skips
+    # already-downloaded files). Confirmed for real against a 30,137-file
+    # Mentions batch: two consecutive kills each independently died around
+    # the same ~51% mark after 30+ minutes, having made no net progress
+    # relaunch to relaunch, because every attempt reprocessed every zip
+    # from file 1, needlessly overwriting output that was already correct.
+    #
+    # The marker's content, not just its existence, is what's checked: it
+    # stores a fingerprint of this run's output_columns (see
+    # config_fingerprint), so a zip processed under a different
+    # output_columns value is correctly treated as not done rather than
+    # silently served stale output shaped by the old setting.
     #
     # A marker keyed to the source zip is used rather than checking for
     # the output parquet's existence directly, because that's not always
@@ -175,14 +196,11 @@ class GDELTConverter:
     # so there is no one output path to check.
     # ------------------------------------------------------------------
 
-    def _done_path(self, zip_path: Path) -> Path:
-        return zip_path.parent / (zip_path.name + ".done")
-
     def _is_done(self, zip_path: Path) -> bool:
-        return self._done_path(zip_path).exists()
+        return is_marked_done(zip_path, self._config_fingerprint)
 
     def _mark_done(self, zip_path: Path) -> None:
-        self._done_path(zip_path).touch()
+        mark_done(zip_path, self._config_fingerprint)
 
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES

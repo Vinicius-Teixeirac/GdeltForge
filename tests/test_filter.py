@@ -137,6 +137,107 @@ class TestFilterAllFiles:
         assert (tmp_path / "hist_out" / "Year=1979" / "1979_filtered.parquet").exists()
 
 
+class TestFilterResumability:
+    """Same .done marker mechanism as GDELTConverter (see test_converter.py's
+    TestConversionResumability), plus the config-fingerprint check that
+    mechanism didn't originally have: filter has several settings a user
+    plausibly reruns with a different value (columns_to_check most of
+    all), and each one changes what the filtered output actually
+    contains, so a marker from a differently-configured run must not
+    cause a resumed run to skip reprocessing that file."""
+
+    def test_a_previously_filtered_file_is_skipped_on_rerun(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, None]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        filt.filter_all_files()
+
+        with caplog.at_level("INFO"):
+            processed, failed = filt.filter_all_files()
+
+        assert (processed, failed) == (0, 0)
+        assert any(
+            "Skipping already filtered" in r.message and "a.parquet" in r.message
+            for r in caplog.records
+        )
+
+    def test_a_changed_columns_to_check_forces_reprocessing(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(
+            input_dir / "a.parquet",
+            {"GlobalEventID": [1, 2, 3], "QuadClass": [1, None, 3], "Actor1Name": [None, "B", "C"]},
+        )
+
+        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
+        out_path = tmp_path / "out" / "a_filtered.parquet"
+        # QuadClass alone: only row 2 (index 1) has a NaN there.
+        assert sorted(pd.read_parquet(out_path)["GlobalEventID"].tolist()) == [1, 3]
+
+        # Rerun with a different columns_to_check must not be skipped by
+        # the marker left above, and must actually re-filter by the new
+        # criteria rather than leaving the stale QuadClass-only output.
+        processed, failed = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["Actor1Name"]
+        ).filter_all_files()
+
+        assert (processed, failed) == (1, 0)
+        assert sorted(pd.read_parquet(out_path)["GlobalEventID"].tolist()) == [2, 3]
+
+    def test_a_changed_output_columns_forces_reprocessing(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(
+            input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]}
+        )
+
+        GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"], output_columns=["GlobalEventID"]
+        ).filter_all_files()
+        out_path = tmp_path / "out" / "a_filtered.parquet"
+        assert list(pd.read_parquet(out_path).columns) == ["GlobalEventID"]
+
+        processed, failed = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"], output_columns=None
+        ).filter_all_files()
+
+        assert (processed, failed) == (1, 0)
+        assert list(pd.read_parquet(out_path).columns) == ["GlobalEventID", "QuadClass"]
+
+    def test_an_unchanged_config_across_reordered_columns_still_skips(self, tmp_path, caplog):
+        # columns_to_check=["A", "B"] and ["B", "A"] enforce the same set;
+        # config_fingerprint sorts list fields, so this must still skip.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(
+            input_dir / "a.parquet", {"GlobalEventID": [1], "A": [1], "B": [1]}
+        )
+
+        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["A", "B"]).filter_all_files()
+
+        with caplog.at_level("INFO"):
+            processed, failed = GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), ["B", "A"]
+            ).filter_all_files()
+
+        assert (processed, failed) == (0, 0)
+        assert any("Skipping already filtered" in r.message for r in caplog.records)
+
+    def test_a_file_that_still_errors_is_not_marked_done(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        (input_dir / "bad.parquet").write_bytes(b"not a real parquet file")
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        filt.filter_all_files()
+
+        assert not filter_module.is_marked_done(
+            input_dir / "bad.parquet", filt._config_fingerprint
+        )
+
+
 class TestOutputColumns:
     def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
         filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
