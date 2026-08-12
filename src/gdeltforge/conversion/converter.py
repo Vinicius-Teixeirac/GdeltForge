@@ -157,7 +157,22 @@ class GDELTConverter:
         return None
 
     # ------------------------------------------------------------------
-    # .done marker helpers  (historical files only)
+    # .done marker helpers
+    #
+    # Applies to every file type, not just historical (Hive-partitioned)
+    # ones: flat/daily writes used to have no resumability at all, so a
+    # process killed mid-conversion lost 100% of that run's work on the
+    # next attempt, unlike scrape (which skips already-downloaded files).
+    # Confirmed for real against a 30,137-file Mentions batch: two
+    # consecutive kills each independently died around the same ~51%
+    # mark with zero parquet output ever finalized, because every
+    # relaunch reprocessed every zip from file 1.
+    #
+    # A marker keyed to the source zip is used rather than checking for
+    # the output parquet's existence directly, because that's not always
+    # a single predictable path: historical writes can fan one input zip
+    # out into several partition files (one per Year/MonthYear group),
+    # so there is no one output path to check.
     # ------------------------------------------------------------------
 
     def _done_path(self, zip_path: Path) -> Path:
@@ -197,9 +212,8 @@ class GDELTConverter:
         to_process = []
         for zip_file in zip_files:
             zip_path = Path(zip_file)
-            file_type = self._detect_file_type(zip_path.name)
 
-            if self._partitioning_enabled and file_type != "daily" and self._is_done(zip_path):
+            if self._is_done(zip_path):
                 logger.info(f"Skipping already converted: {zip_path.name}")
                 continue
 
@@ -233,10 +247,7 @@ class GDELTConverter:
                 try:
                     outputs = future.result()
                     all_outputs.extend(outputs)
-
-                    file_type = self._detect_file_type(zip_path.name)
-                    if self._partitioning_enabled and file_type != "daily":
-                        self._mark_done(zip_path)
+                    self._mark_done(zip_path)
 
                 except Exception as e:
                     logger.error(f"Failed to process {zip_path.name}: {e}")
