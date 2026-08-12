@@ -297,6 +297,121 @@ class TestConvertsNonEventsSchemaEndToEnd:
         assert df["Day"].tolist() == [20200101, 20200102]
 
 
+def _write_flat_zip(raw_dir, filename="20200101.export.CSV.zip", rows="1\t20200101\n"):
+    """A minimal Events-shaped zip (GlobalEventID, Day) for exercising the
+    flat/daily conversion path end to end, same shape used throughout this
+    file's other tests."""
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    csv_name = filename.removesuffix(".zip")
+    if not csv_name.lower().endswith(".csv"):
+        csv_name += ".csv"
+    csv_path = raw_dir / csv_name
+    csv_path.write_text(rows)
+    zip_path = raw_dir / filename
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.write(csv_path, arcname=csv_name)
+    csv_path.unlink()
+    return zip_path
+
+
+class TestConversionResumability:
+    """Regression coverage for the .done marker mechanism: found for real
+    against a live 30,137-file Mentions batch that flat/daily conversions
+    had no resumability at all (unlike scrape's skip-already-downloaded
+    behavior): two independent runs each died around the same ~51% mark
+    after 30+ minutes with zero parquet output ever finalized, because
+    every relaunch reprocessed every zip from file 1. The marker mechanism
+    already existed for historical (Hive-partitioned) files but was never
+    itself covered by a test; both paths are covered here now."""
+
+    def test_flat_daily_conversion_creates_a_done_marker(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        zip_path = _write_flat_zip(tmp_path / "raw")
+
+        converter = GDELTConverter(cfg)
+        outputs, failed = converter.process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert converter._is_done(zip_path)
+
+    def test_a_previously_converted_flat_zip_is_skipped_on_rerun(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path)
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(cfg)
+        converter.process_all_files()
+
+        with caplog.at_level("INFO"):
+            outputs, failed = converter.process_all_files()
+
+        assert failed == []
+        assert outputs == []
+        assert any(
+            "Skipping already converted" in r.message and zip_path.name in r.message
+            for r in caplog.records
+        )
+
+    def test_a_zip_that_still_errors_is_not_marked_done(self, tmp_path, monkeypatch):
+        # A failed conversion must stay eligible for retry on the next run,
+        # not get silently marked complete.
+        cfg = _make_config(tmp_path)
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(cfg)
+
+        def boom(self, zip_path):
+            raise RuntimeError("simulated crash mid-conversion")
+
+        monkeypatch.setattr(GDELTConverter, "process_single_file", boom)
+        outputs, failed = converter.process_all_files()
+
+        assert outputs == []
+        assert failed == [zip_path.name]
+        assert not converter._is_done(zip_path)
+
+    def test_historical_partitioned_conversion_creates_a_done_marker(self, tmp_path):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        cfg["columns"]["gdelt_event"] = ["GlobalEventID", "Year", "Day"]
+        cfg["columns_numeric"]["gdelt_event"] = ["GlobalEventID", "Year", "Day"]
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", filename="2020.zip", rows="1\t2020\t20200101\n"
+        )
+
+        converter = GDELTConverter(cfg)
+        outputs, failed = converter.process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert converter._is_done(zip_path)
+
+    def test_a_previously_converted_historical_zip_is_skipped_on_rerun(self, tmp_path, caplog):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        cfg["columns"]["gdelt_event"] = ["GlobalEventID", "Year", "Day"]
+        cfg["columns_numeric"]["gdelt_event"] = ["GlobalEventID", "Year", "Day"]
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", filename="2020.zip", rows="1\t2020\t20200101\n"
+        )
+        converter = GDELTConverter(cfg)
+        converter.process_all_files()
+
+        with caplog.at_level("INFO"):
+            outputs, failed = converter.process_all_files()
+
+        assert failed == []
+        assert outputs == []
+        assert any(
+            "Skipping already converted" in r.message and zip_path.name in r.message
+            for r in caplog.records
+        )
+
+
 class TestSaveParquetAtomicity:
     """_save_parquet/_save_historical_parquet used to write straight to
     their final path. Found for real: a process killed mid-write while
