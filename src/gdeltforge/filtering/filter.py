@@ -70,6 +70,7 @@ from tqdm import tqdm
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, parse_file_date
 from gdeltforge.utils.config import dataset_path_key
+from gdeltforge.utils.io import config_fingerprint, is_marked_done, mark_done
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -79,6 +80,12 @@ class GDELTFilter:
     """
     Filters Parquet files by removing rows with NaN in specified columns.
     Handles both flat daily files and Hive-partitioned historical files.
+
+    A file already filtered under the exact same columns_to_check,
+    output_columns, float32_columns, and compression is skipped on a
+    resumed run (see .done markers in utils.io); a run started after any
+    of those changed reprocesses every file instead of serving output
+    shaped by the old configuration.
     """
 
     def __init__(
@@ -137,6 +144,21 @@ class GDELTFilter:
         self.end_date = end_date
         self.date_parser = date_parser
 
+        # Determines whether a .done marker from a previous run is still
+        # valid: these are exactly the settings a user plausibly iterates
+        # on between runs, and each one changes what the filtered output
+        # actually contains (which rows survive, which columns are kept,
+        # which are narrowed to float32, how it's compressed on disk). A
+        # marker written under different values must not cause this run
+        # to skip reprocessing that file and silently serve output shaped
+        # by the old configuration.
+        self._config_fingerprint = config_fingerprint(
+            columns_to_check=self.columns_to_check,
+            output_columns=self.output_columns,
+            float32_columns=self.float32_columns,
+            compression=self.compression,
+        )
+
         self.output_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Filter output folder ensured: {self.output_folder}")
 
@@ -179,9 +201,22 @@ class GDELTFilter:
             )
             return 0, 0
 
+        to_process = []
+        for parquet_path, is_historical in all_files:
+            if is_marked_done(parquet_path, self._config_fingerprint):
+                logger.info(f"Skipping already filtered: {parquet_path.name}")
+                continue
+            to_process.append((parquet_path, is_historical))
+
+        if not to_process:
+            logger.info("Nothing to filter; all files already processed.")
+            return 0, 0
+
+        flat_to_process = sum(1 for _, is_hist in to_process if not is_hist)
+        historical_to_process = len(to_process) - flat_to_process
         logger.info(
-            f"Filtering {len(flat_files)} flat file(s) "
-            f"and {len(historical_files)} historical file(s) using "
+            f"Filtering {flat_to_process} flat file(s) "
+            f"and {historical_to_process} historical file(s) using "
             f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
         )
 
@@ -202,7 +237,7 @@ class GDELTFilter:
                     parquet_path,
                     self._output_path_for(parquet_path, is_historical),
                 ): parquet_path
-                for parquet_path, is_historical in all_files
+                for parquet_path, is_historical in to_process
             }
 
             for future in tqdm(
@@ -211,6 +246,7 @@ class GDELTFilter:
                 parquet_path = futures[future]
                 try:
                     rows_before, rows_after = future.result()
+                    mark_done(parquet_path, self._config_fingerprint)
 
                     total_rows_before += rows_before
                     total_rows_after  += rows_after
