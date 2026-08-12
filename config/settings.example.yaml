@@ -369,6 +369,14 @@ converter:
       - V2ENHANCEDORGANIZATIONS
       - V1.5TONE
 
+  # Write codec per dataset, same setting and same zstd default as
+  # filter.compression below. Overriding it here changes converter's own
+  # intermediate parquet output (parquet_data_directory), independent of
+  # whatever filter.compression is set to for the filtered output that
+  # follows it.
+  compression:
+    gdelt_gkg_v2: snappy # example override away from the zstd default
+
   # Optional Hive partitioning for pre-daily (yearly / monthly) source files.
   # When enabled, yearly and monthly ZIPs are written as a Hive-partitioned
   # dataset under parquet_historical_directory instead of flat files.

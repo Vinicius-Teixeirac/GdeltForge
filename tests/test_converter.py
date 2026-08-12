@@ -2,6 +2,7 @@ import zipfile
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 
 import gdeltforge.conversion.converter as converter_module
@@ -128,6 +129,55 @@ class TestOutputColumnsConfig:
 
         df = pd.read_parquet(outputs[0])
         assert list(df.columns) == ["Day"]
+
+
+class TestCompressionConfig:
+    def test_defaults_to_zstd(self, tmp_path):
+        # Matching filter.compression's default (see test_filter.py's
+        # TestCompressionConfig): measured ~30% smaller than snappy on
+        # real GDELT Events data at comparable or faster write speed, and
+        # lossless, so there's no accuracy tradeoff to weigh.
+        converter = GDELTConverter(_make_config(tmp_path))
+        assert converter.compression == "zstd"
+
+    def test_default_codec_is_used_on_write(self, tmp_path):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(_make_config(tmp_path))
+        outputs = converter.process_single_file(str(zip_path))
+
+        metadata = pq.ParquetFile(outputs[0]).metadata
+        codec = metadata.row_group(0).column(0).compression
+        assert codec.lower() == "zstd"
+
+    def test_explicit_codec_overrides_the_default(self, tmp_path):
+        cfg = _make_config(tmp_path, compression={"gdelt_event": "snappy"})
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        metadata = pq.ParquetFile(outputs[0]).metadata
+        codec = metadata.row_group(0).column(0).compression
+        assert codec.lower() == "snappy"
+
+    def test_a_changed_compression_forces_reprocessing(self, tmp_path):
+        cfg = _make_config(tmp_path, compression={"gdelt_event": "snappy"})
+        _write_flat_zip(tmp_path / "raw", rows="1\t20200101\n")
+
+        GDELTConverter(cfg).process_all_files()
+        out_path = tmp_path / "parquet" / "20200101.export.parquet"
+        codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
+        assert codec.lower() == "snappy"
+
+        # Rerun with a different codec must not be skipped by the marker
+        # left above, and must actually rewrite with the new codec rather
+        # than leaving the stale snappy file in place.
+        cfg2 = _make_config(tmp_path, compression={"gdelt_event": "zstd"})
+        outputs, failed = GDELTConverter(cfg2).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
+        assert codec.lower() == "zstd"
 
 
 class TestRunConverterWarnsAboutCrossrefJoinKey:
