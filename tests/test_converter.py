@@ -319,10 +319,16 @@ class TestConversionResumability:
     against a live 30,137-file Mentions batch that flat/daily conversions
     had no resumability at all (unlike scrape's skip-already-downloaded
     behavior): two independent runs each died around the same ~51% mark
-    after 30+ minutes with zero parquet output ever finalized, because
-    every relaunch reprocessed every zip from file 1. The marker mechanism
+    after 30+ minutes having made no net progress relaunch to relaunch,
+    because every attempt reprocessed every zip from file 1, needlessly
+    overwriting output that was already correct. The marker mechanism
     already existed for historical (Hive-partitioned) files but was never
-    itself covered by a test; both paths are covered here now."""
+    itself covered by a test; both paths are covered here now.
+
+    The marker also carries a fingerprint of output_columns, the one
+    converter setting a user plausibly reruns with a different value:
+    without that check, a rerun after changing it would be skipped by a
+    marker from the old value and silently serve output shaped by it."""
 
     def test_flat_daily_conversion_creates_a_done_marker(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -350,6 +356,28 @@ class TestConversionResumability:
             "Skipping already converted" in r.message and zip_path.name in r.message
             for r in caplog.records
         )
+
+    def test_a_changed_output_columns_forces_reprocessing(self, tmp_path):
+        cfg = _make_config(tmp_path, output_columns={"gdelt_event": ["GlobalEventID", "Day"]})
+        cfg["columns"]["gdelt_event"] = ["GlobalEventID", "Day"]
+        cfg["columns_numeric"]["gdelt_event"] = ["GlobalEventID", "Day"]
+        _write_flat_zip(tmp_path / "raw", rows="1\t20200101\n")
+
+        GDELTConverter(cfg).process_all_files()
+        out_path = tmp_path / "parquet" / "20200101.export.parquet"
+        assert list(pd.read_parquet(out_path).columns) == ["GlobalEventID", "Day"]
+
+        # Rerun with a narrower output_columns must not be skipped by the
+        # marker left above, and must actually reproduce the narrower
+        # output rather than leaving the stale two-column file in place.
+        cfg2 = _make_config(tmp_path, output_columns={"gdelt_event": ["Day"]})
+        cfg2["columns"] = cfg["columns"]
+        cfg2["columns_numeric"] = cfg["columns_numeric"]
+        outputs, failed = GDELTConverter(cfg2).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert list(pd.read_parquet(out_path).columns) == ["Day"]
 
     def test_a_zip_that_still_errors_is_not_marked_done(self, tmp_path, monkeypatch):
         # A failed conversion must stay eligible for retry on the next run,
