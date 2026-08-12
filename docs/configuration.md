@@ -147,6 +147,12 @@ data/
 
 Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, unaffected by this setting. Historical ZIPs that have already been converted are tracked with `.done` marker files, so re-running `convert` skips them safely. `filter` and `sample` detect the historical directory automatically from the config and include its data without any extra flags.
 
+### Resumability
+
+Flat output (Events daily, GKG 1.0, GKG 2.1, Mentions) is tracked with the same kind of `.done` marker historical output gets above: an interrupted `convert` run resumes from wherever it stopped instead of reprocessing every file from the start, the same way `scrape` skips already-downloaded files.
+
+The marker records the run's own `output_columns` and `compression` settings, not just that a file was processed. Changing either between runs invalidates markers left by the old configuration, so a rerun reprocesses affected files instead of silently serving output shaped by settings that no longer match.
+
 ## `filter`
 
 | Key | Description |
@@ -158,6 +164,8 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, u
 | `float32_columns.<dataset>` | Narrows these float64 columns to float32 on write. Unset keeps every float column at full float64 precision. See "Capacity planning" below before using this: it's a real precision change, not free compression |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate.
+
+Filtered output is resumable the same way `convert`'s is (see "Resumability" above): a `.done` marker per file records `columns_to_check`, `output_columns`, `float32_columns`, and `compression`, so an interrupted `filter` run resumes instead of restarting from the first file, and changing any of those settings invalidates old markers rather than silently skipping files that need to be reprocessed under the new configuration.
 
 ### `output_columns` and `crossref`: four columns you can't prune away
 
