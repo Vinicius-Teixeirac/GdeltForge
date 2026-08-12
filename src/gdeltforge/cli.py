@@ -51,8 +51,8 @@ _DATASET_CLI_TO_CONFIG = {
 
 # crossref's own choices: a GKG generation to join against, not a dataset
 # to read directly (v2 pulls in Mentions internally as the join bridge).
-# "auto" routes each event to v1 or v2 by its own DATEADDED instead of
-# requiring one version for the whole sample; see
+# "auto" attempts every eligible event against both generations instead
+# of requiring one version for the whole sample; see
 # crossref_events_gkg_auto's docstring and configuration.md.
 _CROSSREF_GKG_CHOICES = ["v1", "v1-counts", "v2", "auto"]
 _CROSSREF_GKG_TO_CONFIG = {
@@ -518,9 +518,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=_CROSSREF_GKG_CHOICES,
         help="Which GKG generation to join against: v1 (direct join on EventIds, main GKG "
              "1.0 file), v1-counts (same join, GKG 1.0's separate Counts file), v2 "
-             "(two-hop join through Mentions, GKG 2.1), or auto (routes each event to v1 "
-             "or v2 by its own DATEADDED, e.g. for a sample spanning the 2013-2015 window "
-             "where only GKG 1.0 exists; --columns isn't supported with auto)"
+             "(two-hop join through Mentions, GKG 2.1), or auto (attempts every eligible "
+             "event against both generations, e.g. for a sample spanning the 2013-2015 "
+             "window where only GKG 1.0 exists; --columns isn't supported with auto)"
     )
     crossref.add_argument(
         "--source",
