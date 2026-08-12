@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -373,6 +374,36 @@ class TestCrossrefEventsGkgV2:
         # Both the 2001 and 2002 rows for article1 must carry the SAME,
         # latest GKG record (REC1-late), not the earlier REC1-early, and
         # article1 must never contribute two GKG-side variants at once.
+        assert set(article1_rows["GKG_GKGRECORDID"]) == {"REC1-late"}
+
+    def test_reprocessed_article_dedup_is_correct_regardless_of_glob_order(
+        self, tmp_path, monkeypatch
+    ):
+        # Path.glob's return order is filesystem-dependent, not guaranteed
+        # sorted. Confirmed for real: the previous test passed locally on
+        # Windows/NTFS by coincidence (alphabetical happens to match
+        # chronological order for GDELT's YYYYMMDDHHMMSS filenames there),
+        # but failed on Linux/ext4 in CI, where glob came back in a
+        # different order and the dedup silently kept the stale record
+        # instead. Forces the adversarial case directly: glob returns the
+        # files in reverse (most-recent-first) order, and the dedup must
+        # still keep the chronologically later record, proving
+        # _dataset()'s explicit sort is what's relied on, not whatever
+        # order the filesystem happens to hand back.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        real_glob = Path.glob
+
+        def reversed_glob(self, pattern):
+            return list(reversed(list(real_glob(self, pattern))))
+
+        monkeypatch.setattr(Path, "glob", reversed_glob)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+        )
+        article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
         assert set(article1_rows["GKG_GKGRECORDID"]) == {"REC1-late"}
 
     def test_unrelated_rows_on_either_side_never_leak_in(self, tmp_path):

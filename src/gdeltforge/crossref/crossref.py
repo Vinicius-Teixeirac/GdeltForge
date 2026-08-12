@@ -105,7 +105,18 @@ GKG_V2_COVERAGE_START = 20150218
 
 
 def _dataset(folder: str) -> ds.Dataset:
-    files = list(Path(folder).glob("*.parquet"))
+    # Sorted explicitly: Path.glob's return order is filesystem-dependent,
+    # not guaranteed sorted, and pyarrow reads a multi-file dataset in the
+    # order the file list is given. crossref_events_gkg_v2's "keep the
+    # most recently reprocessed article" dedup (drop_duplicates(keep=
+    # "last")) depends on that order matching each file's real position
+    # in time. On NTFS, glob happened to come back alphabetical, which
+    # for GDELT's YYYYMMDDHHMMSS filenames is also chronological, so this
+    # worked by coincidence in local testing; on ext4 (GitHub Actions'
+    # Linux runners) it doesn't, so the wrong, stale GKG record could
+    # silently win the dedup instead of erroring. Sorting makes the file
+    # order deterministic and matches filename order on every platform.
+    files = sorted(Path(folder).glob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {folder}")
     return ds.dataset(files, format="parquet")
