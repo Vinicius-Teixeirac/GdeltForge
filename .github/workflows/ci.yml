@@ -15,7 +15,7 @@ jobs:
           fetch-depth: 0  # full history so hatch-vcs can see tags
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
         # setup-uv has no python-version input; uv manages/downloads the
@@ -40,7 +40,7 @@ jobs:
           fetch-depth: 0  # full history so hatch-vcs can see tags
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
         # setup-uv has no python-version input; uv manages/downloads the
