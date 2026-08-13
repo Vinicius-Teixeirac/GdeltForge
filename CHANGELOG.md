@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-13
+
 ### Added
 - `converter.output_columns`: restricts pandas to materializing only the configured columns while parsing CSV, via `read_csv`'s `usecols`, instead of parsing every column and discarding the unwanted ones afterward. `converter.max_workers_by_dataset` overrides the scalar `converter.max_workers` for a single dataset, since a safe worker count depends on peak per-worker memory and that varies a lot by dataset
 - `filter.output_columns`: per-dataset column projection on the filtered output, independent of `columns_to_check`'s row-filtering. `filter.compression` also becomes a per-dataset configurable write codec (pyarrow already ships zstd/gzip/brotli/lz4, no new dependency needed)
