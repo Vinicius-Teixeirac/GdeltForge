@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v7
 
       - name: Install docs dependencies
         # setup-uv has no python-version input; uv manages/downloads the
