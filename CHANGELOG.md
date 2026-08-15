@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `crossref_events_gkg_v1`/`_v2` (and, by extension, `crossref_events_gkg_auto`, which calls both) now warn, once `--events` crosses 1,000,000 rows, that the module is designed for a bounded sample, not the full Events archive. Never blocks: an archive-scale join is a legitimate thing to ask for, just an expensive one that nothing previously flagged. The threshold and the numbers in the warning are measured, not guessed: building the join key set alone (`set()` -> `list()` -> a pyarrow `isin()` filter, the exact sequence both join paths run) was measured via `tracemalloc` at ~100 MB/1s per million events, ~800 MB/5s at 10M, ~5.2 GB/13s at 50M, before the archive scan itself even starts, since predicate pushdown prunes rows within a file, not which files get opened
+
 ## [0.5.0] - 2026-08-13
 
 ### Added
