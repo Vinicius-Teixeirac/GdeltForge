@@ -189,6 +189,8 @@ This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-p
 
 Enriches a sampled Events output with GKG: themes, tone, people, organizations extracted from the news coverage of each event. Takes a Parquet file (the output of `gdeltforge sample`) rather than the full archive, since joining against the entire Events dataset by default would be a much heavier operation than enriching a bounded sample.
 
+Nothing stops `--events` from actually pointing at the full archive (or a directory of files) instead, since a genuinely archive-scale join is sometimes exactly what's wanted, so this isn't blocked, but it logs a warning (not a hard stop, matching how a large `scrape` already warns) once `--events` crosses 1,000,000 rows: every file in the configured Mentions/GKG directory gets scanned regardless of `--events` size, and just building the join key set was measured at roughly 100 MB and a second per million events (10M: ~800 MB; 50M: ~5.2 GB), before that scan even starts. If that wasn't intentional, run `gdeltforge sample` first.
+
 ```
 gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parquet
 ```
