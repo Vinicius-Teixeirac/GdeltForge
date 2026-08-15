@@ -9,7 +9,11 @@ Takes an already-materialized events_df (e.g. the output of `gdeltforge
 sample`), not the full Events archive: joining against 542M rows would be
 a different, much heavier operation than enriching a bounded sample, and
 this matches the rest of the pipeline's "sample first, then work with the
-sample" shape.
+sample" shape. Nothing stops a caller from passing the full archive
+anyway (a large sample, or genuinely wanting an archive-scale join, are
+both legitimate), so crossref_events_gkg_v1/_v2 both warn, via
+warn_if_events_df_is_large, once events_df crosses a size where that
+stops being cheap, without ever blocking it outright.
 
 Two join strategies, because GKG 1.0 and GKG 2.1 relate to Events
 differently (see docs/comparison.md):
@@ -102,6 +106,21 @@ OPTIONAL_MENTIONS_PAYLOAD_COLUMNS: tuple[str, ...] = ("MentionTimeDate", "Confid
 # since the target dataset has no rows at all for that period.
 GKG_V1_COVERAGE_START = 20130401
 GKG_V2_COVERAGE_START = 20150218
+
+# Above this many events, warn_if_events_df_is_large fires. Measured, not
+# guessed: building crossref's own join-key set (set(events_df["Global
+# EventID"]) -> list() -> pyarrow's isin() filter, the exact sequence
+# crossref_events_gkg_v1/_v2 both do) against synthetic int64 ids, true
+# peak memory via tracemalloc:
+#   1,000,000 events  -> ~100 MB,  ~1s
+#   10,000,000 events -> ~800 MB,  ~5s
+#   50,000,000 events -> ~5.2 GB, ~13s
+# and that's before the archive scan itself, which opens every file in
+# the configured Mentions/GKG directory regardless of events_df size.
+# 1M is comfortably past where this is still cheap (the point of the
+# warning is "you likely passed the full archive, not a sample"), not
+# the point where it becomes expensive.
+_LARGE_EVENTS_JOIN_WARNING_THRESHOLD = 1_000_000
 
 
 def _dataset(folder: str) -> ds.Dataset:
@@ -216,6 +235,44 @@ def warn_if_events_predate_gkg_coverage(
         )
 
 
+def warn_if_events_df_is_large(events_df: pd.DataFrame) -> None:
+    """
+    Warn (not error) when events_df looks like the full Events archive
+    rather than a bounded sample. This module's docstring already says
+    crossref is designed for "an already-materialized events_df ... not
+    the full Events archive", but nothing previously enforced that or
+    even flagged it: --events happily accepts a directory of files (or
+    one huge one) and silently proceeds.
+
+    Both join paths build an in-memory join-key set from GlobalEventID
+    (set() -> list() -> a pyarrow isin() filter) before touching the
+    Mentions/GKG archive at all, and that step alone was measured (real
+    memory via tracemalloc, not estimated) at ~100 MB/1s per million
+    events, ~800 MB/5s at 10M, ~5.2 GB/13s at 50M. The archive scan on
+    top of that opens every file in the configured Mentions/GKG
+    directory regardless of events_df size, since pyarrow's filter
+    pushdown prunes rows within a file, not which files get opened.
+
+    Never blocks: a genuine archive-scale join is a real, supported use
+    case, not a mistake by definition, and this can't tell the two
+    apart. It can only flag that the row count is the kind that usually
+    means "forgot to sample first" and say what that costs.
+    """
+    n = len(events_df)
+    if n <= _LARGE_EVENTS_JOIN_WARNING_THRESHOLD:
+        return
+    logger.warning(
+        f"Cross-referencing {n:,} events. crossref is designed for a bounded "
+        f"sample (e.g. the output of `gdeltforge sample`), not the full Events "
+        f"archive: it scans every file in the configured Mentions/GKG directory "
+        f"regardless of events_df size, and just building the join key set "
+        f"measured roughly 100 MB and a second of extra memory/CPU per million "
+        f"events at this scale (10M events: ~800 MB; 50M: ~5.2 GB), before that "
+        f"scan even starts. If this wasn't intentional, sample first with "
+        f"`gdeltforge sample` instead of passing the full archive."
+    )
+
+
 def crossref_events_gkg_v1(
     events_df: pd.DataFrame,
     gkg_folder: str,
@@ -239,6 +296,7 @@ def crossref_events_gkg_v1(
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
     warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+    warn_if_events_df_is_large(events_df)
 
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
@@ -311,6 +369,7 @@ def crossref_events_gkg_v2(
     warn_if_events_predate_gkg_coverage(
         "GDELT 2.0 (GKG 2.1 / Mentions)", GKG_V2_COVERAGE_START, events_df
     )
+    warn_if_events_df_is_large(events_df)
 
     columns = _validate_columns(columns, gkg_v2_columns)
     read_gkg_columns = list(
