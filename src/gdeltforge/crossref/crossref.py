@@ -13,7 +13,13 @@ sample" shape. Nothing stops a caller from passing the full archive
 anyway (a large sample, or genuinely wanting an archive-scale join, are
 both legitimate), so crossref_events_gkg_v1/_v2 both warn, via
 warn_if_events_df_is_large, once events_df crosses a size where that
-stops being cheap, without ever blocking it outright.
+stops being cheap, without ever blocking it outright. The Mentions/GKG
+side has the same shape of risk independent of events_df entirely: both
+join functions also warn, via warn_if_directory_is_large, when the
+configured Mentions/GKG directory itself has enough files that just
+listing and opening them is a real cost, since crossref has no
+--start-date/--end-date of its own to narrow which files in that
+directory get touched.
 
 Two join strategies, because GKG 1.0 and GKG 2.1 relate to Events
 differently (see docs/comparison.md):
@@ -121,6 +127,21 @@ GKG_V2_COVERAGE_START = 20150218
 # warning is "you likely passed the full archive, not a sample"), not
 # the point where it becomes expensive.
 _LARGE_EVENTS_JOIN_WARNING_THRESHOLD = 1_000_000
+
+# Above this many files, warn_if_directory_is_large fires for a
+# configured Mentions/GKG directory. Measured, not guessed, against real
+# local data: listing and constructing a pyarrow dataset over 3,127 real
+# GKG 2.1 files took 0.20s; over 33,303 real Mentions files, 2.47s, a
+# roughly linear ~75 microseconds/file (confirmed against two real,
+# differently-sized directories, not a single data point). Extrapolated
+# to the full historical GKG 2.1/Mentions archive (~385,728 files, see
+# docs/configuration.md's "Capacity planning" section for where that
+# number comes from), that's ~29s just to list and open every file,
+# before a single row is read or any events-side filter applies. 50,000
+# sits comfortably above the measured 33,303-file real Mentions
+# directory above (a real, unremarkable local archive) and comfortably
+# below where the listing cost alone is clearly worth a heads-up.
+_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD = 50_000
 
 
 def _dataset(folder: str) -> ds.Dataset:
@@ -273,6 +294,39 @@ def warn_if_events_df_is_large(events_df: pd.DataFrame) -> None:
     )
 
 
+def warn_if_directory_is_large(folder: str, label: str) -> None:
+    """
+    Warn (not error) when a configured Mentions/GKG directory itself has
+    enough files that listing and opening them is a real, measurable
+    cost, independent of events_df's own size (see
+    warn_if_events_df_is_large for that separate, events-side concern).
+    crossref does this on every single run, not once and cached: there's
+    no --start-date/--end-date on crossref itself to narrow which files
+    in this directory get touched the way scrape/convert/filter can,
+    since pyarrow's filter pushdown narrows which rows get read within a
+    file, not which files get opened at all. Pointing paths.* at a
+    smaller, already-narrowed directory is the only real lever available
+    to reduce it.
+
+    Deliberately a plain file count, not a byte total: the cost this
+    flags is per-file listing/opening overhead (open a footer, read a
+    schema), which doesn't scale with how much data is inside each file,
+    unlike warn_if_events_df_is_large's memory concern.
+    """
+    n = len(list(Path(folder).glob("*.parquet")))
+    if n <= _LARGE_GKG_DIRECTORY_WARNING_THRESHOLD:
+        return
+    logger.warning(
+        f"{label} directory {folder!r} has {n:,} files. crossref lists and opens "
+        f"every file in it on each run, regardless of how selective the join "
+        f"ends up being (~75 microseconds/file measured on real GKG 2.1/Mentions "
+        f"data, so roughly {n * 75e-6:.0f}s here just to list and open them, "
+        f"before a single row is read). There's no --start-date/--end-date on "
+        f"crossref itself to narrow this; pointing paths.* at a smaller, "
+        f"already-narrowed directory is the only way to reduce it."
+    )
+
+
 def crossref_events_gkg_v1(
     events_df: pd.DataFrame,
     gkg_folder: str,
@@ -297,6 +351,7 @@ def crossref_events_gkg_v1(
     _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
     warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
     warn_if_events_df_is_large(events_df)
+    warn_if_directory_is_large(gkg_folder, "GKG 1.0")
 
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
@@ -370,6 +425,8 @@ def crossref_events_gkg_v2(
         "GDELT 2.0 (GKG 2.1 / Mentions)", GKG_V2_COVERAGE_START, events_df
     )
     warn_if_events_df_is_large(events_df)
+    warn_if_directory_is_large(mentions_folder, "Mentions")
+    warn_if_directory_is_large(gkg_v2_folder, "GKG 2.1")
 
     columns = _validate_columns(columns, gkg_v2_columns)
     read_gkg_columns = list(
