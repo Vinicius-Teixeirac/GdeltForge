@@ -132,6 +132,8 @@ pip install gdeltforge
 gdeltforge --help
 ```
 
+No config file required to get started: GdeltForge falls back to a conservative built-in default (real `./data/...` paths, no row/column filtering) and writes it to `config/settings.yaml` the first time you run a command with nothing else configured, so it works immediately in a fresh environment like a Colab session. See [Configuration](https://vinicius-teixeirac.github.io/GdeltForge/configuration/) to customize it instead.
+
 ### Installing from source
 
 For contributing to GdeltForge itself, or an editable install. This project uses [uv](https://docs.astral.sh/uv/) for dependency management; `uv sync` builds and installs GdeltForge itself (editable), so the `gdeltforge` command becomes available inside the virtual environment.
@@ -156,7 +158,7 @@ source .venv/bin/activate
 gdeltforge --help
 ```
 
-Then copy the example config and adjust paths:
+Optional, but worth doing for a real project rather than accepting the built-in default: copy the example config and adjust paths:
 
 ```
 cp config/settings.example.yaml config/settings.yaml
@@ -237,7 +239,7 @@ Available commands:
 
 The CLI intentionally does not chain stages automatically. You run each stage explicitly to maintain full control.
 
-By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable, useful once GdeltForge is installed and invoked from outside the repo checkout.
+By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable, useful once GdeltForge is installed and invoked from outside the repo checkout. If none of those resolve to a real file, GdeltForge falls back to a built-in default instead of failing; see [Configuration](https://vinicius-teixeirac.github.io/GdeltForge/configuration/).
 
 ## Usage Examples
 
