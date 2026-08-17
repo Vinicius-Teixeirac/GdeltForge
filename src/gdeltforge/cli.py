@@ -273,6 +273,8 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             str(mentions_folder),
             str(gkg_v2_folder),
             config["columns"]["gdelt_gkg_v2"],
+            on_duplicate_document=args.on_duplicate_document,
+            dedupe_mentions=args.collapse_duplicate_mentions,
         )
     elif args.gkg_version == "v2":
         mentions_folder = ensure_exists(
@@ -289,6 +291,8 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             str(gkg_v2_folder),
             config["columns"]["gdelt_gkg_v2"],
             columns=columns,
+            on_duplicate_document=args.on_duplicate_document,
+            dedupe_mentions=args.collapse_duplicate_mentions,
         )
     else:
         dataset = _CROSSREF_GKG_TO_CONFIG[args.gkg_version]
@@ -533,6 +537,23 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="Restrict GKG-side output to these columns; cuts I/O and memory. The join key "
              "column is always included regardless. Not supported with --gkg-version auto"
+    )
+    crossref.add_argument(
+        "--on-duplicate-document",
+        choices=["latest", "earliest", "all"],
+        default="all",
+        help="When GKG 2.1 carries more than one record for the same article URL (a page "
+             "crawled more than once): keep all of them, one row per record (default), "
+             "or narrow to just the most recent or the earliest record. Only affects "
+             "--gkg-version v2/auto; v1 has no equivalent duplicate-document step."
+    )
+    crossref.add_argument(
+        "--collapse-duplicate-mentions",
+        action="store_true",
+        help="Collapse per-sentence duplicate mentions of the same event in the same "
+             "article into one row with an explicit Mention_Count column, instead of "
+             "keeping every raw Mentions row (the default). Only affects "
+             "--gkg-version v2/auto."
     )
     crossref.add_argument(
         "--out",
