@@ -67,7 +67,7 @@ Provides:
 """
 
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pandas as pd
 import pyarrow.compute as pc
@@ -100,6 +100,22 @@ REQUIRED_JOIN_COLUMNS: dict[str, tuple[str, ...]] = {
 # Mentions dataset missing one just means that field is absent from the
 # output, not a failed join.
 OPTIONAL_MENTIONS_PAYLOAD_COLUMNS: tuple[str, ...] = ("MentionTimeDate", "Confidence")
+
+# crossref_events_gkg_v2's on_duplicate_document values. GKG 2.1 can carry
+# more than one record for the same V2DOCUMENTIDENTIFIER: confirmed for
+# real against a live GKG 2.1 pull, a URL can be independently crawled
+# years apart (a tag/listing page whose content changed between visits,
+# not just "the same article reprocessed"), so the two records can hold
+# genuinely different content, not a stale duplicate of the same one.
+# Picking a single winner is a real editorial choice, not noise removal,
+# so it defaults to keeping every record rather than silently discarding
+# one on the caller's behalf; "latest"/"earliest" are opt-in for whoever
+# specifically wants a single-row-per-URL join instead:
+#   "all"      - keep every record (default); a shared URL contributes
+#                one row per (event, mention, GKG record) instead of one
+#   "latest"   - keep only the chronologically most recent record
+#   "earliest" - keep only the chronologically first record
+_ON_DUPLICATE_DOCUMENT_MODES = frozenset({"latest", "earliest", "all"})
 
 # When each GKG generation's real data actually begins, as YYYYMMDD ints
 # matching Events' own DATEADDED format. Verified against GDELT's real
@@ -397,6 +413,8 @@ def crossref_events_gkg_v2(
     gkg_v2_folder: str,
     gkg_v2_columns: list[str],
     columns: set[str] | None = None,
+    on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
+    dedupe_mentions: bool = False,
 ) -> pd.DataFrame:
     """
     Two-hop join for GKG 2.1, which carries no event id:
@@ -408,15 +426,42 @@ def crossref_events_gkg_v2(
     a missing one just means its Mention_<name> column isn't in the
     output, not a failed join, unlike REQUIRED_JOIN_COLUMNS's
     GLOBALEVENTID/MentionIdentifier). Returns one row per
-    (event, mention, GKG row) triple: an event mentioned by several
-    articles contributes several rows, and an article covering several
-    events contributes one row per event, not one collapsed row.
+    (event, article, GKG record) combination: an event mentioned by
+    several distinct articles contributes several rows, and an article
+    covering several events contributes one row per event, not one
+    collapsed row. See docs/crossref-join-semantics.md for real-data
+    numbers on how often each of these actually happens.
 
-    The same article can be reprocessed across separate GKG 2.1 batches
-    (e.g. a later crawl refines the extraction); rows are deduped on the
-    document URL, keeping the most recently seen one, so each article
-    contributes exactly one GKG row to the join.
+    on_duplicate_document controls what happens when GKG 2.1 carries more
+    than one record for the same V2DOCUMENTIDENTIFIER (a URL crawled more
+    than once, e.g. a tag/listing page whose content changed between
+    visits, not always just a stale reprocessing of the same article):
+      - "all" (default): keep every record; the shared URL then
+        contributes one row per (event, article, GKG record) instead of
+        one. Nothing is silently discarded on the caller's behalf.
+      - "latest": keep only the chronologically most recent record.
+      - "earliest": keep only the chronologically first record.
+    This only matters for the rare URL that genuinely has more than one
+    GKG record; every other URL is unaffected regardless of the setting.
+
+    dedupe_mentions controls a separate, more common source of repeated
+    rows: Mentions records one row per sentence that references an
+    event, so an event quoted in several sentences of the same article
+    produces several raw Mentions rows for that one (event, article)
+    relationship. By default (False) every raw row is kept, so no
+    (event, article) granularity is ever silently collapsed away. Set to
+    True to instead collapse those rows into one per (event, article),
+    keeping the highest-Confidence version when Confidence is available;
+    a new Mention_Count column then records how many raw rows collapsed
+    into it, so "how many times was this event mentioned in this
+    article" survives explicitly rather than being read off row count.
     """
+    if on_duplicate_document not in _ON_DUPLICATE_DOCUMENT_MODES:
+        raise ValueError(
+            f"on_duplicate_document must be one of {sorted(_ON_DUPLICATE_DOCUMENT_MODES)}, "
+            f"got {on_duplicate_document!r}"
+        )
+
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     _require_column(
         gkg_v2_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v2"][0], "gkg_v2_columns"
@@ -464,6 +509,38 @@ def crossref_events_gkg_v2(
     if bridge_df.empty:
         return pd.DataFrame()
 
+    if dedupe_mentions:
+        # Mentions records one row per sentence that references an
+        # event, so an event quoted in several sentences of one article
+        # produces several raw rows here for what is really a single
+        # (event, article) relationship. Confirmed on real data: ~1.9%
+        # of (event, article) pairs have more than one raw row, and
+        # where they do, the rows aren't always identical: Confidence
+        # differs across them roughly 23% of the time (different
+        # sentences can be extracted with different confidence), so
+        # this is picking a representative row, not collapsing true
+        # duplicates. Mention_Count preserves how many raw rows were
+        # behind it; sorting by Confidence first (stable, so ties keep
+        # whichever row the read happened to return first) means the
+        # kept row is the highest-confidence one when Confidence is
+        # available at all.
+        mention_counts = (
+            bridge_df.groupby(["GLOBALEVENTID", "MentionIdentifier"], sort=False)
+            .size()
+            .rename("Mention_Count")
+            .reset_index()
+        )
+        if "Confidence" in bridge_df.columns:
+            bridge_df = bridge_df.sort_values(
+                "Confidence", ascending=False, na_position="last", kind="stable"
+            )
+        bridge_df = bridge_df.drop_duplicates(
+            subset=["GLOBALEVENTID", "MentionIdentifier"], keep="first"
+        )
+        bridge_df = bridge_df.merge(
+            mention_counts, on=["GLOBALEVENTID", "MentionIdentifier"], how="left"
+        )
+
     urls = set(bridge_df["MentionIdentifier"].dropna().unique())
     if not urls:
         return pd.DataFrame()
@@ -480,7 +557,11 @@ def crossref_events_gkg_v2(
     if gkg_df.empty:
         return pd.DataFrame()
 
-    gkg_df = gkg_df.drop_duplicates(subset=["V2DOCUMENTIDENTIFIER"], keep="last")
+    if on_duplicate_document == "latest":
+        gkg_df = gkg_df.drop_duplicates(subset=["V2DOCUMENTIDENTIFIER"], keep="last")
+    elif on_duplicate_document == "earliest":
+        gkg_df = gkg_df.drop_duplicates(subset=["V2DOCUMENTIDENTIFIER"], keep="first")
+    # "all": no dedup, every GKG record for a shared URL flows through.
     gkg_df = gkg_df.rename(columns={c: f"GKG_{c}" for c in gkg_df.columns})
 
     bridge_df = bridge_df.rename(columns={c: f"Mention_{c}" for c in mentions_payload_columns})
@@ -507,6 +588,8 @@ def crossref_events_gkg_auto(
     gkg_v2_columns: list[str],
     v1_columns: set[str] | None = None,
     v2_columns: set[str] | None = None,
+    on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
+    dedupe_mentions: bool = False,
 ) -> pd.DataFrame:
     """
     Attempts every sampled event against both GKG generations rather than
@@ -554,6 +637,12 @@ def crossref_events_gkg_auto(
     as the "columns" parameter on crossref_events_gkg_v1/_v2 directly);
     there is no single "columns" covering both, since a column name
     meaningful for one schema is usually meaningless for the other.
+
+    on_duplicate_document and dedupe_mentions are forwarded to the GKG
+    2.1 path unchanged; see crossref_events_gkg_v2's docstring. GKG 1.0
+    has no analogous duplicate-document or per-sentence-mention step
+    (it joins directly on EventIds, no Mentions bridge involved), so
+    neither setting affects the v1 path.
     """
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     if "DATEADDED" not in events_df.columns:
@@ -596,6 +685,8 @@ def crossref_events_gkg_auto(
         v2_result = crossref_events_gkg_v2(
             eligible_events, mentions_folder, gkg_v2_folder, gkg_v2_columns,
             columns=v2_columns,
+            on_duplicate_document=on_duplicate_document,
+            dedupe_mentions=dedupe_mentions,
         )
         if not v2_result.empty:
             results.append(v2_result.assign(CrossrefSource="v2"))

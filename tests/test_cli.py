@@ -1,4 +1,5 @@
 import argparse
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -285,6 +286,7 @@ class TestRunCrossrefCmd:
         defaults = dict(
             events=self._events_path(tmp_path), gkg_version="v1", source="filtered",
             columns=None, out=str(tmp_path / "o.parquet"),
+            on_duplicate_document="all", collapse_duplicate_mentions=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -325,7 +327,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v2",
-            lambda events_df, mentions_folder, gkg_folder, cols, columns=None: captured.update(
+            lambda events_df, mentions_folder, gkg_folder, cols, columns=None,
+            on_duplicate_document="all", dedupe_mentions=False: captured.update(
                 mentions_folder=mentions_folder, gkg_folder=gkg_folder
             ) or pd.DataFrame(),
         )
@@ -335,6 +338,29 @@ class TestRunCrossrefCmd:
         assert captured["mentions_folder"] == "/mentions_filtered"
         assert captured["gkg_folder"] == "/gkg_v2_filtered"
 
+    def test_v2_forwards_on_duplicate_document_and_dedupe_mentions(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v2",
+            lambda events_df, mentions_folder, gkg_folder, cols, columns=None,
+            on_duplicate_document="all", dedupe_mentions=False: captured.update(
+                on_duplicate_document=on_duplicate_document, dedupe_mentions=dedupe_mentions
+            ) or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(
+            self._config(),
+            self._args(
+                tmp_path, gkg_version="v2",
+                on_duplicate_document="latest", collapse_duplicate_mentions=True,
+            ),
+        )
+
+        assert captured["on_duplicate_document"] == "latest"
+        assert captured["dedupe_mentions"] is True
+
     def test_auto_reads_gkg_v1_mentions_and_gkg_v2_folders_all_three(self, tmp_path, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
@@ -342,7 +368,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_auto",
             lambda events_df, gkg_v1_folder, gkg_v1_cols, mentions_folder, gkg_v2_folder,
-            gkg_v2_cols: captured.update(
+            gkg_v2_cols, on_duplicate_document="all", dedupe_mentions=False: captured.update(
                 gkg_v1_folder=gkg_v1_folder, mentions_folder=mentions_folder,
                 gkg_v2_folder=gkg_v2_folder,
             ) or pd.DataFrame(),
@@ -527,3 +553,163 @@ class TestMainErrorHandling:
 
         assert exc_info.value.code == 1
         assert "no CAMEO code reference list" in capsys.readouterr().err
+
+
+class TestCliReferenceDocsSync:
+    """
+    docs/cli-reference.md is hand-maintained, not generated from argparse,
+    so it can silently drift from --help. That's exactly what happened
+    with crossref's --on-duplicate-document/--keep-duplicate-mentions:
+    both landed in argparse and CHANGELOG.md but not in this file, and
+    nothing caught it. These tests read the real parser and the real doc
+    file and cross-check them in both directions, so a new, renamed, or
+    removed flag or subcommand fails the suite instead of drifting
+    silently again.
+    """
+
+    DOCS_PATH = Path(__file__).resolve().parent.parent / "docs" / "cli-reference.md"
+
+    @classmethod
+    def _docs_text(cls):
+        return cls.DOCS_PATH.read_text(encoding="utf-8")
+
+    @classmethod
+    def _section(cls, text, heading):
+        # Text between "## <heading>" and the next "## " heading (or end
+        # of file), so one subcommand's table can't be credited with
+        # another's flags.
+        pattern = re.compile(
+            rf"^## {re.escape(heading)}\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
+        )
+        match = pattern.search(text)
+        assert match, f"No '## {heading}' section found in {cls.DOCS_PATH.name}"
+        return match.group(1)
+
+    @staticmethod
+    def _documented_tokens(section_text):
+        # Every markdown table row whose first cell is a code span, e.g.
+        # "| `--on-duplicate-document {latest,earliest,all}` | ... |" or
+        # "| `column` | Positional, optional. ... |". Deliberately only
+        # table rows, not any backtick-wrapped text in prose: several
+        # sections reference another command's flag in passing (e.g.
+        # crossref's prose mentioning `--gkg-version`'s own modes), and
+        # counting those would hide a real missing row behind an
+        # incidental prose mention.
+        tokens = {}
+        for line in section_text.splitlines():
+            row = re.match(r"^\|\s*`([^`]+)`", line)
+            if row:
+                full = row.group(1)
+                tokens[full.split()[0]] = full
+        return tokens
+
+    @staticmethod
+    def _real_flags(subparser):
+        # The option strings/positional dest argparse actually accepts
+        # for this (sub)parser, excluding the auto-added -h/--help, plus
+        # a name -> Action map for the choices cross-check below.
+        flags = {}
+        for action in subparser._actions:
+            if action.dest == "help":
+                continue
+            names = action.option_strings or [action.dest]
+            for name in names:
+                flags[name] = action
+        return flags
+
+    @classmethod
+    def _subcommands(cls):
+        parser = cli.build_parser()
+        subparsers_action = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        )
+        return parser, subparsers_action.choices
+
+    def test_every_subcommand_has_its_own_section(self):
+        _, subcommands = self._subcommands()
+        text = self._docs_text()
+        for name in subcommands:
+            assert re.search(rf"^## `gdeltforge {re.escape(name)}`\s*$", text, re.MULTILINE), (
+                f"docs/cli-reference.md has no '## `gdeltforge {name}`' section"
+            )
+
+    def test_no_stale_command_sections(self):
+        _, subcommands = self._subcommands()
+        text = self._docs_text()
+        documented = set(re.findall(r"^## `gdeltforge ([\w-]+)`\s*$", text, re.MULTILINE))
+        stale = documented - set(subcommands)
+        assert not stale, (
+            f"cli-reference.md documents 'gdeltforge {stale}' but no such subcommand exists"
+        )
+
+    def test_every_subcommand_listed_in_the_command_table(self):
+        _, subcommands = self._subcommands()
+        # The top-of-file "| Command | Description |" table, everything
+        # before the first real section heading.
+        table_section = self._docs_text().split("## Global options")[0]
+        for name in subcommands:
+            assert f"`{name}`" in table_section, (
+                f"'{name}' is missing from the command table at the top of cli-reference.md"
+            )
+
+    def test_global_config_flag_is_documented(self):
+        parser, _ = self._subcommands()
+        section = self._section(self._docs_text(), "Global options")
+        documented = set(re.findall(r"`(--[\w-]+)", section))
+        real_config_action = next(a for a in parser._actions if a.dest == "config")
+        assert set(real_config_action.option_strings) <= documented
+
+    def test_every_real_flag_is_documented(self):
+        _, subcommands = self._subcommands()
+        text = self._docs_text()
+        for name, subparser in subcommands.items():
+            documented = self._documented_tokens(self._section(text, f"`gdeltforge {name}`"))
+            real = self._real_flags(subparser)
+            missing = set(real) - set(documented)
+            assert not missing, (
+                f"gdeltforge {name}: {sorted(missing)} accepted by argparse but not "
+                f"documented in cli-reference.md"
+            )
+
+    def test_no_stale_flags_documented(self):
+        # The opposite drift: a flag renamed or removed in argparse that
+        # is still sitting in the docs table, describing behavior that
+        # no longer exists.
+        _, subcommands = self._subcommands()
+        text = self._docs_text()
+        for name, subparser in subcommands.items():
+            documented = self._documented_tokens(self._section(text, f"`gdeltforge {name}`"))
+            real = self._real_flags(subparser)
+            stale = set(documented) - set(real)
+            assert not stale, (
+                f"gdeltforge {name}: {sorted(stale)} documented in cli-reference.md but not "
+                f"accepted by argparse (renamed or removed?)"
+            )
+
+    def test_documented_choices_match_argparse_choices(self):
+        # Where a documented flag spells out a `{a,b,c}` choice set (the
+        # same rendering argparse's own usage/help text uses), it must
+        # be the same set of values as the real choices= argparse
+        # enforces, not just the same flag name. Order-insensitive:
+        # argparse's choices= is a list for iteration, not a promise
+        # about display order, and sample's own choices=["indexed",
+        # "filtered", "daily"] already documents in a different order
+        # ("indexed,daily,filtered") without that being a real bug.
+        _, subcommands = self._subcommands()
+        text = self._docs_text()
+        for name, subparser in subcommands.items():
+            documented = self._documented_tokens(self._section(text, f"`gdeltforge {name}`"))
+            real = self._real_flags(subparser)
+            for flag, full_token in documented.items():
+                action = real.get(flag)
+                if action is None or not action.choices:
+                    continue
+                doc_choices_match = re.search(r"\{([^}]+)\}", full_token)
+                if not doc_choices_match:
+                    continue
+                documented_choices = set(doc_choices_match.group(1).split(","))
+                real_choices = {str(c) for c in action.choices}
+                assert documented_choices == real_choices, (
+                    f"gdeltforge {name} {flag}: docs list choices {documented_choices}, "
+                    f"argparse actually accepts {real_choices}"
+                )
