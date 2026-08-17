@@ -792,7 +792,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
         event_3001_rows = result[result["GlobalEventID"] == 3001]
         assert len(event_3001_rows) == 1
         assert "Mention_Count" in result.columns
-        assert event_3001_rows["Mention_Count"].iloc[0] == 2
+        assert event_3001_rows.iloc[0]["Mention_Count"] == 2
 
     def test_dedupe_mentions_true_keeps_the_highest_confidence_row(self, tmp_path):
         mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
@@ -817,7 +817,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
 
         event_3002_rows = result[result["GlobalEventID"] == 3002]
         assert len(event_3002_rows) == 1
-        assert event_3002_rows["Mention_Count"].iloc[0] == 1
+        assert event_3002_rows.iloc[0]["Mention_Count"] == 1
 
     def test_dedupe_mentions_false_matches_the_no_argument_default(self, tmp_path):
         # False is now the actual default (see the class above); this
@@ -916,7 +916,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
         with pytest.raises(ValueError, match="on_duplicate_document"):
             crossref_events_gkg_v2(
                 self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
-                on_duplicate_document="nonsense",
+                on_duplicate_document="nonsense",  # type: ignore[arg-type]  # deliberately invalid, exercising the runtime check
             )
 
 
