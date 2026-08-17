@@ -236,6 +236,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
 
 
 def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
+    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
+    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
+
+    if start_date and end_date and start_date > end_date:
+        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+
     events_df = pd.read_parquet(args.events)
     columns = set(args.columns) if args.columns else None
     source_key = (
@@ -275,6 +281,8 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             config["columns"]["gdelt_gkg_v2"],
             on_duplicate_document=args.on_duplicate_document,
             dedupe_mentions=args.collapse_duplicate_mentions,
+            start_date=start_date,
+            end_date=end_date,
         )
     elif args.gkg_version == "v2":
         mentions_folder = ensure_exists(
@@ -293,6 +301,8 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             columns=columns,
             on_duplicate_document=args.on_duplicate_document,
             dedupe_mentions=args.collapse_duplicate_mentions,
+            start_date=start_date,
+            end_date=end_date,
         )
     else:
         dataset = _CROSSREF_GKG_TO_CONFIG[args.gkg_version]
@@ -302,6 +312,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         )
         result = crossref_events_gkg_v1(
             events_df, str(gkg_folder), config["columns"][dataset], columns=columns,
+            start_date=start_date, end_date=end_date,
         )
 
     write_parquet_atomic(result, out)
@@ -554,6 +565,20 @@ def build_parser() -> argparse.ArgumentParser:
              "article into one row with an explicit Mention_Count column, instead of "
              "keeping every raw Mentions row (the default). Only affects "
              "--gkg-version v2/auto."
+    )
+    crossref.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        help="Only join against GKG/Mentions files whose period starts on or after this "
+             "date. Narrows the configured directories being read, not --events, which is "
+             "unaffected either way"
+    )
+    crossref.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        help="Only join against GKG/Mentions files whose period ends on or before this "
+             "date. Narrows the configured directories being read, not --events, which is "
+             "unaffected either way"
     )
     crossref.add_argument(
         "--out",

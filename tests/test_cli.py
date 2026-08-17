@@ -287,6 +287,7 @@ class TestRunCrossrefCmd:
             events=self._events_path(tmp_path), gkg_version="v1", source="filtered",
             columns=None, out=str(tmp_path / "o.parquet"),
             on_duplicate_document="all", collapse_duplicate_mentions=False,
+            start_date=None, end_date=None,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -297,7 +298,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
-            lambda events_df, folder, cols, columns=None: captured.update(
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: captured.update(
                 folder=folder, gkg_columns=cols, columns=columns
             ) or pd.DataFrame(),
         )
@@ -313,7 +315,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
-            lambda events_df, folder, cols, columns=None: captured.update(folder=folder)
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: captured.update(folder=folder)
             or pd.DataFrame(),
         )
 
@@ -328,7 +331,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v2",
             lambda events_df, mentions_folder, gkg_folder, cols, columns=None,
-            on_duplicate_document="all", dedupe_mentions=False: captured.update(
+            on_duplicate_document="all", dedupe_mentions=False, start_date=None,
+            end_date=None: captured.update(
                 mentions_folder=mentions_folder, gkg_folder=gkg_folder
             ) or pd.DataFrame(),
         )
@@ -345,7 +349,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v2",
             lambda events_df, mentions_folder, gkg_folder, cols, columns=None,
-            on_duplicate_document="all", dedupe_mentions=False: captured.update(
+            on_duplicate_document="all", dedupe_mentions=False, start_date=None,
+            end_date=None: captured.update(
                 on_duplicate_document=on_duplicate_document, dedupe_mentions=dedupe_mentions
             ) or pd.DataFrame(),
         )
@@ -368,7 +373,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_auto",
             lambda events_df, gkg_v1_folder, gkg_v1_cols, mentions_folder, gkg_v2_folder,
-            gkg_v2_cols, on_duplicate_document="all", dedupe_mentions=False: captured.update(
+            gkg_v2_cols, on_duplicate_document="all", dedupe_mentions=False,
+            start_date=None, end_date=None: captured.update(
                 gkg_v1_folder=gkg_v1_folder, mentions_folder=mentions_folder,
                 gkg_v2_folder=gkg_v2_folder,
             ) or pd.DataFrame(),
@@ -394,7 +400,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
-            lambda events_df, folder, cols, columns=None: captured.update(folder=folder)
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: captured.update(folder=folder)
             or pd.DataFrame(),
         )
 
@@ -410,7 +417,8 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
-            lambda events_df, folder, cols, columns=None: captured.update(columns=columns)
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: captured.update(columns=columns)
             or pd.DataFrame(),
         )
 
@@ -430,7 +438,8 @@ class TestRunCrossrefCmd:
         expected = pd.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
-            lambda events_df, folder, cols, columns=None: expected,
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: expected,
         )
 
         out_path = str(tmp_path / "o.parquet")
@@ -438,6 +447,41 @@ class TestRunCrossrefCmd:
 
         assert written["out"] == Path(out_path)
         assert written["df"] is expected
+
+    def test_date_strings_are_parsed_and_passed_through(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: captured.update(
+                start_date=start_date, end_date=end_date
+            ) or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(
+            self._config(),
+            self._args(tmp_path, gkg_version="v1", start_date="2020-01-01", end_date="2020-12-31"),
+        )
+
+        assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
+
+    def test_invalid_date_string_raises_clearly(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid date for --start-date"):
+            cli.run_crossref_cmd(
+                self._config(), self._args(tmp_path, gkg_version="v1", start_date="not-a-date"),
+            )
+
+    def test_start_after_end_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be after"):
+            cli.run_crossref_cmd(
+                self._config(),
+                self._args(
+                    tmp_path, gkg_version="v1",
+                    start_date="2020-12-31", end_date="2020-01-01",
+                ),
+            )
 
 
 class TestRunCodesCmd:
