@@ -17,9 +17,21 @@ stops being cheap, without ever blocking it outright. The Mentions/GKG
 side has the same shape of risk independent of events_df entirely: both
 join functions also warn, via warn_if_directory_is_large, when the
 configured Mentions/GKG directory itself has enough files that just
-listing and opening them is a real cost, since crossref has no
---start-date/--end-date of its own to narrow which files in that
-directory get touched.
+listing and opening them is a real cost.
+
+start_date/end_date (all three functions, CLI: --start-date/--end-date)
+narrow which files in the configured Mentions/GKG directories get listed
+and opened at all, the same [start, end] overlap semantics scrape/
+convert/filter already use, reusing their own filter_paths_by_date and
+filename date parsers rather than a separate mechanism. This narrows the
+corpus being joined against, not events_df, which is unaffected either
+way: a Mentions row is timestamped by when it was recorded, not by its
+event's DATEADDED (crossref_events_gkg_auto's docstring below has a real
+example of a mention created a year after its event), so narrowing the
+corpus by date is a real scope decision that can exclude a legitimate
+late mention of an in-range event, not a risk-free filter. Left at their
+None default, every file in the configured directory is still opened,
+same as before this existed.
 
 Two join strategies, because GKG 1.0 and GKG 2.1 relate to Events
 differently (see docs/comparison.md):
@@ -66,6 +78,8 @@ Provides:
     - crossref_events_gkg_auto
 """
 
+from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
@@ -74,6 +88,11 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 from tqdm import tqdm
 
+from gdeltforge.scraping.scraper import (
+    filter_paths_by_date,
+    parse_gdelt_gkg_v1_file_date,
+    parse_gdeltv2_file_date,
+)
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -160,7 +179,12 @@ _LARGE_EVENTS_JOIN_WARNING_THRESHOLD = 1_000_000
 _LARGE_GKG_DIRECTORY_WARNING_THRESHOLD = 50_000
 
 
-def _dataset(folder: str) -> ds.Dataset:
+def _list_files(
+    folder: str,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[Path]:
     # Sorted explicitly: Path.glob's return order is filesystem-dependent,
     # not guaranteed sorted, and pyarrow reads a multi-file dataset in the
     # order the file list is given. crossref_events_gkg_v2's "keep the
@@ -173,8 +197,30 @@ def _dataset(folder: str) -> ds.Dataset:
     # silently win the dedup instead of erroring. Sorting makes the file
     # order deterministic and matches filename order on every platform.
     files = sorted(Path(folder).glob("*.parquet"))
+    # No-ops when both bounds are None, same as scrape/convert/filter's
+    # own use of this function: a file whose name doesn't carry a
+    # parseable date is kept regardless (see filter_paths_by_date's
+    # docstring), rather than silently dropped just because a range was
+    # given.
+    return filter_paths_by_date(files, start_date, end_date, date_parser=date_parser)
+
+
+def _dataset(
+    folder: str,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> ds.Dataset:
+    files = _list_files(folder, date_parser, start_date, end_date)
     if not files:
-        raise FileNotFoundError(f"No parquet files found in {folder}")
+        raise FileNotFoundError(
+            f"No parquet files found in {folder}"
+            + (
+                f" within [{start_date} - {end_date}]"
+                if start_date or end_date
+                else ""
+            )
+        )
     return ds.dataset(files, format="parquet")
 
 
@@ -310,36 +356,44 @@ def warn_if_events_df_is_large(events_df: pd.DataFrame) -> None:
     )
 
 
-def warn_if_directory_is_large(folder: str, label: str) -> None:
+def warn_if_directory_is_large(
+    folder: str,
+    label: str,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> None:
     """
     Warn (not error) when a configured Mentions/GKG directory itself has
     enough files that listing and opening them is a real, measurable
     cost, independent of events_df's own size (see
     warn_if_events_df_is_large for that separate, events-side concern).
-    crossref does this on every single run, not once and cached: there's
-    no --start-date/--end-date on crossref itself to narrow which files
-    in this directory get touched the way scrape/convert/filter can,
-    since pyarrow's filter pushdown narrows which rows get read within a
-    file, not which files get opened at all. Pointing paths.* at a
-    smaller, already-narrowed directory is the only real lever available
-    to reduce it.
+    crossref does this on every single run, not once and cached: pyarrow's
+    filter pushdown narrows which rows get read within a file, not which
+    files get opened at all, so the file count itself is what this
+    tracks. Counts the same post-start_date/end_date file list
+    crossref_events_gkg_v1/_v2 actually open, not the raw directory: once
+    those are narrowed, that's the real lever reducing this, on top of
+    pointing paths.* at a smaller, already-narrowed directory.
 
     Deliberately a plain file count, not a byte total: the cost this
     flags is per-file listing/opening overhead (open a footer, read a
     schema), which doesn't scale with how much data is inside each file,
     unlike warn_if_events_df_is_large's memory concern.
     """
-    n = len(list(Path(folder).glob("*.parquet")))
+    n = len(_list_files(folder, date_parser, start_date, end_date))
     if n <= _LARGE_GKG_DIRECTORY_WARNING_THRESHOLD:
         return
     logger.warning(
-        f"{label} directory {folder!r} has {n:,} files. crossref lists and opens "
-        f"every file in it on each run, regardless of how selective the join "
-        f"ends up being (~75 microseconds/file measured on real GKG 2.1/Mentions "
-        f"data, so roughly {n * 75e-6:.0f}s here just to list and open them, "
-        f"before a single row is read). There's no --start-date/--end-date on "
-        f"crossref itself to narrow this; pointing paths.* at a smaller, "
-        f"already-narrowed directory is the only way to reduce it."
+        f"{label} directory {folder!r} has {n:,} files"
+        f"{' in the given date range' if start_date or end_date else ''}. "
+        f"crossref lists and opens every one of them on each run, regardless "
+        f"of how selective the join ends up being (~75 microseconds/file "
+        f"measured on real GKG 2.1/Mentions data, so roughly {n * 75e-6:.0f}s "
+        f"here just to list and open them, before a single row is read). "
+        f"--start-date/--end-date narrows which files in this directory get "
+        f"touched at all; pointing paths.* at a smaller, already-narrowed "
+        f"directory reduces it further."
     )
 
 
@@ -348,6 +402,8 @@ def crossref_events_gkg_v1(
     gkg_folder: str,
     gkg_columns: list[str],
     columns: set[str] | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> pd.DataFrame:
     """
     Direct join: events_df x a GKG 1.0-family dataset (the main file or
@@ -359,6 +415,11 @@ def crossref_events_gkg_v1(
     GKG-side output columns are prefixed "GKG_" to avoid colliding with
     an identically-named Events column (NumArticles exists on both sides).
 
+    start_date/end_date (CLI: --start-date/--end-date) narrow which files
+    in gkg_folder get listed and opened at all, independent of
+    events_df; see the module docstring for what this does and doesn't
+    affect.
+
     Returns one row per (event, GKG row) pair. An event with no GKG match
     contributes no rows; a GKG row naming several events contributes one
     row per event, not one collapsed row.
@@ -367,7 +428,9 @@ def crossref_events_gkg_v1(
     _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
     warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
     warn_if_events_df_is_large(events_df)
-    warn_if_directory_is_large(gkg_folder, "GKG 1.0")
+    warn_if_directory_is_large(
+        gkg_folder, "GKG 1.0", parse_gdelt_gkg_v1_file_date, start_date, end_date
+    )
 
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
@@ -376,7 +439,9 @@ def crossref_events_gkg_v1(
     event_id_set = set(event_id_col)
     events_side = events_df.assign(_GlobalEventID_str=event_id_col)
 
-    scanner = _dataset(gkg_folder).scanner(columns=read_columns, batch_size=64_000)
+    scanner = _dataset(
+        gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date
+    ).scanner(columns=read_columns, batch_size=64_000)
 
     matches: list[pd.DataFrame] = []
     for batch in tqdm(scanner.to_batches(), desc="Cross-referencing GKG 1.0"):
@@ -415,6 +480,8 @@ def crossref_events_gkg_v2(
     columns: set[str] | None = None,
     on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
     dedupe_mentions: bool = False,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> pd.DataFrame:
     """
     Two-hop join for GKG 2.1, which carries no event id:
@@ -455,6 +522,11 @@ def crossref_events_gkg_v2(
     a new Mention_Count column then records how many raw rows collapsed
     into it, so "how many times was this event mentioned in this
     article" survives explicitly rather than being read off row count.
+
+    start_date/end_date (CLI: --start-date/--end-date) narrow which files
+    in both mentions_folder and gkg_v2_folder get listed and opened at
+    all, independent of events_df; see the module docstring for what
+    this does and doesn't affect.
     """
     if on_duplicate_document not in _ON_DUPLICATE_DOCUMENT_MODES:
         raise ValueError(
@@ -470,8 +542,12 @@ def crossref_events_gkg_v2(
         "GDELT 2.0 (GKG 2.1 / Mentions)", GKG_V2_COVERAGE_START, events_df
     )
     warn_if_events_df_is_large(events_df)
-    warn_if_directory_is_large(mentions_folder, "Mentions")
-    warn_if_directory_is_large(gkg_v2_folder, "GKG 2.1")
+    warn_if_directory_is_large(
+        mentions_folder, "Mentions", parse_gdeltv2_file_date, start_date, end_date
+    )
+    warn_if_directory_is_large(
+        gkg_v2_folder, "GKG 2.1", parse_gdeltv2_file_date, start_date, end_date
+    )
 
     columns = _validate_columns(columns, gkg_v2_columns)
     read_gkg_columns = list(
@@ -484,7 +560,7 @@ def crossref_events_gkg_v2(
     # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
     # column unlike GKG 1.0's comma-packed EventIds, so this narrows
     # the scan at the row-group level instead of reading everything.
-    mentions_dataset = _dataset(mentions_folder)
+    mentions_dataset = _dataset(mentions_folder, parse_gdeltv2_file_date, start_date, end_date)
     mentions_schema_names = mentions_dataset.schema.names
     for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
         _require_column(mentions_schema_names, required, "mentions_folder")
@@ -551,7 +627,9 @@ def crossref_events_gkg_v2(
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     gkg_filter = pc.field("V2DOCUMENTIDENTIFIER").isin(list(urls))
     gkg_df = (
-        _dataset(gkg_v2_folder).to_table(columns=read_gkg_columns, filter=gkg_filter).to_pandas()
+        _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+        .to_table(columns=read_gkg_columns, filter=gkg_filter)
+        .to_pandas()
     )
 
     if gkg_df.empty:
@@ -590,6 +668,8 @@ def crossref_events_gkg_auto(
     v2_columns: set[str] | None = None,
     on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
     dedupe_mentions: bool = False,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> pd.DataFrame:
     """
     Attempts every sampled event against both GKG generations rather than
@@ -643,6 +723,11 @@ def crossref_events_gkg_auto(
     has no analogous duplicate-document or per-sentence-mention step
     (it joins directly on EventIds, no Mentions bridge involved), so
     neither setting affects the v1 path.
+
+    start_date/end_date (CLI: --start-date/--end-date) are forwarded to
+    both paths, narrowing which files in gkg_v1_folder, mentions_folder,
+    and gkg_v2_folder get listed and opened at all; see the module
+    docstring for what this does and doesn't affect.
     """
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     if "DATEADDED" not in events_df.columns:
@@ -678,6 +763,7 @@ def crossref_events_gkg_auto(
         )
         v1_result = crossref_events_gkg_v1(
             eligible_events, gkg_v1_folder, gkg_v1_columns, columns=v1_columns,
+            start_date=start_date, end_date=end_date,
         )
         if not v1_result.empty:
             results.append(v1_result.assign(CrossrefSource="v1"))
@@ -687,6 +773,7 @@ def crossref_events_gkg_auto(
             columns=v2_columns,
             on_duplicate_document=on_duplicate_document,
             dedupe_mentions=dedupe_mentions,
+            start_date=start_date, end_date=end_date,
         )
         if not v2_result.empty:
             results.append(v2_result.assign(CrossrefSource="v2"))
