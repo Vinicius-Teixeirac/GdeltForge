@@ -1,11 +1,21 @@
-import logging
 import os
 from importlib.resources import files
 from pathlib import Path
 
 import yaml
 
-logger = logging.getLogger(__name__)
+from gdeltforge.utils.logging import get_logger
+
+# get_logger, not a bare logging.getLogger(__name__): every other module
+# in this codebase goes through it, which eagerly attaches a formatted
+# StreamHandler (timestamp, level, logger name) at import time. Skipping
+# it here meant this module's warnings only ever reached the terminal
+# via Python's own unconfigured-logger fallback (logging.lastResort),
+# which does print to stderr, so nothing was silently lost, but with no
+# formatting at all: no "WARNING" label, no timestamp, indistinguishable
+# from ordinary output and inconsistent with every other warning this
+# tool emits.
+logger = get_logger(__name__)
 
 CONFIG_ENV_VAR = "GDELTFORGE_CONFIG"
 DEFAULT_CONFIG_PATH = "config/settings.yaml"

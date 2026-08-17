@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import gdeltforge.utils.config as config_module
 from gdeltforge.utils.config import CONFIG_ENV_VAR, dataset_path_key, load_config
 
 
@@ -29,6 +30,30 @@ class TestDatasetPathKey:
     def test_unknown_dataset_raises(self):
         with pytest.raises(ValueError, match="Unknown dataset"):
             dataset_path_key("not_a_real_dataset", "downloaded_data_directory")
+
+
+class TestModuleLoggerIsProperlyConfigured:
+    """Regression test for a real bug found in review: this module used
+    to build its logger with a bare logging.getLogger(__name__) instead
+    of gdeltforge.utils.logging.get_logger, the helper every other
+    module in the codebase goes through. The warnings still reached the
+    terminal either way (Python's own logging.lastResort fallback
+    catches an unconfigured logger's WARNING+ records), so nothing was
+    silently lost, but with zero formatting: no "WARNING" label, no
+    timestamp, indistinguishable from ordinary print output and
+    inconsistent with every other warning this tool emits. caplog alone
+    can't catch this class of bug -- it captures log records directly,
+    the same regardless of which logger built them -- so this checks the
+    module's actual handler setup instead."""
+
+    def test_logger_was_built_via_get_logger_not_a_bare_getlogger(self):
+        # get_logger() eagerly attaches a formatted StreamHandler at
+        # import time; a bare logging.getLogger(__name__) attaches none.
+        assert config_module.logger.handlers, (
+            "config_module.logger has no handlers -- it's probably using "
+            "logging.getLogger(__name__) directly instead of "
+            "gdeltforge.utils.logging.get_logger(__name__)"
+        )
 
 
 class TestLoadConfig:
