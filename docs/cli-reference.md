@@ -69,7 +69,13 @@ gdeltforge convert
 
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores).
 
-Accepts the same `--start-date`/`--end-date` as `scrape` (see above), narrowing which already-downloaded ZIPs get converted instead of which get downloaded:
+| Flag | Description |
+|------|-------------|
+| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (default `events`; see [`--dataset`](#-dataset) below) |
+| `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
+
+`--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
 ```
 gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
@@ -87,7 +93,13 @@ gdeltforge filter
 
 Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
 
-Also accepts `--start-date`/`--end-date`, narrowing which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
+| Flag | Description |
+|------|-------------|
+| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (default `events`; see [`--dataset`](#-dataset) below) |
+| `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
+
+`--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
 Already-filtered files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#filter) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
 
