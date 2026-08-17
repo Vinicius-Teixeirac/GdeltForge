@@ -1,0 +1,295 @@
+# ================================
+#   GDELT PIPELINE CONFIGURATION
+#   (built-in fallback default)
+# ================================
+#
+# load_config() falls back to this file, bundled inside the installed
+# package, only when no config is found any other way: no --config, no
+# GDELTFORGE_CONFIG, and no config/settings.yaml on disk. It exists so
+# a fresh `pip install gdeltforge` works immediately with zero setup
+# (e.g. a Colab session, which loses any locally-created file the
+# moment the session resets), not to replace config/settings.example.yaml
+# as the file you'd hand-edit for a real, ongoing project.
+#
+# Deliberately conservative, not a copy of settings.example.yaml: every
+# row and every column survive by default (no columns_to_check, no
+# output_columns pruning), so a first run's output is never silently
+# shaped by choices you didn't make. It also gets written out to the
+# resolved config path the first time it's used, so it becomes a normal,
+# editable file for the rest of that session; load_config() logs when
+# this happens. See docs/configuration.md for what every key here does,
+# and settings.example.yaml for a heavily-annotated, opinionated
+# starting point instead of this one.
+
+# Columns present in each GDELT dataset. GDELT's own field layout, not
+# environment-specific: never needs editing regardless of where this
+# runs.
+columns:
+  gdelt_event:
+    - GlobalEventID
+    - Day
+    - MonthYear
+    - Year
+    - FractionDate
+    - Actor1Code
+    - Actor1Name
+    - Actor1CountryCode
+    - Actor1KnownGroupCode
+    - Actor1EthnicCode
+    - Actor1Religion1Code
+    - Actor1Religion2Code
+    - Actor1Type1Code
+    - Actor1Type2Code
+    - Actor1Type3Code
+    - Actor2Code
+    - Actor2Name
+    - Actor2CountryCode
+    - Actor2KnownGroupCode
+    - Actor2EthnicCode
+    - Actor2Religion1Code
+    - Actor2Religion2Code
+    - Actor2Type1Code
+    - Actor2Type2Code
+    - Actor2Type3Code
+    - IsRootEvent
+    - EventCode
+    - EventBaseCode
+    - EventRootCode
+    - QuadClass
+    - GoldsteinScale
+    - NumMentions
+    - NumSources
+    - NumArticles
+    - AvgTone
+    - Actor1Geo_Type
+    - Actor1Geo_FullName
+    - Actor1Geo_CountryCode
+    - Actor1Geo_ADM1Code
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor1Geo_FeatureID
+    - Actor2Geo_Type
+    - Actor2Geo_FullName
+    - Actor2Geo_CountryCode
+    - Actor2Geo_ADM1Code
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
+    - Actor2Geo_FeatureID
+    - ActionGeo_Type
+    - ActionGeo_FullName
+    - ActionGeo_CountryCode
+    - ActionGeo_ADM1Code
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - ActionGeo_FeatureID
+    - DATEADDED
+    - SOURCEURL
+
+  gdelt_gkg_v2:
+    - GKGRECORDID
+    - V2.1DATE
+    - V2SOURCECOLLECTIONIDENTIFIER
+    - V2SOURCECOMMONNAME
+    - V2DOCUMENTIDENTIFIER
+    - V1COUNTS
+    - V2.1COUNTS
+    - V1THEMES
+    - V2ENHANCEDTHEMES
+    - V1LOCATIONS
+    - V2ENHANCEDLOCATIONS
+    - V1PERSONS
+    - V2ENHANCEDPERSONS
+    - V1ORGANIZATIONS
+    - V2ENHANCEDORGANIZATIONS
+    - V1.5TONE
+    - V2.1ENHANCEDDATES
+    - V2GCAM
+    - V2.1SHARINGIMAGE
+    - V2.1RELATEDIMAGES
+    - V2.1SOCIALIMAGEEMBEDS
+    - V2.1SOCIALVIDEOEMBEDS
+    - V2.1QUOTATIONS
+    - V2.1ALLNAMES
+    - V2.1AMOUNTS
+    - V2.1TRANSLATIONINFO
+    - V2EXTRASXML
+
+  gdelt_mentions:
+    - GLOBALEVENTID
+    - EventTimeDate
+    - MentionTimeDate
+    - MentionType
+    - MentionSourceName
+    - MentionIdentifier
+    - SentenceID
+    - Actor1CharOffset
+    - Actor2CharOffset
+    - ActionCharOffset
+    - InRawText
+    - Confidence
+    - MentionDocLen
+    - MentionDocTone
+    - MentionDocTranslationInfo
+    - Extras
+
+  gdelt_gkg_v1:
+    - Date
+    - NumArticles
+    - Counts
+    - Themes
+    - Locations
+    - Persons
+    - Organizations
+    - Tone
+    - EventIds
+    - Sources
+    - SourceURLs
+
+  gdelt_gkg_v1_counts:
+    - Date
+    - NumArticles
+    - CountType
+    - Count
+    - ObjectType
+    - Geo_Type
+    - Geo_FullName
+    - Geo_CountryCode
+    - Geo_ADM1Code
+    - Geo_Lat
+    - Geo_Long
+    - Geo_FeatureID
+    - EventIds
+    - Sources
+    - SourceURLs
+
+columns_numeric:
+  gdelt_event:
+    - GlobalEventID
+    - Day
+    - MonthYear
+    - Year
+    - FractionDate
+    - IsRootEvent
+    - QuadClass
+    - GoldsteinScale
+    - NumMentions
+    - NumSources
+    - NumArticles
+    - AvgTone
+    - Actor1Geo_Type
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor2Geo_Type
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
+    - ActionGeo_Type
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - DATEADDED
+
+  gdelt_gkg_v2:
+    - V2.1DATE
+    - V2SOURCECOLLECTIONIDENTIFIER
+
+  gdelt_mentions:
+    - GLOBALEVENTID
+    - EventTimeDate
+    - MentionTimeDate
+    - MentionType
+    - SentenceID
+    - Actor1CharOffset
+    - Actor2CharOffset
+    - ActionCharOffset
+    - InRawText
+    - Confidence
+    - MentionDocLen
+    - MentionDocTone
+
+  gdelt_gkg_v1:
+    - Date
+    - NumArticles
+
+  gdelt_gkg_v1_counts:
+    - Date
+    - NumArticles
+    - Count
+    - Geo_Type
+    - Geo_Lat
+    - Geo_Long
+
+# ================================
+#       DIRECTORY PATHS
+# ================================
+# Real, working relative paths (unlike settings.example.yaml's
+# "./path_example/..." placeholders): everything lands under ./data,
+# relative to wherever the command is run from. Fine for a Colab
+# session or a quick local trial; point --config/GDELTFORGE_CONFIG at
+# a real file (e.g. on a mounted Drive) for anything you want to
+# survive past the current session.
+paths:
+  downloaded_data_directory: "./data/events/raw"
+  unzipped_data_directory: "./data/events/csv"
+  parquet_data_directory: "./data/events/parquet"
+  filtered_data_directory: "./data/events/filtered"
+  parquet_historical_directory: "./data/events/historical"
+  filtered_historical_directory: "./data/events/filtered_historical"
+
+  gkg_v2_downloaded_data_directory: "./data/gkg_v2/raw"
+  gkg_v2_unzipped_data_directory: "./data/gkg_v2/csv"
+  gkg_v2_parquet_data_directory: "./data/gkg_v2/parquet"
+  gkg_v2_filtered_data_directory: "./data/gkg_v2/filtered"
+
+  mentions_downloaded_data_directory: "./data/mentions/raw"
+  mentions_unzipped_data_directory: "./data/mentions/csv"
+  mentions_parquet_data_directory: "./data/mentions/parquet"
+  mentions_filtered_data_directory: "./data/mentions/filtered"
+
+  gkg_v1_downloaded_data_directory: "./data/gkg_v1/raw"
+  gkg_v1_unzipped_data_directory: "./data/gkg_v1/csv"
+  gkg_v1_parquet_data_directory: "./data/gkg_v1/parquet"
+  gkg_v1_filtered_data_directory: "./data/gkg_v1/filtered"
+
+  gkg_v1_counts_downloaded_data_directory: "./data/gkg_v1_counts/raw"
+  gkg_v1_counts_unzipped_data_directory: "./data/gkg_v1_counts/csv"
+  gkg_v1_counts_parquet_data_directory: "./data/gkg_v1_counts/parquet"
+  gkg_v1_counts_filtered_data_directory: "./data/gkg_v1_counts/filtered"
+
+# ================================
+#          STAGE SETTINGS
+# ================================
+
+scraping:
+  retries: 3
+  timeout: 30
+  method: requests
+  chromedriver_path: null
+  max_workers: 8
+
+converter:
+  keep_unzipped: false
+  file_pattern: "*.zip"
+  # null = os.cpu_count(): scales down naturally on a resource-constrained
+  # environment like Colab's free tier, unlike a hardcoded worker count.
+  max_workers: null
+  partitioning:
+    enabled: false
+    rules:
+      - file_type: yearly
+        by: ["Year"]
+      - file_type: monthly
+        by: ["Year", "MonthYear"]
+
+# Conservative on purpose: no columns_to_check means every row survives
+# `filter` (dropna against an empty column list is a documented no-op,
+# not "check nothing and drop everything"), and no output_columns/
+# float32_columns means every column stays too, at full precision. If
+# you want the storage/row-filtering wins settings.example.yaml
+# demonstrates, add those sections back in deliberately.
+filter:
+  max_workers: null
+  columns_to_check:
+    gdelt_event: []
+    gdelt_gkg_v2: []
+    gdelt_mentions: []
+    gdelt_gkg_v1: []
+    gdelt_gkg_v1_counts: []
