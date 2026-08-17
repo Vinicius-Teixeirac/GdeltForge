@@ -9,7 +9,17 @@ Takes an already-materialized events_df (e.g. the output of `gdeltforge
 sample`), not the full Events archive: joining against 542M rows would be
 a different, much heavier operation than enriching a bounded sample, and
 this matches the rest of the pipeline's "sample first, then work with the
-sample" shape.
+sample" shape. Nothing stops a caller from passing the full archive
+anyway (a large sample, or genuinely wanting an archive-scale join, are
+both legitimate), so crossref_events_gkg_v1/_v2 both warn, via
+warn_if_events_df_is_large, once events_df crosses a size where that
+stops being cheap, without ever blocking it outright. The Mentions/GKG
+side has the same shape of risk independent of events_df entirely: both
+join functions also warn, via warn_if_directory_is_large, when the
+configured Mentions/GKG directory itself has enough files that just
+listing and opening them is a real cost, since crossref has no
+--start-date/--end-date of its own to narrow which files in that
+directory get touched.
 
 Two join strategies, because GKG 1.0 and GKG 2.1 relate to Events
 differently (see docs/comparison.md):
@@ -102,6 +112,36 @@ OPTIONAL_MENTIONS_PAYLOAD_COLUMNS: tuple[str, ...] = ("MentionTimeDate", "Confid
 # since the target dataset has no rows at all for that period.
 GKG_V1_COVERAGE_START = 20130401
 GKG_V2_COVERAGE_START = 20150218
+
+# Above this many events, warn_if_events_df_is_large fires. Measured, not
+# guessed: building crossref's own join-key set (set(events_df["Global
+# EventID"]) -> list() -> pyarrow's isin() filter, the exact sequence
+# crossref_events_gkg_v1/_v2 both do) against synthetic int64 ids, true
+# peak memory via tracemalloc:
+#   1,000,000 events  -> ~100 MB,  ~1s
+#   10,000,000 events -> ~800 MB,  ~5s
+#   50,000,000 events -> ~5.2 GB, ~13s
+# and that's before the archive scan itself, which opens every file in
+# the configured Mentions/GKG directory regardless of events_df size.
+# 1M is comfortably past where this is still cheap (the point of the
+# warning is "you likely passed the full archive, not a sample"), not
+# the point where it becomes expensive.
+_LARGE_EVENTS_JOIN_WARNING_THRESHOLD = 1_000_000
+
+# Above this many files, warn_if_directory_is_large fires for a
+# configured Mentions/GKG directory. Measured, not guessed, against real
+# local data: listing and constructing a pyarrow dataset over 3,127 real
+# GKG 2.1 files took 0.20s; over 33,303 real Mentions files, 2.47s, a
+# roughly linear ~75 microseconds/file (confirmed against two real,
+# differently-sized directories, not a single data point). Extrapolated
+# to the full historical GKG 2.1/Mentions archive (~385,728 files, see
+# docs/configuration.md's "Capacity planning" section for where that
+# number comes from), that's ~29s just to list and open every file,
+# before a single row is read or any events-side filter applies. 50,000
+# sits comfortably above the measured 33,303-file real Mentions
+# directory above (a real, unremarkable local archive) and comfortably
+# below where the listing cost alone is clearly worth a heads-up.
+_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD = 50_000
 
 
 def _dataset(folder: str) -> ds.Dataset:
@@ -216,6 +256,77 @@ def warn_if_events_predate_gkg_coverage(
         )
 
 
+def warn_if_events_df_is_large(events_df: pd.DataFrame) -> None:
+    """
+    Warn (not error) when events_df looks like the full Events archive
+    rather than a bounded sample. This module's docstring already says
+    crossref is designed for "an already-materialized events_df ... not
+    the full Events archive", but nothing previously enforced that or
+    even flagged it: --events happily accepts a directory of files (or
+    one huge one) and silently proceeds.
+
+    Both join paths build an in-memory join-key set from GlobalEventID
+    (set() -> list() -> a pyarrow isin() filter) before touching the
+    Mentions/GKG archive at all, and that step alone was measured (real
+    memory via tracemalloc, not estimated) at ~100 MB/1s per million
+    events, ~800 MB/5s at 10M, ~5.2 GB/13s at 50M. The archive scan on
+    top of that opens every file in the configured Mentions/GKG
+    directory regardless of events_df size, since pyarrow's filter
+    pushdown prunes rows within a file, not which files get opened.
+
+    Never blocks: a genuine archive-scale join is a real, supported use
+    case, not a mistake by definition, and this can't tell the two
+    apart. It can only flag that the row count is the kind that usually
+    means "forgot to sample first" and say what that costs.
+    """
+    n = len(events_df)
+    if n <= _LARGE_EVENTS_JOIN_WARNING_THRESHOLD:
+        return
+    logger.warning(
+        f"Cross-referencing {n:,} events. crossref is designed for a bounded "
+        f"sample (e.g. the output of `gdeltforge sample`), not the full Events "
+        f"archive: it scans every file in the configured Mentions/GKG directory "
+        f"regardless of events_df size, and just building the join key set "
+        f"measured roughly 100 MB and a second of extra memory/CPU per million "
+        f"events at this scale (10M events: ~800 MB; 50M: ~5.2 GB), before that "
+        f"scan even starts. If this wasn't intentional, sample first with "
+        f"`gdeltforge sample` instead of passing the full archive."
+    )
+
+
+def warn_if_directory_is_large(folder: str, label: str) -> None:
+    """
+    Warn (not error) when a configured Mentions/GKG directory itself has
+    enough files that listing and opening them is a real, measurable
+    cost, independent of events_df's own size (see
+    warn_if_events_df_is_large for that separate, events-side concern).
+    crossref does this on every single run, not once and cached: there's
+    no --start-date/--end-date on crossref itself to narrow which files
+    in this directory get touched the way scrape/convert/filter can,
+    since pyarrow's filter pushdown narrows which rows get read within a
+    file, not which files get opened at all. Pointing paths.* at a
+    smaller, already-narrowed directory is the only real lever available
+    to reduce it.
+
+    Deliberately a plain file count, not a byte total: the cost this
+    flags is per-file listing/opening overhead (open a footer, read a
+    schema), which doesn't scale with how much data is inside each file,
+    unlike warn_if_events_df_is_large's memory concern.
+    """
+    n = len(list(Path(folder).glob("*.parquet")))
+    if n <= _LARGE_GKG_DIRECTORY_WARNING_THRESHOLD:
+        return
+    logger.warning(
+        f"{label} directory {folder!r} has {n:,} files. crossref lists and opens "
+        f"every file in it on each run, regardless of how selective the join "
+        f"ends up being (~75 microseconds/file measured on real GKG 2.1/Mentions "
+        f"data, so roughly {n * 75e-6:.0f}s here just to list and open them, "
+        f"before a single row is read). There's no --start-date/--end-date on "
+        f"crossref itself to narrow this; pointing paths.* at a smaller, "
+        f"already-narrowed directory is the only way to reduce it."
+    )
+
+
 def crossref_events_gkg_v1(
     events_df: pd.DataFrame,
     gkg_folder: str,
@@ -239,6 +350,8 @@ def crossref_events_gkg_v1(
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
     warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
+    warn_if_events_df_is_large(events_df)
+    warn_if_directory_is_large(gkg_folder, "GKG 1.0")
 
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
@@ -311,6 +424,9 @@ def crossref_events_gkg_v2(
     warn_if_events_predate_gkg_coverage(
         "GDELT 2.0 (GKG 2.1 / Mentions)", GKG_V2_COVERAGE_START, events_df
     )
+    warn_if_events_df_is_large(events_df)
+    warn_if_directory_is_large(mentions_folder, "Mentions")
+    warn_if_directory_is_large(gkg_v2_folder, "GKG 2.1")
 
     columns = _validate_columns(columns, gkg_v2_columns)
     read_gkg_columns = list(

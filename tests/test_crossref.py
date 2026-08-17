@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import gdeltforge.crossref.crossref as crossref_module
 from gdeltforge.crossref.crossref import (
     GKG_V1_COVERAGE_START,
     GKG_V2_COVERAGE_START,
@@ -12,6 +13,8 @@ from gdeltforge.crossref.crossref import (
     crossref_events_gkg_auto,
     crossref_events_gkg_v1,
     crossref_events_gkg_v2,
+    warn_if_directory_is_large,
+    warn_if_events_df_is_large,
     warn_if_events_predate_gkg_coverage,
     warn_if_output_columns_drops_join_key,
 )
@@ -158,6 +161,82 @@ class TestWarnIfEventsPredateGkgCoverage:
         assert any("1 of 2" in r.message for r in caplog.records)
 
 
+class TestWarnIfEventsDfIsLarge:
+    """Core logic shared by crossref_events_gkg_v1 and _v2; each join
+    function's own tests only need to prove they call this, not
+    re-verify the logic itself. Never a hard error: an archive-scale
+    join is a legitimate thing to ask for, just an expensive one."""
+
+    def test_no_warning_at_or_below_threshold(self, caplog):
+        n = crossref_module._LARGE_EVENTS_JOIN_WARNING_THRESHOLD
+        events_df = pd.DataFrame({"GlobalEventID": range(n)})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_df_is_large(events_df)
+        assert caplog.records == []
+
+    def test_warns_above_threshold(self, caplog):
+        n = crossref_module._LARGE_EVENTS_JOIN_WARNING_THRESHOLD + 1
+        events_df = pd.DataFrame({"GlobalEventID": range(n)})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_df_is_large(events_df)
+        assert any(
+            f"{n:,}" in r.message and "gdeltforge sample" in r.message for r in caplog.records
+        )
+
+    def test_no_warning_for_a_typical_bounded_sample(self, caplog):
+        events_df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        with caplog.at_level(logging.WARNING):
+            warn_if_events_df_is_large(events_df)
+        assert caplog.records == []
+
+
+class TestWarnIfDirectoryIsLarge:
+    """Core logic shared by crossref_events_gkg_v1 (its gkg_folder) and
+    _v2 (its mentions_folder and gkg_v2_folder, checked independently);
+    each join function's own tests only need to prove they call this for
+    the right folder(s), not re-verify the logic itself. Never a hard
+    error: a genuinely large local archive is a real directory someone
+    might legitimately point crossref at, just a slow one to list.
+
+    Path.glob is faked here rather than creating tens of thousands of
+    real files on disk, matching the same trick this file's dedup tests
+    already use (test_reprocessed_article_dedup_is_correct_regardless_
+    of_glob_order) -- fine for these isolated tests, which call
+    warn_if_directory_is_large directly and never reach _dataset()'s own
+    real file I/O the way the integration tests below do.
+    """
+
+    @staticmethod
+    def _fake_glob(n):
+        def glob(_self, _pattern):
+            return [Path(f"{i}.parquet") for i in range(n)]
+        return glob
+
+    def test_no_warning_at_or_below_threshold(self, tmp_path, caplog, monkeypatch):
+        n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD
+        monkeypatch.setattr(Path, "glob", self._fake_glob(n))
+        with caplog.at_level(logging.WARNING):
+            warn_if_directory_is_large(str(tmp_path), "Mentions")
+        assert caplog.records == []
+
+    def test_warns_above_threshold(self, tmp_path, caplog, monkeypatch):
+        n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD + 1
+        monkeypatch.setattr(Path, "glob", self._fake_glob(n))
+        with caplog.at_level(logging.WARNING):
+            warn_if_directory_is_large(str(tmp_path), "Mentions")
+        assert any(
+            f"{n:,}" in r.message and "Mentions" in r.message and repr(str(tmp_path)) in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_for_a_typical_local_directory(self, tmp_path, caplog):
+        (tmp_path / "a.parquet").touch()
+        (tmp_path / "b.parquet").touch()
+        with caplog.at_level(logging.WARNING):
+            warn_if_directory_is_large(str(tmp_path), "Mentions")
+        assert caplog.records == []
+
+
 # ------------------------------------------------------------
 # crossref_events_gkg_v1: direct join on EventIds
 # ------------------------------------------------------------
@@ -286,6 +365,33 @@ class TestCrossrefEventsGkgV1:
             "1 of 2" in r.message and "GKG 1.0" in r.message for r in caplog.records
         )
         assert 1001 in set(result["GlobalEventID"])
+
+    def test_warns_when_events_df_is_large(self, tmp_path, caplog, monkeypatch):
+        # Threshold lowered to keep this fast: the real join over a
+        # genuinely 1M+-row events_df is exactly the cost this warning
+        # exists to flag, not something a unit test should pay to prove
+        # the wiring is in place. TestWarnIfEventsDfIsLarge covers the
+        # real default threshold and message content in isolation.
+        monkeypatch.setattr(crossref_module, "_LARGE_EVENTS_JOIN_WARNING_THRESHOLD", 1)
+        folder = self._write_gkg_v1(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
+
+        assert any("gdeltforge sample" in r.message for r in caplog.records)
+
+    def test_warns_when_gkg_directory_is_large(self, tmp_path, caplog, monkeypatch):
+        # Real fixture directory (2 files), threshold lowered to 0 rather
+        # than faking thousands of files: TestWarnIfDirectoryIsLarge
+        # already covers the real default threshold and message content
+        # in isolation, this only proves v1 checks its own gkg_folder.
+        monkeypatch.setattr(crossref_module, "_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD", 0)
+        folder = self._write_gkg_v1(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
+
+        assert any("GKG 1.0 directory" in r.message for r in caplog.records)
 
 
 # ------------------------------------------------------------
@@ -566,6 +672,37 @@ class TestCrossrefEventsGkgV2:
         )
         assert 2001 in set(result["GlobalEventID"])
 
+    def test_warns_when_events_df_is_large(self, tmp_path, caplog, monkeypatch):
+        # Same rationale as v1's equivalent test: threshold lowered so
+        # this stays fast, real threshold/message covered in isolation
+        # by TestWarnIfEventsDfIsLarge.
+        monkeypatch.setattr(crossref_module, "_LARGE_EVENTS_JOIN_WARNING_THRESHOLD", 1)
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            crossref_events_gkg_v2(self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS)
+
+        assert any("gdeltforge sample" in r.message for r in caplog.records)
+
+    def test_warns_when_either_gkg_directory_is_large(self, tmp_path, caplog, monkeypatch):
+        # v2 touches two directories independently (mentions_folder and
+        # gkg_v2_folder); both must be checked, not just one, since
+        # either can be the one that's actually enormous.
+        monkeypatch.setattr(crossref_module, "_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD", 0)
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            crossref_events_gkg_v2(self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS)
+
+        labels_warned = {
+            "Mentions" for r in caplog.records if "Mentions directory" in r.message
+        } | {
+            "GKG 2.1" for r in caplog.records if "GKG 2.1 directory" in r.message
+        }
+        assert labels_warned == {"Mentions", "GKG 2.1"}
+
 
 # ------------------------------------------------------------
 # crossref_events_gkg_auto: attempts every eligible event against both
@@ -837,3 +974,29 @@ class TestCrossrefEventsGkgAuto:
 
         assert "GKG_Themes" not in result.columns
         assert "GKG_V1THEMES" not in result.columns
+
+    def test_warns_twice_for_a_large_events_df_once_per_generation_attempted(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # auto calls crossref_events_gkg_v1 and crossref_events_gkg_v2
+        # internally, and each already warns independently about
+        # pre-coverage events (see the DATEADDED coverage tests above);
+        # the large-events warning follows that same established
+        # pattern rather than trying to fire it once for "the auto
+        # call" as a whole, since auto genuinely runs two separate
+        # expensive joins, not one.
+        monkeypatch.setattr(crossref_module, "_LARGE_EVENTS_JOIN_WARNING_THRESHOLD", 1)
+        paths = self._paths(tmp_path)
+        events_df = pd.DataFrame({
+            "GlobalEventID": [1001, 2001],
+            "DATEADDED": [20130401, 20200101],
+        })
+
+        with caplog.at_level("WARNING"):
+            crossref_events_gkg_auto(
+                events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+                paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            )
+
+        large_join_warnings = [r for r in caplog.records if "gdeltforge sample" in r.message]
+        assert len(large_join_warnings) == 2
