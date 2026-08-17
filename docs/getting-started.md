@@ -42,13 +42,13 @@ gdeltforge --help
 
 ## Configuration
 
-Copy the example config and adjust the paths for your machine:
+This step is optional: GdeltForge falls back to a conservative built-in default (real `./data/...` paths, no row/column filtering) if you skip it, so the commands below work immediately even with nothing configured. Worth doing anyway for a real project, so you're deciding `paths:` and `filter.columns_to_check` deliberately rather than accepting the defaults:
 
 ```
 cp config/settings.example.yaml config/settings.yaml
 ```
 
-At minimum, review `paths:` (where downloaded/converted/filtered data will live) and `filter.columns_to_check` (which columns must be non-null for a row to survive filtering). See the full [Configuration](configuration.md) reference for every option.
+At minimum, review `paths:` (where downloaded/converted/filtered data will live) and `filter.columns_to_check` (which columns must be non-null for a row to survive filtering). See the full [Configuration](configuration.md) reference for every option, including what the built-in fallback actually sets.
 
 ## Your first pipeline run
 

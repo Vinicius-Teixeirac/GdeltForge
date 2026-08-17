@@ -5,12 +5,25 @@ GdeltForge reads a single YAML file, resolved in this order:
 1. `--config PATH` passed to the CLI
 2. the `GDELTFORGE_CONFIG` environment variable
 3. `./config/settings.yaml`, relative to the current working directory (the default)
+4. GdeltForge's own built-in default, bundled inside the installed package, but only when neither 1 nor 2 was given at all *and* nothing exists at 3 either
 
-Start from the template:
+For a real, ongoing project, start from the template:
 
 ```
 cp config/settings.example.yaml config/settings.yaml
 ```
+
+and customize it, especially `paths` and `filter.columns_to_check`.
+
+### Tier 4: the built-in default
+
+You don't have to do that first, though. If none of 1-3 resolve to a real file, GdeltForge falls back to a config bundled inside the package itself rather than failing outright, and writes it out to `./config/settings.yaml` so it becomes a normal, editable file for the rest of that session (logged clearly when this happens; the write is best-effort, so a read-only working directory still gets a working, in-memory-only config rather than an error).
+
+This exists for exactly the case where copying a template first isn't practical: a `pip install gdeltforge` (in a fresh Google Colab session, for instance) drops nothing into the working directory the way a git clone's `config/settings.example.yaml` does, and an ephemeral environment that wipes its filesystem on every session reset means you'd otherwise be reconstructing that file by hand every single time. `--config`/`GDELTFORGE_CONFIG` still work exactly as before for anything you want to survive past the current session, e.g. a file saved on a mounted Google Drive.
+
+It is deliberately a different, more conservative file than `settings.example.yaml`, not the same content with the paths changed: every row and every column survive by default (`filter.columns_to_check` is present but empty for every dataset, and there's no `output_columns`/`float32_columns` pruning anywhere), so a first run's output is never silently shaped by choices you didn't make. `settings.example.yaml` remains the place to look for the storage/row-filtering wins (GKG column pruning, `zstd` compression, geocoding-required filtering) that are worth opting into deliberately once you know your data's shape; see the source of `src/gdeltforge/config/default_settings.yaml` for its own paths (real `./data/...` locations, not `settings.example.yaml`'s `./path_example/...` placeholders) and every other default it sets.
+
+An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a path that turns out to be missing still raises `FileNotFoundError` rather than silently falling back: that's almost always a typo, not a request to use the built-in default instead.
 
 ## Datasets and `--dataset`
 
