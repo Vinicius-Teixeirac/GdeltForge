@@ -69,7 +69,13 @@ gdeltforge convert
 
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores).
 
-Accepts the same `--start-date`/`--end-date` as `scrape` (see above), narrowing which already-downloaded ZIPs get converted instead of which get downloaded:
+| Flag | Description |
+|------|-------------|
+| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (default `events`; see [`--dataset`](#-dataset) below) |
+| `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
+
+`--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
 ```
 gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
@@ -87,7 +93,13 @@ gdeltforge filter
 
 Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
 
-Also accepts `--start-date`/`--end-date`, narrowing which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
+| Flag | Description |
+|------|-------------|
+| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (default `events`; see [`--dataset`](#-dataset) below) |
+| `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
+
+`--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
 Already-filtered files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#filter) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
 
@@ -203,6 +215,8 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
 | `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless. Not supported with `--gkg-version auto` |
+| `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto` |
+| `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
 
 GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Comparison](comparison.md) for why a direct Events<->GKG 2.1 join isn't possible):
@@ -212,6 +226,8 @@ GKG's two format generations relate to Events differently, so `--gkg-version` pi
 - **`auto`**: attempts every eligible event against both `v1` and `v2` instead of requiring one version for the whole sample, or picking exactly one per event. `DATEADDED` only decides eligibility (events before 2013-04-01 have no data in either generation and are skipped with a warning), not which single path is allowed to match: a Mentions row is timestamped by when it was created, not by its event's `DATEADDED`, so an event from the GKG 1.0 era can still have a real GKG 2.1 match created much later, and GKG 1.0 remains live today, so a recent event isn't guaranteed to be GKG-2.1-only either. This is the one to reach for when a sample spans both eras, e.g. a broad historical sample that includes the 2013-2015 window where only GKG 1.0 exists. Output carries a `CrossrefSource` column (`v1` or `v2`) marking which path produced each row; an event that genuinely matches both contributes one row per path, not a merged or arbitrarily-chosen row. The two schemas' GKG-side columns don't overlap at all (11 GKG 1.0 fields vs 27 GKG 2.1 fields, different names throughout) and aren't unified: a row carries `NaN` for whichever set its source path didn't produce.
 
 Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure rather than collapsing it: one event can produce several output rows (several articles covered it, each contributing its own GKG data), and one article covering several events contributes one row per event, not one merged row. An event with no GKG match contributes no rows at all, rather than a row full of nulls. GKG-side output columns are prefixed `GKG_` (and, for `v2`, Mentions bridge fields `Mention_`) to avoid colliding with an identically-named Events column, e.g. `NumArticles` exists on both Events and GKG 1.0.
+
+`v2`'s two-hop join has two further, independent sources of repeated rows for what's really the same (event, article) pair, each controlled by its own flag above, both defaulting to keeping everything rather than silently discarding anything: GKG 2.1 occasionally carries more than one record for the same document URL, all of them kept by default (`--on-duplicate-document`), and Mentions records one row per sentence that references an event, so an event quoted several times in one article produces several near-identical raw rows, also kept uncollapsed by default (`--collapse-duplicate-mentions` to fold them into one row with a `Mention_Count` column instead). See [Crossref Join Semantics](crossref-join-semantics.md) for the real-data numbers behind both.
 
 ```
 gdeltforge sample --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet

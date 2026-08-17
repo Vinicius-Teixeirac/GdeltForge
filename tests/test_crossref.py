@@ -439,11 +439,16 @@ class TestCrossrefEventsGkgV2:
         return str(folder)
 
     def test_basic_join_and_hand_computed_row_count(self, tmp_path):
+        # on_duplicate_document="latest" pins article1 to its single most
+        # recent GKG record, isolating this test's own concern (basic
+        # row count) from the reprocessed-article behavior covered by
+        # its own dedicated tests below.
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
-            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="latest",
         )
 
         # 2001 x article1, 2001 x article2, 2002 x article1 -> 3 rows.
@@ -460,21 +465,30 @@ class TestCrossrefEventsGkgV2:
         assert 2003 not in set(result["GlobalEventID"])
 
     def test_article_covering_multiple_events_is_not_collapsed(self, tmp_path):
+        # on_duplicate_document="latest" isolates this test's own concern
+        # (event-side non-collapsing) from the GKG-side reprocessed-
+        # article behavior covered separately below.
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
-            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="latest",
         )
         article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
         assert sorted(article1_rows["GlobalEventID"]) == [2001, 2002]
 
     def test_reprocessed_article_deduped_keeping_the_latest_batch(self, tmp_path):
+        # "all" is the default now (every GKG record for a shared URL is
+        # kept); this test is specifically about on_duplicate_document=
+        # "latest", so it passes that explicitly rather than relying on
+        # whatever the default happens to be.
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
-            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="latest",
         )
         article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
         # Both the 2001 and 2002 rows for article1 must carry the SAME,
@@ -507,7 +521,8 @@ class TestCrossrefEventsGkgV2:
         monkeypatch.setattr(Path, "glob", reversed_glob)
 
         result = crossref_events_gkg_v2(
-            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="latest",
         )
         article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
         assert set(article1_rows["GKG_GKGRECORDID"]) == {"REC1-late"}
@@ -548,7 +563,8 @@ class TestCrossrefEventsGkgV2:
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
-            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="latest",
         )
 
         assert len(result) == 2
@@ -565,7 +581,8 @@ class TestCrossrefEventsGkgV2:
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
-            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS
+            self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="latest",
         )
 
         assert len(result) == 1
@@ -702,6 +719,205 @@ class TestCrossrefEventsGkgV2:
             "GKG 2.1" for r in caplog.records if "GKG 2.1 directory" in r.message
         }
         assert labels_warned == {"Mentions", "GKG 2.1"}
+
+
+class TestCrossrefEventsGkgV2DuplicateHandling:
+    """
+    Two separate axes of "the same event, the same article, more than
+    once": on_duplicate_document (GKG 2.1 carrying more than one record
+    for one URL) and dedupe_mentions (Mentions carrying more than one
+    raw row for one (event, article) pair, since it records one row per
+    sentence that references an event). Confirmed as real, distinct
+    phenomena against live GDELT data before adding these parameters;
+    see docs/crossref-join-semantics.md.
+    """
+
+    @staticmethod
+    def _events_df():
+        return pd.DataFrame({"GlobalEventID": [3001, 3002]})
+
+    @staticmethod
+    def _write_mentions_with_sentence_duplicate(tmp_path):
+        # Event 3001 is mentioned twice in the same article (two
+        # sentences), with different Confidence, matching the real
+        # pattern confirmed against live GDELT data. Event 3002's single
+        # mention of a different article must be unaffected.
+        folder = tmp_path / "mentions_dup"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [3001, 3001, 3002],
+            "MentionIdentifier": [
+                "http://dup.com/article",
+                "http://dup.com/article",
+                "http://other.com/article",
+            ],
+            "MentionTimeDate": [20200101120000, 20200101120000, 20200101130000],
+            "Confidence": [60, 95, 80],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        return str(folder)
+
+    @staticmethod
+    def _write_gkg_v2_single(tmp_path):
+        folder = tmp_path / "gkg_v2_dup"
+        folder.mkdir()
+        pd.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://dup.com/article", "http://other.com/article"],
+            "GKGRECORDID": ["REC-DUP", "REC-OTHER"],
+            "V1THEMES": ["THEME_DUP", "THEME_OTHER"],
+        }).to_parquet(folder / "20200101120000.gkg.parquet")
+        return str(folder)
+
+    def test_sentence_level_duplicate_is_kept_uncollapsed_by_default(self, tmp_path):
+        mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
+        gkg_folder = self._write_gkg_v2_single(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+        )
+
+        event_3001_rows = result[result["GlobalEventID"] == 3001]
+        assert len(event_3001_rows) == 2
+        assert "Mention_Count" not in result.columns
+        assert sorted(event_3001_rows["Mention_Confidence"]) == [60, 95]
+
+    def test_dedupe_mentions_true_collapses_sentence_level_duplicates(self, tmp_path):
+        mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
+        gkg_folder = self._write_gkg_v2_single(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            dedupe_mentions=True,
+        )
+
+        event_3001_rows = result[result["GlobalEventID"] == 3001]
+        assert len(event_3001_rows) == 1
+        assert "Mention_Count" in result.columns
+        assert event_3001_rows["Mention_Count"].iloc[0] == 2
+
+    def test_dedupe_mentions_true_keeps_the_highest_confidence_row(self, tmp_path):
+        mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
+        gkg_folder = self._write_gkg_v2_single(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            dedupe_mentions=True,
+        )
+
+        event_3001_row = result[result["GlobalEventID"] == 3001].iloc[0]
+        assert event_3001_row["Mention_Confidence"] == 95
+
+    def test_dedupe_mentions_true_leaves_unrelated_event_at_count_one(self, tmp_path):
+        mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
+        gkg_folder = self._write_gkg_v2_single(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            dedupe_mentions=True,
+        )
+
+        event_3002_rows = result[result["GlobalEventID"] == 3002]
+        assert len(event_3002_rows) == 1
+        assert event_3002_rows["Mention_Count"].iloc[0] == 1
+
+    def test_dedupe_mentions_false_matches_the_no_argument_default(self, tmp_path):
+        # False is now the actual default (see the class above); this
+        # pins that an *explicit* False produces the identical result,
+        # so the two can't quietly drift apart if the signature's
+        # default value ever changes without the behavior following.
+        mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
+        gkg_folder = self._write_gkg_v2_single(tmp_path)
+
+        explicit = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            dedupe_mentions=False,
+        )
+        default = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+        )
+
+        pd.testing.assert_frame_equal(
+            explicit.reset_index(drop=True), default.reset_index(drop=True)
+        )
+
+    @staticmethod
+    def _write_gkg_v2_reprocessed(tmp_path):
+        folder = tmp_path / "gkg_v2_reprocessed"
+        folder.mkdir()
+        pd.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://dup.com/article"],
+            "GKGRECORDID": ["REC-EARLY"],
+            "V1THEMES": ["THEME_EARLY"],
+        }).to_parquet(folder / "20200101000000.gkg.parquet")
+        pd.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://dup.com/article"],
+            "GKGRECORDID": ["REC-LATE"],
+            "V1THEMES": ["THEME_LATE"],
+        }).to_parquet(folder / "20200102000000.gkg.parquet")
+        return str(folder)
+
+    @staticmethod
+    def _write_mentions_single(tmp_path):
+        folder = tmp_path / "mentions_single"
+        folder.mkdir()
+        pd.DataFrame({
+            "GLOBALEVENTID": [3001],
+            "MentionIdentifier": ["http://dup.com/article"],
+        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        return str(folder)
+
+    def test_on_duplicate_document_earliest_keeps_the_first_record(self, tmp_path):
+        mentions_folder = self._write_mentions_single(tmp_path)
+        gkg_folder = self._write_gkg_v2_reprocessed(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="earliest",
+        )
+
+        assert len(result) == 1
+        assert result["GKG_GKGRECORDID"].iloc[0] == "REC-EARLY"
+
+    def test_on_duplicate_document_all_keeps_every_record(self, tmp_path):
+        mentions_folder = self._write_mentions_single(tmp_path)
+        gkg_folder = self._write_gkg_v2_reprocessed(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="all",
+        )
+
+        assert len(result) == 2
+        assert set(result["GKG_GKGRECORDID"]) == {"REC-EARLY", "REC-LATE"}
+
+    def test_on_duplicate_document_all_matches_the_no_argument_default(self, tmp_path):
+        # "all" is now the actual default (see the class above); this
+        # pins that an *explicit* "all" produces the identical result,
+        # so the two can't quietly drift apart if the signature's
+        # default value ever changes without the behavior following.
+        mentions_folder = self._write_mentions_single(tmp_path)
+        gkg_folder = self._write_gkg_v2_reprocessed(tmp_path)
+
+        explicit = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            on_duplicate_document="all",
+        )
+        default = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+        )
+
+        pd.testing.assert_frame_equal(
+            explicit.reset_index(drop=True), default.reset_index(drop=True)
+        )
+
+    def test_on_duplicate_document_invalid_value_raises(self, tmp_path):
+        mentions_folder = self._write_mentions_single(tmp_path)
+        gkg_folder = self._write_gkg_v2_reprocessed(tmp_path)
+
+        with pytest.raises(ValueError, match="on_duplicate_document"):
+            crossref_events_gkg_v2(
+                self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+                on_duplicate_document="nonsense",
+            )
 
 
 # ------------------------------------------------------------
