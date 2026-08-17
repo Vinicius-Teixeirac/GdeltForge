@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -18,6 +19,7 @@ from gdeltforge.crossref.crossref import (
     warn_if_events_predate_gkg_coverage,
     warn_if_output_columns_drops_join_key,
 )
+from gdeltforge.scraping.scraper import parse_gdeltv2_file_date
 
 GKG_V1_COLUMNS = ["Date", "EventIds", "NumArticles", "Themes"]
 GKG_V2_COLUMNS = ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V1THEMES"]
@@ -216,14 +218,14 @@ class TestWarnIfDirectoryIsLarge:
         n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD
         monkeypatch.setattr(Path, "glob", self._fake_glob(n))
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions")
+            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
         assert caplog.records == []
 
     def test_warns_above_threshold(self, tmp_path, caplog, monkeypatch):
         n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD + 1
         monkeypatch.setattr(Path, "glob", self._fake_glob(n))
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions")
+            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
         assert any(
             f"{n:,}" in r.message and "Mentions" in r.message and repr(str(tmp_path)) in r.message
             for r in caplog.records
@@ -233,8 +235,29 @@ class TestWarnIfDirectoryIsLarge:
         (tmp_path / "a.parquet").touch()
         (tmp_path / "b.parquet").touch()
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions")
+            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
         assert caplog.records == []
+
+    def test_counts_the_post_date_filter_list_not_the_raw_directory(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # Three real, date-parseable files; narrowing to the last two
+        # must be what gets counted, not the raw directory's three,
+        # proving the file count this warning reports is the same list
+        # crossref_events_gkg_v1/_v2 would actually open with the same
+        # bounds, not a stale, pre-narrowing total.
+        for name in ("20200101000000", "20200102000000", "20200103000000"):
+            (tmp_path / f"{name}.gkg.parquet").touch()
+        monkeypatch.setattr(crossref_module, "_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD", 1)
+
+        with caplog.at_level(logging.WARNING):
+            warn_if_directory_is_large(
+                str(tmp_path), "GKG 2.1", parse_gdeltv2_file_date,
+                start_date=date(2020, 1, 2), end_date=None,
+            )
+
+        assert any("2 files" in r.message and "GKG 2.1" in r.message for r in caplog.records)
+        assert not any("3 files" in r.message for r in caplog.records)
 
 
 # ------------------------------------------------------------
@@ -392,6 +415,46 @@ class TestCrossrefEventsGkgV1:
             crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
 
         assert any("GKG 1.0 directory" in r.message for r in caplog.records)
+
+    def test_start_date_excludes_the_earlier_file(self, tmp_path):
+        # _write_gkg_v1 writes 20130401.gkg.parquet ("1001,1002"/"9999")
+        # and 20130402.gkg.parquet ("1001"/None). Excluding the earlier
+        # file removes event 1002's only match, leaving just 1001's
+        # match through the later file.
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, start_date=date(2013, 4, 2),
+        )
+
+        assert sorted(result["GlobalEventID"]) == [1001]
+        assert list(result["GKG_EventIds"]) == ["1001"]
+
+    def test_end_date_excludes_the_later_file(self, tmp_path):
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, end_date=date(2013, 4, 1),
+        )
+
+        assert sorted(result["GlobalEventID"]) == [1001, 1002]
+        assert set(result["GKG_EventIds"]) == {"1001,1002"}
+
+    def test_no_date_bounds_matches_the_no_argument_default(self, tmp_path):
+        folder = self._write_gkg_v1(tmp_path)
+        explicit = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, start_date=None, end_date=None,
+        )
+        default = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
+
+        pd.testing.assert_frame_equal(
+            explicit.reset_index(drop=True), default.reset_index(drop=True)
+        )
+
+    def test_date_range_excluding_every_file_raises(self, tmp_path):
+        folder = self._write_gkg_v1(tmp_path)
+        with pytest.raises(FileNotFoundError, match="No parquet files"):
+            crossref_events_gkg_v1(
+                self._events_df(), folder, GKG_V1_COLUMNS, start_date=date(2013, 5, 1),
+            )
 
 
 # ------------------------------------------------------------
@@ -719,6 +782,52 @@ class TestCrossrefEventsGkgV2:
             "GKG 2.1" for r in caplog.records if "GKG 2.1 directory" in r.message
         }
         assert labels_warned == {"Mentions", "GKG 2.1"}
+
+    def test_end_date_excludes_the_later_gkg_file(self, tmp_path):
+        # Mentions' single file is dated 2020-01-01; _write_gkg_v2 writes
+        # an early (2020-01-01) and a late (2020-01-02) file. Bounding
+        # both dates to 2020-01-01 keeps Mentions and the early GKG file,
+        # excluding the late one: article2's only GKG record lived in
+        # the excluded file, so its match disappears entirely, while
+        # article1's early record (also its only remaining one) still
+        # matches both events that mention it.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            start_date=date(2020, 1, 1), end_date=date(2020, 1, 1),
+        )
+
+        assert set(result["GKG_GKGRECORDID"]) == {"REC1-early"}
+        assert sorted(result["GlobalEventID"]) == [2001, 2002]
+
+    def test_no_date_bounds_matches_the_no_argument_default(self, tmp_path):
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        explicit = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            start_date=None, end_date=None,
+        )
+        default = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+        )
+
+        pd.testing.assert_frame_equal(
+            explicit.reset_index(drop=True), default.reset_index(drop=True)
+        )
+
+    def test_date_range_excluding_the_mentions_file_raises(self, tmp_path):
+        # The bound applies to both folders independently; narrowing past
+        # Mentions' single 2020-01-01 file empties hop 1 before GKG is
+        # ever reached.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        with pytest.raises(FileNotFoundError, match="No parquet files"):
+            crossref_events_gkg_v2(
+                self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+                start_date=date(2020, 1, 2),
+            )
 
 
 class TestCrossrefEventsGkgV2DuplicateHandling:
@@ -1140,6 +1249,30 @@ class TestCrossrefEventsGkgAuto:
         assert len(result) == 1
         assert result["GlobalEventID"].iloc[0] == 1001
         assert any("1 of 2" in r.message for r in caplog.records)
+
+    def test_start_date_is_forwarded_to_the_v1_path(self, tmp_path):
+        # gkg_v1_folder gets a second, earlier file that also names event
+        # 1001, distinguished by its own Themes value; mentions/gkg_v2
+        # keep _paths()'s single 2020-01-01 fixture untouched (2020-01-01
+        # still satisfies file_end >= start_date with no upper bound
+        # set), isolating this to proving start_date actually reaches
+        # crossref_events_gkg_v1 through the auto path, not just
+        # crossref_events_gkg_v2.
+        paths = self._paths(tmp_path)
+        pd.DataFrame({
+            "Date": [20130101], "EventIds": ["1001"], "Themes": ["EXCLUDED_BY_START_DATE"],
+        }).to_parquet(Path(paths["gkg_v1_folder"]) / "20130101.gkg.parquet")
+        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            start_date=date(2013, 4, 1),
+        )
+
+        v1_rows = result[result["CrossrefSource"] == "v1"]
+        assert "EXCLUDED_BY_START_DATE" not in set(v1_rows["GKG_Themes"])
+        assert set(v1_rows["GKG_Themes"]) == {"TAX_FNCACT"}
 
     def test_missing_dateadded_raises(self, tmp_path):
         paths = self._paths(tmp_path)
