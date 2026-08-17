@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `crossref_events_gkg_v2`/`crossref_events_gkg_auto` gain `on_duplicate_document` (`"all"`/`"latest"`/`"earliest"`, default `"all"`): GKG 2.1 can carry more than one record for the same document URL, confirmed against real data to sometimes hold genuinely different content across visits (a tag/listing page recrawled years apart), not always just a stale reprocessing of the same article, so picking a single winner is a real editorial choice rather than noise removal, and defaults to keeping every record rather than silently discarding one. `"latest"`/`"earliest"` remain available for a caller who specifically wants a single row per URL. CLI: `crossref --on-duplicate-document {all,latest,earliest}`
+- `crossref_events_gkg_v2`/`crossref_events_gkg_auto` gain `dedupe_mentions` (default `False`). Mentions records one row per sentence that references an event, so an event quoted in several sentences of the same article produces several near-identical raw rows for one (event, article) relationship; by default every one of those rows is kept, so row count still reflects real mention frequency. Set to `True` (CLI: `--collapse-duplicate-mentions`) to instead collapse them into one row per (event, article), keeping the highest-`Confidence` version when `Confidence` is available, with a new `Mention_Count` column recording how many raw rows collapsed into it. Confirmed against real data: about 1.9% of (event, article) pairs have more than one raw Mentions row, and where they do, `Confidence` differs across them about 23% of the time, so collapsing picks a representative row rather than removing true duplicates
+
 ## [0.5.0] - 2026-08-13
 
 ### Added
