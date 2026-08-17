@@ -47,5 +47,6 @@ nav:
   - Filtered Sampling: filtered-sampling.md
   - Recipes: recipes.md
   - Configuration: configuration.md
+  - Crossref Join Semantics: crossref-join-semantics.md
   - Architecture: architecture.md
   - Limitations & Roadmap: limitations-and-roadmap.md
