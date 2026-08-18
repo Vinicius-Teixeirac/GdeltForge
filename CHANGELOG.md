@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-17
+
 ### Added
 - `load_config()` gains a fourth fallback tier: GdeltForge's own built-in default, bundled inside the installed package via `importlib.resources`, used only when neither `--config` nor `GDELTFORGE_CONFIG` was given at all and `./config/settings.yaml` doesn't exist either. Previously this situation was a hard `FileNotFoundError` on every single run, painful specifically for a `pip install gdeltforge` in an ephemeral environment like a Colab session, where nothing drops `config/settings.example.yaml` into the working directory the way a git clone does, so the file had to be reconstructed by hand every session reset. The bundled default is written out to the resolved config path on first use (best-effort; a read-only working directory still gets a working, in-memory-only config rather than an error), so it becomes a normal editable file for the rest of that session. An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a missing path still raises, unchanged: that's almost always a typo, not a request for the built-in default
 - The bundled default (`src/gdeltforge/config/default_settings.yaml`) is deliberately more conservative than `settings.example.yaml`, not the same content with the paths changed: real `./data/...` paths (not `settings.example.yaml`'s `./path_example/...` placeholders) but no `filter.columns_to_check` values, `output_columns`, or `float32_columns` for any dataset, so a first run's output is never silently shaped by row-dropping or column-pruning choices the user never made. Confirmed `dropna(subset=[])` is a documented pandas no-op before relying on it, not assumed
