@@ -347,6 +347,33 @@ class TestVerboseLogging:
             converter_module.logger.setLevel(logging.INFO)
 
 
+class TestQuietLogging:
+    """--quiet raises this module's own logger to WARNING, suppressing
+    the setup/summary lines run_converter otherwise always logs at INFO.
+    Mutually exclusive with --verbose at the CLI; this module doesn't
+    enforce that itself, so it isn't re-tested here."""
+
+    def test_quiet_raises_the_logger_to_warning(self, tmp_path):
+        _write_flat_zip(tmp_path / "raw")
+        try:
+            run_converter(_make_config(tmp_path), quiet=True)
+            assert converter_module.logger.level == logging.WARNING
+        finally:
+            converter_module.logger.setLevel(logging.INFO)
+
+    def test_quiet_suppresses_the_summary_line(self, tmp_path, capfd):
+        # Same cross-process reasoning as TestVerboseLogging's own
+        # capfd-based test: process_single_file runs inside a
+        # ProcessPoolExecutor worker, so its output must be checked via
+        # the inherited stderr file descriptor, not in-process caplog.
+        _write_flat_zip(tmp_path / "raw")
+        try:
+            run_converter(_make_config(tmp_path), quiet=True)
+            assert "Conversion complete" not in capfd.readouterr().err
+        finally:
+            converter_module.logger.setLevel(logging.INFO)
+
+
 class TestDatasetParameter:
     def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))

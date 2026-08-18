@@ -803,6 +803,7 @@ def run_scraping_pipeline(
     end_date: date | None = None,
     dataset: str = "gdelt_event",
     verbose: bool = False,
+    quiet: bool = False,
 ) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date ->
@@ -813,10 +814,17 @@ def run_scraping_pipeline(
     DEBUG-level (invisible) by default. Nothing new to add here for it:
     convert/filter's own --verbose (see their run_ wrappers) exists to
     match this module's already-quiet-by-default shape, not the other
-    way around.
+    way around. quiet is the inverse: raises the logger to WARNING,
+    suppressing even the default setup/summary INFO lines. Mutually
+    exclusive at the CLI; verbose wins if a caller passes both directly.
+    Unlike convert/filter, a single setLevel call here is enough:
+    download_gdelt_files uses a ThreadPoolExecutor, not a process pool,
+    so every worker thread shares this same logger instance.
     """
     if verbose:
         logger.setLevel(logging.DEBUG)
+    elif quiet:
+        logger.setLevel(logging.WARNING)
 
     files = collect_gdelt_links(config, dataset=dataset)
 
