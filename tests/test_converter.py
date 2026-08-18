@@ -1,3 +1,4 @@
+import logging
 import zipfile
 from pathlib import Path
 
@@ -308,6 +309,44 @@ class TestRunConverterWarnsAboutDeleteSource:
         assert not any("delete_source" in r.message for r in caplog.records)
 
 
+class TestVerboseLogging:
+    """--verbose raises this module's own logger to DEBUG, revealing the
+    per-file "Processing ZIP"/"Skipping already converted" lines that are
+    DEBUG-level (invisible) by default. logger.setLevel is a real,
+    process-wide mutation on a singleton (logging.getLogger caches by
+    name), so every test here restores INFO afterward regardless of
+    outcome, rather than leaking state into whichever test runs next."""
+
+    def test_off_by_default_logger_level_is_unchanged(self, tmp_path):
+        converter_module.logger.setLevel(logging.INFO)
+        _write_flat_zip(tmp_path / "raw")
+
+        run_converter(_make_config(tmp_path))
+
+        assert converter_module.logger.level == logging.INFO
+
+    def test_verbose_lowers_the_logger_to_debug(self, tmp_path):
+        _write_flat_zip(tmp_path / "raw")
+        try:
+            run_converter(_make_config(tmp_path), verbose=True)
+            assert converter_module.logger.level == logging.DEBUG
+        finally:
+            converter_module.logger.setLevel(logging.INFO)
+
+    def test_verbose_reveals_the_per_file_processing_line(self, tmp_path, capfd):
+        # process_single_file runs inside a ProcessPoolExecutor worker, a
+        # genuinely separate process, so its output reaches the terminal
+        # via the inherited stderr file descriptor, not this process's
+        # own Python logging records -- caplog (in-process record capture)
+        # can't see it at all; capfd (OS file-descriptor capture) can.
+        _write_flat_zip(tmp_path / "raw")
+        try:
+            run_converter(_make_config(tmp_path), verbose=True)
+            assert "Processing ZIP" in capfd.readouterr().err
+        finally:
+            converter_module.logger.setLevel(logging.INFO)
+
+
 class TestDatasetParameter:
     def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))
@@ -485,7 +524,11 @@ class TestConversionResumability:
         converter = GDELTConverter(cfg)
         converter.process_all_files()
 
-        with caplog.at_level("INFO"):
+        # get_logger sets an explicit INFO level on this module's own
+        # named logger at import time, so a bare caplog.at_level("DEBUG")
+        # (root-only) never reaches it; the logger name must be given
+        # explicitly to actually lower its effective level.
+        with caplog.at_level("DEBUG", logger="gdeltforge.conversion.converter"):
             outputs, failed = converter.process_all_files()
 
         assert failed == []
@@ -567,7 +610,11 @@ class TestConversionResumability:
         converter = GDELTConverter(cfg)
         converter.process_all_files()
 
-        with caplog.at_level("INFO"):
+        # get_logger sets an explicit INFO level on this module's own
+        # named logger at import time, so a bare caplog.at_level("DEBUG")
+        # (root-only) never reaches it; the logger name must be given
+        # explicitly to actually lower its effective level.
+        with caplog.at_level("DEBUG", logger="gdeltforge.conversion.converter"):
             outputs, failed = converter.process_all_files()
 
         assert failed == []

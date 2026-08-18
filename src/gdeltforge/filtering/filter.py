@@ -56,6 +56,7 @@ Provides:
 """
 
 import glob
+import logging
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -108,6 +109,7 @@ class GDELTFilter:
         compression: str = "zstd",
         float32_columns: list[str] | None = None,
         delete_source: bool = False,
+        verbose: bool = False,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -142,6 +144,17 @@ class GDELTFilter:
         # narrowed away is gone unless an earlier stage is redone, see
         # warn_if_delete_source_drops_recoverable_data in run_filter.
         self.delete_source = delete_source
+        # Stored as a real instance attribute, not just a level flipped
+        # here and forgotten: filter_single_file runs inside a
+        # ProcessPoolExecutor worker, a genuinely separate process that
+        # re-imports this module fresh (get_logger sets INFO again,
+        # independent of whatever this process just did), so self.verbose
+        # travels across the pickle boundary and filter_single_file
+        # re-applies it itself, rather than relying on a level change
+        # made here ever reaching the worker.
+        self.verbose = verbose
+        if verbose:
+            logger.setLevel(logging.DEBUG)
 
         self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
@@ -221,7 +234,7 @@ class GDELTFilter:
         to_process = []
         for parquet_path, is_historical in all_files:
             if is_marked_done(parquet_path, self._config_fingerprint):
-                logger.info(f"Skipping already filtered: {parquet_path.name}")
+                logger.debug(f"Skipping already filtered: {parquet_path.name}")
                 continue
             to_process.append((parquet_path, is_historical))
 
@@ -273,7 +286,10 @@ class GDELTFilter:
                     files_processed   += 1
 
                     rate = (rows_after / rows_before * 100) if rows_before else 0
-                    logger.info(
+                    # DEBUG, not INFO: unconditional, once per file, same
+                    # rationale as convert's equivalent per-file lines --
+                    # see run_filter's verbose docstring.
+                    logger.debug(
                         f"{parquet_path.name}: "
                         f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
                     )
@@ -317,6 +333,15 @@ class GDELTFilter:
         output_path overrides the default flat naming convention; used to
         preserve Hive subdirectory structure for historical files.
         """
+        # Re-applied here, not just in __init__: this method runs inside
+        # a ProcessPoolExecutor worker, a genuinely separate process that
+        # re-imports this module fresh (get_logger sets INFO again), so
+        # __init__'s own logger.setLevel call, made in the main process,
+        # never reaches it. self.verbose survives the pickle boundary
+        # fine; the logger's mutated level does not.
+        if self.verbose:
+            logger.setLevel(logging.DEBUG)
+
         file_path = Path(parquet_path)
         logger.debug(f"Filtering file: {file_path.name}")
 
@@ -496,7 +521,7 @@ class GDELTFilter:
         """
         try:
             parquet_path.unlink()
-            logger.info(
+            logger.debug(
                 f"Deleted source parquet after successful filtering: {parquet_path.name}"
             )
         except OSError as e:
@@ -513,9 +538,22 @@ def run_filter(
     start_date: date | None = None,
     end_date: date | None = None,
     delete_source: bool = False,
+    verbose: bool = False,
 ) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
+
+    verbose raises this module's own logger to DEBUG, revealing the
+    per-file "{name}: rows -> rows"/"Skipping already filtered"/"Deleted
+    source parquet" lines that are DEBUG-level (invisible) by default,
+    exactly matching scrape's own already-DEBUG per-attempt detail and
+    convert's identical treatment of its own per-file lines. Off by
+    default: at GKG 2.1/Mentions scale, those lines unconditionally at
+    INFO used to mean hundreds of thousands of terminal lines fighting
+    the tqdm progress bar below for the screen. Passed straight through
+    to GDELTFilter rather than raised here directly: filter_single_file
+    re-applies it independently inside each ProcessPoolExecutor worker,
+    since a level change made in this process never reaches those.
     """
     part_cfg = config.get("converter", {}).get("partitioning", {})
     historical_input = historical_output = None
@@ -558,5 +596,6 @@ def run_filter(
         compression=config["filter"].get("compression", {}).get(dataset, "zstd"),
         float32_columns=float32_columns,
         delete_source=delete_source,
+        verbose=verbose,
     )
     return filterer.filter_all_files()
