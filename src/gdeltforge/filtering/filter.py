@@ -110,6 +110,7 @@ class GDELTFilter:
         float32_columns: list[str] | None = None,
         delete_source: bool = False,
         verbose: bool = False,
+        quiet: bool = False,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -144,17 +145,22 @@ class GDELTFilter:
         # narrowed away is gone unless an earlier stage is redone -- see
         # warn_if_delete_source_drops_recoverable_data in run_filter.
         self.delete_source = delete_source
-        # Stored as a real instance attribute, not just a level flipped
+        # Stored as real instance attributes, not just a level flipped
         # here and forgotten: filter_single_file runs inside a
         # ProcessPoolExecutor worker, a genuinely separate process that
         # re-imports this module fresh (get_logger sets INFO again,
-        # independent of whatever this process just did), so self.verbose
-        # travels across the pickle boundary and filter_single_file
-        # re-applies it itself, rather than relying on a level change
-        # made here ever reaching the worker.
+        # independent of whatever this process just did), so self.verbose/
+        # self.quiet travel across the pickle boundary and
+        # filter_single_file re-applies whichever is set itself, rather
+        # than relying on a level change made here ever reaching the
+        # worker. verbose wins if a caller somehow passes both (argparse's
+        # mutually exclusive group already prevents that from the CLI).
         self.verbose = verbose
+        self.quiet = quiet
         if verbose:
             logger.setLevel(logging.DEBUG)
+        elif quiet:
+            logger.setLevel(logging.WARNING)
 
         self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
@@ -337,10 +343,12 @@ class GDELTFilter:
         # a ProcessPoolExecutor worker, a genuinely separate process that
         # re-imports this module fresh (get_logger sets INFO again), so
         # __init__'s own logger.setLevel call, made in the main process,
-        # never reaches it. self.verbose survives the pickle boundary
-        # fine; the logger's mutated level does not.
+        # never reaches it. self.verbose/self.quiet survive the pickle
+        # boundary fine; the logger's mutated level does not.
         if self.verbose:
             logger.setLevel(logging.DEBUG)
+        elif self.quiet:
+            logger.setLevel(logging.WARNING)
 
         file_path = Path(parquet_path)
         logger.debug(f"Filtering file: {file_path.name}")
@@ -539,6 +547,7 @@ def run_filter(
     end_date: date | None = None,
     delete_source: bool = False,
     verbose: bool = False,
+    quiet: bool = False,
 ) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
@@ -550,10 +559,15 @@ def run_filter(
     convert's identical treatment of its own per-file lines. Off by
     default: at GKG 2.1/Mentions scale, those lines unconditionally at
     INFO used to mean hundreds of thousands of terminal lines fighting
-    the tqdm progress bar below for the screen. Passed straight through
-    to GDELTFilter rather than raised here directly: filter_single_file
-    re-applies it independently inside each ProcessPoolExecutor worker,
-    since a level change made in this process never reaches those.
+    the tqdm progress bar below for the screen. quiet is the inverse:
+    raises the logger to WARNING, suppressing even the default setup/
+    summary INFO lines for scripted or cron use that only cares about
+    problems. Mutually exclusive at the CLI; verbose wins if a caller
+    passes both directly. Both passed straight through to GDELTFilter
+    rather than raised here directly: filter_single_file re-applies
+    whichever is set independently inside each ProcessPoolExecutor
+    worker, since a level change made in this process never reaches
+    those.
     """
     part_cfg = config.get("converter", {}).get("partitioning", {})
     historical_input = historical_output = None
@@ -597,5 +611,6 @@ def run_filter(
         float32_columns=float32_columns,
         delete_source=delete_source,
         verbose=verbose,
+        quiet=quiet,
     )
     return filterer.filter_all_files()

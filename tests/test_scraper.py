@@ -809,3 +809,11 @@ class TestRunScrapingPipelineVerboseLogging:
             assert scraper.logger.level == logging.DEBUG
         finally:
             scraper.logger.setLevel(logging.INFO)
+
+    def test_quiet_raises_the_logger_to_warning(self, monkeypatch):
+        self._stub_pipeline(monkeypatch)
+        try:
+            scraper.run_scraping_pipeline({"scraping": {}}, quiet=True)
+            assert scraper.logger.level == logging.WARNING
+        finally:
+            scraper.logger.setLevel(logging.INFO)

@@ -941,6 +941,37 @@ class TestVerboseLogging:
             "EventIds" in r.message and "crossref" in r.message for r in caplog.records
         )
 
+
+class TestQuietLogging:
+    """--quiet raises this module's own logger to WARNING, suppressing
+    the setup/summary lines run_filter otherwise always logs at INFO.
+    Mutually exclusive with --verbose at the CLI; this module doesn't
+    enforce that itself, so it isn't re-tested here."""
+
+    def test_quiet_raises_the_logger_to_warning(self, tmp_path):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+        try:
+            run_filter(cfg, quiet=True)
+            assert filter_module.logger.level == logging.WARNING
+        finally:
+            filter_module.logger.setLevel(logging.INFO)
+
+    def test_quiet_suppresses_the_summary_line(self, tmp_path, caplog):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+        try:
+            with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
+                run_filter(cfg, quiet=True)
+            assert not any("FILTERING SUMMARY" in r.message for r in caplog.records)
+        finally:
+            filter_module.logger.setLevel(logging.INFO)
+
+
 class TestFilterSingleFileAtomicity:
     """filter_single_file used to write straight to output_path via a
     streaming ParquetWriter. Now that filter_all_files runs files across a
