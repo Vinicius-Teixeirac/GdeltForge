@@ -255,6 +255,25 @@ Column pruning did most of the work; the codec switch on top was a smaller, roug
 
 Scrape throughput (~4.2 files/s) is network-bound against `data.gdeltproject.org` and unaffected by any of the above; convert is where pruning and worker count actually move the number, from the previous bottleneck (~71 hours) down to roughly 12 hours.
 
+**Raw scrape footprint**, separate from the Disk figures above: those are `convert`/`filter`'s Parquet output, after column pruning and codec choice both apply. `scrape` downloads GDELT's files whole, unconditionally; `output_columns` can't reduce what lands on disk at this stage, since it only takes effect once `convert` parses a file. So the raw archive is close to a fixed cost, not a tunable one.
+
+Measured two full real days directly (96 files each, GKG 2.1's 15-minute cadence):
+
+| Day | Total | Avg/file |
+|-----|-------|----------|
+| 2020-01-01 | 405.3 MB | 4.22 MB |
+| 2023-06-01 (the same "heavier news day" referenced above) | 822.5 MB | 8.57 MB |
+
+Roughly a 2x day-to-day spread, GKG 2.1's raw size tracks news volume as much as its converted output does. A live master-file-list check counted 395,788 `gdelt_gkg_v2` files (slightly ahead of the ~385,728 figure above, since GDELT keeps publishing; treat both as a moving target, not a fixed archive size), 4,122.8 days at the 15-minute cadence:
+
+| Basis | Total |
+|-------|-------|
+| Low (2020-01-01 rate) | ~1.67 TB |
+| High (2023-06-01 rate) | ~3.39 TB |
+| Average of both real days | ~2.53 TB |
+
+That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned one (~220-380 GB): raw zip and unpruned-`snappy` Parquet both hold the full, unpruned content, just under different codecs, while pruning is a `convert`-time decision the raw archive never sees. Deleting raw files after a successful `convert` (they're not needed again once Parquet output exists) is the only real lever to avoid holding both footprints on disk at once, since `scrape` itself doesn't do this automatically.
+
 ### Dtype narrowing: where it does and doesn't pay off
 
 A natural next question after the above is whether narrowing individual column types saves more. The answer depends entirely on whether the column is low-cardinality or genuinely continuous, and the two cases point in opposite directions.
