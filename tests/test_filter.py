@@ -415,6 +415,67 @@ class TestForce:
         assert src.exists()  # force alone does not imply delete_source
 
 
+class TestDryRun:
+    """dry_run (CLI: --dry-run) reports what would be filtered without
+    processing anything: no worker is submitted, no output is written,
+    no .done marker is created. Off by default."""
+
+    def test_dry_run_writes_nothing_and_marks_nothing_done(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True)
+        processed, failed = filt.filter_all_files()
+
+        assert (processed, failed) == (0, 0)
+        assert not filter_module.is_marked_done(
+            input_dir / "a.parquet", filt._config_fingerprint
+        )
+        assert not (tmp_path / "out").exists() or list((tmp_path / "out").glob("*.parquet")) == []
+
+    def test_dry_run_reports_the_would_be_processed_count_at_info(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        with caplog.at_level("INFO", logger="gdeltforge.filtering.filter"):
+            GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True
+            ).filter_all_files()
+
+        assert any(
+            "[dry run] Would filter 1 flat file(s)" in r.message for r in caplog.records
+        )
+
+    def test_dry_run_sees_force_s_effect_on_the_skip_list(self, tmp_path, caplog):
+        # A file already marked done is invisible to a plain dry run (it
+        # would be skipped for real too), but --force --dry-run together
+        # must preview it as something that WOULD be reprocessed.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
+
+        with caplog.at_level("INFO", logger="gdeltforge.filtering.filter"):
+            processed, failed = GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True
+            ).filter_all_files()
+        assert (processed, failed) == (0, 0)
+        assert any("Nothing to filter" in r.message for r in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level("INFO", logger="gdeltforge.filtering.filter"):
+            GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), ["QuadClass"], force=True, dry_run=True
+            ).filter_all_files()
+
+        assert any(
+            "[dry run] Would filter 1 flat file(s)" in r.message for r in caplog.records
+        )
+
+
 class TestOutputColumns:
     def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
         filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])

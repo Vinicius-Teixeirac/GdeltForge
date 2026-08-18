@@ -96,6 +96,7 @@ class GDELTConverter:
         verbose: bool = False,
         quiet: bool = False,
         force: bool = False,
+        dry_run: bool = False,
     ):
         self.config = config
         self.dataset = dataset
@@ -129,8 +130,12 @@ class GDELTConverter:
         self.delete_source = delete_source
         # force bypasses the _is_done check in process_all_files, so a
         # zip already marked done is reprocessed and its output
-        # overwritten.
+        # overwritten. dry_run short-circuits process_all_files after
+        # to_process is built, before any worker is submitted: it only
+        # reports what would happen, so it needs no worker-process
+        # propagation the way verbose/quiet do above.
         self.force = force
+        self.dry_run = dry_run
 
         def path_for(base_key: str) -> str:
             return config["paths"][dataset_path_key(dataset, base_key)]
@@ -318,6 +323,12 @@ class GDELTConverter:
 
         if not to_process:
             logger.info("Nothing to convert; all files already processed.")
+            return [], []
+
+        if self.dry_run:
+            logger.info(f"[dry run] Would convert {len(to_process)} zip file(s):")
+            for zip_file in to_process:
+                logger.debug(f"[dry run]   {Path(zip_file).name}")
             return [], []
 
         logger.info(
@@ -603,6 +614,7 @@ def run_converter(
     verbose: bool = False,
     quiet: bool = False,
     force: bool = False,
+    dry_run: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
@@ -622,6 +634,9 @@ def run_converter(
     caller passes both directly.
 
     force reprocesses zips already marked done instead of skipping them.
+    dry_run reports what would be converted without processing anything;
+    it sees force's effect on the skip list, since it runs after that
+    check.
     """
     output_columns = config["converter"].get("output_columns", {}).get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
@@ -638,7 +653,8 @@ def run_converter(
     # those.
     converter = GDELTConverter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=delete_source, verbose=verbose, quiet=quiet, force=force,
+        delete_source=delete_source, verbose=verbose, quiet=quiet,
+        force=force, dry_run=dry_run,
     )
     return converter.process_all_files()
 

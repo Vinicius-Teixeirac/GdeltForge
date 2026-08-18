@@ -795,6 +795,33 @@ def download_gdelt_files(
     }
 
 
+def _dry_run_preview(files: list[GdeltFile], download_dir: str, force: bool) -> DownloadResult:
+    """
+    Mirrors _download_one's own existing-file check without making any
+    network request, so --dry-run's counts describe exactly what a real
+    run would do. "success" here means "would be downloaded", not "was
+    downloaded"; no file is written or verified.
+    """
+    would_download: list[str] = []
+    would_skip: list[str] = []
+    for file in files:
+        filename = file.url.split("/")[-1]
+        local_path = os.path.join(download_dir, filename)
+        if not force and os.path.exists(local_path):
+            would_skip.append(filename)
+        else:
+            would_download.append(filename)
+
+    logger.info(
+        f"[dry run] Would download {len(would_download)} file(s), "
+        f"skip {len(would_skip)} already-downloaded file(s)."
+    )
+    for filename in would_download:
+        logger.debug(f"[dry run] Would download: {filename}")
+
+    return {"success": len(would_download), "skipped": len(would_skip), "failed": []}
+
+
 # ------------------------------------------------------------
 # PIPELINE INTERFACE
 # ------------------------------------------------------------
@@ -814,6 +841,7 @@ def run_scraping_pipeline(
     verbose: bool = False,
     quiet: bool = False,
     force: bool = False,
+    dry_run: bool = False,
 ) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date ->
@@ -832,7 +860,9 @@ def run_scraping_pipeline(
     so every worker thread shares this same logger instance.
 
     force re-downloads files already present locally instead of skipping
-    them.
+    them. dry_run reports what would be downloaded/skipped without
+    making any network request; it is checked after force so the preview
+    reflects force's effect on which files would be skipped.
     """
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -845,6 +875,11 @@ def run_scraping_pipeline(
     files = filter_urls_by_date(files, start_date, end_date, date_parser=date_parser)
 
     _warn_if_large_scrape(files, dataset)
+
+    if dry_run:
+        download_dir = config["paths"][dataset_path_key(dataset, "downloaded_data_directory")]
+        return _dry_run_preview(files, download_dir, force)
+
     result = download_gdelt_files(files, config, dataset=dataset, force=force)
     return result
 
