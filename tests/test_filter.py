@@ -59,6 +59,51 @@ class TestFilterSingleFile:
         assert rows_before == 2
         assert rows_after == 1
 
+    def test_empty_columns_to_check_is_a_no_op_not_an_error(self, tmp_path):
+        # The bundled default config ships columns_to_check: [] for every
+        # dataset deliberately, documented as a no-op (dropna against an
+        # empty column list drops nothing). This must still write the file
+        # with every row kept, not silently skip writing it: existing_
+        # columns is trivially empty whenever columns_to_check itself is,
+        # which used to be indistinguishable from "columns were configured
+        # but none exist in this file's schema" below.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {
+            "GlobalEventID": [1, 2, 3],
+            "Actor1Name": ["A", None, "C"],
+        })
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        rows_before, rows_after = filt.filter_single_file(src, out_path)
+
+        assert (rows_before, rows_after) == (3, 3)
+        assert out_path.exists()
+        result = pd.read_parquet(out_path)
+        assert sorted(result["GlobalEventID"].tolist()) == [1, 2, 3]
+
+    def test_configured_columns_all_missing_still_skips_writing(self, tmp_path, caplog):
+        # Distinct from the empty-columns_to_check case above: here the
+        # caller actually configured filter columns, and none of them
+        # exist in this file's schema, a real signal something's
+        # misconfigured (e.g. a typo), not a no-op. Must still bail out
+        # without writing, same as before this fix.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        with caplog.at_level("ERROR"):
+            rows_before, rows_after = filt.filter_single_file(src, out_path)
+
+        assert (rows_before, rows_after) == (2, 2)
+        assert not out_path.exists()
+        assert any("None of the filter columns exist" in r.message for r in caplog.records)
+
     def test_empty_file_returns_zero_zero(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
@@ -85,6 +130,27 @@ class TestFilterAllFiles:
 
         assert processed == 2
         assert failed == 0
+
+    def test_empty_columns_to_check_still_writes_every_file(self, tmp_path):
+        # Batch-level version of TestFilterSingleFile's equivalent test:
+        # the real regression was the summary claiming every file
+        # "processed successfully" while filter_single_file quietly wrote
+        # nothing, so this checks actual files on disk, not just the
+        # returned counts.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2]})
+        _write_parquet(input_dir / "b.parquet", {"GlobalEventID": [3, 4, 5]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+        processed, failed = filt.filter_all_files()
+
+        assert (processed, failed) == (2, 0)
+        out_dir = tmp_path / "out"
+        assert (out_dir / "a_filtered.parquet").exists()
+        assert (out_dir / "b_filtered.parquet").exists()
+        assert len(pd.read_parquet(out_dir / "a_filtered.parquet")) == 2
+        assert len(pd.read_parquet(out_dir / "b_filtered.parquet")) == 3
 
     def test_counts_a_corrupt_file_as_failed(self, tmp_path):
         input_dir = tmp_path / "in"
