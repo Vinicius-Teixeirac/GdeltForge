@@ -856,24 +856,74 @@ class TestRunScrapingPipelineVerboseLogging:
             scraper.logger.setLevel(logging.INFO)
 
 
-class TestRunScrapingPipelineForce:
-    """force (CLI: --force) re-downloads files already present locally
-    instead of skipping them, forwarded through to download_gdelt_files
-    (and, from there, to _download_one -- see TestDownloadOne's and
-    TestDownloadGdeltFiles' own force coverage for the actual skip
-    logic)."""
+class TestRunScrapingPipelineForceAndDryRun:
+    """dry_run mirrors _download_one's own existing-file check to report
+    what would be downloaded/skipped without making any network request;
+    force changes what counts as "would be skipped" the same way it
+    changes _download_one's real behavior."""
 
-    def test_force_is_forwarded_to_download_gdelt_files(self, monkeypatch):
-        captured = {}
-        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: [])
+    @staticmethod
+    def _stub_links(monkeypatch, files):
+        # Isolates the preview from real network access: collect_gdelt_links
+        # is the only network-touching call a dry run still makes.
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: files)
+
+    def test_dry_run_makes_no_network_call_and_returns_a_preview(self, monkeypatch, tmp_path):
+        (tmp_path / "20200101.export.CSV.zip").write_bytes(b"already downloaded")
+        files = [
+            GdeltFile(url="http://x/20200101.export.CSV.zip"),
+            GdeltFile(url="http://x/20200102.export.CSV.zip"),
+        ]
+        self._stub_links(monkeypatch, files)
         monkeypatch.setattr(
             scraper, "download_gdelt_files",
-            lambda files, config, dataset, force=False: (
+            lambda *a, **k: pytest.fail("dry_run must not call download_gdelt_files"),
+        )
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
+
+        result = scraper.run_scraping_pipeline(config, dry_run=True)
+
+        assert result == {"success": 1, "skipped": 1, "failed": []}
+        assert not (tmp_path / "20200102.export.CSV.zip").exists()
+
+    def test_dry_run_with_force_counts_the_already_downloaded_file_as_would_download(
+        self, monkeypatch, tmp_path
+    ):
+        (tmp_path / "20200101.export.CSV.zip").write_bytes(b"already downloaded")
+        files = [GdeltFile(url="http://x/20200101.export.CSV.zip")]
+        self._stub_links(monkeypatch, files)
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
+
+        result = scraper.run_scraping_pipeline(config, dry_run=True, force=True)
+
+        assert result == {"success": 1, "skipped": 0, "failed": []}
+
+    def test_dry_run_logs_a_would_download_summary_at_info(self, monkeypatch, tmp_path, caplog):
+        files = [GdeltFile(url="http://x/20200101.export.CSV.zip")]
+        self._stub_links(monkeypatch, files)
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
+
+        with caplog.at_level("INFO", logger="gdeltforge.scraping.scraper"):
+            scraper.run_scraping_pipeline(config, dry_run=True)
+
+        assert any(
+            "[dry run] Would download 1 file(s), skip 0 already-downloaded file(s)" in r.message
+            for r in caplog.records
+        )
+
+    def test_force_is_forwarded_to_download_gdelt_files(self, monkeypatch, tmp_path):
+        captured = {}
+        files = [GdeltFile(url="http://x/20200101.export.CSV.zip")]
+        self._stub_links(monkeypatch, files)
+        monkeypatch.setattr(
+            scraper, "download_gdelt_files",
+            lambda files, config, dataset="gdelt_event", force=False: (
                 captured.update(force=force)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
         )
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
 
-        scraper.run_scraping_pipeline({"scraping": {}}, force=True)
+        scraper.run_scraping_pipeline(config, force=True)
 
         assert captured == {"force": True}

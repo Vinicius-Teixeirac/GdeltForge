@@ -112,6 +112,7 @@ class GDELTFilter:
         verbose: bool = False,
         quiet: bool = False,
         force: bool = False,
+        dry_run: bool = False,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -164,8 +165,10 @@ class GDELTFilter:
             logger.setLevel(logging.WARNING)
         # force bypasses the is_marked_done check in filter_all_files, so
         # a file already marked done is reprocessed and its output
-        # overwritten.
+        # overwritten. dry_run short-circuits filter_all_files after
+        # to_process is built, before any worker is submitted.
         self.force = force
+        self.dry_run = dry_run
 
         self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
@@ -251,6 +254,17 @@ class GDELTFilter:
 
         if not to_process:
             logger.info("Nothing to filter; all files already processed.")
+            return 0, 0
+
+        if self.dry_run:
+            flat_preview = sum(1 for _, is_hist in to_process if not is_hist)
+            historical_preview = len(to_process) - flat_preview
+            logger.info(
+                f"[dry run] Would filter {flat_preview} flat file(s) "
+                f"and {historical_preview} historical file(s):"
+            )
+            for parquet_path, _ in to_process:
+                logger.debug(f"[dry run]   {parquet_path.name}")
             return 0, 0
 
         flat_to_process = sum(1 for _, is_hist in to_process if not is_hist)
@@ -554,6 +568,7 @@ def run_filter(
     verbose: bool = False,
     quiet: bool = False,
     force: bool = False,
+    dry_run: bool = False,
 ) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
@@ -576,7 +591,9 @@ def run_filter(
     those.
 
     force reprocesses files already marked done instead of skipping
-    them.
+    them. dry_run reports what would be filtered without processing
+    anything; it sees force's effect on the skip list, since it runs
+    after that check.
     """
     part_cfg = config.get("converter", {}).get("partitioning", {})
     historical_input = historical_output = None
@@ -622,5 +639,6 @@ def run_filter(
         verbose=verbose,
         quiet=quiet,
         force=force,
+        dry_run=dry_run,
     )
     return filterer.filter_all_files()
