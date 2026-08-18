@@ -275,6 +275,39 @@ class TestRunConverterWarnsAboutCrossrefJoinKey:
         assert not any("crossref" in r.message for r in caplog.records)
 
 
+class TestRunConverterWarnsAboutDeleteSource:
+    """Same shared warning as run_filter (see test_filter.py's own
+    version), fired from config resolution alone, before any zip is
+    processed."""
+
+    def test_warns_when_delete_source_and_output_columns_are_both_active(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path, output_columns={"gdelt_event": ["GlobalEventID"]})
+
+        with caplog.at_level("WARNING"):
+            run_converter(cfg, delete_source=True)
+
+        assert any(
+            "delete_source" in r.message and "output_columns" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_when_delete_source_is_false(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path, output_columns={"gdelt_event": ["GlobalEventID"]})
+
+        with caplog.at_level("WARNING"):
+            run_converter(cfg, delete_source=False)
+
+        assert not any("delete_source" in r.message for r in caplog.records)
+
+    def test_no_warning_when_output_columns_is_unset(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            run_converter(cfg, delete_source=True)
+
+        assert not any("delete_source" in r.message for r in caplog.records)
+
+
 class TestDatasetParameter:
     def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))
@@ -541,6 +574,74 @@ class TestConversionResumability:
         assert outputs == []
         assert any(
             "Skipping already converted" in r.message and zip_path.name in r.message
+            for r in caplog.records
+        )
+
+
+class TestDeleteSource:
+    """delete_source (CLI: --delete-source) removes the source zip once
+    its parquet output is confirmed written and marked done, so a full
+    historical pull doesn't need to hold the raw archive and the
+    converted output at once. Off by default."""
+
+    def test_off_by_default_source_zip_survives(self, tmp_path):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        GDELTConverter(_make_config(tmp_path)).process_all_files()
+
+        assert zip_path.exists()
+
+    def test_deletes_the_source_zip_after_a_successful_conversion(self, tmp_path):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        outputs, failed = GDELTConverter(
+            _make_config(tmp_path), delete_source=True
+        ).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert not zip_path.exists()
+        assert Path(outputs[0]).exists()
+
+    def test_never_deletes_a_zip_that_failed_to_convert(self, tmp_path, monkeypatch):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(_make_config(tmp_path), delete_source=True)
+
+        def boom(self, zip_path):
+            raise RuntimeError("simulated crash mid-conversion")
+
+        monkeypatch.setattr(GDELTConverter, "process_single_file", boom)
+        outputs, failed = converter.process_all_files()
+
+        assert outputs == []
+        assert failed == [zip_path.name]
+        assert zip_path.exists()
+
+    def test_deletion_failure_is_logged_not_fatal(self, tmp_path, monkeypatch, caplog):
+        # The conversion itself already succeeded; a failure to delete the
+        # source afterward (permissions, already gone) must not be
+        # reported as a conversion failure. Only the zip's own unlink is
+        # made to fail here, not Path.unlink generally: process_single_file
+        # also unlinks the intermediate CSV (keep_unzipped=False), and
+        # that one must still succeed normally.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        real_unlink = Path.unlink
+
+        def selective_unlink(self, *args, **kwargs):
+            if self.suffix == ".zip":
+                raise OSError("locked")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", selective_unlink)
+
+        with caplog.at_level("WARNING"):
+            outputs, failed = GDELTConverter(
+                _make_config(tmp_path), delete_source=True
+            ).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert zip_path.exists()
+        assert any(
+            "Could not delete source zip" in r.message and zip_path.name in r.message
             for r in caplog.records
         )
 

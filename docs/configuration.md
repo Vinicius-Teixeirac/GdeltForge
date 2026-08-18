@@ -272,7 +272,7 @@ Roughly a 2x day-to-day spread, GKG 2.1's raw size tracks news volume as much as
 | High (2023-06-01 rate) | ~3.39 TB |
 | Average of both real days | ~2.53 TB |
 
-That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned one (~220-380 GB): raw zip and unpruned-`snappy` Parquet both hold the full, unpruned content, just under different codecs, while pruning is a `convert`-time decision the raw archive never sees. Deleting raw files after a successful `convert` (they're not needed again once Parquet output exists) is the only real lever to avoid holding both footprints on disk at once, since `scrape` itself doesn't do this automatically.
+That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned one (~220-380 GB): raw zip and unpruned-`snappy` Parquet both hold the full, unpruned content, just under different codecs, while pruning is a `convert`-time decision the raw archive never sees. `convert --delete-source` (see [CLI Reference](cli-reference.md#gdeltforge-convert)) removes each zip once its parquet output is confirmed written, the real lever to avoid holding both footprints on disk at once; `filter --delete-source` does the same for the converted parquet once its filtered output exists. Neither is on by default, and combined with any column-pruning or row-filtering setting, whatever that dropped can't be recovered later without redoing an earlier stage.
 
 ### Dtype narrowing: where it does and doesn't pay off
 

@@ -9,6 +9,7 @@ from gdeltforge.utils.io import (
     is_marked_done,
     mark_done,
     read_parquet_path,
+    warn_if_delete_source_drops_recoverable_data,
     write_parquet_atomic,
 )
 
@@ -185,3 +186,43 @@ class TestDoneMarker:
         (tmp_path / "20200101.zip.done").touch()
 
         assert not is_marked_done(src, "fp-1")
+
+
+class TestWarnIfDeleteSourceDropsRecoverableData:
+    """Core logic shared by convert.py's run_converter and filter.py's
+    run_filter; each module's own tests only need to prove they call this
+    with the right arguments, not re-verify the logic itself."""
+
+    def test_warns_when_delete_source_and_narrowing_are_both_active(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_delete_source_drops_recoverable_data(
+                logging.getLogger("test"), "filter", True, narrowing=["columns_to_check"]
+            )
+        assert any(
+            "columns_to_check" in r.message and "filter" in r.message for r in caplog.records
+        )
+
+    def test_no_warning_when_delete_source_is_false(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_delete_source_drops_recoverable_data(
+                logging.getLogger("test"), "filter", False, narrowing=["columns_to_check"]
+            )
+        assert caplog.records == []
+
+    def test_no_warning_when_nothing_narrows_the_output(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_delete_source_drops_recoverable_data(
+                logging.getLogger("test"), "filter", True, narrowing=[]
+            )
+        assert caplog.records == []
+
+    def test_lists_every_active_narrowing_setting(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_delete_source_drops_recoverable_data(
+                logging.getLogger("test"), "filter", True,
+                narrowing=["columns_to_check", "output_columns", "float32_columns"],
+            )
+        message = caplog.records[0].message
+        assert "columns_to_check" in message
+        assert "output_columns" in message
+        assert "float32_columns" in message
