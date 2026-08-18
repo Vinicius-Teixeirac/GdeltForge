@@ -87,7 +87,8 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting scraping stage...")
     result = run_scraping_pipeline(
-        config, start_date=start_date, end_date=end_date, dataset=dataset
+        config, start_date=start_date, end_date=end_date, dataset=dataset,
+        verbose=args.verbose,
     )
     logger.info("Scraping completed.")
 
@@ -109,7 +110,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting conversion stage...")
     outputs, failed = run_converter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=args.delete_source,
+        delete_source=args.delete_source, verbose=args.verbose,
     )
     logger.info(f"Created {len(outputs)} parquet files.")
 
@@ -130,7 +131,7 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting filtering stage...")
     files_processed, files_failed = run_filter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=args.delete_source,
+        delete_source=args.delete_source, verbose=args.verbose,
     )
     logger.info("Filtering completed.")
 
@@ -405,6 +406,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="YYYY-MM-DD",
         help="Only download files whose period ends on or before this date",
     )
+    scrape.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show per-attempt download detail (filename, attempt N/M) instead of just the "
+             "progress bar and summary. Off by default"
+    )
 
     # ----------------------------------------------------
     # convert
@@ -433,6 +440,13 @@ def build_parser() -> argparse.ArgumentParser:
              "Off by default. Only the zip; the intermediate extracted CSV is already "
              "removed unless converter.keep_unzipped is set. Combined with output_columns, "
              "the dropped columns can't be recovered without re-scraping"
+    )
+    convert.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show per-file conversion detail (which zip is being processed, which are "
+             "skipped as already done) instead of just the progress bar and summary. Off by "
+             "default: at GKG 2.1/Mentions scale this is hundreds of thousands of lines"
     )
 
     # ----------------------------------------------------
@@ -463,6 +477,13 @@ def build_parser() -> argparse.ArgumentParser:
              "columns_to_check/output_columns/float32_columns, whatever those narrowed away "
              "can't be recovered without re-converting; also removes the option to later "
              "`sample --source converted` against the unfiltered data"
+    )
+    filter_.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show per-file filter detail (rows kept per file, which are skipped as already "
+             "done) instead of just the progress bar and summary. Off by default: at GKG "
+             "2.1/Mentions scale this is hundreds of thousands of lines"
     )
 
     # ----------------------------------------------------

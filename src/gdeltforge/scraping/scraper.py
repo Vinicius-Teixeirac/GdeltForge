@@ -29,6 +29,7 @@ Provides:
 """
 
 import hashlib
+import logging
 import os
 import re
 import time
@@ -801,11 +802,22 @@ def run_scraping_pipeline(
     start_date: date | None = None,
     end_date: date | None = None,
     dataset: str = "gdelt_event",
+    verbose: bool = False,
 ) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date ->
     warn if huge -> download.
+
+    verbose raises this module's own logger to DEBUG, revealing the
+    per-attempt "Downloading {filename} (attempt N/M)" line that's
+    DEBUG-level (invisible) by default. Nothing new to add here for it:
+    convert/filter's own --verbose (see their run_ wrappers) exists to
+    match this module's already-quiet-by-default shape, not the other
+    way around.
     """
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+
     files = collect_gdelt_links(config, dataset=dataset)
 
     date_parser = date_parser_for(dataset)
