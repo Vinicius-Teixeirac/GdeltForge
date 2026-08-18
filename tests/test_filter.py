@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -220,7 +221,11 @@ class TestFilterResumability:
         filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
         filt.filter_all_files()
 
-        with caplog.at_level("INFO"):
+        # get_logger sets an explicit INFO level on this module's own
+        # named logger at import time, so a bare caplog.at_level("DEBUG")
+        # (root-only) never reaches it; the logger name must be given
+        # explicitly to actually lower its effective level.
+        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
             processed, failed = filt.filter_all_files()
 
         assert (processed, failed) == (0, 0)
@@ -283,7 +288,7 @@ class TestFilterResumability:
 
         GDELTFilter(str(input_dir), str(tmp_path / "out"), ["A", "B"]).filter_all_files()
 
-        with caplog.at_level("INFO"):
+        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
             processed, failed = GDELTFilter(
                 str(input_dir), str(tmp_path / "out"), ["B", "A"]
             ).filter_all_files()
@@ -871,6 +876,49 @@ class TestRunFilterWarnsAboutDeleteSource:
             run_filter(cfg, delete_source=True)
 
         assert not any("delete_source" in r.message for r in caplog.records)
+
+
+class TestVerboseLogging:
+    """--verbose raises this module's own logger to DEBUG, revealing the
+    per-file "{name}: rows -> rows"/"Skipping already filtered" lines
+    that are DEBUG-level (invisible) by default. logger.setLevel is a
+    real, process-wide mutation on a singleton (logging.getLogger caches
+    by name), so every test here restores INFO afterward regardless of
+    outcome, rather than leaking state into whichever test runs next."""
+
+    def test_off_by_default_logger_level_is_unchanged(self, tmp_path):
+        filter_module.logger.setLevel(logging.INFO)
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+
+        run_filter(cfg)
+
+        assert filter_module.logger.level == logging.INFO
+
+    def test_verbose_lowers_the_logger_to_debug(self, tmp_path):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+        try:
+            run_filter(cfg, verbose=True)
+            assert filter_module.logger.level == logging.DEBUG
+        finally:
+            filter_module.logger.setLevel(logging.INFO)
+
+    def test_verbose_reveals_the_per_file_row_count_line(self, tmp_path, caplog):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+        try:
+            with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
+                run_filter(cfg, verbose=True)
+            assert any("a.parquet" in r.message and "rows" in r.message for r in caplog.records)
+        finally:
+            filter_module.logger.setLevel(logging.INFO)
 
     def test_warns_for_gkg_v1_counts_too(self, tmp_path, caplog):
         # gdelt_gkg_v1_counts is a real, distinct crossref target (the
