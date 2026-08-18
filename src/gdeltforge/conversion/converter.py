@@ -95,6 +95,7 @@ class GDELTConverter:
         delete_source: bool = False,
         verbose: bool = False,
         quiet: bool = False,
+        force: bool = False,
     ):
         self.config = config
         self.dataset = dataset
@@ -126,6 +127,10 @@ class GDELTConverter:
         # deliberate one-off choice about this particular run, not a
         # persistent structural setting.
         self.delete_source = delete_source
+        # force bypasses the _is_done check in process_all_files, so a
+        # zip already marked done is reprocessed and its output
+        # overwritten.
+        self.force = force
 
         def path_for(base_key: str) -> str:
             return config["paths"][dataset_path_key(dataset, base_key)]
@@ -305,7 +310,7 @@ class GDELTConverter:
         for zip_file in zip_files:
             zip_path = Path(zip_file)
 
-            if self._is_done(zip_path):
+            if not self.force and self._is_done(zip_path):
                 logger.debug(f"Skipping already converted: {zip_path.name}")
                 continue
 
@@ -597,6 +602,7 @@ def run_converter(
     delete_source: bool = False,
     verbose: bool = False,
     quiet: bool = False,
+    force: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
@@ -614,6 +620,8 @@ def run_converter(
     setup/summary INFO lines for scripted or cron use that only cares
     about problems. Mutually exclusive at the CLI; verbose wins if a
     caller passes both directly.
+
+    force reprocesses zips already marked done instead of skipping them.
     """
     output_columns = config["converter"].get("output_columns", {}).get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
@@ -630,7 +638,7 @@ def run_converter(
     # those.
     converter = GDELTConverter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=delete_source, verbose=verbose, quiet=quiet,
+        delete_source=delete_source, verbose=verbose, quiet=quiet, force=force,
     )
     return converter.process_all_files()
 

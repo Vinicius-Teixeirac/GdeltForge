@@ -655,17 +655,21 @@ def _download_one(
     retries: int,
     timeout: int,
     session: requests.Session,
+    force: bool = False,
 ) -> tuple[str, str]:
     """
     Download a single file with retry and (when file.md5 is known) checksum
     verification. Returns (status, filename) with status one of
     "success" / "skipped" / "failed".
+
+    force skips the existing-file check below, re-downloading and
+    overwriting local_path even when it's already present.
     """
     filename = file.url.split("/")[-1]
     local_path = os.path.join(download_dir, filename)
     tmp_path = local_path + ".tmp"
 
-    if os.path.exists(local_path):
+    if not force and os.path.exists(local_path):
         return "skipped", filename
 
     if os.path.exists(tmp_path):
@@ -719,11 +723,14 @@ def _download_one(
 
 
 def download_gdelt_files(
-    files: list[GdeltFile], config: dict, dataset: str = "gdelt_event"
+    files: list[GdeltFile], config: dict, dataset: str = "gdelt_event", force: bool = False
 ) -> DownloadResult:
     """
     Downloads all `files` concurrently using a bounded thread pool, verifying
     each download's MD5 against the hash GDELT published for it (when known).
+
+    force is forwarded to _download_one, re-downloading files that already
+    exist locally instead of skipping them.
     """
     download_dir = config["paths"][dataset_path_key(dataset, "downloaded_data_directory")]
     retries = config["scraping"]["retries"]
@@ -750,7 +757,9 @@ def download_gdelt_files(
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(_download_one, file, download_dir, retries, timeout, session): file
+                executor.submit(
+                    _download_one, file, download_dir, retries, timeout, session, force
+                ): file
                 for file in files
             }
             for future in tqdm(
@@ -804,6 +813,7 @@ def run_scraping_pipeline(
     dataset: str = "gdelt_event",
     verbose: bool = False,
     quiet: bool = False,
+    force: bool = False,
 ) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date ->
@@ -820,6 +830,9 @@ def run_scraping_pipeline(
     Unlike convert/filter, a single setLevel call here is enough:
     download_gdelt_files uses a ThreadPoolExecutor, not a process pool,
     so every worker thread shares this same logger instance.
+
+    force re-downloads files already present locally instead of skipping
+    them.
     """
     if verbose:
         logger.setLevel(logging.DEBUG)
@@ -832,7 +845,7 @@ def run_scraping_pipeline(
     files = filter_urls_by_date(files, start_date, end_date, date_parser=date_parser)
 
     _warn_if_large_scrape(files, dataset)
-    result = download_gdelt_files(files, config, dataset=dataset)
+    result = download_gdelt_files(files, config, dataset=dataset, force=force)
     return result
 
 

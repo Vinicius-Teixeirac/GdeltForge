@@ -111,6 +111,7 @@ class GDELTFilter:
         delete_source: bool = False,
         verbose: bool = False,
         quiet: bool = False,
+        force: bool = False,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -161,6 +162,10 @@ class GDELTFilter:
             logger.setLevel(logging.DEBUG)
         elif quiet:
             logger.setLevel(logging.WARNING)
+        # force bypasses the is_marked_done check in filter_all_files, so
+        # a file already marked done is reprocessed and its output
+        # overwritten.
+        self.force = force
 
         self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
@@ -239,7 +244,7 @@ class GDELTFilter:
 
         to_process = []
         for parquet_path, is_historical in all_files:
-            if is_marked_done(parquet_path, self._config_fingerprint):
+            if not self.force and is_marked_done(parquet_path, self._config_fingerprint):
                 logger.debug(f"Skipping already filtered: {parquet_path.name}")
                 continue
             to_process.append((parquet_path, is_historical))
@@ -548,6 +553,7 @@ def run_filter(
     delete_source: bool = False,
     verbose: bool = False,
     quiet: bool = False,
+    force: bool = False,
 ) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
@@ -568,6 +574,9 @@ def run_filter(
     whichever is set independently inside each ProcessPoolExecutor
     worker, since a level change made in this process never reaches
     those.
+
+    force reprocesses files already marked done instead of skipping
+    them.
     """
     part_cfg = config.get("converter", {}).get("partitioning", {})
     historical_input = historical_output = None
@@ -612,5 +621,6 @@ def run_filter(
         delete_source=delete_source,
         verbose=verbose,
         quiet=quiet,
+        force=force,
     )
     return filterer.filter_all_files()

@@ -720,6 +720,34 @@ class TestDeleteSource:
         )
 
 
+class TestForce:
+    """force (CLI: --force) bypasses the .done marker check in
+    process_all_files, so a zip already marked done is reprocessed and
+    its output overwritten instead of skipped. Off by default."""
+
+    def test_off_by_default_a_done_zip_is_skipped(self, tmp_path):
+        _write_flat_zip(tmp_path / "raw")
+        GDELTConverter(_make_config(tmp_path)).process_all_files()
+
+        outputs, failed = GDELTConverter(_make_config(tmp_path)).process_all_files()
+
+        assert failed == []
+        assert outputs == []
+
+    def test_force_reprocesses_a_zip_already_marked_done(self, tmp_path):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        GDELTConverter(_make_config(tmp_path)).process_all_files()
+
+        outputs, failed = GDELTConverter(
+            _make_config(tmp_path), force=True
+        ).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert Path(outputs[0]).exists()
+        assert zip_path.exists()  # force alone does not imply delete_source
+
+
 class TestSaveParquetAtomicity:
     """_save_parquet/_save_historical_parquet used to write straight to
     their final path. Found for real: a process killed mid-write while

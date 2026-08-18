@@ -49,6 +49,7 @@ gdeltforge scrape --end-date   2015-12-31          # up to date
 | `--verbose` | Show per-attempt download detail (filename, attempt N/M) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
+| `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
 
 `--dataset gkg-v2`/`mentions` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent Events scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like Events, so this doesn't apply to them.
 
@@ -65,6 +66,8 @@ Files already present in the download directory are skipped regardless of the da
 Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksum-verified against the MD5 GDELT publishes for each file: a mismatch is treated like a network failure and retried, so a corrupted or truncated download never silently ends up in the dataset. See [Configuration](configuration.md#scraping) for the `requests` vs `selenium` link-collection method and the full list of scraping settings.
 
 `--quiet` raises the logger to WARNING, suppressing the setup and summary lines `scrape` otherwise always prints; mutually exclusive with `--verbose`.
+
+`--force` re-downloads a file even when one with the same name is already present, overwriting it.
 
 ## `gdeltforge convert`
 
@@ -83,6 +86,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 | `--verbose` | Show per-file conversion detail (which ZIP is being processed, which are skipped as already done) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
+| `--force` | Reprocess ZIPs already marked done instead of skipping them, overwriting their parquet output. Off by default |
 
 `--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
@@ -95,6 +99,8 @@ Already-converted files are skipped on a rerun, the same way `scrape` skips alre
 `--delete-source` reclaims the raw ZIP's disk space once its parquet output is confirmed written, so a full historical pull doesn't need to hold the raw archive and the converted output at once. Only the ZIP; the intermediate extracted CSV is already removed unless `converter.keep_unzipped` is set. Never deletes on a failed conversion, and never runs ahead of the `.done` marker. Combined with `output_columns`, the columns it dropped can't be recovered later without re-scraping the original file, so a warning fires once at the start of a run configured that way.
 
 By default `convert` shows a setup line, a progress bar, and an end-of-run summary, the same shape `scrape` always has. At `gkg-v2`/`mentions` scale (hundreds of thousands of 15-minute files) the per-file detail this used to always print became hundreds of thousands of terminal lines fighting the progress bar for the screen; `--verbose` restores it for whoever actually wants to watch file-by-file. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
+
+`--force` bypasses the `.done` marker check, reprocessing and overwriting output for ZIPs already converted under the current configuration.
 
 See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
 
@@ -115,6 +121,7 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 | `--verbose` | Show per-file filter detail (rows kept per file, which are skipped as already done) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
+| `--force` | Reprocess files already marked done instead of skipping them, overwriting their filtered output. Off by default |
 
 `--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
@@ -123,6 +130,8 @@ Already-filtered files are skipped on a rerun too, tracked the same way as `conv
 `--delete-source` reclaims the converted parquet's disk space once its filtered output is confirmed written, so a full historical pull doesn't need to hold both copies at once. Never deletes on a failed filter, and never runs ahead of the `.done` marker. Two real costs worth knowing before turning it on: combined with `columns_to_check`/`output_columns`/`float32_columns`, whatever those narrowed away can't be recovered later without re-converting from the raw ZIP (a warning fires once at the start of a run configured that way), and it also removes the option to later `sample --source converted` against the unfiltered data.
 
 By default `filter` shows the same setup line, progress bar, and end-of-run summary shape as `convert`/`scrape`. Its per-file line is quieter than `convert`'s (one line per file instead of two), but at `gkg-v2`/`mentions` scale it's still hundreds of thousands of lines; `--verbose` restores it, same reasoning as `convert`'s own flag. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
+
+`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already filtered under the current configuration.
 
 ## `--dataset`
 
