@@ -107,7 +107,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting scraping stage...")
     result = run_scraping_pipeline(
         config, start_date=start_date, end_date=end_date, dataset=dataset,
-        verbose=args.verbose, quiet=args.quiet,
+        verbose=args.verbose, quiet=args.quiet, force=args.force,
     )
     logger.info("Scraping completed.")
 
@@ -131,6 +131,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     outputs, failed = run_converter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
+        force=args.force,
     )
     logger.info(f"Created {len(outputs)} parquet files.")
 
@@ -153,6 +154,7 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
     files_processed, files_failed = run_filter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
+        force=args.force,
     )
     logger.info("Filtering completed.")
 
@@ -440,6 +442,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Suppress even the default setup/summary lines, leaving only warnings and "
              "errors. Off by default"
     )
+    scrape.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download files that already exist locally instead of skipping them. "
+             "Off by default"
+    )
 
     # ----------------------------------------------------
     # convert
@@ -482,6 +490,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress even the default setup/summary lines, leaving only warnings and "
              "errors. Off by default"
+    )
+    convert.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess zips already marked done instead of skipping them, overwriting "
+             "their parquet output. Off by default"
     )
 
     # ----------------------------------------------------
@@ -526,6 +540,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress even the default setup/summary lines, leaving only warnings and "
              "errors. Off by default"
+    )
+    filter_.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess files already marked done instead of skipping them, overwriting "
+             "their filtered output. Off by default"
     )
 
     # ----------------------------------------------------
