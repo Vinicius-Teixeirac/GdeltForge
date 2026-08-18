@@ -383,6 +383,38 @@ class TestDeleteSource:
         )
 
 
+class TestForce:
+    """force (CLI: --force) bypasses the is_marked_done check in
+    filter_all_files, so a file already marked done is reprocessed and
+    its filtered output overwritten instead of skipped. Off by default."""
+
+    def test_off_by_default_a_done_file_is_skipped(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
+        processed, failed = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"]
+        ).filter_all_files()
+
+        assert (processed, failed) == (0, 0)
+
+    def test_force_reprocesses_a_file_already_marked_done(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "a.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
+        processed, failed = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"], force=True
+        ).filter_all_files()
+
+        assert (processed, failed) == (1, 0)
+        assert src.exists()  # force alone does not imply delete_source
+
+
 class TestOutputColumns:
     def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
         filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
