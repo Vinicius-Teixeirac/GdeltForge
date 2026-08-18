@@ -74,6 +74,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 | `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
+| `--delete-source` | Delete each source ZIP once its parquet output is written and confirmed done. Off by default |
 
 `--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
@@ -82,6 +83,8 @@ gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
 Already-converted files are skipped on a rerun, the same way `scrape` skips already-downloaded files; an interrupted run resumes rather than starting over. See [Configuration](configuration.md#resumability) for how that marker also tracks `output_columns`/`compression`, so a config change is reprocessed rather than skipped.
+
+`--delete-source` reclaims the raw ZIP's disk space once its parquet output is confirmed written, so a full historical pull doesn't need to hold the raw archive and the converted output at once. Only the ZIP; the intermediate extracted CSV is already removed unless `converter.keep_unzipped` is set. Never deletes on a failed conversion, and never runs ahead of the `.done` marker. Combined with `output_columns`, the columns it dropped can't be recovered later without re-scraping the original file, so a warning fires once at the start of a run configured that way.
 
 See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
 
@@ -98,10 +101,13 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 | `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
+| `--delete-source` | Delete each source (unfiltered, converted) parquet once its filtered output is written and confirmed done. Off by default |
 
 `--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
 Already-filtered files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#filter) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
+
+`--delete-source` reclaims the converted parquet's disk space once its filtered output is confirmed written, so a full historical pull doesn't need to hold both copies at once. Never deletes on a failed filter, and never runs ahead of the `.done` marker. Two real costs worth knowing before turning it on: combined with `columns_to_check`/`output_columns`/`float32_columns`, whatever those narrowed away can't be recovered later without re-converting from the raw ZIP (a warning fires once at the start of a run configured that way), and it also removes the option to later `sample --source converted` against the unfiltered data.
 
 ## `--dataset`
 

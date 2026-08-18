@@ -119,6 +119,39 @@ def mark_done(source_path: str | Path, fingerprint: str) -> None:
     _done_marker_path(source_path).write_text(fingerprint)
 
 
+def warn_if_delete_source_drops_recoverable_data(
+    logger, stage: str, delete_source: bool, narrowing: list[str]
+) -> None:
+    """
+    Shared by convert.py's run_converter and filter.py's run_filter, both
+    of which expose a delete_source knob that removes the input file once
+    its output is written successfully, to save the disk a full
+    raw-plus-processed archive would otherwise need. Combined with any
+    setting that narrows what actually lands in that output relative to
+    the input (a column projection, a row filter, a precision cast),
+    deleting the input means whatever that setting dropped or changed has
+    nothing left to recover it from except redoing an earlier pipeline
+    stage: re-scraping for convert, re-converting for filter. Never
+    blocks: this is a legitimate storage/completeness tradeoff a caller
+    is entitled to make deliberately, just one worth being explicit about
+    rather than silent.
+
+    narrowing is the list of setting names actually active for this run
+    (e.g. ["output_columns"], ["columns_to_check", "float32_columns"]);
+    empty means this run's output is a straight copy of its input, so
+    delete_source has no recoverability cost and nothing to warn about.
+    """
+    if not delete_source or not narrowing:
+        return
+    settings = ", ".join(narrowing)
+    logger.warning(
+        f"delete_source is set for {stage} together with {settings}: the input "
+        f"file is deleted once its (narrowed) output is written, so whatever "
+        f"{settings} dropped or changed has nothing left to recover it from "
+        f"except redoing an earlier pipeline stage."
+    )
+
+
 def unzip_file(zip_filepath: str | Path, extract_to_dir: str | Path | None = None) -> list[Path]:
     """
     Unzips a zip file and returns a list of extracted file paths.

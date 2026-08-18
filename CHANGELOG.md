@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `convert`/`filter` gain `--delete-source`: `convert` deletes each source zip once its parquet output is written and confirmed done, `filter` deletes each source (unfiltered, converted) parquet once its filtered output is written and confirmed done. Off by default, never deletes on a failed conversion/filter, and never runs ahead of the existing `.done` marker. `sample` deliberately doesn't get an equivalent option: a sample is many-to-one against its source, so deleting the source after one sample would discard the ability to draw another. Combined with any setting that narrows the output (`output_columns` for convert; `columns_to_check`/`output_columns`/`float32_columns` for filter), whatever that dropped or changed has nothing left to recover it from except redoing an earlier stage, so a warning fires once at the start of a run configured that way, shared between both commands (`warn_if_delete_source_drops_recoverable_data`)
+
 ## [0.6.1] - 2026-08-18
 
 ### Fixed

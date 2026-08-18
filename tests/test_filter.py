@@ -304,6 +304,80 @@ class TestFilterResumability:
         )
 
 
+class TestDeleteSource:
+    """delete_source (CLI: --delete-source) removes the source (unfiltered,
+    converted) parquet once its filtered output is confirmed written and
+    marked done, so a full historical pull doesn't need to hold both
+    copies at once. Off by default."""
+
+    def test_off_by_default_source_survives(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "a.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2]})
+
+        GDELTFilter(str(input_dir), str(tmp_path / "out"), []).filter_all_files()
+
+        assert src.exists()
+
+    def test_deletes_the_source_after_a_successful_filter(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "a.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2]})
+
+        processed, failed = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), [], delete_source=True
+        ).filter_all_files()
+
+        assert (processed, failed) == (1, 0)
+        assert not src.exists()
+        assert (tmp_path / "out" / "a_filtered.parquet").exists()
+
+    def test_never_deletes_a_file_that_failed_to_filter(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        bad = input_dir / "bad.parquet"
+        bad.write_bytes(b"not a real parquet file")
+
+        processed, failed = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), [], delete_source=True
+        ).filter_all_files()
+
+        assert (processed, failed) == (0, 1)
+        assert bad.exists()
+
+    def test_deletion_failure_is_logged_not_fatal(self, tmp_path, monkeypatch, caplog):
+        # The filter itself already succeeded; a failure to delete the
+        # source afterward (permissions, already gone) must not be
+        # reported as a filter failure.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "a.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2]})
+
+        real_unlink = Path.unlink
+
+        def selective_unlink(self, *args, **kwargs):
+            if self == src:
+                raise OSError("locked")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", selective_unlink)
+
+        with caplog.at_level("WARNING"):
+            processed, failed = GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), [], delete_source=True
+            ).filter_all_files()
+
+        assert (processed, failed) == (1, 0)
+        assert src.exists()
+        assert any(
+            "Could not delete source parquet" in r.message and "a.parquet" in r.message
+            for r in caplog.records
+        )
+
+
 class TestOutputColumns:
     def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
         filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
@@ -750,6 +824,53 @@ class TestCrossrefJoinKeyWarning:
             run_filter(cfg, dataset="gdelt_gkg_v2")
 
         assert not any("crossref" in r.message for r in caplog.records)
+
+
+class TestRunFilterWarnsAboutDeleteSource:
+    """Same shared warning as run_converter (see test_converter.py's own
+    version). columns_to_check is the setting most tests here already
+    configure non-empty (see TestRunFilterDatasetParameter._config), so
+    delete_source=True alone is enough to trigger it without any extra
+    setup."""
+
+    def test_warns_when_delete_source_and_columns_to_check_are_both_active(
+        self, tmp_path, caplog
+    ):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, delete_source=True)
+
+        assert any(
+            "delete_source" in r.message and "columns_to_check" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_when_delete_source_is_false(self, tmp_path, caplog):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, delete_source=False)
+
+        assert not any("delete_source" in r.message for r in caplog.records)
+
+    def test_no_warning_when_nothing_narrows_the_output(self, tmp_path, caplog):
+        cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
+        cfg["filter"]["columns_to_check"]["gdelt_event"] = []
+        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+            events_in / "a.parquet"
+        )
+
+        with caplog.at_level("WARNING"):
+            run_filter(cfg, delete_source=True)
+
+        assert not any("delete_source" in r.message for r in caplog.records)
 
     def test_warns_for_gkg_v1_counts_too(self, tmp_path, caplog):
         # gdelt_gkg_v1_counts is a real, distinct crossref target (the

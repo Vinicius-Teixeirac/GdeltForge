@@ -70,7 +70,12 @@ from tqdm import tqdm
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, parse_file_date
 from gdeltforge.utils.config import dataset_path_key
-from gdeltforge.utils.io import config_fingerprint, is_marked_done, mark_done
+from gdeltforge.utils.io import (
+    config_fingerprint,
+    is_marked_done,
+    mark_done,
+    warn_if_delete_source_drops_recoverable_data,
+)
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -102,6 +107,7 @@ class GDELTFilter:
         output_columns: list[str] | None = None,
         compression: str = "zstd",
         float32_columns: list[str] | None = None,
+        delete_source: bool = False,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -125,6 +131,17 @@ class GDELTFilter:
         # float32's ~7 can represent, so this measurably changes values,
         # it does not just store the same ones more compactly.
         self.float32_columns = float32_columns
+        # Off by default: deletes the source (unfiltered, converted)
+        # parquet once its filtered output is written and marked done, so
+        # a full historical pull doesn't need to hold both the converted
+        # and filtered copies at once. A caller explicitly opts in per run
+        # (CLI: --delete-source), same shape as start_date/end_date rather
+        # than a persistent settings.yaml value, since it's a deliberate
+        # one-off choice about this particular run. Also means whatever
+        # this run's own columns_to_check/output_columns/float32_columns
+        # narrowed away is gone unless an earlier stage is redone, see
+        # warn_if_delete_source_drops_recoverable_data in run_filter.
+        self.delete_source = delete_source
 
         self.historical_input_folder: Path | None = (
             Path(historical_input_folder) if historical_input_folder else None
@@ -247,6 +264,9 @@ class GDELTFilter:
                 try:
                     rows_before, rows_after = future.result()
                     mark_done(parquet_path, self._config_fingerprint)
+
+                    if self.delete_source:
+                        self._delete_source(parquet_path)
 
                     total_rows_before += rows_before
                     total_rows_after  += rows_after
@@ -463,6 +483,25 @@ class GDELTFilter:
             / f"{parquet_path.stem}_filtered.parquet"
         )
 
+    def _delete_source(self, parquet_path: Path) -> None:
+        """
+        Delete the source (unfiltered, converted) parquet once its
+        filtered output is confirmed written and marked done. Only
+        called from the success branch of filter_all_files, never on a
+        failed or in-progress filter, so a killed run can't lose an input
+        whose filtered output doesn't actually exist yet. A failure here
+        (permissions, the file already gone) is logged and swallowed
+        rather than counted as a filter failure: the filtering itself
+        already succeeded, this is best-effort cleanup on top of it.
+        """
+        try:
+            parquet_path.unlink()
+            logger.info(
+                f"Deleted source parquet after successful filtering: {parquet_path.name}"
+            )
+        except OSError as e:
+            logger.warning(f"Could not delete source parquet {parquet_path.name}: {e}")
+
 
 # ======================================================================
 # RUN WRAPPER (used by main.py)
@@ -473,6 +512,7 @@ def run_filter(
     dataset: str = "gdelt_event",
     start_date: date | None = None,
     end_date: date | None = None,
+    delete_source: bool = False,
 ) -> tuple[int, int]:
     """
     Convenience wrapper so main.py can call the filter cleanly.
@@ -488,13 +528,26 @@ def run_filter(
             dataset_path_key(dataset, "filtered_historical_directory")
         )
 
+    columns_to_check = config["filter"]["columns_to_check"][dataset]
     output_columns = config["filter"].get("output_columns", {}).get(dataset)
+    float32_columns = config["filter"].get("float32_columns", {}).get(dataset)
     warn_if_output_columns_drops_join_key(logger, "filter", dataset, output_columns)
+    warn_if_delete_source_drops_recoverable_data(
+        logger, "filter", delete_source,
+        narrowing=[
+            name for name, value in (
+                ("columns_to_check", columns_to_check),
+                ("output_columns", output_columns),
+                ("float32_columns", float32_columns),
+            )
+            if value
+        ],
+    )
 
     filterer = GDELTFilter(
         input_folder=config["paths"][dataset_path_key(dataset, "parquet_data_directory")],
         output_folder=config["paths"][dataset_path_key(dataset, "filtered_data_directory")],
-        columns_to_check=config["filter"]["columns_to_check"][dataset],
+        columns_to_check=columns_to_check,
         historical_input_folder=historical_input,
         historical_output_folder=historical_output,
         max_workers=config["filter"].get("max_workers"),
@@ -503,6 +556,7 @@ def run_filter(
         date_parser=date_parser_for(dataset),
         output_columns=output_columns,
         compression=config["filter"].get("compression", {}).get(dataset, "zstd"),
-        float32_columns=config["filter"].get("float32_columns", {}).get(dataset),
+        float32_columns=float32_columns,
+        delete_source=delete_source,
     )
     return filterer.filter_all_files()
