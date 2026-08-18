@@ -315,7 +315,13 @@ class GDELTFilter:
                 f"{file_path.name}: Missing {len(missing_columns)} column(s): {missing_columns}"
             )
 
-        if not existing_columns:
+        # An empty columns_to_check (the bundled default config ships this
+        # for every dataset) is a deliberate no-op, not an error: dropna
+        # against an empty column list is a documented no-op, so every row
+        # is meant to survive. That's a different case from columns_to_check
+        # being non-empty but matching nothing in this file's schema, which
+        # genuinely can't be checked and bails out below without writing.
+        if self.columns_to_check and not existing_columns:
             logger.error(f"{file_path.name}: None of the filter columns exist.")
             return pf.metadata.num_rows, pf.metadata.num_rows
 
