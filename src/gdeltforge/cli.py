@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import sys
 from datetime import date
 from pathlib import Path
@@ -77,7 +78,25 @@ def _parse_date(value: str, arg_name: str) -> date:
         raise ValueError(f"Invalid date for {arg_name}: '{value}'. Expected YYYY-MM-DD.") from e
 
 
+def _apply_verbosity(args: argparse.Namespace) -> None:
+    """
+    Applies --verbose/--quiet to this module's own logger (gdeltforge.cli),
+    not just the stage module's. Without this, "Starting X stage..."/"X
+    completed." (logged from here, not from scraper.py/converter.py/
+    filter.py) would leak through under --quiet, and --quiet's own
+    "suppress even the default setup/summary lines" promise would be a
+    lie for exactly those two lines. Only called from the three commands
+    that actually define these flags (scrape/convert/filter); getattr's
+    default keeps it a no-op for any caller whose args lacks them.
+    """
+    if getattr(args, "verbose", False):
+        logger.setLevel(logging.DEBUG)
+    elif getattr(args, "quiet", False):
+        logger.setLevel(logging.WARNING)
+
+
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
+    _apply_verbosity(args)
     start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
     end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
 
@@ -88,7 +107,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting scraping stage...")
     result = run_scraping_pipeline(
         config, start_date=start_date, end_date=end_date, dataset=dataset,
-        verbose=args.verbose,
+        verbose=args.verbose, quiet=args.quiet,
     )
     logger.info("Scraping completed.")
 
@@ -100,6 +119,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
 
 
 def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
+    _apply_verbosity(args)
     start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
     end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
 
@@ -110,7 +130,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting conversion stage...")
     outputs, failed = run_converter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=args.delete_source, verbose=args.verbose,
+        delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
     )
     logger.info(f"Created {len(outputs)} parquet files.")
 
@@ -121,6 +141,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
 
 
 def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
+    _apply_verbosity(args)
     start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
     end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
 
@@ -131,7 +152,7 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting filtering stage...")
     files_processed, files_failed = run_filter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=args.delete_source, verbose=args.verbose,
+        delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
     )
     logger.info("Filtering completed.")
 
@@ -406,11 +427,18 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="YYYY-MM-DD",
         help="Only download files whose period ends on or before this date",
     )
-    scrape.add_argument(
+    scrape_verbosity = scrape.add_mutually_exclusive_group()
+    scrape_verbosity.add_argument(
         "--verbose",
         action="store_true",
         help="Show per-attempt download detail (filename, attempt N/M) instead of just the "
              "progress bar and summary. Off by default"
+    )
+    scrape_verbosity.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress even the default setup/summary lines, leaving only warnings and "
+             "errors. Off by default"
     )
 
     # ----------------------------------------------------
@@ -441,12 +469,19 @@ def build_parser() -> argparse.ArgumentParser:
              "removed unless converter.keep_unzipped is set. Combined with output_columns, "
              "the dropped columns can't be recovered without re-scraping"
     )
-    convert.add_argument(
+    convert_verbosity = convert.add_mutually_exclusive_group()
+    convert_verbosity.add_argument(
         "--verbose",
         action="store_true",
         help="Show per-file conversion detail (which zip is being processed, which are "
              "skipped as already done) instead of just the progress bar and summary. Off by "
              "default: at GKG 2.1/Mentions scale this is hundreds of thousands of lines"
+    )
+    convert_verbosity.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress even the default setup/summary lines, leaving only warnings and "
+             "errors. Off by default"
     )
 
     # ----------------------------------------------------
@@ -478,12 +513,19 @@ def build_parser() -> argparse.ArgumentParser:
              "can't be recovered without re-converting; also removes the option to later "
              "`sample --source converted` against the unfiltered data"
     )
-    filter_.add_argument(
+    filter_verbosity = filter_.add_mutually_exclusive_group()
+    filter_verbosity.add_argument(
         "--verbose",
         action="store_true",
         help="Show per-file filter detail (rows kept per file, which are skipped as already "
              "done) instead of just the progress bar and summary. Off by default: at GKG "
              "2.1/Mentions scale this is hundreds of thousands of lines"
+    )
+    filter_verbosity.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress even the default setup/summary lines, leaving only warnings and "
+             "errors. Off by default"
     )
 
     # ----------------------------------------------------

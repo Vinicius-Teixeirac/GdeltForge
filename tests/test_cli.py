@@ -44,16 +44,22 @@ class TestDatasetFlag:
 
 
 class TestRunScrapeCmd:
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="events", start_date=None, end_date=None, verbose=False, quiet=False,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
     def test_raises_when_downloads_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date, dataset, verbose=False: {
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False: {
                 "success": 2, "skipped": 0, "failed": ["20200101.export.CSV.zip"],
             },
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, verbose=False,
-        )
+        args = self._args()
 
         with pytest.raises(RuntimeError, match="1 failed download"):
             cli.run_scrape_cmd({}, args)
@@ -61,13 +67,11 @@ class TestRunScrapeCmd:
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date, dataset, verbose=False: {
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False: {
                 "success": 5, "skipped": 0, "failed": [],
             },
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, verbose=False,
-        )
+        args = self._args()
 
         cli.run_scrape_cmd({}, args)  # should not raise
 
@@ -75,31 +79,50 @@ class TestRunScrapeCmd:
         captured = {}
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date, dataset, verbose=False: (
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False: (
                 captured.update(verbose=verbose)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, verbose=True,
-        )
+        args = self._args(verbose=True)
 
         cli.run_scrape_cmd({}, args)
 
         assert captured == {"verbose": True}
 
+    def test_quiet_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_scraping_pipeline",
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False: (
+                captured.update(quiet=quiet)
+                or {"success": 0, "skipped": 0, "failed": []}
+            ),
+        )
+        args = self._args(quiet=True)
+
+        cli.run_scrape_cmd({}, args)
+
+        assert captured == {"quiet": True}
+
 
 class TestRunConvertCmd:
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="events", start_date=None, end_date=None, delete_source=False,
+            verbose=False, quiet=False,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
     def test_raises_when_conversions_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: (["a.parquet"], ["bad.zip"]),
+            verbose=False, quiet=False: (["a.parquet"], ["bad.zip"]),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=False,
-        )
+        args = self._args()
 
         with pytest.raises(RuntimeError, match="1 failed file"):
             cli.run_convert_cmd({}, args)
@@ -108,12 +131,9 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: (["a.parquet", "b.parquet"], []),
+            verbose=False, quiet=False: (["a.parquet", "b.parquet"], []),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=False,
-        )
+        args = self._args()
 
         cli.run_convert_cmd({}, args)  # should not raise
 
@@ -121,36 +141,28 @@ class TestRunConvertCmd:
         captured = {}
 
         def fake_run_converter(
-            config, dataset, start_date, end_date, delete_source=False, verbose=False
+            config, dataset, start_date, end_date, delete_source=False,
+            verbose=False, quiet=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
             return [], []
 
         monkeypatch.setattr(cli, "run_converter", fake_run_converter)
-        args = argparse.Namespace(
-            dataset="events", start_date="2020-01-01", end_date="2020-12-31",
-            delete_source=False, verbose=False,
-        )
+        args = self._args(start_date="2020-01-01", end_date="2020-12-31")
 
         cli.run_convert_cmd({}, args)
 
         assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
 
     def test_invalid_date_string_raises_clearly(self):
-        args = argparse.Namespace(
-            dataset="events", start_date="not-a-date", end_date=None, delete_source=False,
-            verbose=False,
-        )
+        args = self._args(start_date="not-a-date")
 
         with pytest.raises(ValueError, match="Invalid date for --start-date"):
             cli.run_convert_cmd({}, args)
 
     def test_start_after_end_is_rejected(self):
-        args = argparse.Namespace(
-            dataset="events", start_date="2020-12-31", end_date="2020-01-01",
-            delete_source=False, verbose=False,
-        )
+        args = self._args(start_date="2020-12-31", end_date="2020-01-01")
 
         with pytest.raises(ValueError, match="must not be after"):
             cli.run_convert_cmd({}, args)
@@ -160,12 +172,11 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: captured.update(delete_source=delete_source) or ([], []),
+            verbose=False, quiet=False: (
+                captured.update(delete_source=delete_source) or ([], [])
+            ),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=True,
-            verbose=False,
-        )
+        args = self._args(delete_source=True)
 
         cli.run_convert_cmd({}, args)
 
@@ -176,29 +187,49 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: captured.update(verbose=verbose) or ([], []),
+            verbose=False, quiet=False: (
+                captured.update(verbose=verbose) or ([], [])
+            ),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=True,
-        )
+        args = self._args(verbose=True)
 
         cli.run_convert_cmd({}, args)
 
         assert captured == {"verbose": True}
 
+    def test_quiet_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_converter",
+            lambda config, dataset, start_date, end_date, delete_source=False,
+            verbose=False, quiet=False: (
+                captured.update(quiet=quiet) or ([], [])
+            ),
+        )
+        args = self._args(quiet=True)
+
+        cli.run_convert_cmd({}, args)
+
+        assert captured == {"quiet": True}
+
 
 class TestRunFilterCmd:
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="events", start_date=None, end_date=None, delete_source=False,
+            verbose=False, quiet=False,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
     def test_raises_when_filtering_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: (8, 2),
+            verbose=False, quiet=False: (8, 2),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=False,
-        )
+        args = self._args()
 
         with pytest.raises(RuntimeError, match="2 failed file"):
             cli.run_filter_cmd({}, args)
@@ -207,12 +238,9 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: (10, 0),
+            verbose=False, quiet=False: (10, 0),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=False,
-        )
+        args = self._args()
 
         cli.run_filter_cmd({}, args)  # should not raise
 
@@ -220,27 +248,22 @@ class TestRunFilterCmd:
         captured = {}
 
         def fake_run_filter(
-            config, dataset, start_date, end_date, delete_source=False, verbose=False
+            config, dataset, start_date, end_date, delete_source=False,
+            verbose=False, quiet=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
             return 0, 0
 
         monkeypatch.setattr(cli, "run_filter", fake_run_filter)
-        args = argparse.Namespace(
-            dataset="events", start_date="2020-01-01", end_date="2020-12-31",
-            delete_source=False, verbose=False,
-        )
+        args = self._args(start_date="2020-01-01", end_date="2020-12-31")
 
         cli.run_filter_cmd({}, args)
 
         assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
 
     def test_start_after_end_is_rejected(self):
-        args = argparse.Namespace(
-            dataset="events", start_date="2020-12-31", end_date="2020-01-01",
-            delete_source=False, verbose=False,
-        )
+        args = self._args(start_date="2020-12-31", end_date="2020-01-01")
 
         with pytest.raises(ValueError, match="must not be after"):
             cli.run_filter_cmd({}, args)
@@ -250,12 +273,11 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: captured.update(delete_source=delete_source) or (0, 0),
+            verbose=False, quiet=False: (
+                captured.update(delete_source=delete_source) or (0, 0)
+            ),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=True,
-            verbose=False,
-        )
+        args = self._args(delete_source=True)
 
         cli.run_filter_cmd({}, args)
 
@@ -266,16 +288,30 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False: captured.update(verbose=verbose) or (0, 0),
+            verbose=False, quiet=False: (
+                captured.update(verbose=verbose) or (0, 0)
+            ),
         )
-        args = argparse.Namespace(
-            dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=True,
-        )
+        args = self._args(verbose=True)
 
         cli.run_filter_cmd({}, args)
 
         assert captured == {"verbose": True}
+
+    def test_quiet_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_filter",
+            lambda config, dataset, start_date, end_date, delete_source=False,
+            verbose=False, quiet=False: (
+                captured.update(quiet=quiet) or (0, 0)
+            ),
+        )
+        args = self._args(quiet=True)
+
+        cli.run_filter_cmd({}, args)
+
+        assert captured == {"quiet": True}
 
 
 class TestRunSamplingCmdSource:

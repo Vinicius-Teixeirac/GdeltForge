@@ -94,22 +94,28 @@ class GDELTConverter:
         end_date: date | None = None,
         delete_source: bool = False,
         verbose: bool = False,
+        quiet: bool = False,
     ):
         self.config = config
         self.dataset = dataset
         self.start_date = start_date
         self.end_date = end_date
-        # Stored as a real instance attribute, not just a level flipped
+        # Stored as real instance attributes, not just a level flipped
         # here and forgotten: process_single_file runs inside a
         # ProcessPoolExecutor worker, a genuinely separate process that
         # re-imports this module fresh (get_logger sets INFO again,
-        # independent of whatever this process just did), so self.verbose
-        # travels across the pickle boundary and process_single_file
-        # re-applies it itself, rather than relying on a level change
-        # made here ever reaching the worker.
+        # independent of whatever this process just did), so self.verbose/
+        # self.quiet travel across the pickle boundary and
+        # process_single_file re-applies whichever is set itself, rather
+        # than relying on a level change made here ever reaching the
+        # worker. verbose wins if a caller somehow passes both (argparse's
+        # mutually exclusive group already prevents that from the CLI).
         self.verbose = verbose
+        self.quiet = quiet
         if verbose:
             logger.setLevel(logging.DEBUG)
+        elif quiet:
+            logger.setLevel(logging.WARNING)
         # Off by default: deletes the source zip once its parquet is
         # written and marked done, so a full historical pull doesn't need
         # to hold the raw archive and the converted output at once. Only
@@ -357,10 +363,12 @@ class GDELTConverter:
         # a ProcessPoolExecutor worker, a genuinely separate process that
         # re-imports this module fresh (get_logger sets INFO again), so
         # __init__'s own logger.setLevel call, made in the main process,
-        # never reaches it. self.verbose survives the pickle boundary
-        # fine; the logger's mutated level does not.
+        # never reaches it. self.verbose/self.quiet survive the pickle
+        # boundary fine; the logger's mutated level does not.
         if self.verbose:
             logger.setLevel(logging.DEBUG)
+        elif self.quiet:
+            logger.setLevel(logging.WARNING)
 
         zip_p = Path(zip_path)
         # DEBUG, not INFO: unconditional, once per file, which at GKG 2.1/
@@ -588,6 +596,7 @@ def run_converter(
     end_date: date | None = None,
     delete_source: bool = False,
     verbose: bool = False,
+    quiet: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
@@ -600,7 +609,11 @@ def run_converter(
     exactly matching scrape's own already-DEBUG per-attempt detail. Off
     by default: at GKG 2.1/Mentions scale, those lines unconditionally
     at INFO used to mean hundreds of thousands of terminal lines
-    fighting the tqdm progress bar below for the screen.
+    fighting the tqdm progress bar below for the screen. quiet is the
+    inverse: raises the logger to WARNING, suppressing even the default
+    setup/summary INFO lines for scripted or cron use that only cares
+    about problems. Mutually exclusive at the CLI; verbose wins if a
+    caller passes both directly.
     """
     output_columns = config["converter"].get("output_columns", {}).get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
@@ -609,14 +622,15 @@ def run_converter(
         narrowing=["output_columns"] if output_columns is not None else [],
     )
 
-    # verbose is passed straight through rather than raised here directly:
-    # GDELTConverter.__init__ sets it (covering this process's own log
-    # calls), and process_single_file re-applies it independently inside
-    # each ProcessPoolExecutor worker, since a level change made in this
-    # process never reaches those.
+    # verbose/quiet are passed straight through rather than raised here
+    # directly: GDELTConverter.__init__ sets them (covering this
+    # process's own log calls), and process_single_file re-applies
+    # whichever is set independently inside each ProcessPoolExecutor
+    # worker, since a level change made in this process never reaches
+    # those.
     converter = GDELTConverter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=delete_source, verbose=verbose,
+        delete_source=delete_source, verbose=verbose, quiet=quiet,
     )
     return converter.process_all_files()
 
