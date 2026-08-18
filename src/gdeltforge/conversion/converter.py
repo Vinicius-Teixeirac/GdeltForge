@@ -46,6 +46,7 @@ from gdeltforge.utils.io import (
     is_marked_done,
     mark_done,
     unzip_file,
+    warn_if_delete_source_drops_recoverable_data,
     write_parquet_atomic,
 )
 from gdeltforge.utils.logging import get_logger
@@ -90,11 +91,22 @@ class GDELTConverter:
         dataset: str = "gdelt_event",
         start_date: date | None = None,
         end_date: date | None = None,
+        delete_source: bool = False,
     ):
         self.config = config
         self.dataset = dataset
         self.start_date = start_date
         self.end_date = end_date
+        # Off by default: deletes the source zip once its parquet is
+        # written and marked done, so a full historical pull doesn't need
+        # to hold the raw archive and the converted output at once. Only
+        # the zip; keep_unzipped above already governs the intermediate
+        # extracted CSV independently. A caller explicitly opts in per
+        # run (CLI: --delete-source), matching start_date/end_date's own
+        # shape rather than living in settings.yaml, since it's a
+        # deliberate one-off choice about this particular run, not a
+        # persistent structural setting.
+        self.delete_source = delete_source
 
         def path_for(base_key: str) -> str:
             return config["paths"][dataset_path_key(dataset, base_key)]
@@ -228,6 +240,23 @@ class GDELTConverter:
     def _mark_done(self, zip_path: Path) -> None:
         mark_done(zip_path, self._config_fingerprint)
 
+    def _delete_source(self, zip_path: Path) -> None:
+        """
+        Delete the source zip once its parquet output is confirmed
+        written and marked done. Only called from the success branch of
+        process_all_files, never on a failed or in-progress conversion,
+        so a killed run can't lose a zip whose output doesn't actually
+        exist yet. A failure here (permissions, the file already gone) is
+        logged and swallowed rather than counted as a conversion failure:
+        the conversion itself already succeeded, this is best-effort
+        cleanup on top of it, not the operation that matters.
+        """
+        try:
+            zip_path.unlink()
+            logger.info(f"Deleted source zip after successful conversion: {zip_path.name}")
+        except OSError as e:
+            logger.warning(f"Could not delete source zip {zip_path.name}: {e}")
+
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES
     # ------------------------------------------------------------
@@ -292,6 +321,9 @@ class GDELTConverter:
                     outputs = future.result()
                     all_outputs.extend(outputs)
                     self._mark_done(zip_path)
+
+                    if self.delete_source:
+                        self._delete_source(zip_path)
 
                 except Exception as e:
                     logger.error(f"Failed to process {zip_path.name}: {e}")
@@ -524,6 +556,7 @@ def run_converter(
     dataset: str = "gdelt_event",
     start_date: date | None = None,
     end_date: date | None = None,
+    delete_source: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
@@ -532,8 +565,15 @@ def run_converter(
     """
     output_columns = config["converter"].get("output_columns", {}).get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
+    warn_if_delete_source_drops_recoverable_data(
+        logger, "convert", delete_source,
+        narrowing=["output_columns"] if output_columns is not None else [],
+    )
 
-    converter = GDELTConverter(config, dataset=dataset, start_date=start_date, end_date=end_date)
+    converter = GDELTConverter(
+        config, dataset=dataset, start_date=start_date, end_date=end_date,
+        delete_source=delete_source,
+    )
     return converter.process_all_files()
 
 
