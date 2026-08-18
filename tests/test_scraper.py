@@ -772,3 +772,40 @@ class TestDownloadGdeltFiles:
 
         assert result["success"] == 2
         assert result["failed"] == ["1.export.CSV.zip"]
+
+
+class TestRunScrapingPipelineVerboseLogging:
+    """--verbose raises this module's own logger to DEBUG, revealing the
+    already-existing per-attempt "Downloading {filename} (attempt N/M)"
+    line _download_one logs at DEBUG -- nothing new needed here for that,
+    just the level threshold. convert/filter's own --verbose exists to
+    match this module's already-quiet-by-default shape, not the other
+    way around. logger.setLevel is a real, process-wide mutation on a
+    singleton, so tests restore INFO afterward regardless of outcome."""
+
+    @staticmethod
+    def _stub_pipeline(monkeypatch):
+        # Isolates the verbose/logger-level behavior from real network
+        # access: collect_gdelt_links/download_gdelt_files are the two
+        # network-touching calls run_scraping_pipeline makes.
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: [])
+        monkeypatch.setattr(
+            scraper, "download_gdelt_files",
+            lambda files, config, dataset: {"success": 0, "skipped": 0, "failed": []},
+        )
+
+    def test_off_by_default_logger_level_is_unchanged(self, monkeypatch):
+        scraper.logger.setLevel(logging.INFO)
+        self._stub_pipeline(monkeypatch)
+
+        scraper.run_scraping_pipeline({"scraping": {}})
+
+        assert scraper.logger.level == logging.INFO
+
+    def test_verbose_lowers_the_logger_to_debug(self, monkeypatch):
+        self._stub_pipeline(monkeypatch)
+        try:
+            scraper.run_scraping_pipeline({"scraping": {}}, verbose=True)
+            assert scraper.logger.level == logging.DEBUG
+        finally:
+            scraper.logger.setLevel(logging.INFO)

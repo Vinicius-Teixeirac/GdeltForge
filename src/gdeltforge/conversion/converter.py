@@ -27,6 +27,7 @@ This module provides:
 """
 
 import glob
+import logging
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -92,11 +93,23 @@ class GDELTConverter:
         start_date: date | None = None,
         end_date: date | None = None,
         delete_source: bool = False,
+        verbose: bool = False,
     ):
         self.config = config
         self.dataset = dataset
         self.start_date = start_date
         self.end_date = end_date
+        # Stored as a real instance attribute, not just a level flipped
+        # here and forgotten: process_single_file runs inside a
+        # ProcessPoolExecutor worker, a genuinely separate process that
+        # re-imports this module fresh (get_logger sets INFO again,
+        # independent of whatever this process just did), so self.verbose
+        # travels across the pickle boundary and process_single_file
+        # re-applies it itself, rather than relying on a level change
+        # made here ever reaching the worker.
+        self.verbose = verbose
+        if verbose:
+            logger.setLevel(logging.DEBUG)
         # Off by default: deletes the source zip once its parquet is
         # written and marked done, so a full historical pull doesn't need
         # to hold the raw archive and the converted output at once. Only
@@ -253,7 +266,7 @@ class GDELTConverter:
         """
         try:
             zip_path.unlink()
-            logger.info(f"Deleted source zip after successful conversion: {zip_path.name}")
+            logger.debug(f"Deleted source zip after successful conversion: {zip_path.name}")
         except OSError as e:
             logger.warning(f"Could not delete source zip {zip_path.name}: {e}")
 
@@ -287,7 +300,7 @@ class GDELTConverter:
             zip_path = Path(zip_file)
 
             if self._is_done(zip_path):
-                logger.info(f"Skipping already converted: {zip_path.name}")
+                logger.debug(f"Skipping already converted: {zip_path.name}")
                 continue
 
             to_process.append(zip_file)
@@ -340,8 +353,25 @@ class GDELTConverter:
     # PROCESS SINGLE ZIP FILE
     # ------------------------------------------------------------
     def process_single_file(self, zip_path: str) -> list[str]:
+        # Re-applied here, not just in __init__: this method runs inside
+        # a ProcessPoolExecutor worker, a genuinely separate process that
+        # re-imports this module fresh (get_logger sets INFO again), so
+        # __init__'s own logger.setLevel call, made in the main process,
+        # never reaches it. self.verbose survives the pickle boundary
+        # fine; the logger's mutated level does not.
+        if self.verbose:
+            logger.setLevel(logging.DEBUG)
+
         zip_p = Path(zip_path)
-        logger.info(f"Processing ZIP: {zip_p.name}")
+        # DEBUG, not INFO: unconditional, once per file, which at GKG 2.1/
+        # Mentions scale (hundreds of thousands of 15-minute files) means
+        # hundreds of thousands of lines fighting the tqdm progress bar
+        # below for the terminal. --verbose (run_converter) raises this
+        # module's logger to DEBUG for whoever actually wants per-file
+        # detail; the default matches scrape's own shape (setup line,
+        # progress bar, summary), which never had this problem since its
+        # own per-file detail was already DEBUG-only.
+        logger.debug(f"Processing ZIP: {zip_p.name}")
         created_parquets = []
 
         # "flat" is a routing shortcut, not a real granularity: it means
@@ -557,11 +587,20 @@ def run_converter(
     start_date: date | None = None,
     end_date: date | None = None,
     delete_source: bool = False,
+    verbose: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
 
     Returns (outputs, failed): see GDELTConverter.process_all_files.
+
+    verbose raises this module's own logger to DEBUG, revealing the
+    per-file "Processing ZIP"/"Skipping already converted"/"Deleted
+    source zip" lines that are DEBUG-level (invisible) by default,
+    exactly matching scrape's own already-DEBUG per-attempt detail. Off
+    by default: at GKG 2.1/Mentions scale, those lines unconditionally
+    at INFO used to mean hundreds of thousands of terminal lines
+    fighting the tqdm progress bar below for the screen.
     """
     output_columns = config["converter"].get("output_columns", {}).get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
@@ -570,9 +609,14 @@ def run_converter(
         narrowing=["output_columns"] if output_columns is not None else [],
     )
 
+    # verbose is passed straight through rather than raised here directly:
+    # GDELTConverter.__init__ sets it (covering this process's own log
+    # calls), and process_single_file re-applies it independently inside
+    # each ProcessPoolExecutor worker, since a level change made in this
+    # process never reaches those.
     converter = GDELTConverter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
-        delete_source=delete_source,
+        delete_source=delete_source, verbose=verbose,
     )
     return converter.process_all_files()
 
