@@ -47,8 +47,8 @@ class TestRunScrapeCmd:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
-            dataset="events", start_date=None, end_date=None, verbose=False, quiet=False,
-            force=False,
+            dataset="events", start_date=None, end_date=None,
+            verbose=False, quiet=False, force=False, dry_run=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -56,7 +56,8 @@ class TestRunScrapeCmd:
     def test_raises_when_downloads_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date, dataset, verbose=False, quiet=False, force=False: {
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False,
+            force=False, dry_run=False: {
                 "success": 2, "skipped": 0, "failed": ["20200101.export.CSV.zip"],
             },
         )
@@ -68,7 +69,8 @@ class TestRunScrapeCmd:
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date, dataset, verbose=False, quiet=False, force=False: {
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False,
+            force=False, dry_run=False: {
                 "success": 5, "skipped": 0, "failed": [],
             },
         )
@@ -80,7 +82,8 @@ class TestRunScrapeCmd:
         captured = {}
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
-            lambda config, start_date, end_date, dataset, verbose=False, quiet=False, force=False: (
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False,
+            force=False, dry_run=False: (
                 captured.update(verbose=verbose)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -96,7 +99,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, verbose=False, quiet=False,
-            force=False: (
+            force=False, dry_run=False: (
                 captured.update(quiet=quiet)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -112,7 +115,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, verbose=False, quiet=False,
-            force=False: (
+            force=False, dry_run=False: (
                 captured.update(force=force)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -123,13 +126,29 @@ class TestRunScrapeCmd:
 
         assert captured == {"force": True}
 
+    def test_dry_run_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_scraping_pipeline",
+            lambda config, start_date, end_date, dataset, verbose=False, quiet=False,
+            force=False, dry_run=False: (
+                captured.update(dry_run=dry_run)
+                or {"success": 0, "skipped": 0, "failed": []}
+            ),
+        )
+        args = self._args(dry_run=True)
+
+        cli.run_scrape_cmd({}, args)
+
+        assert captured == {"dry_run": True}
+
 
 class TestRunConvertCmd:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
             dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=False, quiet=False, force=False,
+            verbose=False, quiet=False, force=False, dry_run=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -138,7 +157,9 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (["a.parquet"], ["bad.zip"]),
+            verbose=False, quiet=False, force=False, dry_run=False: (
+                ["a.parquet"], ["bad.zip"]
+            ),
         )
         args = self._args()
 
@@ -149,7 +170,9 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (["a.parquet", "b.parquet"], []),
+            verbose=False, quiet=False, force=False, dry_run=False: (
+                ["a.parquet", "b.parquet"], []
+            ),
         )
         args = self._args()
 
@@ -160,7 +183,7 @@ class TestRunConvertCmd:
 
         def fake_run_converter(
             config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False,
+            verbose=False, quiet=False, force=False, dry_run=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -190,7 +213,7 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(delete_source=delete_source) or ([], [])
             ),
         )
@@ -205,7 +228,7 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(verbose=verbose) or ([], [])
             ),
         )
@@ -220,7 +243,7 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(quiet=quiet) or ([], [])
             ),
         )
@@ -235,7 +258,7 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(force=force) or ([], [])
             ),
         )
@@ -245,13 +268,28 @@ class TestRunConvertCmd:
 
         assert captured == {"force": True}
 
+    def test_dry_run_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_converter",
+            lambda config, dataset, start_date, end_date, delete_source=False,
+            verbose=False, quiet=False, force=False, dry_run=False: (
+                captured.update(dry_run=dry_run) or ([], [])
+            ),
+        )
+        args = self._args(dry_run=True)
+
+        cli.run_convert_cmd({}, args)
+
+        assert captured == {"dry_run": True}
+
 
 class TestRunFilterCmd:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
             dataset="events", start_date=None, end_date=None, delete_source=False,
-            verbose=False, quiet=False, force=False,
+            verbose=False, quiet=False, force=False, dry_run=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -260,7 +298,7 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (8, 2),
+            verbose=False, quiet=False, force=False, dry_run=False: (8, 2),
         )
         args = self._args()
 
@@ -271,7 +309,7 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (10, 0),
+            verbose=False, quiet=False, force=False, dry_run=False: (10, 0),
         )
         args = self._args()
 
@@ -282,7 +320,7 @@ class TestRunFilterCmd:
 
         def fake_run_filter(
             config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False,
+            verbose=False, quiet=False, force=False, dry_run=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -306,7 +344,7 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(delete_source=delete_source) or (0, 0)
             ),
         )
@@ -321,7 +359,7 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(verbose=verbose) or (0, 0)
             ),
         )
@@ -336,7 +374,7 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(quiet=quiet) or (0, 0)
             ),
         )
@@ -351,7 +389,7 @@ class TestRunFilterCmd:
         monkeypatch.setattr(
             cli, "run_filter",
             lambda config, dataset, start_date, end_date, delete_source=False,
-            verbose=False, quiet=False, force=False: (
+            verbose=False, quiet=False, force=False, dry_run=False: (
                 captured.update(force=force) or (0, 0)
             ),
         )
@@ -360,6 +398,21 @@ class TestRunFilterCmd:
         cli.run_filter_cmd({}, args)
 
         assert captured == {"force": True}
+
+    def test_dry_run_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_filter",
+            lambda config, dataset, start_date, end_date, delete_source=False,
+            verbose=False, quiet=False, force=False, dry_run=False: (
+                captured.update(dry_run=dry_run) or (0, 0)
+            ),
+        )
+        args = self._args(dry_run=True)
+
+        cli.run_filter_cmd({}, args)
+
+        assert captured == {"dry_run": True}
 
 
 class TestRunSamplingCmdSource:
