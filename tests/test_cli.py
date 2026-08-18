@@ -483,6 +483,37 @@ class TestRunCrossrefCmd:
                 ),
             )
 
+    def test_events_pointed_at_a_directory_with_a_done_marker_works(self, tmp_path, monkeypatch):
+        # Real scenario: --events pointed directly at convert/filter
+        # output (skipping sample) instead of a single sample.parquet
+        # file. Those directories always carry .done resumability
+        # markers as real siblings of the data; this must read the real
+        # files and ignore the marker, not crash trying to parse it as
+        # parquet.
+        events_dir = tmp_path / "events"
+        events_dir.mkdir()
+        pd.DataFrame({"GlobalEventID": [1001]}).to_parquet(
+            events_dir / "20260811.export.parquet"
+        )
+        (events_dir / "20260811.export.parquet.done").write_text("some-fingerprint")
+
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: captured.update(
+                n_events=len(events_df), ids=events_df["GlobalEventID"].tolist()
+            ) or pd.DataFrame(),
+        )
+
+        cli.run_crossref_cmd(
+            self._config(), self._args(tmp_path, gkg_version="v1", events=str(events_dir)),
+        )
+
+        assert captured == {"n_events": 1, "ids": [1001]}
+
 
 class TestRunCodesCmd:
     def test_bare_lists_known_columns(self, capsys):

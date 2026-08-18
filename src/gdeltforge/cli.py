@@ -4,8 +4,6 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
-
 from gdeltforge.conversion.converter import run_converter
 from gdeltforge.crossref.crossref import (
     crossref_events_gkg_auto,
@@ -25,7 +23,7 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import run_scraping_pipeline
 from gdeltforge.utils.config import dataset_path_key, load_config
-from gdeltforge.utils.io import ensure_exists, write_parquet_atomic
+from gdeltforge.utils.io import ensure_exists, read_parquet_path, write_parquet_atomic
 from gdeltforge.utils.logging import get_logger
 
 # ======================================================================
@@ -242,7 +240,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     if start_date and end_date and start_date > end_date:
         raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
 
-    events_df = pd.read_parquet(args.events)
+    events_df = read_parquet_path(args.events)
     columns = set(args.columns) if args.columns else None
     source_key = (
         "filtered_data_directory" if args.source == "filtered" else "parquet_data_directory"
@@ -525,7 +523,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--events",
         required=True,
         metavar="PATH",
-        help="Parquet file of Events rows to enrich, e.g. the output of `gdeltforge sample`"
+        help="Parquet file of Events rows to enrich, e.g. the output of `gdeltforge sample`. "
+             "A directory of parquet files (e.g. convert/filter output) also works; .done "
+             "resumability markers in it are ignored"
     )
     crossref.add_argument(
         "--gkg-version",

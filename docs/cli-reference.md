@@ -211,7 +211,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 
 | Flag | Description |
 |------|-------------|
-| `--events PATH` | Parquet file of Events rows to enrich (required) |
+| `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/filter output directly); `.done` resumability markers in it are ignored |
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
 | `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless. Not supported with `--gkg-version auto` |

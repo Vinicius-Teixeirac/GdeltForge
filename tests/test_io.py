@@ -8,6 +8,7 @@ from gdeltforge.utils.io import (
     config_fingerprint,
     is_marked_done,
     mark_done,
+    read_parquet_path,
     write_parquet_atomic,
 )
 
@@ -68,6 +69,53 @@ class TestWriteParquetAtomic:
 
         assert not out.exists()
         assert not (tmp_path / "sample.parquet.tmp").exists()
+
+
+class TestReadParquetPath:
+    def test_reads_a_single_file_directly(self, tmp_path):
+        f = tmp_path / "sample.parquet"
+        pd.DataFrame({"GlobalEventID": [1, 2, 3]}).to_parquet(f)
+
+        result = read_parquet_path(f)
+
+        assert result["GlobalEventID"].tolist() == [1, 2, 3]
+
+    def test_reads_every_parquet_file_in_a_directory(self, tmp_path):
+        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(tmp_path / "a.parquet")
+        pd.DataFrame({"GlobalEventID": [3, 4, 5]}).to_parquet(tmp_path / "b.parquet")
+
+        result = read_parquet_path(tmp_path)
+
+        assert sorted(result["GlobalEventID"].tolist()) == [1, 2, 3, 4, 5]
+
+    def test_ignores_done_resumability_markers_in_a_directory(self, tmp_path):
+        # The real bug: convert/filter's own .done markers (mark_done above
+        # writes <name>.done as a real sibling of the data) sit in exactly
+        # these directories by design, and pandas' own directory read has
+        # no notion of that convention, so it tries to parse the marker as
+        # a parquet file and fails. A directory pointed at real convert/
+        # filter output always has these; this must not choke on them.
+        f = tmp_path / "20260811.export.parquet"
+        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(f)
+        mark_done(f, "some-fingerprint")
+        assert (tmp_path / "20260811.export.parquet.done").exists()
+
+        result = read_parquet_path(tmp_path)
+
+        assert result["GlobalEventID"].tolist() == [1, 2]
+
+    def test_empty_directory_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="No parquet files"):
+            read_parquet_path(tmp_path)
+
+    def test_directory_of_only_done_markers_raises_file_not_found(self, tmp_path):
+        # A directory can genuinely have markers with no real data left,
+        # e.g. every source file got removed after conversion; this must
+        # not silently return an empty-looking success either.
+        (tmp_path / "20260811.export.parquet.done").write_text("fingerprint")
+
+        with pytest.raises(FileNotFoundError, match="No parquet files"):
+            read_parquet_path(tmp_path)
 
 
 class TestConfigFingerprint:
