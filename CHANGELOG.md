@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-18
+
+### Fixed
+- `filter` silently wrote nothing whenever `columns_to_check` was empty, exactly the bundled default config's own value for every dataset. `filter_single_file` treated an empty `columns_to_check` the same as "columns were configured but none exist in this file's schema", logging an error and returning before ever writing the output file, while the batch summary still reported every file processed successfully with 100% retention. `sample` and `crossref` then correctly found nothing in the (empty) output directory, surfacing as confusing downstream errors with no indication the real failure was upstream and silent. The early-return now only fires when `columns_to_check` is actually non-empty; an empty list falls through to the existing, already-correct no-op path (`dropna(subset=[])` is a documented pandas no-op)
+- `crossref --events` crashed with a confusing `ArrowInvalid: ... magic bytes not found` error when pointed at a directory instead of a single file, if that directory contained a `convert`/`filter` `.done` resumability marker (`<name>.parquet.done`, a real sibling of the data by design in every one of their output directories). `pd.read_parquet` was handing the raw path straight to pandas with no awareness of that convention. `--events` now accepts a directory properly: every `*.parquet` file in it is read and concatenated, `.done` markers and any other non-parquet sibling are never handed to the parquet reader
+
 ## [0.6.0] - 2026-08-17
 
 ### Added
