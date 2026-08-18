@@ -658,6 +658,23 @@ class TestDownloadOne:
         assert status == "skipped"
         assert session.calls == []  # no network call needed
 
+    def test_force_re_downloads_an_already_downloaded_file(self, tmp_path):
+        existing = tmp_path / "20200101.export.CSV.zip"
+        existing.write_bytes(b"stale content from an earlier run")
+        content = b"fresh content"
+        file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5=None)
+        session = FakeSession(content)
+
+        status, filename = _download_one(
+            file, str(tmp_path), retries=3, timeout=5,
+            session=session,  # pyright: ignore[reportArgumentType]
+            force=True,
+        )
+
+        assert status == "success"
+        assert len(session.calls) == 1  # the network call force requires
+        assert (tmp_path / filename).read_bytes() == content
+
     def test_http_error_retries_then_fails(self, tmp_path, monkeypatch):
         monkeypatch.setattr(scraper.time, "sleep", lambda s: None)
         file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5=None)
@@ -712,7 +729,7 @@ class TestDownloadGdeltFiles:
             "http://x/4.export.CSV.zip": "success",
         }
 
-        def fake_download_one(file, download_dir, retries, timeout, session):
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
             return outcomes[file.url], file.url.split("/")[-1]
 
         monkeypatch.setattr(scraper, "_download_one", fake_download_one)
@@ -733,7 +750,7 @@ class TestDownloadGdeltFiles:
         gkg_dir = tmp_path / "gkg_raw"
         file = GdeltFile(url="http://x/20150218233000.gkg.csv.zip")
 
-        def fake_download_one(file, download_dir, retries, timeout, session):
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
             assert download_dir == str(gkg_dir)
             return "success", "20150218233000.gkg.csv.zip"
 
@@ -757,7 +774,7 @@ class TestDownloadGdeltFiles:
         # right file rather than crashing the whole scrape.
         files = [GdeltFile(url=f"http://x/{i}.export.CSV.zip") for i in range(3)]
 
-        def fake_download_one(file, download_dir, retries, timeout, session):
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
             if file.url.endswith("1.export.CSV.zip"):
                 raise OSError("simulated unexpected failure")
             return "success", file.url.split("/")[-1]
@@ -772,6 +789,24 @@ class TestDownloadGdeltFiles:
 
         assert result["success"] == 2
         assert result["failed"] == ["1.export.CSV.zip"]
+
+    def test_force_is_forwarded_to_download_one(self, monkeypatch, tmp_path):
+        captured = {}
+        file = GdeltFile(url="http://x/20200101.export.CSV.zip")
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            captured["force"] = force
+            return "success", "20200101.export.CSV.zip"
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+        download_gdelt_files([file], config, force=True)
+
+        assert captured == {"force": True}
 
 
 class TestRunScrapingPipelineVerboseLogging:
@@ -791,7 +826,9 @@ class TestRunScrapingPipelineVerboseLogging:
         monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: [])
         monkeypatch.setattr(
             scraper, "download_gdelt_files",
-            lambda files, config, dataset: {"success": 0, "skipped": 0, "failed": []},
+            lambda files, config, dataset, force=False: {
+                "success": 0, "skipped": 0, "failed": []
+            },
         )
 
     def test_off_by_default_logger_level_is_unchanged(self, monkeypatch):
@@ -817,3 +854,26 @@ class TestRunScrapingPipelineVerboseLogging:
             assert scraper.logger.level == logging.WARNING
         finally:
             scraper.logger.setLevel(logging.INFO)
+
+
+class TestRunScrapingPipelineForce:
+    """force (CLI: --force) re-downloads files already present locally
+    instead of skipping them, forwarded through to download_gdelt_files
+    (and, from there, to _download_one -- see TestDownloadOne's and
+    TestDownloadGdeltFiles' own force coverage for the actual skip
+    logic)."""
+
+    def test_force_is_forwarded_to_download_gdelt_files(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: [])
+        monkeypatch.setattr(
+            scraper, "download_gdelt_files",
+            lambda files, config, dataset, force=False: (
+                captured.update(force=force)
+                or {"success": 0, "skipped": 0, "failed": []}
+            ),
+        )
+
+        scraper.run_scraping_pipeline({"scraping": {}}, force=True)
+
+        assert captured == {"force": True}
