@@ -44,6 +44,28 @@ def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs)
         raise
 
 
+def read_parquet_path(path: str | Path) -> pd.DataFrame:
+    """
+    Read a single Parquet file, or every Parquet file directly in a
+    directory, concatenated into one DataFrame. A directory is globbed to
+    *.parquet explicitly rather than handed to pandas as-is: convert and
+    filter's own resumability markers (mark_done above writes <name>.done
+    as a real sibling of the data) sit in exactly these directories by
+    design, and pandas has no notion of that convention, so handing it a
+    directory containing one tries to parse the marker as a Parquet file
+    and fails with a confusing "magic bytes not found" error instead of
+    just ignoring it.
+    """
+    p = Path(path)
+    if not p.is_dir():
+        return pd.read_parquet(p)
+
+    files = sorted(p.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No parquet files found in {path}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+
+
 def _fingerprint_value(value: object) -> str:
     if value is None:
         return "None"
