@@ -748,6 +748,56 @@ class TestForce:
         assert zip_path.exists()  # force alone does not imply delete_source
 
 
+class TestDryRun:
+    """dry_run (CLI: --dry-run) reports what would be converted without
+    processing anything: no worker is submitted, no output is written,
+    no .done marker is created. Off by default."""
+
+    def test_dry_run_writes_nothing_and_marks_nothing_done(self, tmp_path):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(_make_config(tmp_path), dry_run=True)
+
+        outputs, failed = converter.process_all_files()
+
+        assert outputs == []
+        assert failed == []
+        assert not converter._is_done(zip_path)
+        assert list((tmp_path / "parquet").glob("*.parquet")) == []
+
+    def test_dry_run_reports_the_would_be_processed_count_at_info(self, tmp_path, caplog):
+        _write_flat_zip(tmp_path / "raw")
+
+        with caplog.at_level("INFO", logger="gdeltforge.conversion.converter"):
+            GDELTConverter(_make_config(tmp_path), dry_run=True).process_all_files()
+
+        assert any(
+            "[dry run] Would convert 1 zip file(s)" in r.message for r in caplog.records
+        )
+
+    def test_dry_run_sees_force_s_effect_on_the_skip_list(self, tmp_path, caplog):
+        # A zip already marked done is invisible to a plain dry run (it
+        # would be skipped for real too), but --force --dry-run together
+        # must preview it as something that WOULD be reprocessed.
+        _write_flat_zip(tmp_path / "raw")
+        GDELTConverter(_make_config(tmp_path)).process_all_files()
+
+        with caplog.at_level("INFO", logger="gdeltforge.conversion.converter"):
+            outputs, failed = GDELTConverter(
+                _make_config(tmp_path), dry_run=True
+            ).process_all_files()
+        assert outputs == []
+        assert failed == []
+        assert any("Nothing to convert" in r.message for r in caplog.records)
+
+        caplog.clear()
+        with caplog.at_level("INFO", logger="gdeltforge.conversion.converter"):
+            GDELTConverter(_make_config(tmp_path), force=True, dry_run=True).process_all_files()
+
+        assert any(
+            "[dry run] Would convert 1 zip file(s)" in r.message for r in caplog.records
+        )
+
+
 class TestSaveParquetAtomicity:
     """_save_parquet/_save_historical_parquet used to write straight to
     their final path. Found for real: a process killed mid-write while

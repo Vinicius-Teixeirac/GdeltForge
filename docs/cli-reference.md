@@ -50,6 +50,7 @@ gdeltforge scrape --end-date   2015-12-31          # up to date
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
+| `--dry-run` | Report how many files would be downloaded and skipped without downloading anything. Off by default |
 
 `--dataset gkg-v2`/`mentions` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent Events scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like Events, so this doesn't apply to them.
 
@@ -67,7 +68,7 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 
 `--quiet` raises the logger to WARNING, suppressing the setup and summary lines `scrape` otherwise always prints; mutually exclusive with `--verbose`.
 
-`--force` re-downloads a file even when one with the same name is already present, overwriting it.
+`--force` re-downloads a file even when one with the same name is already present, overwriting it. `--dry-run` reports how many files would be downloaded versus skipped, honoring `--force`'s effect on that count, without making any network request.
 
 ## `gdeltforge convert`
 
@@ -87,6 +88,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Reprocess ZIPs already marked done instead of skipping them, overwriting their parquet output. Off by default |
+| `--dry-run` | Report how many ZIPs would be converted without converting anything. Off by default |
 
 `--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
@@ -100,7 +102,7 @@ Already-converted files are skipped on a rerun, the same way `scrape` skips alre
 
 By default `convert` shows a setup line, a progress bar, and an end-of-run summary, the same shape `scrape` always has. At `gkg-v2`/`mentions` scale (hundreds of thousands of 15-minute files) the per-file detail this used to always print became hundreds of thousands of terminal lines fighting the progress bar for the screen; `--verbose` restores it for whoever actually wants to watch file-by-file. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
 
-`--force` bypasses the `.done` marker check, reprocessing and overwriting output for ZIPs already converted under the current configuration.
+`--force` bypasses the `.done` marker check, reprocessing and overwriting output for ZIPs already converted under the current configuration. `--dry-run` reports how many ZIPs would be converted, honoring `--force`'s effect on that count, without processing anything.
 
 See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
 
@@ -122,6 +124,7 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Reprocess files already marked done instead of skipping them, overwriting their filtered output. Off by default |
+| `--dry-run` | Report how many files would be filtered without filtering anything. Off by default |
 
 `--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
@@ -131,7 +134,7 @@ Already-filtered files are skipped on a rerun too, tracked the same way as `conv
 
 By default `filter` shows the same setup line, progress bar, and end-of-run summary shape as `convert`/`scrape`. Its per-file line is quieter than `convert`'s (one line per file instead of two), but at `gkg-v2`/`mentions` scale it's still hundreds of thousands of lines; `--verbose` restores it, same reasoning as `convert`'s own flag. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
 
-`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already filtered under the current configuration.
+`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already filtered under the current configuration. `--dry-run` reports how many files would be filtered, honoring `--force`'s effect on that count, without processing anything.
 
 ## `--dataset`
 

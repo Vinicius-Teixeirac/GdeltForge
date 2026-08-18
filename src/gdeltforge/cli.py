@@ -107,7 +107,8 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     logger.info("Starting scraping stage...")
     result = run_scraping_pipeline(
         config, start_date=start_date, end_date=end_date, dataset=dataset,
-        verbose=args.verbose, quiet=args.quiet, force=args.force,
+        verbose=args.verbose, quiet=args.quiet,
+        force=args.force, dry_run=args.dry_run,
     )
     logger.info("Scraping completed.")
 
@@ -131,7 +132,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     outputs, failed = run_converter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force,
+        force=args.force, dry_run=args.dry_run,
     )
     logger.info(f"Created {len(outputs)} parquet files.")
 
@@ -154,7 +155,7 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
     files_processed, files_failed = run_filter(
         config, dataset=dataset, start_date=start_date, end_date=end_date,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force,
+        force=args.force, dry_run=args.dry_run,
     )
     logger.info("Filtering completed.")
 
@@ -448,6 +449,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Re-download files that already exist locally instead of skipping them. "
              "Off by default"
     )
+    scrape.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many files would be downloaded and skipped without downloading "
+             "anything. Off by default"
+    )
 
     # ----------------------------------------------------
     # convert
@@ -496,6 +503,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reprocess zips already marked done instead of skipping them, overwriting "
              "their parquet output. Off by default"
+    )
+    convert.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many zips would be converted without converting anything. "
+             "Off by default"
     )
 
     # ----------------------------------------------------
@@ -546,6 +559,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Reprocess files already marked done instead of skipping them, overwriting "
              "their filtered output. Off by default"
+    )
+    filter_.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many files would be filtered without filtering anything. "
+             "Off by default"
     )
 
     # ----------------------------------------------------
