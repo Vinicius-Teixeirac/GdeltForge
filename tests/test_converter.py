@@ -1,4 +1,5 @@
 import logging
+import time
 import zipfile
 from pathlib import Path
 
@@ -338,11 +339,13 @@ class TestVerboseLogging:
         # genuinely separate process, so its output reaches the terminal
         # via the inherited stderr file descriptor, not this process's
         # own Python logging records -- caplog (in-process record capture)
-        # can't see it at all; capfd (OS file-descriptor capture) can.
+        # can't see it at all; capfd (OS file-descriptor capture) can,
+        # though not necessarily on the very next read -- see
+        # _read_stderr_until's own docstring.
         _write_flat_zip(tmp_path / "raw")
         try:
             run_converter(_make_config(tmp_path), verbose=True)
-            assert "Processing ZIP" in capfd.readouterr().err
+            assert "Processing ZIP" in _read_stderr_until(capfd, "Processing ZIP")
         finally:
             converter_module.logger.setLevel(logging.INFO)
 
@@ -516,6 +519,30 @@ def _write_flat_zip(raw_dir, filename="20200101.export.CSV.zip", rows="1\t202001
         z.write(csv_path, arcname=csv_name)
     csv_path.unlink()
     return zip_path
+
+
+def _read_stderr_until(capfd, needle: str, timeout: float = 2.0) -> str:
+    """
+    Polls capfd.readouterr().err, accumulating output, until needle shows
+    up or timeout elapses. A single blind read right after
+    ProcessPoolExecutor's `with` block exits is not safe: shutdown(wait=True)
+    guarantees the worker process has already terminated (so it has
+    definitely already executed and flushed every logger.debug() call
+    inside it), but that doesn't guarantee capfd's read of the shared
+    captured file observes those bytes at the very next instruction on
+    every platform. Confirmed as a real, deterministic gap on Linux CI
+    (never reproduced locally on Windows): the missed line reliably shows
+    up moments later in pytest's own end-of-test capture. Polling briefly
+    resolves near-instantly in the common case and only matters when that
+    gap actually occurs.
+    """
+    err = ""
+    deadline = time.monotonic() + timeout
+    while True:
+        err += capfd.readouterr().err
+        if needle in err or time.monotonic() >= deadline:
+            return err
+        time.sleep(0.02)
 
 
 class TestConversionResumability:
