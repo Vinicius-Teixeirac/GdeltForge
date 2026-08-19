@@ -44,6 +44,47 @@ def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs)
         raise
 
 
+_EXPORT_FORMATS = ("parquet", "csv")
+
+
+def write_dataframe_atomic(
+    df: pd.DataFrame, out: str | Path, export_format: str = "parquet", **kwargs
+) -> None:
+    """
+    Same atomic tmp-then-rename guarantee as write_parquet_atomic, generalized
+    to sample/crossref's --export-format. export_format="parquet" (the
+    default) delegates straight to write_parquet_atomic; convert/filter's own
+    writes (_save_parquet, pq.ParquetWriter) are untouched and never call this
+    -- their per-file streaming architecture has no reason to share a code
+    path with a single already-in-memory DataFrame's final write.
+    """
+    if export_format == "parquet":
+        write_parquet_atomic(df, out, **kwargs)
+        return
+
+    if export_format != "csv":
+        raise ValueError(
+            f"Unsupported export format: {export_format!r} "
+            f"(expected one of {_EXPORT_FORMATS})"
+        )
+
+    out = Path(out)
+    tmp_path = out.with_name(out.name + ".tmp")
+
+    if tmp_path.exists():
+        logger.warning(
+            f"Found a leftover incomplete file from a previous interrupted "
+            f"run: {tmp_path}. It will be overwritten."
+        )
+
+    try:
+        df.to_csv(tmp_path, index=False, **kwargs)
+        os.replace(tmp_path, out)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def read_parquet_path(path: str | Path) -> pd.DataFrame:
     """
     Read a single Parquet file, or every Parquet file directly in a
