@@ -163,6 +163,9 @@ All sampling modes read from the filtered directory by default; pass `--source c
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` |
 | `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set |
 | `--out PATH` | all | Output parquet file (default `sample.parquet`) |
+| `--export-format {parquet,csv}` | all | Output file format. `csv` rewrites `--out`'s extension to `.csv`. Off (`parquet`) by default |
+
+`--export-format csv` is meant for handing a finished sample to a tool that doesn't read Parquet (Excel, a quick spreadsheet look), not as a second internal storage format: CSV has no typed schema, so nullable `Int64` columns and dates round-trip as plain digits with empty-string `NaN`s, not restored automatically the way Parquet's schema is on the next read.
 
 ### Indexed sampling (uniform random)
 
@@ -253,6 +256,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--start-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period starts on or after this date. Narrows the configured directories being read, not `--events` |
 | `--end-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period ends on or before this date. Narrows the configured directories being read, not `--events` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
+| `--export-format {parquet,csv}` | Output file format. `csv` rewrites `--out`'s extension to `.csv`. Off (`parquet`) by default; see `sample`'s own `--export-format` above for the CSV round-trip caveat |
 
 GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Comparison](comparison.md) for why a direct Events<->GKG 2.1 join isn't possible):
 
