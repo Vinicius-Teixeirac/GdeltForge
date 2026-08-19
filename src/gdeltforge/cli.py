@@ -24,7 +24,12 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import run_scraping_pipeline
 from gdeltforge.utils.config import dataset_path_key, load_config
-from gdeltforge.utils.io import ensure_exists, read_parquet_path, write_parquet_atomic
+from gdeltforge.utils.io import (
+    ensure_exists,
+    read_parquet_path,
+    write_dataframe_atomic,
+    write_parquet_atomic,
+)
 from gdeltforge.utils.logging import get_logger
 
 # ======================================================================
@@ -93,6 +98,37 @@ def _apply_verbosity(args: argparse.Namespace) -> None:
         logger.setLevel(logging.DEBUG)
     elif getattr(args, "quiet", False):
         logger.setLevel(logging.WARNING)
+
+
+# sample/crossref's --export-format: --out already defaults to *.parquet,
+# so this is a no-op unless a caller actually asks for a different format.
+_EXPORT_EXTENSIONS = {"parquet": ".parquet", "csv": ".csv"}
+
+
+def _out_path_for_export_format(out: Path, export_format: str) -> Path:
+    """
+    --export-format is authoritative over --out's own extension: whatever
+    suffix --out was given (or defaulted to) gets replaced with the one
+    matching the chosen format, so `--out result.parquet --export-format
+    csv` writes result.csv rather than CSV content into a .parquet-named
+    file.
+    """
+    return out.with_suffix(_EXPORT_EXTENSIONS[export_format])
+
+
+def _write_sample_output(df, out: Path, export_format: str) -> None:
+    """
+    Writes sample/crossref's finished, already-in-memory result. The
+    default (parquet) case calls write_parquet_atomic directly, by that
+    exact name, rather than always going through write_dataframe_atomic:
+    several existing tests isolate unrelated CLI wiring (which folder a
+    sampler reads from, which join function gets called) by monkeypatching
+    cli.write_parquet_atomic, and this keeps that working unchanged.
+    """
+    if export_format == "parquet":
+        write_parquet_atomic(df, out)
+    else:
+        write_dataframe_atomic(df, out, export_format=export_format)
 
 
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
@@ -177,7 +213,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     historical_key = dataset_path_key(dataset, historical_key)
     source_folder = ensure_exists(config["paths"][source_key], source_key)
 
-    out = Path(args.out)
+    out = _out_path_for_export_format(Path(args.out), args.export_format)
 
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +232,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             columns=columns,
         )
         df = sampler.get_random_sample(args.n)
-        write_parquet_atomic(df, out)
+        _write_sample_output(df, out, args.export_format)
         logger.info(f"Saved indexed sample ({len(df)} rows) -> {out}")
         return
 
@@ -211,7 +247,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             columns=columns,
         )
         df = sampler.get_daily_samples(samples_per_day=args.per_day)
-        write_parquet_atomic(df, out)
+        _write_sample_output(df, out, args.export_format)
         logger.info(f"Saved daily sample ({len(df)} rows) -> {out}")
         return
 
@@ -243,14 +279,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             if args.n_per_group is None:
                 raise ValueError("--n-per-group is required when --stratify is set")
             df = sampler.get_stratified_sample(args.stratify, args.n_per_group)
-            write_parquet_atomic(df, out)
+            _write_sample_output(df, out, args.export_format)
             logger.info(
                 f"Saved stratified sample ({len(df)} rows) "
                 f"stratified by '{args.stratify}' ({args.n_per_group} per group) -> {out}"
             )
         else:
             df = sampler.get_random_sample(args.n)
-            write_parquet_atomic(df, out)
+            _write_sample_output(df, out, args.export_format)
             logger.info(
                 f"Saved filtered sample ({len(df)} rows) "
                 f"using filter={filter_dict} -> {out}"
@@ -273,7 +309,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         "filtered_data_directory" if args.source == "filtered" else "parquet_data_directory"
     )
 
-    out = Path(args.out)
+    out = _out_path_for_export_format(Path(args.out), args.export_format)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     if args.gkg_version == "auto":
@@ -340,7 +376,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             start_date=start_date, end_date=end_date,
         )
 
-    write_parquet_atomic(result, out)
+    _write_sample_output(result, out, args.export_format)
     logger.info(f"Saved cross-referenced sample ({len(result)} rows) -> {out}")
 
 
@@ -633,6 +669,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="sample.parquet",
         help="Output parquet file"
     )
+    sample.add_argument(
+        "--export-format",
+        choices=["parquet", "csv"],
+        default="parquet",
+        help="Output file format. csv rewrites --out's extension to .csv. "
+             "Off (parquet) by default"
+    )
 
     # ----------------------------------------------------
     # crossref
@@ -705,6 +748,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         default="crossref.parquet",
         help="Output parquet file"
+    )
+    crossref.add_argument(
+        "--export-format",
+        choices=["parquet", "csv"],
+        default="parquet",
+        help="Output file format. csv rewrites --out's extension to .csv. "
+             "Off (parquet) by default"
     )
 
     # ----------------------------------------------------
