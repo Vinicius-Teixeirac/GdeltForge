@@ -10,6 +10,7 @@ from gdeltforge.utils.io import (
     mark_done,
     read_parquet_path,
     warn_if_delete_source_drops_recoverable_data,
+    write_dataframe_atomic,
     write_parquet_atomic,
 )
 
@@ -70,6 +71,79 @@ class TestWriteParquetAtomic:
 
         assert not out.exists()
         assert not (tmp_path / "sample.parquet.tmp").exists()
+
+
+class TestWriteDataframeAtomic:
+    """write_dataframe_atomic generalizes write_parquet_atomic to
+    sample/crossref's --export-format. export_format="parquet" (the
+    default) delegates straight to write_parquet_atomic; export_format=
+    "csv" is new code with its own atomic tmp-then-rename coverage,
+    mirroring TestWriteParquetAtomic's own shape above."""
+
+    def test_parquet_delegates_to_write_parquet_atomic(self, tmp_path):
+        out = tmp_path / "sample.parquet"
+        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+
+        write_dataframe_atomic(df, out, export_format="parquet")
+
+        assert out.exists()
+        assert pd.read_parquet(out)["GlobalEventID"].tolist() == [1, 2, 3]
+        assert not (tmp_path / "sample.parquet.tmp").exists()
+
+    def test_csv_writes_a_real_readable_file(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        df = pd.DataFrame({"GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3]})
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        assert out.exists()
+        result = pd.read_csv(out)
+        assert result["GlobalEventID"].tolist() == [1, 2, 3]
+        assert result["QuadClass"].tolist() == [1, 2, 3]
+        assert not (tmp_path / "sample.csv.tmp").exists()
+
+    def test_csv_writes_without_a_pandas_index_column(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        assert list(pd.read_csv(out).columns) == ["GlobalEventID"]
+
+    def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+        out = tmp_path / "sample.csv"
+        tmp_path_leftover = tmp_path / "sample.csv.tmp"
+        tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
+
+        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(df, out, export_format="csv")
+
+        assert "leftover incomplete file" in caplog.text
+        assert pd.read_csv(out)["GlobalEventID"].tolist() == [1, 2, 3]
+        assert not tmp_path_leftover.exists()
+
+    def test_csv_cleans_up_tmp_and_reraises_on_write_failure(self, tmp_path, monkeypatch):
+        out = tmp_path / "sample.csv"
+
+        def boom(self, path, *args, **kwargs):
+            Path(path).write_bytes(b"partial write before failure")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pd.DataFrame, "to_csv", boom)
+
+        with pytest.raises(OSError):
+            write_dataframe_atomic(pd.DataFrame({"a": [1]}), out, export_format="csv")
+
+        assert not out.exists()
+        assert not (tmp_path / "sample.csv.tmp").exists()
+
+    def test_unsupported_format_raises_clearly(self, tmp_path):
+        out = tmp_path / "sample.json"
+        with pytest.raises(ValueError, match="Unsupported export format: 'json'"):
+            write_dataframe_atomic(pd.DataFrame({"a": [1]}), out, export_format="json")
+
+        assert not out.exists()
 
 
 class TestReadParquetPath:
