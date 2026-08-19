@@ -1,5 +1,7 @@
+import json
 import logging
-import time
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -315,8 +317,12 @@ class TestVerboseLogging:
     per-file "Processing ZIP"/"Skipping already converted" lines that are
     DEBUG-level (invisible) by default. logger.setLevel is a real,
     process-wide mutation on a singleton (logging.getLogger caches by
-    name), so every test here restores INFO afterward regardless of
-    outcome, rather than leaking state into whichever test runs next."""
+    name), so every test here that mutates this process's own logger
+    restores INFO afterward regardless of outcome, rather than leaking
+    state into whichever test runs next. test_verbose_reveals_the_per_
+    file_processing_line is the exception: it runs entirely in its own
+    subprocess (see its own docstring for why) and never touches this
+    process's logger at all."""
 
     def test_off_by_default_logger_level_is_unchanged(self, tmp_path):
         converter_module.logger.setLevel(logging.INFO)
@@ -334,20 +340,56 @@ class TestVerboseLogging:
         finally:
             converter_module.logger.setLevel(logging.INFO)
 
-    def test_verbose_reveals_the_per_file_processing_line(self, tmp_path, capfd):
-        # process_single_file runs inside a ProcessPoolExecutor worker, a
-        # genuinely separate process, so its output reaches the terminal
-        # via the inherited stderr file descriptor, not this process's
-        # own Python logging records -- caplog (in-process record capture)
-        # can't see it at all; capfd (OS file-descriptor capture) can,
-        # though not necessarily on the very next read -- see
-        # _read_stderr_until's own docstring.
+    def test_verbose_reveals_the_per_file_processing_line(self, tmp_path):
+        # process_single_file runs inside a ProcessPoolExecutor worker,
+        # and that worker's own logging output turns out not to be
+        # reliably observable from within the SAME pytest process by any
+        # means tried: ProcessPoolExecutor's start method differs by
+        # platform (fork on Linux, spawn on Windows). capfd (OS-level
+        # stderr capture) misses the worker's write entirely under fork,
+        # confirmed empirically not a timing issue, since polling it
+        # for a full 2 seconds in real Linux CI still found nothing,
+        # apparently because get_logger's StreamHandler is constructed
+        # once at module-import time, and a forked worker inherits that
+        # *exact* handler object (fork does not re-run imports), stream
+        # reference and all, rather than a live one a per-test capfd
+        # redirect would see. A dynamically attached logging.FileHandler
+        # fixes that (fork inherits it along with everything else) but
+        # breaks the opposite way under spawn: a spawned worker re-runs
+        # the module import fresh, in its own process, so it never sees
+        # a handler added to the parent's logger after that import ran.
+        #
+        # Sidesteps both entirely by not relying on any of that: this
+        # runs run_converter in a genuinely separate, ordinary Python
+        # subprocess (independent of pytest's own capture machinery and
+        # of ProcessPoolExecutor's platform-specific start method) and
+        # captures ITS stdout/stderr the standard way: a pipe
+        # subprocess.run sets up at OS-level process-creation time, in
+        # place before that outer process (or anything it forks/spawns
+        # in turn) ever starts, so its own worker's writes land in the
+        # same captured pipe regardless of platform.
         _write_flat_zip(tmp_path / "raw")
-        try:
-            run_converter(_make_config(tmp_path), verbose=True)
-            assert "Processing ZIP" in _read_stderr_until(capfd, "Processing ZIP")
-        finally:
-            converter_module.logger.setLevel(logging.INFO)
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(_make_config(tmp_path)))
+        script_path = tmp_path / "run_verbose_convert.py"
+        script_path.write_text(
+            "import json, sys\n"
+            "from gdeltforge.conversion.converter import run_converter\n"
+            # Windows' spawn start method re-imports this script as
+            # __main__ in each worker process; without this guard,
+            # run_converter's own ProcessPoolExecutor submission would
+            # re-execute at that re-import too, recursively.
+            "if __name__ == '__main__':\n"
+            "    config = json.loads(open(sys.argv[1]).read())\n"
+            "    run_converter(config, verbose=True)\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(script_path), str(config_path)],
+            capture_output=True, text=True, timeout=60,
+        )
+
+        assert "Processing ZIP" in result.stderr, result.stderr
 
 
 class TestQuietLogging:
@@ -519,30 +561,6 @@ def _write_flat_zip(raw_dir, filename="20200101.export.CSV.zip", rows="1\t202001
         z.write(csv_path, arcname=csv_name)
     csv_path.unlink()
     return zip_path
-
-
-def _read_stderr_until(capfd, needle: str, timeout: float = 2.0) -> str:
-    """
-    Polls capfd.readouterr().err, accumulating output, until needle shows
-    up or timeout elapses. A single blind read right after
-    ProcessPoolExecutor's `with` block exits is not safe: shutdown(wait=True)
-    guarantees the worker process has already terminated (so it has
-    definitely already executed and flushed every logger.debug() call
-    inside it), but that doesn't guarantee capfd's read of the shared
-    captured file observes those bytes at the very next instruction on
-    every platform. Confirmed as a real, deterministic gap on Linux CI
-    (never reproduced locally on Windows): the missed line reliably shows
-    up moments later in pytest's own end-of-test capture. Polling briefly
-    resolves near-instantly in the common case and only matters when that
-    gap actually occurs.
-    """
-    err = ""
-    deadline = time.monotonic() + timeout
-    while True:
-        err += capfd.readouterr().err
-        if needle in err or time.monotonic() >= deadline:
-            return err
-        time.sleep(0.02)
 
 
 class TestConversionResumability:
