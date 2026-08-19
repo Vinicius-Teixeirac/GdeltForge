@@ -43,6 +43,57 @@ class TestDatasetFlag:
             parser.parse_args(["convert", "--dataset", "not-a-real-dataset"])
 
 
+class TestExportFormatFlag:
+    def test_defaults_to_parquet(self):
+        parser = cli.build_parser()
+
+        args = parser.parse_args(["sample", "--mode", "indexed"])
+        assert args.export_format == "parquet"
+
+        args = parser.parse_args(["crossref", "--events", "x.parquet", "--gkg-version", "v1"])
+        assert args.export_format == "parquet"
+
+    def test_csv_is_accepted(self):
+        parser = cli.build_parser()
+
+        args = parser.parse_args(["sample", "--mode", "indexed", "--export-format", "csv"])
+        assert args.export_format == "csv"
+
+        args = parser.parse_args(
+            ["crossref", "--events", "x.parquet", "--gkg-version", "v1",
+             "--export-format", "csv"]
+        )
+        assert args.export_format == "csv"
+
+    def test_invalid_choice_is_rejected(self):
+        parser = cli.build_parser()
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["sample", "--mode", "indexed", "--export-format", "feather"]
+            )
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["crossref", "--events", "x.parquet", "--gkg-version", "v1",
+                 "--export-format", "feather"]
+            )
+
+
+class TestOutPathForExportFormat:
+    def test_parquet_is_a_no_op_on_a_parquet_path(self):
+        out = cli._out_path_for_export_format(Path("sample.parquet"), "parquet")
+        assert out == Path("sample.parquet")
+
+    def test_csv_rewrites_a_parquet_extension(self):
+        out = cli._out_path_for_export_format(Path("sample.parquet"), "csv")
+        assert out == Path("sample.csv")
+
+    def test_csv_rewrites_whatever_extension_out_was_given(self):
+        out = cli._out_path_for_export_format(Path("result.txt"), "csv")
+        assert out == Path("result.csv")
+
+
 class TestRunScrapeCmd:
     def test_raises_when_downloads_failed(self, monkeypatch):
         monkeypatch.setattr(
@@ -313,7 +364,7 @@ class TestRunSamplingCmdSource:
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source=source, n=10, seed=42,
-            out=str(tmp_path / "o.parquet"), columns=None,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
         )
         cli.run_sampling_cmd(self._config(), args)
         return captured
@@ -347,6 +398,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
+            export_format="parquet",
         )
         cli.run_sampling_cmd(self._config(), args)
 
@@ -369,10 +421,40 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="daily", source="filtered", per_day=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
+            export_format="parquet",
         )
         cli.run_sampling_cmd(self._config(), args)
 
         assert captured["columns"] == {"GlobalEventID"}
+
+    def test_export_format_csv_writes_a_real_csv_file(self, tmp_path, monkeypatch):
+        # Not mocking write_parquet_atomic/write_dataframe_atomic here,
+        # unlike every other test in this class: the whole point is to
+        # verify the real file that lands on disk, not just that the
+        # right function got called.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+
+        class FakeIndexedSampler:
+            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+                pass
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 3]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        args = argparse.Namespace(
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="csv",
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        out_csv = tmp_path / "o.csv"
+        assert out_csv.exists()
+        assert not (tmp_path / "o.parquet").exists()
+        result = pd.read_csv(out_csv)
+        assert result["GlobalEventID"].tolist() == [1, 2]
+        assert result["QuadClass"].tolist() == [1, 3]
 
 
 class TestRunCrossrefCmd:
@@ -407,7 +489,7 @@ class TestRunCrossrefCmd:
     def _args(self, tmp_path, **overrides):
         defaults = dict(
             events=self._events_path(tmp_path), gkg_version="v1", source="filtered",
-            columns=None, out=str(tmp_path / "o.parquet"),
+            columns=None, out=str(tmp_path / "o.parquet"), export_format="parquet",
             on_duplicate_document="all", collapse_duplicate_mentions=False,
             start_date=None, end_date=None,
         )
@@ -569,6 +651,31 @@ class TestRunCrossrefCmd:
 
         assert written["out"] == Path(out_path)
         assert written["df"] is expected
+
+    def test_export_format_csv_writes_a_real_csv_file(self, tmp_path, monkeypatch):
+        # Not mocking write_parquet_atomic/write_dataframe_atomic here,
+        # unlike every other test in this class: the whole point is to
+        # verify the real file that lands on disk, not just that the
+        # right function got called.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        expected = pd.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: expected,
+        )
+
+        cli.run_crossref_cmd(
+            self._config(),
+            self._args(tmp_path, gkg_version="v1", export_format="csv"),
+        )
+
+        out_csv = tmp_path / "o.csv"
+        assert out_csv.exists()
+        assert not (tmp_path / "o.parquet").exists()
+        result = pd.read_csv(out_csv)
+        assert result["GlobalEventID"].tolist() == [1]
+        assert result["GKG_Date"].tolist() == [20130401]
 
     def test_date_strings_are_parsed_and_passed_through(self, tmp_path, monkeypatch):
         captured = {}
