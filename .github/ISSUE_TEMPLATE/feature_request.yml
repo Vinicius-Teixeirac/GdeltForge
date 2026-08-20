@@ -1,36 +1,41 @@
-name: Feature Request
-description: Suggest an idea or improvement for GdeltForge
+name: Feature request
+description: Any ideas cool ideas for the project? Suggest!
+title: "[FEAT]"
 labels: ["enhancement"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for the suggestion. For anything non-trivial, opening an issue first (rather than jumping straight to a PR) helps make sure we agree on the approach before work goes into it.
-
   - type: textarea
-    id: problem
+    id: limitation
     attributes:
-      label: What problem does this solve?
-      description: What are you trying to do that GdeltForge doesn't support today?
+      label: Is your feature request related to a limitation? Please describe.
+      description: |
+        A clear and concise description of what the limitation is. Example:
+
+        > Everytime I want to {scrape, convert, filter, sample, ...} I have '...'
     validations:
       required: true
 
   - type: textarea
     id: solution
     attributes:
-      label: Proposed solution
-      description: How would you like this to work? A CLI flag, a config option, a new pipeline stage, etc.
+      label: Describe the solution you'd like
+      description: |
+        A clear and concise description of what you want to happen. Assure you considered the new command's feasibility. Example:
+
+        > A new command '...' would simplify this usage case.
     validations:
       required: true
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
-      description: Any workarounds you're currently using, or other approaches you considered.
+      label: Describe alternatives you've considered
+      description: |
+        A clear and concise description of any alternative solutions or features you've considered. Example:
+
+        > If the command happens to unfeasible, a new config file structure '...' would also help.
 
   - type: textarea
     id: context
     attributes:
       label: Additional context
-      description: Anything else — links, examples from other tools, related issues.
+      description: Add any other context or screenshots about the feature request here.
