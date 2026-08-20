@@ -1,52 +1,29 @@
-name: Bug Report
-description: Something in GdeltForge isn't working as expected
+name: Bug report
+description: Report a bug and let us improve the package
+title: "[BUG]"
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report a bug. Please fill in as much of this as you can — it's the difference between a fix in a day and a fix in a month.
+        0. **Check the issues page**
+        Assure your bug isn't already reported.
 
-  - type: textarea
-    id: description
-    attributes:
-      label: What happened?
-      description: A clear description of the bug.
-    validations:
-      required: true
-
-  - type: textarea
-    id: reproduce
-    attributes:
-      label: Steps to reproduce
-      description: The exact command(s) run, and any relevant config.
-      placeholder: |
-        1. `gdeltforge scrape --start-date 2020-01-01 --end-date 2020-01-31`
-        2. `gdeltforge convert`
-        3. ...
-      render: shell
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected behavior
-    validations:
-      required: true
-
-  - type: textarea
-    id: logs
-    attributes:
-      label: Relevant log output
-      description: Output from `logs/pipeline.log` or the terminal. This will be rendered as a code block automatically.
-      render: shell
+        1. **Check the version**
+        Confirm your version:
+        ```bash
+        pip show gdeltforge
+        ```
+        Check the [CHANGELOG](https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/CHANGELOG.md) seeking the bug/behavior you're about to report. (Recommended) Use the latest version:
+        ```bash
+        pip install --upgrade gdeltforge
+        ```
 
   - type: input
     id: version
     attributes:
       label: GdeltForge version
-      description: Output of `gdeltforge --version` if available, or the git commit/tag you're on.
+      description: Output of `pip show gdeltforge`.
     validations:
       required: true
 
@@ -54,24 +31,66 @@ body:
     id: python-version
     attributes:
       label: Python version
-      description: Output of `python --version`
     validations:
       required: true
 
-  - type: dropdown
-    id: os
+  - type: textarea
+    id: description
     attributes:
-      label: Operating System
-      options:
-        - Windows
-        - macOS
-        - Linux
-        - Other
+      label: Describe the bug
+      description: A clear and concise description of what the bug is and how it affects your usage.
     validations:
       required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To Reproduce
+      description: |
+        Steps to reproduce the behavior. Example:
+           1. Insert '...' in the config file
+           2. Try to '....'
+           3. Check the output '....'
+           4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen. Justify your expectations using the [docs](https://vinicius-teixeirac.github.io/GdeltForge/).
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: If applicable, add logs or screenshots to help explain your problem.
+      render: shell
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "e.g. Debian 13.6"
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware specs
+      placeholder: "e.g. 16 CPU cores, 16GB of RAM, 2 TB of storage"
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Config file overwrite
 
   - type: textarea
     id: context
     attributes:
       label: Additional context
-      description: Anything else relevant — relevant settings.yaml sections (redact anything sensitive), whether this happens consistently, etc.
+      description: Add any other context about the problem here.
