@@ -824,6 +824,19 @@ class TestDeleteSource:
         assert not zip_path.exists()
         assert Path(outputs[0]).exists()
 
+    def test_also_deletes_the_zip_s_own_done_marker(self, tmp_path):
+        # The marker sits next to the zip, not the parquet output; once
+        # the zip is gone it gates nothing (process_all_files' own glob
+        # can never find a deleted zip again), so leaving it behind is
+        # just an orphaned file --delete-source's whole point was to
+        # avoid accumulating.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        marker_path = zip_path.with_name(zip_path.name + ".done")
+
+        GDELTConverter(_make_config(tmp_path), delete_source=True).process_all_files()
+
+        assert not marker_path.exists()
+
     def test_never_deletes_a_zip_that_failed_to_convert(self, tmp_path, monkeypatch):
         zip_path = _write_flat_zip(tmp_path / "raw")
         converter = GDELTConverter(_make_config(tmp_path), delete_source=True)
