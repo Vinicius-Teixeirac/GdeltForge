@@ -44,9 +44,10 @@ logger = get_logger(__name__, log_to_file=True)
 # the current, actively-produced "v2") are different schemas with
 # different files, so they're exposed as distinct choices rather than
 # one ambiguous "gkg".
-_DATASET_CHOICES = ["events", "gkg-v1", "gkg-v1-counts", "gkg-v2", "mentions"]
+_DATASET_CHOICES = ["events", "events-15min", "gkg-v1", "gkg-v1-counts", "gkg-v2", "mentions"]
 _DATASET_CLI_TO_CONFIG = {
     "events": "gdelt_event",
+    "events-15min": "gdelt_event_15min",
     "gkg-v1": "gdelt_gkg_v1",
     "gkg-v1-counts": "gdelt_gkg_v1_counts",
     "gkg-v2": "gdelt_gkg_v2",
@@ -467,8 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
     scrape.add_argument(
         "--dataset",
         choices=_DATASET_CHOICES,
-        default="events",
-        help="Which GDELT dataset to scrape (default: events)"
+        required=True,
+        help="Which GDELT dataset to scrape (required)"
     )
     scrape.add_argument(
         "--start-date",
@@ -521,8 +522,8 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument(
         "--dataset",
         choices=_DATASET_CHOICES,
-        default="events",
-        help="Which GDELT dataset to convert (default: events)"
+        required=True,
+        help="Which GDELT dataset to convert (required)"
     )
     convert.add_argument(
         "--start-date",
@@ -584,8 +585,8 @@ def build_parser() -> argparse.ArgumentParser:
     filter_.add_argument(
         "--dataset",
         choices=_DATASET_CHOICES,
-        default="events",
-        help="Which GDELT dataset to filter (default: events)"
+        required=True,
+        help="Which GDELT dataset to filter (required)"
     )
     filter_.add_argument(
         "--start-date",
@@ -651,8 +652,8 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--dataset",
         choices=_DATASET_CHOICES,
-        default="events",
-        help="Which GDELT dataset to sample from (default: events)"
+        required=True,
+        help="Which GDELT dataset to sample from (required)"
     )
     sample.add_argument(
         "--mode",

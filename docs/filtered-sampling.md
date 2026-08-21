@@ -143,6 +143,7 @@ You may restrict the output to specific columns, which is a memory-friendly prac
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode filtered \
   --filter '{"ActionGeo_CountryCode": "USA"}' \
   --columns GlobalEventID Year Actor1Code \
@@ -156,13 +157,14 @@ Once the filter is applied, sampling works normally:
 **Random sample**
 
 ```
-gdeltforge sample --mode filtered -n 5000 --filter '{"QuadClass":[1,2]}'
+gdeltforge sample --dataset events --mode filtered -n 5000 --filter '{"QuadClass":[1,2]}'
 ```
 
 **Stratified by column**
 
 ```
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode":"USA"}' \
     --stratify QuadClass \

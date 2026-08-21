@@ -3,9 +3,9 @@
 Practical, runnable sampling recipes, assuming you've already run:
 
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
 ```
 
 ## Random Global Samples
@@ -15,7 +15,7 @@ Sweep a range of sample sizes in one pass:
 ```bash
 mkdir -p samples
 for n in 100000 150000 200000 250000 300000 350000 400000 450000 500000; do
-    gdeltforge sample --mode indexed -n "$n" --out "samples/sample_${n}.parquet"
+    gdeltforge sample --dataset events --mode indexed -n "$n" --out "samples/sample_${n}.parquet"
 done
 ```
 
@@ -23,6 +23,7 @@ done
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode indexed \
   -n 500000 \
   --seed 42 \
@@ -35,7 +36,7 @@ A fixed number of rows per day, across the whole period your downloaded data cov
 
 ```bash
 for d in 2 3 4 5; do
-    gdeltforge sample --mode daily --per-day "$d" --out "samples/daily_${d}.parquet"
+    gdeltforge sample --dataset events --mode daily --per-day "$d" --out "samples/daily_${d}.parquet"
 done
 ```
 
@@ -45,6 +46,7 @@ Combine an `OR` block across every column that can carry a country code to catch
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode filtered \
   --filter '{ "OR": { "Actor1CountryCode": "BRA", "Actor2CountryCode": "BRA", "Actor1Geo_CountryCode": "BR", "Actor2Geo_CountryCode": "BR", "ActionGeo_CountryCode": "BR" } }' \
   -n 100000 \
@@ -55,6 +57,7 @@ gdeltforge sample \
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode filtered \
   --filter '{ "OR": { "Actor1CountryCode": "BRA", "Actor2CountryCode": "BRA", "ActionGeo_CountryCode": "BR" } }' \
   --columns GlobalEventID Year MonthYear Day Actor1Code Actor2Code QuadClass GoldsteinScale AvgTone ActionGeo_CountryCode \
@@ -70,6 +73,7 @@ Stratified sampling draws exactly N rows per distinct value of a chosen column, 
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode filtered \
   --stratify QuadClass \
   --n-per-group 50000 \
@@ -80,6 +84,7 @@ Brazil events balanced by event type:
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode filtered \
   --filter '{ "ActionGeo_CountryCode": "BR" }' \
   --stratify QuadClass \
@@ -91,6 +96,7 @@ Verbal events (`QuadClass` 1 or 2) balanced by root-event flag:
 
 ```
 gdeltforge sample \
+  --dataset events \
   --mode filtered \
   --filter '{ "QuadClass": [1, 2] }' \
   --stratify IsRootEvent \
@@ -112,7 +118,7 @@ gdeltforge convert --dataset mentions
 gdeltforge filter --dataset gkg-v2
 gdeltforge filter --dataset mentions
 
-gdeltforge sample --mode indexed -n 5000 --seed 42 --out samples/events_5k.parquet
+gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42 --out samples/events_5k.parquet
 
 gdeltforge crossref \
   --events samples/events_5k.parquet \
@@ -154,6 +160,7 @@ gdeltforge filter --dataset mentions
 
 gdeltforge filter --dataset events --start-date 2014-01-01 --end-date 2016-01-01
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"DATEADDED": {"op": "between", "min": 20140101, "max": 20160101}}' \
     -n 5000 --out samples/gap_events_5k.parquet

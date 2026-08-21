@@ -12,10 +12,10 @@ GdeltForge is a lightweight but scalable data pipeline to extract, transform, an
 
 ```
 pip install gdeltforge
-gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 See [Getting Started](getting-started.md) for configuration and an installation-from-source option, useful if you're contributing to GdeltForge itself.
