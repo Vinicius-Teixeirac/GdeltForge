@@ -85,6 +85,73 @@ columns:
     - DATEADDED
     - SOURCEURL
 
+  # Events at native GDELT 2.0 granularity (--dataset events-15min): a
+  # genuinely different, 61-column schema, not just the daily archive
+  # above at finer granularity, see settings.example.yaml's own
+  # comment on this dataset for the full explanation.
+  gdelt_event_15min:
+    - GlobalEventID
+    - Day
+    - MonthYear
+    - Year
+    - FractionDate
+    - Actor1Code
+    - Actor1Name
+    - Actor1CountryCode
+    - Actor1KnownGroupCode
+    - Actor1EthnicCode
+    - Actor1Religion1Code
+    - Actor1Religion2Code
+    - Actor1Type1Code
+    - Actor1Type2Code
+    - Actor1Type3Code
+    - Actor2Code
+    - Actor2Name
+    - Actor2CountryCode
+    - Actor2KnownGroupCode
+    - Actor2EthnicCode
+    - Actor2Religion1Code
+    - Actor2Religion2Code
+    - Actor2Type1Code
+    - Actor2Type2Code
+    - Actor2Type3Code
+    - IsRootEvent
+    - EventCode
+    - EventBaseCode
+    - EventRootCode
+    - QuadClass
+    - GoldsteinScale
+    - NumMentions
+    - NumSources
+    - NumArticles
+    - AvgTone
+    - Actor1Geo_Type
+    - Actor1Geo_FullName
+    - Actor1Geo_CountryCode
+    - Actor1Geo_ADM1Code
+    - Actor1Geo_ADM2Code
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor1Geo_FeatureID
+    - Actor2Geo_Type
+    - Actor2Geo_FullName
+    - Actor2Geo_CountryCode
+    - Actor2Geo_ADM1Code
+    - Actor2Geo_ADM2Code
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
+    - Actor2Geo_FeatureID
+    - ActionGeo_Type
+    - ActionGeo_FullName
+    - ActionGeo_CountryCode
+    - ActionGeo_ADM1Code
+    - ActionGeo_ADM2Code
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - ActionGeo_FeatureID
+    - DATEADDED
+    - SOURCEURL
+
   gdelt_gkg_v2:
     - GKGRECORDID
     - V2.1DATE
@@ -187,6 +254,32 @@ columns_numeric:
     - ActionGeo_Long
     - DATEADDED
 
+  # Same numeric set as gdelt_event above: the 3 new ADM2Code fields
+  # stay strings, same treatment ADM1Code already gets.
+  gdelt_event_15min:
+    - GlobalEventID
+    - Day
+    - MonthYear
+    - Year
+    - FractionDate
+    - IsRootEvent
+    - QuadClass
+    - GoldsteinScale
+    - NumMentions
+    - NumSources
+    - NumArticles
+    - AvgTone
+    - Actor1Geo_Type
+    - Actor1Geo_Lat
+    - Actor1Geo_Long
+    - Actor2Geo_Type
+    - Actor2Geo_Lat
+    - Actor2Geo_Long
+    - ActionGeo_Type
+    - ActionGeo_Lat
+    - ActionGeo_Long
+    - DATEADDED
+
   gdelt_gkg_v2:
     - V2.1DATE
     - V2SOURCECOLLECTIONIDENTIFIER
@@ -244,6 +337,11 @@ paths:
   mentions_parquet_data_directory: "./data/mentions/parquet"
   mentions_filtered_data_directory: "./data/mentions/filtered"
 
+  event_15min_downloaded_data_directory: "./data/events_15min/raw"
+  event_15min_unzipped_data_directory: "./data/events_15min/csv"
+  event_15min_parquet_data_directory: "./data/events_15min/parquet"
+  event_15min_filtered_data_directory: "./data/events_15min/filtered"
+
   gkg_v1_downloaded_data_directory: "./data/gkg_v1/raw"
   gkg_v1_unzipped_data_directory: "./data/gkg_v1/csv"
   gkg_v1_parquet_data_directory: "./data/gkg_v1/parquet"
@@ -289,6 +387,7 @@ filter:
   max_workers: null
   columns_to_check:
     gdelt_event: []
+    gdelt_event_15min: []
     gdelt_gkg_v2: []
     gdelt_mentions: []
     gdelt_gkg_v1: []

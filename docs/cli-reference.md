@@ -30,20 +30,20 @@ Any command that fails prints `Error: <message>` to stderr and exits with status
 Download the entire archive:
 
 ```
-gdeltforge scrape
+gdeltforge scrape --dataset events
 ```
 
 Download only files within a date range (any combination of bounds is valid):
 
 ```
-gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge scrape --start-date 2022-01-01          # from date onward
-gdeltforge scrape --end-date   2015-12-31          # up to date
+gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge scrape --dataset events --start-date 2022-01-01          # from date onward
+gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (default `events`; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (required; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -53,7 +53,7 @@ gdeltforge scrape --end-date   2015-12-31          # up to date
 | `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
 | `--dry-run` | Report how many files would be downloaded and skipped without downloading anything. Off by default |
 
-`--dataset gkg-v2`/`mentions` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent Events scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like Events, so this doesn't apply to them.
+`--dataset gkg-v2`/`mentions`/`events-15min` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent daily `events` scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like `events`, so this doesn't apply to them.
 
 The date filter applies to all three file types the GDELT archive provides:
 
@@ -76,14 +76,14 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 ## `gdeltforge convert`
 
 ```
-gdeltforge convert
+gdeltforge convert --dataset events
 ```
 
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores).
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (default `events`; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (required; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -97,7 +97,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 `--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
 ```
-gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
+gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
 Already-converted files are skipped on a rerun, the same way `scrape` skips already-downloaded files; an interrupted run resumes rather than starting over. See [Configuration](configuration.md#resumability) for how that marker also tracks `output_columns`/`compression`, so a config change is reprocessed rather than skipped.
@@ -115,14 +115,14 @@ See [Configuration](configuration.md#hive-partitioning-for-historical-data) for 
 ## `gdeltforge filter`
 
 ```
-gdeltforge filter
+gdeltforge filter --dataset events
 ```
 
 Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (default `events`; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (required; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -147,9 +147,10 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 ## `--dataset`
 
-`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` (default `events`).
+`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there's no default, so every invocation of these four commands names its dataset explicitly. This was a deliberate breaking change (see the changelog): with two Events-flavored choices now available, a silent default risked someone meaning to opt into the finer, slower one falling back to the daily archive instead with no error.
 
-- `events`: the daily/monthly/yearly Events archive, as always.
+- `events`: the daily/monthly/yearly Events archive. Not real-time (updates once a day), but far smaller and faster than `events-15min` for the same date range.
+- `events-15min`: Events at native GDELT 2.0 granularity, discovered from the same 15-minute master file list as `gkg-v2`/`mentions`, not the daily archive's directory listing. Genuinely a different, richer schema, not just finer granularity: 61 columns against the daily archive's 58, with an `ADM2Code` field added to each of the three geo blocks (`Actor1Geo`/`Actor2Geo`/`ActionGeo`) that the older, GDELT-1.0-compatible daily format doesn't carry. Opt-in and much slower in practice: real measurement puts the full 2015-present archive at 396,086 files (~81x the daily archive's file count for the same span) and ~40 GB total. File count, not raw size, is what dominates the cost here, since Events rows are compact structured data rather than GKG's free text. Reach for this only when you need intraday freshness or the extra geo precision; `events` is the right default-shaped choice otherwise.
 - `gkg-v2`: GKG 2.1, the current, actively-produced Global Knowledge Graph (themes, tone, GCAM, people, organizations; see [Configuration](configuration.md#datasets-and-dataset)). Discovered and downloaded differently from Events under the hood (a 15-minute-interval master file list, not a directory listing); see [Configuration](configuration.md#gkg-21-mentions-discovery-is-a-different-mechanism-entirely).
 - `mentions`: every re-report of an Event by a different article over time, the bridge table a real Events<->GKG join goes through, since GKG 2.1 itself carries no event ID (see [Comparison](comparison.md)).
 - `gkg-v1`: the legacy GKG format (April 2013 through February 2015 as the primary feed, still published daily since). Unlike GKG 2.1, each row carries `EventIds` directly, so it joins to Events without the two-hop trip through Mentions. Daily files, discovered the same way as Events but from a different URL (see [Configuration](configuration.md#gkg-10-uses-events-html-listing-mechanism-at-a-different-url)).
@@ -161,7 +162,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
-| `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (default `events`; see `--dataset` above) |
+| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
 | `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
 | `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
@@ -183,7 +184,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 ### Indexed sampling (uniform random)
 
 ```
-gdeltforge sample --mode indexed -n 10000 --seed 123 --out sample.parquet
+gdeltforge sample --dataset events --mode indexed -n 10000 --seed 123 --out sample.parquet
 ```
 
 Samples 10,000 rows uniformly across the entire dataset.
@@ -191,7 +192,7 @@ Samples 10,000 rows uniformly across the entire dataset.
 ### Daily sampling (N rows per day)
 
 ```
-gdeltforge sample --mode daily --per-day 20 --out daily.parquet
+gdeltforge sample --dataset events --mode daily --per-day 20 --out daily.parquet
 ```
 
 Samples 20 rows per day across the entire period covered by your downloaded data.
@@ -202,6 +203,7 @@ Samples 20 rows per day across the entire period covered by your downloaded data
 
 ```
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"QuadClass": [1, 2]}' \
     -n 5000 \
@@ -212,6 +214,7 @@ gdeltforge sample \
 
 ```
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["US"], "QuadClass": [1]}' \
     -n 2000
@@ -221,6 +224,7 @@ Selecting specific columns keeps memory use down:
 
 ```
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["US"], "QuadClass": [1]}' \
     --columns GlobalEventID Year Actor1Code \
@@ -237,6 +241,7 @@ Combines a filter with stratified reservoir sampling: draws exactly `--n-per-gro
 
 ```
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["US"]}' \
     --stratify QuadClass \
@@ -282,14 +287,14 @@ Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure ra
 `v2`'s two-hop join has two further, independent sources of repeated rows for what's really the same (event, article) pair, each controlled by its own flag above, both defaulting to keeping everything rather than silently discarding anything: GKG 2.1 occasionally carries more than one record for the same document URL, all of them kept by default (`--on-duplicate-document`), and Mentions records one row per sentence that references an event, so an event quoted several times in one article produces several near-identical raw rows, also kept uncollapsed by default (`--collapse-duplicate-mentions` to fold them into one row with a `Mention_Count` column instead). See [Crossref Join Semantics](crossref-join-semantics.md) for the real-data numbers behind both.
 
 ```
-gdeltforge sample --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
+gdeltforge sample --dataset events --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
 gdeltforge crossref --events us_events.parquet --gkg-version v2 --out us_events_enriched.parquet
 ```
 
 For a sample spanning the 2013-2015 window specifically (see [Recipes](recipes.md) for the full worked example):
 
 ```
-gdeltforge sample --mode filtered --filter '{"DATEADDED": {"op": "between", "min": 20130101, "max": 20160101}}' -n 5000 --out gap_events.parquet
+gdeltforge sample --dataset events --mode filtered --filter '{"DATEADDED": {"op": "between", "min": 20130101, "max": 20160101}}' -n 5000 --out gap_events.parquet
 gdeltforge crossref --events gap_events.parquet --gkg-version auto --out gap_events_enriched.parquet
 ```
 
@@ -341,28 +346,29 @@ gdeltforge codes ActionGeo_CountryCode --search korea
 Sample 10,000 rows end-to-end:
 
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 Reproducible sampling (fixed seed):
 
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 5000 --seed 42
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
 ```
 
 USA-only events:
 
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["US"]}' \
     -n 3000
@@ -371,37 +377,37 @@ gdeltforge sample \
 30 events per day:
 
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode daily --per-day 30
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode daily --per-day 30
 ```
 
 Date-restricted pipeline (the date flags apply only to `scrape`; later stages operate on whatever files are already on disk):
 
 ```
-gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 Bash one-liner:
 
 ```bash
-gdeltforge scrape && \
-gdeltforge convert && \
-gdeltforge filter && \
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events && \
+gdeltforge convert --dataset events && \
+gdeltforge filter --dataset events && \
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 PowerShell loop:
 
 ```powershell
 foreach ($c in "scrape", "convert", "filter") {
-    gdeltforge $c
+    gdeltforge $c --dataset events
 }
-gdeltforge sample --mode indexed -n 10000
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 For the complete filter syntax (nested `AND`/`OR` blocks, all operators) see [Filtered Sampling](filtered-sampling.md); for complete runnable examples see [Recipes](recipes.md).

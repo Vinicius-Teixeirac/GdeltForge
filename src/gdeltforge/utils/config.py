@@ -35,6 +35,7 @@ _BUNDLED_DEFAULT_RESOURCE = files("gdeltforge").joinpath("config/default_setting
 # datasets get a prefixed sibling key (e.g. "gkg_v2_downloaded_data_directory").
 _DATASET_PATH_PREFIXES = {
     "gdelt_event": "",
+    "gdelt_event_15min": "event_15min_",
     "gdelt_gkg_v1": "gkg_v1_",
     "gdelt_gkg_v1_counts": "gkg_v1_counts_",
     "gdelt_gkg_v2": "gkg_v2_",
