@@ -59,6 +59,23 @@ def dataset_path_key(dataset: str, base_key: str) -> str:
     return f"{prefix}{base_key}"
 
 
+def _normalize_top_level_sections(config: dict) -> dict:
+    """
+    A top-level section key present in the YAML but with nothing indented
+    under it (e.g. `converter:` immediately followed by the next key, or
+    an explicit `converter: null`) parses to None, not {}. Every
+    downstream `config["converter"].get(...)`-style call (scraper.py,
+    converter.py, filter.py, cli.py) assumes a dict, so touching such a
+    section used to crash with a bare "'NoneType' object has no attribute
+    'get'", with no mention of which section or file was at fault.
+    Replacing a None-valued top-level key with {} here makes every one of
+    those calls fall through to its own .get(key, default) exactly as if
+    the section had been omitted entirely, which is what an empty section
+    actually means.
+    """
+    return {key: ({} if value is None else value) for key, value in config.items()}
+
+
 def _load_bundled_default(path: Path) -> dict:
     """
     Read GdeltForge's own built-in fallback config (bundled inside the
@@ -71,7 +88,7 @@ def _load_bundled_default(path: Path) -> dict:
     config/settings.yaml" convenience.
     """
     text = _BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8")
-    config = yaml.safe_load(text)
+    config = _normalize_top_level_sections(yaml.safe_load(text))
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,7 +142,13 @@ def load_config(config_path: str | None = None) -> dict:
     path = Path(config_path)
     if path.exists():
         with open(path) as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+        if not config:
+            raise ValueError(
+                f"Config file is empty: {path}. Copy config/settings.example.yaml as a "
+                f"starting point, or see docs/configuration.md."
+            )
+        return _normalize_top_level_sections(config)
 
     if not explicit:
         return _load_bundled_default(path)
