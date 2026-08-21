@@ -339,6 +339,24 @@ class TestDeleteSource:
         assert not src.exists()
         assert (tmp_path / "out" / "a_filtered.parquet").exists()
 
+    def test_also_deletes_the_source_s_own_done_marker(self, tmp_path):
+        # The marker sits next to the source parquet, not the filtered
+        # output; once the source is gone it gates nothing
+        # (filter_all_files' own glob can never find a deleted file
+        # again), so leaving it behind is just an orphaned file
+        # --delete-source's whole point was to avoid accumulating.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "a.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2]})
+        marker_path = src.with_name(src.name + ".done")
+
+        GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), [], delete_source=True
+        ).filter_all_files()
+
+        assert not marker_path.exists()
+
     def test_never_deletes_a_file_that_failed_to_filter(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()

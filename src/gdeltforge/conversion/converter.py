@@ -44,6 +44,7 @@ from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, s
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import (
     config_fingerprint,
+    delete_done_marker,
     is_marked_done,
     mark_done,
     unzip_file,
@@ -285,9 +286,16 @@ class GDELTConverter:
         logged and swallowed rather than counted as a conversion failure:
         the conversion itself already succeeded, this is best-effort
         cleanup on top of it, not the operation that matters.
+
+        Also removes the zip's own .done marker: once the zip is gone,
+        the marker gates nothing (a deleted zip can never be found by
+        this method's own glob on a later run), so leaving it behind
+        just accumulates one orphaned file per deleted zip in a
+        directory this flag's whole point was to shrink.
         """
         try:
             zip_path.unlink()
+            delete_done_marker(zip_path)
             logger.debug(f"Deleted source zip after successful conversion: {zip_path.name}")
         except OSError as e:
             logger.warning(f"Could not delete source zip {zip_path.name}: {e}")
