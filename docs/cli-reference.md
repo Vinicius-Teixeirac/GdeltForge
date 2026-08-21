@@ -162,8 +162,12 @@ All sampling modes read from the filtered directory by default; pass `--source c
 | `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` |
 | `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set |
+| `--start-date YYYY-MM-DD` | all | Only sample from files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | all | Only sample from files whose period ends on or before this date |
 | `--out PATH` | all | Output parquet file (default `sample.parquet`) |
 | `--export-format {parquet,csv}` | all | Output file format. `csv` rewrites `--out`'s extension to `.csv`. Off (`parquet`) by default |
+
+`--start-date`/`--end-date` narrow which files each mode reads before it does anything else, the same file-level date filter `scrape`/`convert`/`filter`/`crossref` already apply (reusing `filter_paths_by_date`). In `filtered` mode this stacks with `--filter`'s own row-level predicate pushdown rather than replacing it: the date range prunes which files even get opened, `--filter` then narrows rows within whatever remains. Setting both together logs a warning, since a result narrower than either constraint alone implied is otherwise easy to misread as a bug.
 
 `--export-format csv` is meant for handing a finished sample to a tool that doesn't read Parquet (Excel, a quick spreadsheet look), not as a second internal storage format: CSV has no typed schema, so nullable `Int64` columns and dates round-trip as plain digits with empty-string `NaN`s, not restored automatically the way Parquet's schema is on the next read.
 

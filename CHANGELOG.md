@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `sample` gains `--start-date`/`--end-date`, narrowing which files each of its three modes (`indexed`, `daily`, `filtered`) reads before doing anything else, the same file-level date filter `scrape`/`convert`/`filter`/`crossref` already apply, reusing `filter_paths_by_date`/`date_parser_for`. `--mode filtered` already had its own way to express a date range, through `--filter`'s `gt`/`lt`/`between` conditions (row-level, via `pyarrow.dataset` predicate pushdown); the new flags don't replace that, they stack a cheap file-level pre-filter on top, so a file outside the range is skipped without ever reaching the row-level scan. Combining `--filter` with `--start-date`/`--end-date` in filtered mode logs a warning, since a result narrower than either constraint alone implied is otherwise easy to misread as a bug rather than two mechanisms both being active
+
 ## [0.7.0] - 2026-08-19
 
 ### Added
