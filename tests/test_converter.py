@@ -697,6 +697,110 @@ class TestConversionResumability:
         )
 
 
+def _write_zip_with_raw_csv_bytes(raw_dir, filename: str, csv_bytes: bytes) -> Path:
+    """Like _write_flat_zip, but writes raw bytes for the CSV content
+    instead of write_text, so a genuinely invalid UTF-8 byte can be
+    injected: write_text always encodes as valid UTF-8 itself."""
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    csv_name = filename.removesuffix(".zip")
+    if not csv_name.lower().endswith(".csv"):
+        csv_name += ".csv"
+    csv_path = raw_dir / csv_name
+    csv_path.write_bytes(csv_bytes)
+    zip_path = raw_dir / filename
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.write(csv_path, arcname=csv_name)
+    csv_path.unlink()
+    return zip_path
+
+
+class TestUnicodeDecodeRecovery:
+    """_read_csv used to catch every exception, including
+    UnicodeDecodeError, and return an empty DataFrame; process_single_file's
+    `if df.empty: continue` then treated that as "nothing to write," so the
+    zip still got marked done with zero output and never appeared in the
+    run's failed count. Found for real against a live 373,615-file GKG 2.1
+    conversion where ~6.7% of files (25,160 of them) hit this silently.
+
+    Both halves of the fix are covered here: a decode error is recovered
+    from via encoding_errors="replace" rather than silently dropped, and
+    any other genuine read failure now correctly fails the zip instead of
+    marking it done."""
+
+    def test_invalid_utf8_byte_is_recovered_not_dropped(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        # 0xff on its own is not valid UTF-8 (not a valid single-byte or
+        # leading multi-byte sequence), exactly the shape of error real
+        # GKG 2.1 files hit from non-English source articles. Checked via
+        # process_all_files' return values (failed/outputs), not log
+        # content: those cross the ProcessPoolExecutor worker boundary
+        # cleanly regardless of platform, unlike log records (see
+        # test_invalid_utf8_byte_logs_a_warning below for why that half
+        # needs a real subprocess instead of caplog/capfd).
+        _write_zip_with_raw_csv_bytes(
+            tmp_path / "raw", "20200101.export.CSV.zip",
+            b"1\t2020010\xff1\n2\t20200102\n",
+        )
+
+        outputs, failed = GDELTConverter(cfg).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        # Both rows survived: the whole file wasn't discarded just
+        # because one byte in it couldn't be decoded.
+        out = pd.read_parquet(outputs[0])
+        assert len(out) == 2
+
+    def test_invalid_utf8_byte_logs_a_warning(self, tmp_path):
+        # process_single_file runs inside a ProcessPoolExecutor worker;
+        # that worker's own logging output isn't reliably observable from
+        # within the same pytest process by caplog OR capfd, on either
+        # start method (fork or spawn), see
+        # TestVerboseLogging.test_verbose_reveals_the_per_file_processing_line's
+        # docstring for the full story. Same sidestep here: a genuine
+        # subprocess, whose stdout/stderr pipe is set up at OS level
+        # before anything it forks/spawns in turn ever starts.
+        _write_zip_with_raw_csv_bytes(
+            tmp_path / "raw", "20200101.export.CSV.zip",
+            b"1\t2020010\xff1\n2\t20200102\n",
+        )
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(_make_config(tmp_path)))
+        script_path = tmp_path / "run_convert.py"
+        script_path.write_text(
+            "import json, sys\n"
+            "from gdeltforge.conversion.converter import run_converter\n"
+            "if __name__ == '__main__':\n"
+            "    config = json.loads(open(sys.argv[1]).read())\n"
+            "    run_converter(config)\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(script_path), str(config_path)],
+            capture_output=True, text=True, timeout=60,
+        )
+
+        assert "not valid UTF-8" in result.stderr, result.stderr
+
+    def test_a_genuine_read_failure_raises_naming_the_csv(self, tmp_path, monkeypatch):
+        # Exercised directly against process_single_file, not through
+        # process_all_files' ProcessPoolExecutor: Windows spawn re-imports
+        # this module fresh in each worker, so a monkeypatch made here in
+        # the parent process wouldn't reach a spawned worker anyway. This
+        # is exactly the boundary the fix lives at regardless.
+        cfg = _make_config(tmp_path)
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        converter = GDELTConverter(cfg)
+
+        def _boom(csv_path):
+            raise ValueError("simulated unrecoverable read failure")
+
+        monkeypatch.setattr(converter, "_read_csv", _boom)
+
+        with pytest.raises(RuntimeError, match="could not be processed"):
+            converter.process_single_file(str(zip_path))
+
+
 class TestDeleteSource:
     """delete_source (CLI: --delete-source) removes the source zip once
     its parquet output is confirmed written and marked done, so a full
