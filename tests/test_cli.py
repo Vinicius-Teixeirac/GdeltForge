@@ -94,6 +94,23 @@ class TestOutPathForExportFormat:
         assert out == Path("result.csv")
 
 
+class TestSampleDateFlags:
+    def test_defaults_to_none(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["sample", "--mode", "indexed"])
+        assert args.start_date is None
+        assert args.end_date is None
+
+    def test_dates_are_accepted(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(
+            ["sample", "--mode", "indexed",
+             "--start-date", "2020-01-01", "--end-date", "2020-12-31"]
+        )
+        assert args.start_date == "2020-01-01"
+        assert args.end_date == "2020-12-31"
+
+
 class TestRunScrapeCmd:
     @staticmethod
     def _args(**overrides):
@@ -489,7 +506,10 @@ class TestRunSamplingCmdSource:
         captured = {}
 
         class FakeIndexedSampler:
-            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
                 captured["columns"] = columns
@@ -502,6 +522,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="indexed", source=source, n=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
         )
         cli.run_sampling_cmd(self._config(), args)
         return captured
@@ -524,7 +545,10 @@ class TestRunSamplingCmdSource:
         captured = {}
 
         class FakeIndexedSampler:
-            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
                 captured["columns"] = columns
 
             def get_random_sample(self, n):
@@ -535,7 +559,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
-            export_format="parquet",
+            export_format="parquet", start_date=None, end_date=None,
         )
         cli.run_sampling_cmd(self._config(), args)
 
@@ -547,7 +571,10 @@ class TestRunSamplingCmdSource:
         captured = {}
 
         class FakeDailySampler:
-            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
                 captured["columns"] = columns
 
             def get_daily_samples(self, samples_per_day):
@@ -558,7 +585,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="daily", source="filtered", per_day=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
-            export_format="parquet",
+            export_format="parquet", start_date=None, end_date=None,
         )
         cli.run_sampling_cmd(self._config(), args)
 
@@ -572,7 +599,10 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
 
         class FakeIndexedSampler:
-            def __init__(self, folder_path, historical_folder, random_state, columns=None):
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
                 pass
 
             def get_random_sample(self, n):
@@ -583,6 +613,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="csv",
+            start_date=None, end_date=None,
         )
         cli.run_sampling_cmd(self._config(), args)
 
@@ -592,6 +623,150 @@ class TestRunSamplingCmdSource:
         result = pd.read_csv(out_csv)
         assert result["GlobalEventID"].tolist() == [1, 2]
         assert result["QuadClass"].tolist() == [1, 3]
+
+
+class TestRunSamplingCmdDateFiltering:
+    """--start-date/--end-date reach the sampler classes, get validated the
+    same way scrape/convert/filter/crossref already do, and (filtered mode
+    only) log a warning when combined with --filter, since the two narrow
+    the result independently rather than one replacing the other."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            out="o.parquet", columns=None, export_format="parquet",
+            filter=None, stratify=None, n_per_group=None,
+            start_date=None, end_date=None,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_date_strings_are_parsed_and_passed_through(self, tmp_path, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeIndexedSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                captured["start_date"] = start_date
+                captured["end_date"] = end_date
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        cli.run_sampling_cmd(
+            self._config(),
+            self._args(
+                out=str(tmp_path / "o.parquet"),
+                start_date="2020-01-01", end_date="2020-12-31",
+            ),
+        )
+
+        assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
+
+    def test_invalid_date_string_raises_clearly(self, tmp_path):
+        with pytest.raises(ValueError, match="Invalid date for --start-date"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(out=str(tmp_path / "o.parquet"), start_date="not-a-date"),
+            )
+
+    def test_start_after_end_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be after"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(
+                    out=str(tmp_path / "o.parquet"),
+                    start_date="2020-12-31", end_date="2020-01-01",
+                ),
+            )
+
+    def test_warns_when_filtered_mode_combines_filter_and_dates(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(
+                    mode="filtered", filter='{"QuadClass": [1]}',
+                    out=str(tmp_path / "o.parquet"), start_date="2020-01-01",
+                ),
+            )
+
+        assert any("both set" in r.message for r in caplog.records)
+
+    def test_no_warning_when_only_dates_are_set(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeIndexedSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(out=str(tmp_path / "o.parquet"), start_date="2020-01-01"),
+            )
+
+        assert not any("both set" in r.message for r in caplog.records)
+
+    def test_no_warning_when_only_filter_is_set(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(
+                    mode="filtered", filter='{"QuadClass": [1]}',
+                    out=str(tmp_path / "o.parquet"),
+                ),
+            )
+
+        assert not any("both set" in r.message for r in caplog.records)
 
 
 class TestRunCrossrefCmd:

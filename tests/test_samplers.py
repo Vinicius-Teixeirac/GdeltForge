@@ -1,10 +1,12 @@
 import logging
+from datetime import date
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from gdeltforge.sampling.samplers import DailySampler, FilteredSampler, IndexedSampler
+from gdeltforge.scraping.scraper import parse_gdelt_gkg_v1_file_date
 
 # A small, hand-verifiable dataset covering equality, IN-list, range, and
 # AND/OR combinations. Every filter test below asserts an exact expected
@@ -580,3 +582,205 @@ class TestStratifiedSampling:
         counts = df.groupby("QuadClass").size()
         assert counts[1] == 2
         assert counts[2] == 5
+
+
+# ----------------------------------------------------------
+# --start-date/--end-date file-level pre-filtering
+# ----------------------------------------------------------
+def _write_daily_file(folder, day: str, ids: list[int]):
+    """day is YYYYMMDD; filename matches parse_file_date's daily pattern."""
+    pd.DataFrame({"GlobalEventID": ids, "Day": [int(day)] * len(ids)}).to_parquet(
+        folder / f"{day}.export.parquet"
+    )
+
+
+class TestIndexedSamplerDateFiltering:
+    def test_only_in_range_files_are_sampled(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        _write_daily_file(folder, "20150102", [3, 4])
+        _write_daily_file(folder, "20150103", [5, 6])
+
+        sampler = IndexedSampler(
+            str(folder), random_state=1,
+            start_date=date(2015, 1, 2), end_date=date(2015, 1, 2),
+        )
+        df = sampler.get_random_sample(2)
+
+        assert sorted(df["GlobalEventID"]) == [3, 4]
+
+    def test_open_ended_start_date(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        _write_daily_file(folder, "20150102", [3, 4])
+        _write_daily_file(folder, "20150103", [5, 6])
+
+        sampler = IndexedSampler(str(folder), random_state=1, start_date=date(2015, 1, 2))
+        df = sampler.get_random_sample(4)
+
+        assert sorted(df["GlobalEventID"]) == [3, 4, 5, 6]
+
+    def test_open_ended_end_date(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        _write_daily_file(folder, "20150102", [3, 4])
+        _write_daily_file(folder, "20150103", [5, 6])
+
+        sampler = IndexedSampler(str(folder), random_state=1, end_date=date(2015, 1, 2))
+        df = sampler.get_random_sample(4)
+
+        assert sorted(df["GlobalEventID"]) == [1, 2, 3, 4]
+
+    def test_unparseable_filename_is_kept_regardless_of_range(self, tmp_path):
+        # A file whose name carries no date the parser understands (e.g. a
+        # pre-daily historical archive) is kept rather than excluded, same
+        # as filter_paths_by_date already does for convert/filter/crossref.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        pd.DataFrame({"GlobalEventID": [99], "Day": [19790101]}).to_parquet(
+            folder / "misc.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(folder), random_state=1,
+            start_date=date(2015, 6, 1), end_date=date(2015, 6, 30),
+        )
+        df = sampler.get_random_sample(1)
+
+        assert df["GlobalEventID"].tolist() == [99]
+
+    def test_fully_excluded_range_raises(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+
+        with pytest.raises(FileNotFoundError):
+            IndexedSampler(
+                str(folder), random_state=1,
+                start_date=date(2016, 1, 1), end_date=date(2016, 1, 31),
+            )
+
+    def test_custom_date_parser_is_honored(self, tmp_path):
+        # "20150101.parquet" isn't parseable by the default parse_file_date
+        # (no .export.parquet/.zip suffix, wrong length for monthly/yearly),
+        # but is a valid GKG 1.0-style filename under parse_gdelt_gkg_v1_file_date.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(folder / "20150101.parquet")
+        pd.DataFrame({"GlobalEventID": [3, 4]}).to_parquet(folder / "20150201.parquet")
+
+        sampler = IndexedSampler(
+            str(folder), random_state=1,
+            start_date=date(2015, 1, 1), end_date=date(2015, 1, 31),
+            date_parser=parse_gdelt_gkg_v1_file_date,
+        )
+        df = sampler.get_random_sample(2)
+
+        assert sorted(df["GlobalEventID"]) == [1, 2]
+
+
+class TestDailySamplerDateFiltering:
+    def test_only_in_range_files_contribute(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        _write_daily_file(folder, "20150102", [3, 4])
+        _write_daily_file(folder, "20150103", [5, 6])
+
+        sampler = DailySampler(
+            str(folder), random_state=1,
+            start_date=date(2015, 1, 2), end_date=date(2015, 1, 2),
+        )
+        df = sampler.get_daily_samples(samples_per_day=10)
+
+        assert sorted(df["GlobalEventID"]) == [3, 4]
+
+    def test_unparseable_filename_is_kept_regardless_of_range(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        pd.DataFrame({"GlobalEventID": [99], "Day": [19790101]}).to_parquet(
+            folder / "misc.parquet"
+        )
+
+        sampler = DailySampler(
+            str(folder), random_state=1,
+            start_date=date(2015, 6, 1), end_date=date(2015, 6, 30),
+        )
+        df = sampler.get_daily_samples(samples_per_day=10)
+
+        assert df["GlobalEventID"].tolist() == [99]
+
+    def test_fully_excluded_range_raises(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+
+        sampler = DailySampler(
+            str(folder), random_state=1,
+            start_date=date(2016, 1, 1), end_date=date(2016, 1, 31),
+        )
+        with pytest.raises(FileNotFoundError):
+            sampler.get_daily_samples(samples_per_day=10)
+
+
+class TestFilteredSamplerDateFiltering:
+    def test_only_in_range_files_are_scanned(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+        _write_daily_file(folder, "20150102", [3, 4])
+        _write_daily_file(folder, "20150103", [5, 6])
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "Day"], random_state=1,
+            start_date=date(2015, 1, 2), end_date=date(2015, 1, 2),
+        )
+        df = sampler.filter_dataset()
+
+        assert sorted(df["GlobalEventID"]) == [3, 4]
+
+    def test_stacks_with_row_level_filter_dict(self, tmp_path):
+        # A file inside the date range can still have its rows narrowed
+        # further by --filter; the two mechanisms compose rather than
+        # one replacing the other.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pd.DataFrame({
+            "GlobalEventID": [1, 2, 3, 4],
+            "Day": [20150102] * 4,
+            "QuadClass": [1, 2, 1, 2],
+        }).to_parquet(folder / "20150102.export.parquet")
+        pd.DataFrame({
+            "GlobalEventID": [5, 6],
+            "Day": [20150103] * 2,
+            "QuadClass": [1, 1],
+        }).to_parquet(folder / "20150103.export.parquet")
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "Day", "QuadClass"], random_state=1,
+            filter_dict={"QuadClass": [1]},
+            start_date=date(2015, 1, 2), end_date=date(2015, 1, 2),
+        )
+        df = sampler.filter_dataset()
+
+        # 20150103 is excluded by the date range even though its rows would
+        # otherwise pass QuadClass == 1; only 20150102's QuadClass == 1 rows
+        # (GlobalEventID 1, 3) survive both filters.
+        assert sorted(df["GlobalEventID"]) == [1, 3]
+
+    def test_fully_excluded_range_raises(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _write_daily_file(folder, "20150101", [1, 2])
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "Day"], random_state=1,
+            start_date=date(2016, 1, 1), end_date=date(2016, 1, 31),
+        )
+        with pytest.raises(FileNotFoundError):
+            sampler.filter_dataset()

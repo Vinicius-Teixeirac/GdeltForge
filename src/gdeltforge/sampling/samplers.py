@@ -10,6 +10,8 @@ Provides:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import date
 from enum import Enum
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +21,7 @@ import pandas as pd
 import pyarrow.dataset as ds
 from tqdm import tqdm
 
+from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
 from gdeltforge.utils.logging import get_logger
 
 from . import cameo_codes
@@ -57,6 +60,9 @@ class IndexedSampler:
         historical_folder: str | None = None,
         random_state: int | None = 42,
         columns: set[str] | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
         self.folder = Path(folder_path)
         self.columns = columns
@@ -69,10 +75,15 @@ class IndexedSampler:
                     set(parquet_files) | set(hist_path.rglob("*.parquet"))
                 )
 
+        parquet_files = filter_paths_by_date(
+            parquet_files, start_date, end_date, date_parser=date_parser
+        )
+
         if not parquet_files:
             raise FileNotFoundError(
                 f"No parquet files found in {self.folder}"
                 + (f" or {historical_folder}" if historical_folder else "")
+                + (f" within [{start_date} - {end_date}]" if start_date or end_date else "")
             )
 
         self.rng   = ReproducibleRNG(random_state)
@@ -121,6 +132,9 @@ class DailySampler:
         random_state: int | None = 42,
         columns: set[str] | None = None,
         date_column: str = "Day",
+        start_date: date | None = None,
+        end_date: date | None = None,
+        date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
@@ -128,6 +142,9 @@ class DailySampler:
         )
         self.columns = columns
         self.date_column = date_column
+        self.start_date = start_date
+        self.end_date = end_date
+        self.date_parser = date_parser
         self.rng = ReproducibleRNG(random_state)
 
     def get_daily_samples(self, samples_per_day: int = 10) -> pd.DataFrame:
@@ -139,10 +156,18 @@ class DailySampler:
         )
         parquet_files = flat_files + hist_files
 
+        parquet_files = filter_paths_by_date(
+            parquet_files, self.start_date, self.end_date, date_parser=self.date_parser
+        )
+
         if not parquet_files:
             raise FileNotFoundError(
                 f"No parquet files found in {self.folder}"
                 + (f" or {self.historical_folder}" if self.historical_folder else "")
+                + (
+                    f" within [{self.start_date} - {self.end_date}]"
+                    if self.start_date or self.end_date else ""
+                )
             )
 
         # date_column drives the grouping below, so it has to be read even
@@ -195,6 +220,9 @@ class FilteredSampler:
         filter_dict: dict[str, Any] | None = None,
         random_state: int | None = 42,
         historical_folder: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
@@ -206,6 +234,9 @@ class FilteredSampler:
         self.columns     = columns or self.gdelt_columns
         self.filter_dict = filter_dict or {}
         self.rng         = ReproducibleRNG(random_state)
+        self.start_date  = start_date
+        self.end_date    = end_date
+        self.date_parser = date_parser
 
         self._validate_columns()
         self._validate_filter_dict()
@@ -355,10 +386,18 @@ class FilteredSampler:
         if self.historical_folder and self.historical_folder.exists():
             all_files += list(self.historical_folder.rglob("*.parquet"))
 
+        all_files = filter_paths_by_date(
+            all_files, self.start_date, self.end_date, date_parser=self.date_parser
+        )
+
         if not all_files:
             raise FileNotFoundError(
                 f"No parquet files found in {self.folder}"
                 + (f" or {self.historical_folder}" if self.historical_folder else "")
+                + (
+                    f" within [{self.start_date} - {self.end_date}]"
+                    if self.start_date or self.end_date else ""
+                )
             )
 
         # Pass files as a flat list so PyArrow uses a single physical schema.
