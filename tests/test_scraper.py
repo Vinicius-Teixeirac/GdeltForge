@@ -1,6 +1,7 @@
 import hashlib
 import logging
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,8 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
+    sort_paths_by_date,
+    sort_urls_by_date,
 )
 
 
@@ -208,6 +211,47 @@ class TestFilterUrlsByDate:
 
 
 # ------------------------------------------------------------
+# sort_urls_by_date: --order for scrape
+# ------------------------------------------------------------
+class TestSortUrlsByDate:
+    def _files(self):
+        return [
+            GdeltFile(url="http://x/20200601.export.CSV.zip"),
+            GdeltFile(url="http://x/20200101.export.CSV.zip"),
+            GdeltFile(url="http://x/20191231.export.CSV.zip"),
+        ]
+
+    def test_asc_is_oldest_first(self):
+        ordered = sort_urls_by_date(self._files(), "asc", date_parser=parse_file_date)
+        assert [f.url for f in ordered] == [
+            "http://x/20191231.export.CSV.zip",
+            "http://x/20200101.export.CSV.zip",
+            "http://x/20200601.export.CSV.zip",
+        ]
+
+    def test_desc_is_newest_first(self):
+        ordered = sort_urls_by_date(self._files(), "desc", date_parser=parse_file_date)
+        assert [f.url for f in ordered] == [
+            "http://x/20200601.export.CSV.zip",
+            "http://x/20200101.export.CSV.zip",
+            "http://x/20191231.export.CSV.zip",
+        ]
+
+    def test_undated_file_is_always_last(self):
+        files = self._files() + [GdeltFile(url="http://x/unparseable.txt")]
+
+        asc = sort_urls_by_date(files, "asc", date_parser=parse_file_date)
+        desc = sort_urls_by_date(files, "desc", date_parser=parse_file_date)
+
+        assert asc[-1].url == "http://x/unparseable.txt"
+        assert desc[-1].url == "http://x/unparseable.txt"
+
+    def test_invalid_order_raises(self):
+        with pytest.raises(ValueError, match="order must be one of"):
+            sort_urls_by_date(self._files(), "sideways", date_parser=parse_file_date)
+
+
+# ------------------------------------------------------------
 # filter_paths_by_date: convert/filter's local-path equivalent of
 # filter_urls_by_date, used against a directory already on disk
 # ------------------------------------------------------------
@@ -275,6 +319,54 @@ class TestFilterPathsByDate:
             date_parser=parse_gdeltv2_file_date,
         )
         assert kept == ["/data/20150218233000.gkg.parquet"]
+
+
+# ------------------------------------------------------------
+# sort_paths_by_date: --order for convert/filter
+# ------------------------------------------------------------
+class TestSortPathsByDate:
+    def _paths(self):
+        return [
+            "/data/20200601.export.parquet",
+            "/data/20200101.export.parquet",
+            "/data/20191231.export.parquet",
+        ]
+
+    def test_asc_is_oldest_first(self):
+        ordered = sort_paths_by_date(self._paths(), "asc", date_parser=parse_file_date)
+        assert ordered == [
+            "/data/20191231.export.parquet",
+            "/data/20200101.export.parquet",
+            "/data/20200601.export.parquet",
+        ]
+
+    def test_desc_is_newest_first(self):
+        ordered = sort_paths_by_date(self._paths(), "desc", date_parser=parse_file_date)
+        assert ordered == [
+            "/data/20200601.export.parquet",
+            "/data/20200101.export.parquet",
+            "/data/20191231.export.parquet",
+        ]
+
+    def test_undated_file_is_always_last(self):
+        paths = self._paths() + ["/data/README.txt"]
+
+        asc = sort_paths_by_date(paths, "asc", date_parser=parse_file_date)
+        desc = sort_paths_by_date(paths, "desc", date_parser=parse_file_date)
+
+        assert asc[-1] == "/data/README.txt"
+        assert desc[-1] == "/data/README.txt"
+
+    def test_works_with_path_objects_not_just_strings(self):
+        paths = [Path("/data/20200601.export.parquet"), Path("/data/20200101.export.parquet")]
+        ordered = sort_paths_by_date(paths, "asc", date_parser=parse_file_date)
+        assert ordered == [
+            Path("/data/20200101.export.parquet"), Path("/data/20200601.export.parquet"),
+        ]
+
+    def test_invalid_order_raises(self):
+        with pytest.raises(ValueError, match="order must be one of"):
+            sort_paths_by_date(self._paths(), "sideways", date_parser=parse_file_date)
 
 
 # ------------------------------------------------------------
@@ -927,3 +1019,53 @@ class TestRunScrapingPipelineForceAndDryRun:
         scraper.run_scraping_pipeline(config, force=True)
 
         assert captured == {"force": True}
+
+
+class TestRunScrapingPipelineOrder:
+    """--order reaches sort_urls_by_date before download_gdelt_files is
+    ever called; verified end to end through dry_run's own preview log,
+    the one place the resulting order is directly observable without
+    mocking download_gdelt_files' internal submission order too."""
+
+    @staticmethod
+    def _stub_links(monkeypatch, files):
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: files)
+
+    def _files(self):
+        return [
+            GdeltFile(url="http://x/20200601.export.CSV.zip"),
+            GdeltFile(url="http://x/20200101.export.CSV.zip"),
+            GdeltFile(url="http://x/20191231.export.CSV.zip"),
+        ]
+
+    def test_default_order_is_ascending(self, monkeypatch, tmp_path, caplog):
+        self._stub_links(monkeypatch, self._files())
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.scraping.scraper"):
+            scraper.run_scraping_pipeline(config, dry_run=True)
+
+        would_download = [
+            r.message for r in caplog.records if "[dry run] Would download:" in r.message
+        ]
+        assert would_download == [
+            "[dry run] Would download: 20191231.export.CSV.zip",
+            "[dry run] Would download: 20200101.export.CSV.zip",
+            "[dry run] Would download: 20200601.export.CSV.zip",
+        ]
+
+    def test_desc_orders_newest_first(self, monkeypatch, tmp_path, caplog):
+        self._stub_links(monkeypatch, self._files())
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.scraping.scraper"):
+            scraper.run_scraping_pipeline(config, dry_run=True, order="desc")
+
+        would_download = [
+            r.message for r in caplog.records if "[dry run] Would download:" in r.message
+        ]
+        assert would_download == [
+            "[dry run] Would download: 20200601.export.CSV.zip",
+            "[dry run] Would download: 20200101.export.CSV.zip",
+            "[dry run] Would download: 20191231.export.CSV.zip",
+        ]

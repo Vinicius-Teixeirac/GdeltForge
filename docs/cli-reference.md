@@ -46,6 +46,7 @@ gdeltforge scrape --end-date   2015-12-31          # up to date
 | `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
+| `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
 | `--verbose` | Show per-attempt download detail (filename, attempt N/M) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
@@ -70,6 +71,8 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 
 `--force` re-downloads a file even when one with the same name is already present, overwriting it. `--dry-run` reports how many files would be downloaded versus skipped, honoring `--force`'s effect on that count, without making any network request.
 
+`--order` picks which files are submitted to the download pool first: `asc` (the default) matches `convert`/`filter`/`sample`/`crossref`'s own existing file order, so an interrupted scrape leaves a contiguous prefix of history those stages can already process cleanly; `desc` prioritizes the most recent files, useful when the goal is current data rather than a full backfill. It only controls submission order, not real completion order: downloads run concurrently, so a later-submitted small file can still finish before an earlier-submitted large one.
+
 ## `gdeltforge convert`
 
 ```
@@ -83,6 +86,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 | `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
+| `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
 | `--delete-source` | Delete each source ZIP once its parquet output is written and confirmed done. Off by default |
 | `--verbose` | Show per-file conversion detail (which ZIP is being processed, which are skipped as already done) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
@@ -97,6 +101,8 @@ gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
 Already-converted files are skipped on a rerun, the same way `scrape` skips already-downloaded files; an interrupted run resumes rather than starting over. See [Configuration](configuration.md#resumability) for how that marker also tracks `output_columns`/`compression`, so a config change is reprocessed rather than skipped.
+
+`--order` picks which ZIPs are submitted to the worker pool first, same meaning and same "submission order, not completion order" caveat as `scrape`'s own `--order`. Unlike `scrape`, `convert`'s file discovery has no inherent order of its own to preserve or override (it lists the download directory, not a remote listing), so `--order` is the only thing that makes this deterministic at all.
 
 `--delete-source` reclaims the raw ZIP's disk space once its parquet output is confirmed written, so a full historical pull doesn't need to hold the raw archive and the converted output at once. Only the ZIP; the intermediate extracted CSV is already removed unless `converter.keep_unzipped` is set. Never deletes on a failed conversion, and never runs ahead of the `.done` marker. Combined with `output_columns`, the columns it dropped can't be recovered later without re-scraping the original file, so a warning fires once at the start of a run configured that way.
 
@@ -119,6 +125,7 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 | `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (default `events`; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
+| `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
 | `--delete-source` | Delete each source (unfiltered, converted) parquet once its filtered output is written and confirmed done. Off by default |
 | `--verbose` | Show per-file filter detail (rows kept per file, which are skipped as already done) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
@@ -129,6 +136,8 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 `--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
 
 Already-filtered files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#filter) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
+
+`--order` picks which files are submitted to the worker pool first, same meaning as `convert`'s own `--order`. When Hive-partitioned historical data is configured, flat and historical files are ordered together as one sequence, not each sorted independently and concatenated, so `desc` genuinely surfaces the single newest file across both first rather than just the newest of whichever group happens to be listed first.
 
 `--delete-source` reclaims the converted parquet's disk space once its filtered output is confirmed written, so a full historical pull doesn't need to hold both copies at once. Never deletes on a failed filter, and never runs ahead of the `.done` marker. Two real costs worth knowing before turning it on: combined with `columns_to_check`/`output_columns`/`float32_columns`, whatever those narrowed away can't be recovered later without re-converting from the raw ZIP (a warning fires once at the start of a run configured that way), and it also removes the option to later `sample --source converted` against the unfiltered data.
 

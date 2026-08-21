@@ -584,6 +584,62 @@ def filter_urls_by_date(
     return kept
 
 
+_ORDERS = ("asc", "desc")
+
+
+def _date_sort_key(
+    filename: str,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+    order: str,
+) -> tuple[bool, int]:
+    """
+    Single ascending sort key that produces the right result for either
+    order without a separate reverse=True: reverse=True would also flip
+    the "undated last" placement below, which isn't wanted: a file
+    whose name carries no parseable date should stay last regardless of
+    which direction was requested, since there's nothing meaningful to
+    rank it by either way.
+
+    (True, 0) for an undated file always sorts after any (False, ...)
+    dated one. For a dated file, the ordinal is negated when order is
+    "desc", so ascending sort on the whole key set produces descending
+    date order among the dated files while leaving the undated ones
+    pinned to the end.
+    """
+    if order not in _ORDERS:
+        raise ValueError(f"order must be one of {_ORDERS}, got {order!r}")
+
+    start, _ = date_parser(filename)
+    if start is None:
+        return (True, 0)
+
+    ordinal = start.toordinal()
+    return (False, -ordinal if order == "desc" else ordinal)
+
+
+def sort_urls_by_date(
+    files: list[GdeltFile],
+    order: str,
+    date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
+) -> list[GdeltFile]:
+    """
+    Order files by the period-start date their filename encodes:
+    "asc" for oldest first, "desc" for newest first. A file whose
+    filename doesn't parse to a date is placed last regardless of order
+    (see _date_sort_key); in practice this shouldn't happen here, since
+    collect_gdelt_links's file_predicate already restricts the listing to
+    known dataset filenames, but a file list is still accepted as-is
+    rather than assumed uniform.
+
+    This only controls submission order into download_gdelt_files'
+    thread pool, not real completion order: concurrent downloads finish
+    in whatever order their individual requests happen to complete.
+    """
+    return sorted(
+        files, key=lambda f: _date_sort_key(f.url.split("/")[-1], date_parser, order)
+    )
+
+
 _PathT = TypeVar("_PathT", str, Path)
 
 
@@ -644,6 +700,26 @@ def filter_paths_by_date(
     )
 
     return kept
+
+
+def sort_paths_by_date(
+    paths: list[_PathT],
+    order: str,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+) -> list[_PathT]:
+    """
+    Order local file paths (convert/filter) by the period-start date their
+    filename encodes: "asc" for oldest first, "desc" for newest first.
+    Same "undated always last" behavior as sort_urls_by_date, and for the
+    same reason: a pre-daily historical archive (1979.parquet,
+    200601.parquet) carries no single day to rank by either direction.
+
+    This only controls submission order into the ProcessPoolExecutor
+    convert/filter each use, not real completion order: concurrent
+    workers finish in whatever order their individual work happens to
+    complete.
+    """
+    return sorted(paths, key=lambda p: _date_sort_key(Path(p).name, date_parser, order))
 
 
 # ------------------------------------------------------------
@@ -838,6 +914,7 @@ def run_scraping_pipeline(
     start_date: date | None = None,
     end_date: date | None = None,
     dataset: str = "gdelt_event",
+    order: str = "asc",
     verbose: bool = False,
     quiet: bool = False,
     force: bool = False,
@@ -845,7 +922,14 @@ def run_scraping_pipeline(
 ) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date ->
-    warn if huge -> download.
+    sort by order -> warn if huge -> download.
+
+    order ("asc", the default, or "desc") only controls which files are
+    submitted to the download thread pool first, not real completion
+    order under concurrency (see sort_urls_by_date). "asc" (oldest first)
+    matches convert/filter/sample/crossref's own existing file order, so
+    an interrupted scrape leaves a contiguous prefix of history those
+    stages can already process cleanly.
 
     verbose raises this module's own logger to DEBUG, revealing the
     per-attempt "Downloading {filename} (attempt N/M)" line that's
@@ -873,6 +957,7 @@ def run_scraping_pipeline(
 
     date_parser = date_parser_for(dataset)
     files = filter_urls_by_date(files, start_date, end_date, date_parser=date_parser)
+    files = sort_urls_by_date(files, order, date_parser=date_parser)
 
     _warn_if_large_scrape(files, dataset)
 

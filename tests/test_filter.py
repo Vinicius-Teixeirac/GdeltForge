@@ -476,6 +476,87 @@ class TestDryRun:
         )
 
 
+class TestOrder:
+    """order (CLI: --order) controls which file is submitted to the
+    worker pool first; verified through dry_run's own per-file preview
+    log, the one place the resulting order is directly observable
+    without mocking ProcessPoolExecutor's internal submission order too."""
+
+    @staticmethod
+    def _write_three_flat_files(input_dir):
+        input_dir.mkdir(parents=True, exist_ok=True)
+        names = (
+            "20200601.export.parquet", "20200101.export.parquet", "20191231.export.parquet",
+        )
+        for name in names:
+            _write_parquet(input_dir / name, {"GlobalEventID": [1], "QuadClass": [1]})
+
+    def test_default_order_is_ascending(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        self._write_three_flat_files(input_dir)
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
+            GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True
+            ).filter_all_files()
+
+        would_filter = [
+            r.message for r in caplog.records if r.message.startswith("[dry run]   ")
+        ]
+        assert would_filter == [
+            "[dry run]   20191231.export.parquet",
+            "[dry run]   20200101.export.parquet",
+            "[dry run]   20200601.export.parquet",
+        ]
+
+    def test_desc_orders_newest_first(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        self._write_three_flat_files(input_dir)
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
+            GDELTFilter(
+                str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+                order="desc", dry_run=True,
+            ).filter_all_files()
+
+        would_filter = [
+            r.message for r in caplog.records if r.message.startswith("[dry run]   ")
+        ]
+        assert would_filter == [
+            "[dry run]   20200601.export.parquet",
+            "[dry run]   20200101.export.parquet",
+            "[dry run]   20191231.export.parquet",
+        ]
+
+    def test_flat_and_historical_are_ordered_together_not_concatenated(self, tmp_path, caplog):
+        # A per-group sort (flat sorted, historical sorted, then
+        # concatenated) would put every flat file before every historical
+        # one regardless of order. Sorting them together means desc
+        # surfaces the single newest file across both groups first.
+        flat_in = tmp_path / "flat_in"
+        hist_in = tmp_path / "hist_in"
+        flat_in.mkdir()
+        part_dir = hist_in / "Year=1979"
+        part_dir.mkdir(parents=True)
+        _write_parquet(part_dir / "1979.parquet", {"GlobalEventID": [1], "QuadClass": [1]})
+        _write_parquet(
+            flat_in / "20200101.export.parquet", {"GlobalEventID": [1], "QuadClass": [1]}
+        )
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
+            GDELTFilter(
+                str(flat_in), str(tmp_path / "flat_out"), ["QuadClass"],
+                historical_input_folder=str(hist_in),
+                historical_output_folder=str(tmp_path / "hist_out"),
+                order="desc", dry_run=True,
+            ).filter_all_files()
+
+        would_filter = [
+            r.message for r in caplog.records if r.message.startswith("[dry run]   ")
+        ]
+        assert would_filter == ["[dry run]   20200101.export.parquet", "[dry run]   1979.parquet"]
+
+
 class TestOutputColumns:
     def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
         filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])

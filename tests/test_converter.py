@@ -843,6 +843,49 @@ class TestDryRun:
         )
 
 
+class TestOrder:
+    """order (CLI: --order) controls which zip is submitted to the worker
+    pool first; verified through dry_run's own per-file preview log, the
+    one place the resulting order is directly observable without mocking
+    ProcessPoolExecutor's internal submission order too."""
+
+    @staticmethod
+    def _write_three_zips(tmp_path):
+        _write_flat_zip(tmp_path / "raw", filename="20200601.export.CSV.zip")
+        _write_flat_zip(tmp_path / "raw", filename="20200101.export.CSV.zip")
+        _write_flat_zip(tmp_path / "raw", filename="20191231.export.CSV.zip")
+
+    def test_default_order_is_ascending(self, tmp_path, caplog):
+        self._write_three_zips(tmp_path)
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.conversion.converter"):
+            GDELTConverter(_make_config(tmp_path), dry_run=True).process_all_files()
+
+        would_convert = [
+            r.message for r in caplog.records if r.message.startswith("[dry run]   ")
+        ]
+        assert would_convert == [
+            "[dry run]   20191231.export.CSV.zip",
+            "[dry run]   20200101.export.CSV.zip",
+            "[dry run]   20200601.export.CSV.zip",
+        ]
+
+    def test_desc_orders_newest_first(self, tmp_path, caplog):
+        self._write_three_zips(tmp_path)
+
+        with caplog.at_level("DEBUG", logger="gdeltforge.conversion.converter"):
+            GDELTConverter(_make_config(tmp_path), order="desc", dry_run=True).process_all_files()
+
+        would_convert = [
+            r.message for r in caplog.records if r.message.startswith("[dry run]   ")
+        ]
+        assert would_convert == [
+            "[dry run]   20200601.export.CSV.zip",
+            "[dry run]   20200101.export.CSV.zip",
+            "[dry run]   20191231.export.CSV.zip",
+        ]
+
+
 class TestSaveParquetAtomicity:
     """_save_parquet/_save_historical_parquet used to write straight to
     their final path. Found for real: a process killed mid-write while
