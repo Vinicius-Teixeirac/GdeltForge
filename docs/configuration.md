@@ -27,19 +27,22 @@ An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a path that turns out to 
 
 ## Datasets and `--dataset`
 
-`convert`, `filter`, `sample`, and `scrape` all accept `--dataset {events,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, defaulting to `events`. This selects which set of `columns`/`columns_numeric`/`filter.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
+`convert`, `filter`, `sample`, and `scrape` all accept `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there is no default. This selects which set of `columns`/`columns_numeric`/`filter.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
 
 | `--dataset` | Config key | Status |
 |---|---|---|
 | `events` | `gdelt_event` | Full support |
+| `events-15min` | `gdelt_event_15min` | Full support (Events at native GDELT 2.0 granularity; genuinely a different, 61-column schema from `events`' 58, not just finer granularity, see below) |
 | `gkg-v2` | `gdelt_gkg_v2` | Full support (GKG 2.1, the current format, live since Feb 2015) |
 | `mentions` | `gdelt_mentions` | Full support (the bridge table between Events and GKG; see [Comparison](comparison.md) for why) |
 | `gkg-v1` | `gdelt_gkg_v1` | Full support (legacy format, April 2013 through February 2015 as the primary feed, still published daily since) |
 | `gkg-v1-counts` | `gdelt_gkg_v1_counts` | Full support (GKG 1.0's separate, narrower "Counts" file, one row per count mention rather than per document) |
 
+`events` and `events-15min` cover the same underlying events at different granularity and schema richness, not the same file at two speeds: `events` is the daily/monthly/yearly archive, still served in the older, GDELT-1.0-compatible 58-column format for backward compatibility; `events-15min` is discovered from the same 15-minute master file list `gkg-v2`/`mentions` use, in native GDELT 2.0's 61-column format, with an `ADM2Code` field added to each of the three geo blocks (`Actor1Geo`/`Actor2Geo`/`ActionGeo`) that the daily format doesn't carry. They deliberately get separate `paths.*` directories (see below) so pulling both for an overlapping date range can never double-count the same events into one pipeline's output.
+
 ## `columns`
 
-`columns.<dataset>` lists every column in that dataset's schema, in file order. It's used to name the otherwise-headerless columns when reading the raw CSVs, so it should match the official field list for that dataset unless you know you're working with a modified schema: [Events](https://www.gdeltproject.org/data/lookups/CSV.header.fieldids.xlsx), [GKG 2.1](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook-V2.1.pdf), [GKG 1.0](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook.pdf) (covers both `gkg-v1` and `gkg-v1-counts`).
+`columns.<dataset>` lists every column in that dataset's schema, in file order. It's used to name the otherwise-headerless columns when reading the raw CSVs, so it should match the official field list for that dataset unless you know you're working with a modified schema: [Events](https://www.gdeltproject.org/data/lookups/CSV.header.fieldids.xlsx) (the daily archive's 58-column schema; `events-15min`'s 61-column schema was instead verified directly against a real downloaded file, byte for byte, not this reference), [GKG 2.1](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook-V2.1.pdf), [GKG 1.0](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook.pdf) (covers both `gkg-v1` and `gkg-v1-counts`).
 
 `columns_numeric.<dataset>` lists which of those columns should be coerced to numeric types (via `pd.to_numeric`, invalid values become `NaN`) rather than kept as strings.
 
@@ -49,11 +52,12 @@ GKG's own repeated/structured sub-fields (themes, persons, GCAM scores, `EventId
 
 All directories the pipeline reads from or writes to. Absolute or relative paths both work. Events keeps its original, unprefixed keys; every other dataset uses a prefixed sibling key for the same four stages, since mixing different datasets' files in one directory would be a real correctness hazard, not just an organizational one. The actual config key is `<prefix><base key>`, e.g. `gkg_v1_counts_` + `downloaded_data_directory` = `gkg_v1_counts_downloaded_data_directory`.
 
-The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/filtered`, ...) rather than a flat `data/<dataset>_<stage>`, so the five datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
+The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/filtered`, ...) rather than a flat `data/<dataset>_<stage>`, so the six datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
 
 | `--dataset` | Path prefix |
 |---|---|
 | `events` | *(none, unprefixed)* |
+| `events-15min` | `event_15min_` |
 | `gkg-v2` | `gkg_v2_` |
 | `mentions` | `mentions_` |
 | `gkg-v1` | `gkg_v1_` |
@@ -66,7 +70,7 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 | `parquet_data_directory` | convert, filter, sample | Flat Parquet output |
 | `filtered_data_directory` | filter, sample | Flat filtered Parquet output |
 
-Two further keys exist for Events only: `parquet_historical_directory` and `filtered_historical_directory` (Hive-partitioned Parquet for yearly/monthly source files, only used when `converter.partitioning.enabled` is true). None of GKG 2.1, Mentions, or GKG 1.0/Counts have a pre-2013 yearly/monthly archive to partition, so they have no historical variant.
+Two further keys exist for Events only: `parquet_historical_directory` and `filtered_historical_directory` (Hive-partitioned Parquet for yearly/monthly source files, only used when `converter.partitioning.enabled` is true). None of `events-15min`, GKG 2.1, Mentions, or GKG 1.0/Counts have a pre-2013 yearly/monthly archive to partition, so they have no historical variant.
 
 ## `scraping`
 
@@ -273,6 +277,8 @@ Roughly a 2x day-to-day spread, GKG 2.1's raw size tracks news volume as much as
 | Average of both real days | ~2.53 TB |
 
 That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned one (~220-380 GB): raw zip and unpruned-`snappy` Parquet both hold the full, unpruned content, just under different codecs, while pruning is a `convert`-time decision the raw archive never sees. `convert --delete-source` (see [CLI Reference](cli-reference.md#gdeltforge-convert)) removes each zip once its parquet output is confirmed written, the real lever to avoid holding both footprints on disk at once; `filter --delete-source` does the same for the converted parquet once its filtered output exists. Neither is on by default, and combined with any column-pruning or row-filtering setting, whatever that dropped can't be recovered later without redoing an earlier stage.
+
+**`events-15min`** is a much lighter pull than GKG 2.1 at the same file count: a live master-file-list check counted 396,086 `.export.CSV.zip` files (2015-02-18 to present, same window as GKG 2.1/Mentions), totaling ~39.7 GB, ~100 KB/file average. File count, not raw size, dominates the cost here (~81x the daily `events` archive's file count for the same date range): Events rows are compact structured data, not GKG's free text, so the per-file and total-size story looks much closer to Mentions' ~67 GB than to GKG 2.1's multi-TB footprint.
 
 ### Dtype narrowing: where it does and doesn't pay off
 

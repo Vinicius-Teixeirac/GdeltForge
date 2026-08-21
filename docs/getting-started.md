@@ -55,10 +55,10 @@ At minimum, review `paths:` (where downloaded/converted/filtered data will live)
 Each stage is a separate command, run in order. A small, date-restricted run is the fastest way to confirm everything is wired up correctly:
 
 ```
-gdeltforge scrape --start-date 2024-01-01 --end-date 2024-01-07
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 1000 --out sample.parquet
+gdeltforge scrape --dataset events --start-date 2024-01-01 --end-date 2024-01-07
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 1000 --out sample.parquet
 ```
 
 This downloads one week of daily GDELT files, converts them to Parquet, drops rows missing your configured columns, and writes a 1,000-row random sample to `sample.parquet`.

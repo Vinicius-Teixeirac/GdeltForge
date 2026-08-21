@@ -247,16 +247,16 @@ Below are practical, beginner-friendly examples covering all common workflows.
 
 ### Scrape Raw Data
 
-Download the entire archive:
+Download the entire archive (`--dataset` is required on every command; see [CLI Reference](https://vinicius-teixeirac.github.io/GdeltForge/cli-reference/#-dataset) for the other five choices):
 ```
-gdeltforge scrape
+gdeltforge scrape --dataset events
 ```
 
 Download only files within a date range (any combination of bounds is valid):
 ```
-gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge scrape --start-date 2022-01-01          # from date onward
-gdeltforge scrape --end-date   2015-12-31          # up to date
+gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge scrape --dataset events --start-date 2022-01-01          # from date onward
+gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 ```
 
 The filter applies to all three file types the GDELT archive provides:
@@ -290,7 +290,7 @@ The site's TLS certificate doesn't match its hostname (it's served off a GCS buc
 ### Convert CSV to Parquet
 
 ```
-gdeltforge convert
+gdeltforge convert --dataset events
 ```
 Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet files. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers` in `config/settings.yaml`; `null`, the default, uses all available CPU cores).
 
@@ -341,12 +341,12 @@ All downstream stages (`filter`, `sample`) detect the historical directory autom
 `convert` also accepts `--start-date`/`--end-date`, same as `scrape`, narrowing which already-downloaded ZIPs get converted:
 
 ```
-gdeltforge convert --start-date 2020-01-01 --end-date 2020-12-31
+gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
 ### Filter the Parquet Dataset
 ```
-gdeltforge filter
+gdeltforge filter --dataset events
 ```
 Drops rows with missing values in the columns defined in settings.yaml. Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
 
@@ -358,13 +358,13 @@ All sampling modes read from the filtered directory by default. Pass `--source c
 
 #### Indexed Sampling (Uniform Random)
 ```
-gdeltforge sample --mode indexed -n 10000 --seed 123 --out sample.parquet
+gdeltforge sample --dataset events --mode indexed -n 10000 --seed 123 --out sample.parquet
 ```
 This samples 10000 instances considering the entire data.
 
 #### Daily Sampling (N Rows Per Day)
 ```
-gdeltforge sample --mode daily --per-day 20 --out daily.parquet
+gdeltforge sample --dataset events --mode daily --per-day 20 --out daily.parquet
 ```
 This samples 20 instances per day from the entire period (1971 - 20xx)
 
@@ -374,6 +374,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 
   ```
   gdeltforge sample \
+      --dataset events \
       --mode filtered \
       --filter '{"QuadClass": [1, 2]}' \
       -n 5000 \
@@ -384,6 +385,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 
   ```
   gdeltforge sample \
+      --dataset events \
       --mode filtered \
       --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
       -n 2000
@@ -393,6 +395,7 @@ This samples 20 instances per day from the entire period (1971 - 20xx)
 
   ```
   gdeltforge sample \
+      --dataset events \
       --mode filtered \
       --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
       --columns GlobalEventID Year Actor1Code \
@@ -406,6 +409,7 @@ Combines a filter with stratified reservoir sampling: draws exactly `--n-per-gro
 
 ```
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["USA"]}' \
     --stratify QuadClass \
@@ -441,24 +445,25 @@ See [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/#gkg-enric
 
 #### Full pipeline: sample 10,000 rows
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 #### Reproducible sampling
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 5000 --seed 42
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
 ```
 #### USA-only events
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
 gdeltforge sample \
+    --dataset events \
     --mode filtered \
     --filter '{"ActionGeo_CountryCode": ["USA"]}' \
     -n 3000
@@ -466,34 +471,34 @@ gdeltforge sample \
 
 #### 30 Events Per Day
 ```
-gdeltforge scrape
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode daily --per-day 30
+gdeltforge scrape --dataset events
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode daily --per-day 30
 ```
 
 #### Bash One-Liner
 ```
-gdeltforge scrape && \
-gdeltforge convert && \
-gdeltforge filter && \
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events && \
+gdeltforge convert --dataset events && \
+gdeltforge filter --dataset events && \
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 #### PowerShell Loop
 ```
 foreach ($c in "scrape", "convert", "filter") {
-    gdeltforge $c
+    gdeltforge $c --dataset events
 }
-gdeltforge sample --mode indexed -n 10000
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
 #### Date-restricted pipeline
 ```
-gdeltforge scrape --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge convert
-gdeltforge filter
-gdeltforge sample --mode indexed -n 10000
+gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge convert --dataset events
+gdeltforge filter --dataset events
+gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 The date flags apply only to `scrape`. The subsequent stages operate on whatever files are already on disk.
 

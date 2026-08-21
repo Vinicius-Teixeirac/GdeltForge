@@ -63,9 +63,23 @@ GDELT_V2_MASTERFILELIST_URL = GDELT_V2_BASE_URL + "masterfilelist.txt"
 # lines (GDELT's capitalization isn't consistent across families):
 #   ...gdeltv2/20150218233000.gkg.csv.zip
 #   ...gdeltv2/20150218230000.mentions.CSV.zip
+#   ...gdeltv2/20150218230000.export.CSV.zip
+# gdelt_event_15min is genuinely a different schema from gdelt_event, not
+# just the same data at finer granularity: this master file list carries
+# native GDELT 2.0 Events (61 columns), while the daily archive
+# gdelt_event downloads from GDELT_EVENTS_URL is still the older,
+# GDELT-1.0-compatible 58-column format, kept for backward compatibility.
+# Confirmed by downloading one real file from each source and diffing
+# columns directly, not assumed from the codebook alone: the daily
+# archive is missing an ADM2Code field in each of the three geo blocks
+# (Actor1Geo/Actor2Geo/ActionGeo) that the 15-minute files carry. No
+# suffix collision with the two entries above: confirmed via a real
+# masterfilelist.txt fetch that all three suffixes are disjoint file sets
+# (~396,000 files each, 2015-02-18 to present).
 _GDELT_V2_SUFFIXES = {
     "gdelt_gkg_v2": ".gkg.csv.zip",
     "gdelt_mentions": ".mentions.CSV.zip",
+    "gdelt_event_15min": ".export.CSV.zip",
 }
 
 GDELT_GKG_V1_BASE_URL = "http://data.gdeltproject.org/gkg/"
@@ -246,11 +260,16 @@ def _collect_gdeltv2_links(config: dict, dataset: str) -> list[GdeltFile]:
 
 def _warn_if_large_scrape(files: list[GdeltFile], dataset: str) -> None:
     """
-    GKG 2.1 and Mentions publish every 15 minutes (~96 files/day) rather
-    than Events'/GKG 1.0's 1/day, so a multi-year range can silently imply
-    hundreds of thousands of small downloads. Warn, don't block: the
-    download's own progress bar makes it easy to Ctrl+C once the scale is
-    visible anyway.
+    GKG 2.1, Mentions, and gdelt_event_15min publish every 15 minutes
+    (~96 files/day) rather than Events'/GKG 1.0's 1/day, so a multi-year
+    range can silently imply hundreds of thousands of small downloads.
+    Warn, don't block: the download's own progress bar makes it easy to
+    Ctrl+C once the scale is visible anyway.
+
+    The cadence_note below still reads correctly for gdelt_event_15min
+    despite the "not daily like Events" wording: "Events" there means
+    specifically the still-daily gdelt_event dataset, a distinct dataset
+    from this one, not a self-referential contradiction.
     """
     if len(files) <= _LARGE_SCRAPE_WARNING_THRESHOLD:
         return

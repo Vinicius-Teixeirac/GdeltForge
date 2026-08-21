@@ -26,13 +26,35 @@ class TestDatasetFlag:
     def test_events_maps_to_gdelt_event(self):
         assert cli._DATASET_CLI_TO_CONFIG["events"] == "gdelt_event"
 
-    def test_convert_filter_sample_subcommands_accept_dataset_flag(self):
+    def test_events_15min_is_a_valid_choice_mapping_to_its_own_config_key(self):
+        # events and events-15min are deliberately distinct datasets
+        # (different schema, different paths.* prefix), not the same
+        # data at two speeds, confirm the new choice parses and maps
+        # correctly end to end, same as the other five.
+        from gdeltforge.utils.config import _DATASET_PATH_PREFIXES, dataset_path_key
+
+        assert "events-15min" in cli._DATASET_CHOICES
+        assert cli._DATASET_CLI_TO_CONFIG["events-15min"] == "gdelt_event_15min"
+        assert _DATASET_PATH_PREFIXES["gdelt_event_15min"] == "event_15min_"
+        assert dataset_path_key("gdelt_event_15min", "downloaded_data_directory") == (
+            "event_15min_downloaded_data_directory"
+        )
+
+        parser = cli.build_parser()
+        args = parser.parse_args(["scrape", "--dataset", "events-15min"])
+        assert args.dataset == "events-15min"
+
+    def test_scrape_convert_filter_sample_require_dataset_flag(self):
+        # No default: a silent fallback to "events" is exactly the
+        # footgun events-15min's existence made real: someone meaning
+        # to opt into the finer, slower dataset who forgets --dataset
+        # would otherwise get the daily archive instead, with no error.
         parser = cli.build_parser()
 
-        for command in ("convert", "filter", "sample"):
+        for command in ("scrape", "convert", "filter", "sample"):
             extra = ["--mode", "indexed"] if command == "sample" else []
-            args = parser.parse_args([command, *extra])
-            assert args.dataset == "events"
+            with pytest.raises(SystemExit):
+                parser.parse_args([command, *extra])
 
             args = parser.parse_args([command, "--dataset", "gkg-v2", *extra])
             assert args.dataset == "gkg-v2"
@@ -47,7 +69,7 @@ class TestExportFormatFlag:
     def test_defaults_to_parquet(self):
         parser = cli.build_parser()
 
-        args = parser.parse_args(["sample", "--mode", "indexed"])
+        args = parser.parse_args(["sample", "--dataset", "events", "--mode", "indexed"])
         assert args.export_format == "parquet"
 
         args = parser.parse_args(["crossref", "--events", "x.parquet", "--gkg-version", "v1"])
@@ -56,7 +78,9 @@ class TestExportFormatFlag:
     def test_csv_is_accepted(self):
         parser = cli.build_parser()
 
-        args = parser.parse_args(["sample", "--mode", "indexed", "--export-format", "csv"])
+        args = parser.parse_args(
+            ["sample", "--dataset", "events", "--mode", "indexed", "--export-format", "csv"]
+        )
         assert args.export_format == "csv"
 
         args = parser.parse_args(
@@ -97,14 +121,14 @@ class TestOutPathForExportFormat:
 class TestSampleDateFlags:
     def test_defaults_to_none(self):
         parser = cli.build_parser()
-        args = parser.parse_args(["sample", "--mode", "indexed"])
+        args = parser.parse_args(["sample", "--dataset", "events", "--mode", "indexed"])
         assert args.start_date is None
         assert args.end_date is None
 
     def test_dates_are_accepted(self):
         parser = cli.build_parser()
         args = parser.parse_args(
-            ["sample", "--mode", "indexed",
+            ["sample", "--dataset", "events", "--mode", "indexed",
              "--start-date", "2020-01-01", "--end-date", "2020-12-31"]
         )
         assert args.start_date == "2020-01-01"
@@ -114,15 +138,21 @@ class TestSampleDateFlags:
 class TestOrderFlag:
     def test_defaults_to_asc(self):
         parser = cli.build_parser()
-        assert parser.parse_args(["scrape"]).order == "asc"
-        assert parser.parse_args(["convert"]).order == "asc"
-        assert parser.parse_args(["filter"]).order == "asc"
+        assert parser.parse_args(["scrape", "--dataset", "events"]).order == "asc"
+        assert parser.parse_args(["convert", "--dataset", "events"]).order == "asc"
+        assert parser.parse_args(["filter", "--dataset", "events"]).order == "asc"
 
     def test_desc_is_accepted(self):
         parser = cli.build_parser()
-        assert parser.parse_args(["scrape", "--order", "desc"]).order == "desc"
-        assert parser.parse_args(["convert", "--order", "desc"]).order == "desc"
-        assert parser.parse_args(["filter", "--order", "desc"]).order == "desc"
+        assert parser.parse_args(
+            ["scrape", "--dataset", "events", "--order", "desc"]
+        ).order == "desc"
+        assert parser.parse_args(
+            ["convert", "--dataset", "events", "--order", "desc"]
+        ).order == "desc"
+        assert parser.parse_args(
+            ["filter", "--dataset", "events", "--order", "desc"]
+        ).order == "desc"
 
     def test_invalid_choice_is_rejected(self):
         parser = cli.build_parser()
@@ -139,7 +169,9 @@ class TestOrderFlag:
         # (indexed/filtered touch the whole file set regardless of order)
         # and crossref (same, full scan) deliberately don't get it.
         parser = cli.build_parser()
-        assert not hasattr(parser.parse_args(["sample", "--mode", "indexed"]), "order")
+        assert not hasattr(
+            parser.parse_args(["sample", "--dataset", "events", "--mode", "indexed"]), "order"
+        )
         assert not hasattr(
             parser.parse_args(["crossref", "--events", "x.parquet", "--gkg-version", "v1"]),
             "order",
@@ -1204,7 +1236,7 @@ class TestMainErrorHandling:
     non-zero, for any command, not just the one under test here."""
 
     def test_exception_prints_clean_message_and_exits_1(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
 
         def boom(config, dataset):
@@ -1221,7 +1253,7 @@ class TestMainErrorHandling:
         assert "Traceback" not in err
 
     def test_keyboard_interrupt_prints_interrupted_and_exits_130(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
 
         def interrupted(config, dataset):
@@ -1236,7 +1268,7 @@ class TestMainErrorHandling:
         assert capsys.readouterr().err.strip() == "Interrupted."
 
     def test_successful_command_does_not_exit(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
         monkeypatch.setattr(cli, "run_convert_cmd", lambda config, dataset: None)
 
