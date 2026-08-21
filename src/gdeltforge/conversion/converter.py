@@ -40,7 +40,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
-from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date
+from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import (
     config_fingerprint,
@@ -92,6 +92,7 @@ class GDELTConverter:
         dataset: str = "gdelt_event",
         start_date: date | None = None,
         end_date: date | None = None,
+        order: str = "asc",
         delete_source: bool = False,
         verbose: bool = False,
         quiet: bool = False,
@@ -102,6 +103,11 @@ class GDELTConverter:
         self.dataset = dataset
         self.start_date = start_date
         self.end_date = end_date
+        # "asc" (oldest first, the default) or "desc" (newest first).
+        # Only controls submission order into process_all_files' own
+        # ProcessPoolExecutor, not real completion order under
+        # concurrency, see sort_paths_by_date.
+        self.order = order
         # Stored as real instance attributes, not just a level flipped
         # here and forgotten: process_single_file runs inside a
         # ProcessPoolExecutor worker, a genuinely separate process that
@@ -310,6 +316,10 @@ class GDELTConverter:
         if not zip_files:
             logger.info("Nothing to convert; no files in the given date range.")
             return [], []
+
+        zip_files = sort_paths_by_date(
+            zip_files, self.order, date_parser=date_parser_for(self.dataset)
+        )
 
         to_process = []
         for zip_file in zip_files:
@@ -610,6 +620,7 @@ def run_converter(
     dataset: str = "gdelt_event",
     start_date: date | None = None,
     end_date: date | None = None,
+    order: str = "asc",
     delete_source: bool = False,
     verbose: bool = False,
     quiet: bool = False,
@@ -652,7 +663,7 @@ def run_converter(
     # worker, since a level change made in this process never reaches
     # those.
     converter = GDELTConverter(
-        config, dataset=dataset, start_date=start_date, end_date=end_date,
+        config, dataset=dataset, start_date=start_date, end_date=end_date, order=order,
         delete_source=delete_source, verbose=verbose, quiet=quiet,
         force=force, dry_run=dry_run,
     )

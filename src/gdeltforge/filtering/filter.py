@@ -69,7 +69,12 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
-from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, parse_file_date
+from gdeltforge.scraping.scraper import (
+    date_parser_for,
+    filter_paths_by_date,
+    parse_file_date,
+    sort_paths_by_date,
+)
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import (
     config_fingerprint,
@@ -105,6 +110,7 @@ class GDELTFilter:
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
+        order: str = "asc",
         output_columns: list[str] | None = None,
         compression: str = "zstd",
         float32_columns: list[str] | None = None,
@@ -187,6 +193,11 @@ class GDELTFilter:
         self.start_date = start_date
         self.end_date = end_date
         self.date_parser = date_parser
+        # "asc" (oldest first, the default) or "desc" (newest first).
+        # Only controls submission order into filter_all_files' own
+        # ProcessPoolExecutor, not real completion order under
+        # concurrency, see sort_paths_by_date.
+        self.order = order
 
         # Determines whether a .done marker from a previous run is still
         # valid: these are exactly the settings a user plausibly iterates
@@ -221,7 +232,7 @@ class GDELTFilter:
         Filter all parquet files in input_folder (flat) and, if configured,
         all parquet files under historical_input_folder (Hive tree).
         """
-        flat_files = glob.glob(str(self.input_folder / pattern))
+        flat_files = [Path(p) for p in glob.glob(str(self.input_folder / pattern))]
         historical_files = (
             list(self.historical_input_folder.rglob("*.parquet"))
             if self.historical_input_folder and self.historical_input_folder.exists()
@@ -235,8 +246,15 @@ class GDELTFilter:
             historical_files, self.start_date, self.end_date, date_parser=self.date_parser
         )
 
-        all_files = [(Path(p), False) for p in flat_files] + \
-                    [(p, True) for p in historical_files]
+        # Sorted together, not each list independently then concatenated:
+        # a per-list sort would only order flat files relative to other
+        # flat files (and likewise for historical), not give a true
+        # global order across both when their date ranges overlap.
+        historical_set = set(historical_files)
+        combined = sort_paths_by_date(
+            flat_files + historical_files, self.order, date_parser=self.date_parser
+        )
+        all_files = [(p, p in historical_set) for p in combined]
 
         if not all_files:
             logger.warning(
@@ -564,6 +582,7 @@ def run_filter(
     dataset: str = "gdelt_event",
     start_date: date | None = None,
     end_date: date | None = None,
+    order: str = "asc",
     delete_source: bool = False,
     verbose: bool = False,
     quiet: bool = False,
@@ -632,6 +651,7 @@ def run_filter(
         start_date=start_date,
         end_date=end_date,
         date_parser=date_parser_for(dataset),
+        order=order,
         output_columns=output_columns,
         compression=config["filter"].get("compression", {}).get(dataset, "zstd"),
         float32_columns=float32_columns,

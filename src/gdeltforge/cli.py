@@ -148,7 +148,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting scraping stage...")
     result = run_scraping_pipeline(
-        config, start_date=start_date, end_date=end_date, dataset=dataset,
+        config, start_date=start_date, end_date=end_date, dataset=dataset, order=args.order,
         verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run,
     )
@@ -168,7 +168,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting conversion stage...")
     outputs, failed = run_converter(
-        config, dataset=dataset, start_date=start_date, end_date=end_date,
+        config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run,
     )
@@ -187,7 +187,7 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting filtering stage...")
     files_processed, files_failed = run_filter(
-        config, dataset=dataset, start_date=start_date, end_date=end_date,
+        config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run,
     )
@@ -480,6 +480,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="YYYY-MM-DD",
         help="Only download files whose period ends on or before this date",
     )
+    scrape.add_argument(
+        "--order",
+        choices=["asc", "desc"],
+        default="asc",
+        help="Processing order: asc (oldest first, the default) or desc (newest first). "
+             "Only controls which files are submitted to the download pool first, not real "
+             "completion order under concurrency"
+    )
     scrape_verbosity = scrape.add_mutually_exclusive_group()
     scrape_verbosity.add_argument(
         "--verbose",
@@ -525,6 +533,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--end-date",
         metavar="YYYY-MM-DD",
         help="Only convert files whose period ends on or before this date",
+    )
+    convert.add_argument(
+        "--order",
+        choices=["asc", "desc"],
+        default="asc",
+        help="Processing order: asc (oldest first, the default) or desc (newest first). "
+             "Only controls which files are submitted to the worker pool first, not real "
+             "completion order under concurrency"
     )
     convert.add_argument(
         "--delete-source",
@@ -580,6 +596,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--end-date",
         metavar="YYYY-MM-DD",
         help="Only filter files whose period ends on or before this date",
+    )
+    filter_.add_argument(
+        "--order",
+        choices=["asc", "desc"],
+        default="asc",
+        help="Processing order: asc (oldest first, the default) or desc (newest first). "
+             "Only controls which files are submitted to the worker pool first, not real "
+             "completion order under concurrency"
     )
     filter_.add_argument(
         "--delete-source",
