@@ -170,6 +170,45 @@ class TestLoadConfig:
 
         assert config == {"columns": {"gdelt_event": ["EditedByUser"]}}
 
+    def test_empty_top_level_section_is_normalized_to_an_empty_dict(self):
+        # A section key present with nothing indented under it (or an
+        # explicit `converter: null`) parses to None, not {}. Every
+        # downstream config["converter"].get(...) call assumes a dict;
+        # left as None this used to crash with a bare "'NoneType' object
+        # has no attribute 'get'" the moment that section was touched.
+        custom = self.tmp_path / "custom.yaml"
+        custom.write_text(
+            "columns: {gdelt_event: [GlobalEventID]}\n"
+            "converter:\n"
+            "filter: null\n"
+        )
+
+        config = load_config(str(custom))
+
+        assert config["converter"] == {}
+        assert config["filter"] == {}
+        # And the .get() chains real call sites use no longer raise:
+        assert config["converter"].get("max_workers") is None
+        assert config["filter"].get("output_columns", {}).get("gdelt_event") is None
+
+    def test_sections_with_real_content_are_left_untouched(self):
+        custom = self.tmp_path / "custom.yaml"
+        custom.write_text(
+            "columns: {gdelt_event: [GlobalEventID]}\n"
+            "converter: {max_workers: 4}\n"
+        )
+
+        config = load_config(str(custom))
+
+        assert config["converter"] == {"max_workers": 4}
+
+    def test_empty_config_file_raises_clearly(self):
+        empty = self.tmp_path / "empty.yaml"
+        empty.write_text("")
+
+        with pytest.raises(ValueError, match="empty"):
+            load_config(str(empty))
+
     def test_write_failure_falls_back_to_in_memory_only(self, monkeypatch, caplog):
         def _boom(*_args, **_kwargs):
             raise OSError("read-only filesystem")
