@@ -22,7 +22,7 @@ from gdeltforge.sampling.samplers import (
 )
 
 # Pipeline stages
-from gdeltforge.scraping.scraper import run_scraping_pipeline
+from gdeltforge.scraping.scraper import date_parser_for, run_scraping_pipeline
 from gdeltforge.utils.config import dataset_path_key, load_config
 from gdeltforge.utils.io import (
     ensure_exists,
@@ -83,6 +83,16 @@ def _parse_date(value: str, arg_name: str) -> date:
         raise ValueError(f"Invalid date for {arg_name}: '{value}'. Expected YYYY-MM-DD.") from e
 
 
+def _parse_date_range(args: argparse.Namespace) -> tuple[date | None, date | None]:
+    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
+    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
+
+    if start_date and end_date and start_date > end_date:
+        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+
+    return start_date, end_date
+
+
 def _apply_verbosity(args: argparse.Namespace) -> None:
     """
     Applies --verbose/--quiet to this module's own logger (gdeltforge.cli),
@@ -133,11 +143,7 @@ def _write_sample_output(df, out: Path, export_format: str) -> None:
 
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
-    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
-    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
-
-    if start_date and end_date and start_date > end_date:
-        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+    start_date, end_date = _parse_date_range(args)
 
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting scraping stage...")
@@ -157,11 +163,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
 
 def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
-    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
-    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
-
-    if start_date and end_date and start_date > end_date:
-        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+    start_date, end_date = _parse_date_range(args)
 
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting conversion stage...")
@@ -180,11 +182,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
 
 def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
-    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
-    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
-
-    if start_date and end_date and start_date > end_date:
-        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+    start_date, end_date = _parse_date_range(args)
 
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     logger.info("Starting filtering stage...")
@@ -203,7 +201,18 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
 
 
 def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
+    start_date, end_date = _parse_date_range(args)
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
+    date_parser = date_parser_for(dataset)
+
+    if args.mode == "filtered" and (start_date or end_date) and args.filter:
+        logger.warning(
+            "--start-date/--end-date and --filter are both set: --start-date/--end-date "
+            "narrow which files get scanned (by filename period), while --filter narrows "
+            "rows within whatever files remain. Both apply independently, so a result "
+            "narrower than expected from either alone usually means the other is also active."
+        )
+
     source_key, historical_key = (
         ("filtered_data_directory", "filtered_historical_directory")
         if args.source == "filtered"
@@ -230,6 +239,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             historical_folder=hist_folder,
             random_state=args.seed,
             columns=columns,
+            start_date=start_date,
+            end_date=end_date,
+            date_parser=date_parser,
         )
         df = sampler.get_random_sample(args.n)
         _write_sample_output(df, out, args.export_format)
@@ -245,6 +257,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             historical_folder=hist_folder,
             random_state=args.seed,
             columns=columns,
+            start_date=start_date,
+            end_date=end_date,
+            date_parser=date_parser,
         )
         df = sampler.get_daily_samples(samples_per_day=args.per_day)
         _write_sample_output(df, out, args.export_format)
@@ -273,6 +288,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             filter_dict=filter_dict,
             random_state=args.seed,
             historical_folder=hist_folder,
+            start_date=start_date,
+            end_date=end_date,
+            date_parser=date_parser,
         )
 
         if args.stratify:
@@ -297,11 +315,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
 
 
 def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
-    start_date = _parse_date(args.start_date, "--start-date") if args.start_date else None
-    end_date = _parse_date(args.end_date, "--end-date") if args.end_date else None
-
-    if start_date and end_date and start_date > end_date:
-        raise ValueError(f"--start-date ({start_date}) must not be after --end-date ({end_date}).")
+    start_date, end_date = _parse_date_range(args)
 
     events_df = read_parquet_path(args.events)
     columns = set(args.columns) if args.columns else None
@@ -663,6 +677,20 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         help="Rows per stratum when --stratify is set"
+    )
+    sample.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        help="Only sample from files whose period starts on or after this date. "
+             "Applies to all three modes alike, narrowing the file list each one "
+             "reads before it does anything else; in filtered mode this stacks "
+             "with --filter's own row-level conditions rather than replacing them"
+    )
+    sample.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        help="Only sample from files whose period ends on or before this date. "
+             "Same file-level narrowing as --start-date above"
     )
     sample.add_argument(
         "--out",
