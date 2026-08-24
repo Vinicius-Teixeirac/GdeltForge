@@ -828,9 +828,25 @@ def download_gdelt_files(
     exist locally instead of skipping them.
     """
     download_dir = config["paths"][dataset_path_key(dataset, "downloaded_data_directory")]
-    retries = config["scraping"]["retries"]
-    timeout = config["scraping"]["timeout"]
-    max_workers = config.get("scraping", {}).get("max_workers", 8)
+    scraping_cfg = config.get("scraping", {})
+    timeout = scraping_cfg["timeout"]
+
+    # Unlike converter.max_workers/filter.max_workers, an explicit null here
+    # is not a safe "auto" sentinel: it reaches requests.adapters.HTTPAdapter
+    # as pool_connections/pool_maxsize, and urllib3 does
+    # `for _ in range(maxsize): self.pool.put(None)` internally, which raises
+    # `TypeError: 'NoneType' object cannot be interpreted as an integer` on
+    # the very first request, retry after retry, for every file. Seen in
+    # practice: a real GKG 1.0 scrape with max_workers left null failed all
+    # 4637 downloads this way. retries feeds range(retries) directly and
+    # fails the same way, so both get the same explicit-None guard rather
+    # than relying on dict.get's default, which only covers a missing key.
+    retries = scraping_cfg.get("retries")
+    if retries is None:
+        retries = 3
+    max_workers = scraping_cfg.get("max_workers")
+    if max_workers is None:
+        max_workers = 8
 
     os.makedirs(download_dir, exist_ok=True)
 
