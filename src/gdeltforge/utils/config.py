@@ -60,6 +60,28 @@ def dataset_path_key(dataset: str, base_key: str) -> str:
     return f"{prefix}{base_key}"
 
 
+def get_dict(section: dict, key: str) -> dict:
+    """
+    section.get(key, {}), except an explicit `key: null` in the YAML is
+    also treated as "use {}" instead of returned as None. dict.get's own
+    default only applies when key is missing entirely; every optional,
+    dict-valued config subsection this guards (converter.output_columns,
+    converter.compression, converter.max_workers_by_dataset,
+    converter.partitioning, filter.output_columns, filter.float32_columns,
+    filter.compression) is routinely left blank while a user is still
+    filling the config in, and YAML parses that as None, not {}. Every
+    caller immediately chains a second .get(...) onto the result, which
+    crashes with "'NoneType' object has no attribute 'get'" the instant
+    that happens -- found in a real production log, once for the section
+    a converter:/filter: line mid-edit produces (see
+    _normalize_top_level_sections above), and independently again here,
+    one level deeper, for the same reason on a subsection instead of a
+    top-level section.
+    """
+    value = section.get(key)
+    return value if value is not None else {}
+
+
 def _normalize_top_level_sections(config: dict) -> dict:
     """
     A top-level section key present in the YAML but with nothing indented

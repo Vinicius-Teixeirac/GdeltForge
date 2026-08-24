@@ -144,7 +144,14 @@ def _scrape_html_index(
     browser is required. `file_predicate` decides which filenames in the
     listing belong to the caller's dataset.
     """
-    timeout = config.get("scraping", {}).get("timeout", 30)
+    # An explicit `scraping.timeout: null` doesn't crash here the way
+    # max_workers/retries above do -- requests.get(timeout=None) just
+    # waits forever -- but it silently drops the 30s default, so one
+    # hung request can block the whole scrape indefinitely instead of
+    # timing out and retrying. Same explicit-None guard either way.
+    timeout = config.get("scraping", {}).get("timeout")
+    if timeout is None:
+        timeout = 30
 
     response = requests.get(index_url, timeout=timeout, verify=False)
     response.raise_for_status()
@@ -231,7 +238,10 @@ def _collect_gdeltv2_links(config: dict, dataset: str) -> list[GdeltFile]:
     every dataset in this family, rather than a page to parse per dataset.
     """
     suffix = _GDELT_V2_SUFFIXES[dataset]
-    timeout = config.get("scraping", {}).get("timeout", 30)
+    # See _scrape_html_index's own copy of this guard above.
+    timeout = config.get("scraping", {}).get("timeout")
+    if timeout is None:
+        timeout = 30
 
     logger.info(f"Fetching GDELT v2 master file list for {dataset}...")
     response = requests.get(GDELT_V2_MASTERFILELIST_URL, timeout=timeout, verify=False)
@@ -434,7 +444,10 @@ def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[Gdel
     clearly instead of silently scraping Events data.
     """
     if dataset == "gdelt_event":
-        method = config.get("scraping", {}).get("method", "requests").lower()
+        method = config.get("scraping", {}).get("method")
+        if method is None:
+            method = "requests"
+        method = method.lower()
 
         if method == "selenium":
             return _collect_gdelt_links_selenium(config)

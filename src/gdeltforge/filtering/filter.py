@@ -75,7 +75,7 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
-from gdeltforge.utils.config import dataset_path_key
+from gdeltforge.utils.config import dataset_path_key, get_dict
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -622,7 +622,7 @@ def run_filter(
     anything; it sees force's effect on the skip list, since it runs
     after that check.
     """
-    part_cfg = config.get("converter", {}).get("partitioning", {})
+    part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     historical_input = historical_output = None
 
     if part_cfg.get("enabled", False):
@@ -633,9 +633,13 @@ def run_filter(
             dataset_path_key(dataset, "filtered_historical_directory")
         )
 
-    columns_to_check = config["filter"]["columns_to_check"][dataset]
-    output_columns = config["filter"].get("output_columns", {}).get(dataset)
-    float32_columns = config["filter"].get("float32_columns", {}).get(dataset)
+    # `or []`, not just the raw config value: an explicit
+    # columns_to_check.<dataset>: null (as opposed to the documented [])
+    # reaches `for c in self.columns_to_check` a few frames down and
+    # crashes with "'NoneType' object is not iterable" on the first file.
+    columns_to_check = config["filter"]["columns_to_check"][dataset] or []
+    output_columns = get_dict(config["filter"], "output_columns").get(dataset)
+    float32_columns = get_dict(config["filter"], "float32_columns").get(dataset)
     warn_if_output_columns_drops_join_key(logger, "filter", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(
         logger, "filter", delete_source,
@@ -661,7 +665,7 @@ def run_filter(
         date_parser=date_parser_for(dataset),
         order=order,
         output_columns=output_columns,
-        compression=config["filter"].get("compression", {}).get(dataset, "zstd"),
+        compression=get_dict(config["filter"], "compression").get(dataset, "zstd"),
         float32_columns=float32_columns,
         delete_source=delete_source,
         verbose=verbose,

@@ -5,7 +5,7 @@ import pytest
 import yaml
 
 import gdeltforge.utils.config as config_module
-from gdeltforge.utils.config import CONFIG_ENV_VAR, dataset_path_key, load_config
+from gdeltforge.utils.config import CONFIG_ENV_VAR, dataset_path_key, get_dict, load_config
 
 
 class TestDatasetPathKey:
@@ -30,6 +30,30 @@ class TestDatasetPathKey:
     def test_unknown_dataset_raises(self):
         with pytest.raises(ValueError, match="Unknown dataset"):
             dataset_path_key("not_a_real_dataset", "downloaded_data_directory")
+
+
+class TestGetDict:
+    """get_dict guards the same None-vs-{} YAML footgun as
+    _normalize_top_level_sections below, one level deeper: an optional,
+    dict-valued config subsection (converter.output_columns,
+    filter.compression, etc.) commonly left blank while a user is still
+    filling the config in. Every real call site chains a second .get(...)
+    onto the result, which used to crash with "'NoneType' object has no
+    attribute 'get'" the instant that happened."""
+
+    def test_missing_key_returns_empty_dict(self):
+        assert get_dict({}, "output_columns") == {}
+
+    def test_explicit_null_returns_empty_dict_not_none(self):
+        assert get_dict({"output_columns": None}, "output_columns") == {}
+
+    def test_real_content_is_returned_unchanged(self):
+        section = {"output_columns": {"gdelt_event": ["GlobalEventID"]}}
+        assert get_dict(section, "output_columns") == {"gdelt_event": ["GlobalEventID"]}
+
+    def test_chaining_a_second_get_onto_the_result_no_longer_crashes(self):
+        # The exact shape every real call site uses.
+        assert get_dict({"compression": None}, "compression").get("gdelt_event", "zstd") == "zstd"
 
 
 class TestModuleLoggerIsProperlyConfigured:

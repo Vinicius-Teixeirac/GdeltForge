@@ -652,6 +652,43 @@ class TestRunSamplingCmdSource:
         captured = self._run(tmp_path, monkeypatch, source="converted")
         assert captured["folder_path"] == "/converted"
 
+    def test_explicit_null_partitioning_is_treated_as_disabled_not_a_crash(
+        self, tmp_path, monkeypatch
+    ):
+        # converter.partitioning: (nothing typed under it yet) parses to
+        # None, not {}; _historical_folder used to crash with "'NoneType'
+        # object has no attribute 'get'" on part_cfg.get("enabled", False)
+        # instead of falling through to "no historical folder", the same
+        # as the key being absent entirely (see test_default_source_is_
+        # filtered above).
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                captured["historical_folder"] = historical_folder
+
+            def get_random_sample(self, n):
+                return pd.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        config = self._config()
+        config["converter"] = {"partitioning": None}
+        args = argparse.Namespace(
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+
+        cli.run_sampling_cmd(config, args)
+
+        assert captured["historical_folder"] is None
+
     def test_columns_arg_reaches_indexed_sampler(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
