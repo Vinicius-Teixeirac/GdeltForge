@@ -160,6 +160,21 @@ def mark_done(source_path: str | Path, fingerprint: str) -> None:
     _done_marker_path(source_path).write_text(fingerprint)
 
 
+def delete_done_marker(source_path: str | Path) -> None:
+    """
+    Remove source_path's .done marker, if any. Meant to be called right
+    after source_path itself is deleted (--delete-source): once the
+    source is gone, the marker has nothing left to gate, since a deleted
+    zip/parquet can never be found by process_all_files'/filter_all_files'
+    own glob again on a later run. Left behind, it just accumulates one
+    orphaned marker file per deleted source in a directory
+    --delete-source's whole point was to shrink. missing_ok=True: a
+    source that was never actually marked done (e.g. force=True skipped
+    the check that would have written one) isn't an error here.
+    """
+    _done_marker_path(source_path).unlink(missing_ok=True)
+
+
 def warn_if_delete_source_drops_recoverable_data(
     logger, stage: str, delete_source: bool, narrowing: list[str]
 ) -> None:

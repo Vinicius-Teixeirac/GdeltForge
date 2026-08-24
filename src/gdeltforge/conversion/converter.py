@@ -44,6 +44,7 @@ from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, s
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import (
     config_fingerprint,
+    delete_done_marker,
     is_marked_done,
     mark_done,
     unzip_file,
@@ -285,9 +286,16 @@ class GDELTConverter:
         logged and swallowed rather than counted as a conversion failure:
         the conversion itself already succeeded, this is best-effort
         cleanup on top of it, not the operation that matters.
+
+        Also removes the zip's own .done marker: once the zip is gone,
+        the marker gates nothing (a deleted zip can never be found by
+        this method's own glob on a later run), so leaving it behind
+        just accumulates one orphaned file per deleted zip in a
+        directory this flag's whole point was to shrink.
         """
         try:
             zip_path.unlink()
+            delete_done_marker(zip_path)
             logger.debug(f"Deleted source zip after successful conversion: {zip_path.name}")
         except OSError as e:
             logger.warning(f"Could not delete source zip {zip_path.name}: {e}")
@@ -433,6 +441,7 @@ class GDELTConverter:
             logger.warning(f"No extracted files from {zip_p.name}")
             return created_parquets
 
+        failed_csvs = []
         for csv_path in extracted_files:
             if csv_path.suffix.lower() != ".csv":
                 logger.debug(f"Skipping non-CSV file: {csv_path.name}")
@@ -456,6 +465,22 @@ class GDELTConverter:
 
             except Exception as e:
                 logger.error(f"Error processing CSV {csv_path.name}: {e}")
+                failed_csvs.append(csv_path.name)
+
+        if failed_csvs:
+            # Raising (rather than swallowing and returning whatever
+            # created_parquets accumulated) is what makes process_all_files'
+            # own except Exception branch fire: the zip is counted in
+            # `failed`, not marked done, and a plain rerun retries it. The
+            # old behavior returned normally here even on a real read
+            # failure, which meant the zip got marked done with zero
+            # output and never appeared in the run's failed count, see
+            # _read_csv's UnicodeDecodeError handling above for the
+            # concrete case this was found from.
+            raise RuntimeError(
+                f"{len(failed_csvs)} of {len(extracted_files)} CSV file(s) in "
+                f"{zip_p.name} could not be processed: {', '.join(failed_csvs)}"
+            )
 
         return created_parquets
 
@@ -463,22 +488,22 @@ class GDELTConverter:
     # READ CSV
     # ------------------------------------------------------------
     def _read_csv(self, csv_path: str | Path) -> pd.DataFrame:
+        # header=0 + names=... together mean "the first line is a real
+        # header, skip it, then use our own names instead of its literal
+        # text", not "there's no header at all" (that's header=None).
+        header = 0 if self.dataset in _DATASETS_WITH_HEADER_ROW else None
+        # usecols must reference names from the full COLUMN_NAMES list
+        # (pandas resolves position -> name from `names` first, then
+        # applies usecols), and drops any configured name that isn't
+        # actually one of this dataset's columns rather than erroring,
+        # matching how columns_to_check/output_columns are handled
+        # elsewhere in the pipeline.
+        usecols = (
+            [c for c in self.output_columns if c in self.COLUMN_NAMES]
+            if self.output_columns is not None
+            else None
+        )
         try:
-            # header=0 + names=... together mean "the first line is a real
-            # header, skip it, then use our own names instead of its literal
-            # text", not "there's no header at all" (that's header=None).
-            header = 0 if self.dataset in _DATASETS_WITH_HEADER_ROW else None
-            # usecols must reference names from the full COLUMN_NAMES list
-            # (pandas resolves position -> name from `names` first, then
-            # applies usecols), and drops any configured name that isn't
-            # actually one of this dataset's columns rather than erroring,
-            # matching how columns_to_check/output_columns are handled
-            # elsewhere in the pipeline.
-            usecols = (
-                [c for c in self.output_columns if c in self.COLUMN_NAMES]
-                if self.output_columns is not None
-                else None
-            )
             df = pd.read_csv(
                 csv_path,
                 sep="\t",
@@ -490,16 +515,45 @@ class GDELTConverter:
                 usecols=usecols,
                 on_bad_lines="warn",
             )
+        except UnicodeDecodeError:
+            # GKG 2.1's free-text fields (quotations, all-names) routinely
+            # carry a handful of non-UTF-8 bytes from non-English source
+            # articles GDELT scraped; confirmed against a real 373K-file
+            # run where ~6.7% of files hit this. The old behavior caught
+            # every exception here, including this one, and returned an
+            # empty DataFrame, which process_single_file's `if df.empty:
+            # continue` then treated as "nothing to write," so the zip
+            # still got marked done with zero output and never showed up
+            # in the run's failed count. Retrying with encoding_errors=
+            # "replace" keeps every row that WAS valid UTF-8 intact and
+            # substitutes U+FFFD only for the genuinely undecodable bytes,
+            # instead of silently discarding the whole file. Anything
+            # other than a decode error (a truly malformed file, a
+            # permissions issue) is not retried here; it propagates to
+            # process_single_file's caller, which now correctly counts
+            # the zip as failed instead of marking it done.
+            logger.warning(
+                f"{csv_path}: not valid UTF-8, retrying with byte-level "
+                f"replacement (undecodable bytes become U+FFFD)"
+            )
+            df = pd.read_csv(
+                csv_path,
+                sep="\t",
+                header=header,
+                dtype=str,
+                encoding="utf-8",
+                encoding_errors="replace",
+                low_memory=False,
+                names=self.COLUMN_NAMES,
+                usecols=usecols,
+                on_bad_lines="warn",
+            )
 
-            for col in self.NUMERIC_COLUMNS:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
+        for col in self.NUMERIC_COLUMNS:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            return df
-
-        except Exception as e:
-            logger.error(f"Error reading CSV {csv_path}: {e}")
-            return pd.DataFrame()
+        return df
 
     # ------------------------------------------------------------
     # SAVE PARQUET  (flat files)
