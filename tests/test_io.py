@@ -6,6 +6,7 @@ import pytest
 
 from gdeltforge.utils.io import (
     config_fingerprint,
+    delete_done_marker,
     is_marked_done,
     mark_done,
     read_parquet_path,
@@ -260,6 +261,32 @@ class TestDoneMarker:
         (tmp_path / "20200101.zip.done").touch()
 
         assert not is_marked_done(src, "fp-1")
+
+
+class TestDeleteDoneMarker:
+    """--delete-source deletes the source zip/parquet but used to leave
+    its .done marker behind: the marker is written next to the source,
+    not the output, and a deleted source can never be found by
+    process_all_files'/filter_all_files' own glob again on a later run,
+    so the marker becomes permanently vestigial the instant its source
+    is gone, just an orphaned file accumulating in a directory
+    --delete-source's whole point was to shrink."""
+
+    def test_removes_an_existing_marker(self, tmp_path):
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+        mark_done(src, "fp-1")
+        assert (tmp_path / "20200101.zip.done").exists()
+
+        delete_done_marker(src)
+
+        assert not (tmp_path / "20200101.zip.done").exists()
+
+    def test_no_marker_present_is_not_an_error(self, tmp_path):
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+
+        delete_done_marker(src)  # should not raise
 
 
 class TestWarnIfDeleteSourceDropsRecoverableData:
