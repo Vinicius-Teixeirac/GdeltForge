@@ -410,7 +410,7 @@ paths:
 # ================================
 
 scraping:
-  retries: 3
+  retries: 3  # must be a real number, not null: feeds range(retries) directly
   timeout: 30  # seconds
 
   # How to collect the list of downloadable GDELT files:
@@ -431,6 +431,9 @@ scraping:
   # Concurrent download workers. Downloads are I/O-bound (network wait),
   # so this can comfortably exceed CPU core count; raise/lower based on
   # your connection and how politely you want to hit data.gdeltproject.org.
+  # Unlike converter.max_workers/filter.max_workers below, null is not a
+  # valid "auto" value here: it falls all the way into requests' connection
+  # pool sizing and fails every download. Set a real number.
   max_workers: 8
 
 converter:

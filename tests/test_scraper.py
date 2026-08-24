@@ -900,6 +900,62 @@ class TestDownloadGdeltFiles:
 
         assert captured == {"force": True}
 
+    def test_retries_explicitly_null_in_config_is_coerced_not_passed_through(
+        self, monkeypatch, tmp_path
+    ):
+        # Found in a real production log: scraping.retries resolving to
+        # None reaches range(retries) in _download_one's retry loop and
+        # raises "'NoneType' object cannot be interpreted as an integer"
+        # immediately, before a single attempt. config["scraping"]["retries"]
+        # was read with no null guard, unlike the sibling fix this same
+        # investigation applied to max_workers below.
+        captured = {}
+        file = GdeltFile(url="http://x/20200101.export.CSV.zip")
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            captured["retries"] = retries
+            return "success", "20200101.export.CSV.zip"
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": None, "timeout": 5, "max_workers": 2},
+        }
+        download_gdelt_files([file], config)
+
+        assert captured["retries"] == 3
+
+    def test_max_workers_explicitly_null_in_config_does_not_crash_the_adapter(
+        self, monkeypatch, tmp_path
+    ):
+        # Found in a real production log: a live GKG 1.0 scrape with
+        # scraping.max_workers resolving to None failed all 4637 downloads,
+        # every attempt, with "'NoneType' object cannot be interpreted as an
+        # integer". Unlike converter.max_workers/filter.max_workers (where
+        # None is a real "auto" sentinel ProcessPoolExecutor understands),
+        # None here reaches requests.adapters.HTTPAdapter(pool_connections=
+        # None, pool_maxsize=None), and urllib3's own
+        # `for _ in range(maxsize): self.pool.put(None)` raises the exact
+        # same error on the very first request. _download_one is stubbed
+        # out to isolate this from real network access, but the adapter and
+        # ThreadPoolExecutor construction inside download_gdelt_files itself
+        # run for real, so this is a genuine regression test for the crash.
+        file = GdeltFile(url="http://x/20200101.export.CSV.zip")
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            return "success", "20200101.export.CSV.zip"
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": None},
+        }
+        result = download_gdelt_files([file], config)
+
+        assert result["success"] == 1
+
 
 class TestRunScrapingPipelineVerboseLogging:
     """--verbose raises this module's own logger to DEBUG, revealing the
