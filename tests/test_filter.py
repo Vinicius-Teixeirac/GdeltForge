@@ -915,6 +915,63 @@ class TestRunFilterDatasetParameter:
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
         assert codec.lower() == "zstd"
 
+    def test_explicit_null_output_columns_compression_float32_columns_default_same_as_missing(
+        self, tmp_path
+    ):
+        # filter.output_columns: (nothing typed under it yet) parses to
+        # None, not {} -- a real key present with an explicit null, not
+        # the "missing entirely" case above. Every one of these used to
+        # crash with "'NoneType' object has no attribute 'get'" instead
+        # of falling through to the same defaults as a missing key.
+        cfg, events_in, _ = self._config(tmp_path)
+        cfg["filter"]["output_columns"] = None
+        cfg["filter"]["compression"] = None
+        cfg["filter"]["float32_columns"] = None
+        pd.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).to_parquet(events_in / "a.parquet")
+
+        processed, failed = run_filter(cfg)
+
+        assert (processed, failed) == (1, 0)
+        out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        out = pd.read_parquet(out_path)
+        assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
+        codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
+        assert codec.lower() == "zstd"
+
+    def test_explicit_null_columns_to_check_is_a_no_op_same_as_empty_list(self, tmp_path):
+        # filter.columns_to_check.<dataset>: (nothing typed under it yet)
+        # parses to None, not []; used to crash with "'NoneType' object is
+        # not iterable" on the very first file instead of behaving like
+        # the documented, deliberate [] no-op.
+        cfg, events_in, _ = self._config(tmp_path)
+        cfg["filter"]["columns_to_check"]["gdelt_event"] = None
+        pd.DataFrame(
+            {"GlobalEventID": [1, 2], "Actor1Name": ["A", None]}
+        ).to_parquet(events_in / "a.parquet")
+
+        processed, failed = run_filter(cfg)
+
+        assert (processed, failed) == (1, 0)
+        out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        out = pd.read_parquet(out_path)
+        assert len(out) == 2
+
+    def test_explicit_null_converter_partitioning_is_treated_as_disabled(self, tmp_path):
+        # converter.partitioning: (nothing typed under it yet) parses to
+        # None, not {}; used to crash with "'NoneType' object has no
+        # attribute 'get'" before ever reaching a real file.
+        cfg, events_in, _ = self._config(tmp_path)
+        cfg["converter"]["partitioning"] = None
+        pd.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).to_parquet(events_in / "a.parquet")
+
+        processed, failed = run_filter(cfg)
+
+        assert (processed, failed) == (1, 0)
+
     def test_output_columns_and_compression_are_resolved_per_dataset(self, tmp_path):
         cfg, _, gkg_in = self._config(tmp_path)
         cfg["filter"]["output_columns"] = {

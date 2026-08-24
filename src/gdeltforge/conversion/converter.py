@@ -41,7 +41,7 @@ from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
-from gdeltforge.utils.config import dataset_path_key
+from gdeltforge.utils.config import dataset_path_key, get_dict
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -159,8 +159,8 @@ class GDELTConverter:
         # depends on peak per-worker memory, which output_columns above
         # changes a lot for wide datasets like GKG 2.1), so a value safe
         # for one dataset isn't necessarily safe for another.
-        self.max_workers: int | None = config["converter"].get(
-            "max_workers_by_dataset", {}
+        self.max_workers: int | None = get_dict(
+            config["converter"], "max_workers_by_dataset"
         ).get(dataset, config["converter"].get("max_workers"))
 
         self.COLUMN_NAMES    = config["columns"][dataset]
@@ -174,19 +174,19 @@ class GDELTConverter:
         # (quotations, all-names, GCAM, extras XML, image/video embeds)
         # cost the most CPU and RAM.
         # None (the default) parses every column, matching prior behavior.
-        self.output_columns: list[str] | None = config["converter"].get(
-            "output_columns", {}
+        self.output_columns: list[str] | None = get_dict(
+            config["converter"], "output_columns"
         ).get(dataset)
         # zstd default, matching filter.compression: measured ~30% smaller
         # than snappy on real Events data at comparable or faster write
         # speed, and lossless, so there's no accuracy tradeoff to weigh
         # before defaulting to it here too. Per-dataset override available
         # the same way as output_columns above.
-        self.compression: str = config["converter"].get(
-            "compression", {}
+        self.compression: str = get_dict(
+            config["converter"], "compression"
         ).get(dataset, "zstd")
 
-        part_cfg = config["converter"].get("partitioning", {})
+        part_cfg = get_dict(config["converter"], "partitioning")
         self._partitioning_enabled = part_cfg.get("enabled", False)
         self._partition_rules: list[dict] = part_cfg.get("rules", [])
 
@@ -703,7 +703,7 @@ def run_converter(
     it sees force's effect on the skip list, since it runs after that
     check.
     """
-    output_columns = config["converter"].get("output_columns", {}).get(dataset)
+    output_columns = get_dict(config["converter"], "output_columns").get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(
         logger, "convert", delete_source,
