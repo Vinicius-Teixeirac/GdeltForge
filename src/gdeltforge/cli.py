@@ -23,7 +23,7 @@ from gdeltforge.sampling.samplers import (
 
 # Pipeline stages
 from gdeltforge.scraping.scraper import date_parser_for, run_scraping_pipeline
-from gdeltforge.utils.config import dataset_path_key, load_config
+from gdeltforge.utils.config import dataset_path_key, get_dict, load_config
 from gdeltforge.utils.io import (
     ensure_exists,
     read_parquet_path,
@@ -68,7 +68,7 @@ _CROSSREF_GKG_TO_CONFIG = {
 
 def _historical_folder(config: dict, path_key: str) -> str | None:
     """Return the historical directory path when partitioning is enabled, else None."""
-    part_cfg = config.get("converter", {}).get("partitioning", {})
+    part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     if not part_cfg.get("enabled", False):
         return None
     return config["paths"].get(path_key)

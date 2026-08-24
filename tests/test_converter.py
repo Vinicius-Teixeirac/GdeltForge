@@ -103,6 +103,19 @@ class TestPartitionRuleRouting:
         assert (tmp_path / "parquet" / "20150219080000.mentions.parquet").exists()
         assert not any("No partition rule" in r.message for r in caplog.records)
 
+    def test_explicit_null_is_treated_as_partitioning_disabled(self, tmp_path):
+        # converter.partitioning: (nothing typed under it yet) parses to
+        # None, not {}; used to crash with "'NoneType' object has no
+        # attribute 'get'" on part_cfg.get("enabled", False) before ever
+        # reaching a real file.
+        cfg = _make_config(tmp_path, partitioning=None)
+        zip_path = _write_flat_zip(tmp_path / "raw")
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        assert (tmp_path / "parquet" / "20200101.export.parquet").exists()
+
 
 class TestMaxWorkersConfig:
     def test_defaults_to_none_so_executor_uses_cpu_count(self, tmp_path):
@@ -141,6 +154,15 @@ class TestMaxWorkersByDataset:
         converter = GDELTConverter(_make_config(tmp_path, max_workers=2))
         assert converter.max_workers == 2
 
+    def test_explicit_null_falls_back_to_the_scalar_default(self, tmp_path):
+        # converter.max_workers_by_dataset: (nothing typed under it yet)
+        # parses to None, not {}; used to crash with "'NoneType' object
+        # has no attribute 'get'" before reaching the scalar default.
+        converter = GDELTConverter(
+            _make_config(tmp_path, max_workers=4, max_workers_by_dataset=None)
+        )
+        assert converter.max_workers == 4
+
 
 class TestOutputColumnsConfig:
     def test_defaults_to_none_so_every_column_is_parsed(self, tmp_path):
@@ -152,6 +174,14 @@ class TestOutputColumnsConfig:
             "gdelt_event": ["Day"],
         }))
         assert converter.output_columns == ["Day"]
+
+    def test_explicit_null_is_treated_the_same_as_unset(self, tmp_path):
+        # converter.output_columns: (nothing typed under it yet) parses to
+        # None, not {}; used to crash with "'NoneType' object has no
+        # attribute 'get'" instead of falling through to "parse every
+        # column", the same as the key being absent entirely.
+        converter = GDELTConverter(_make_config(tmp_path, output_columns=None))
+        assert converter.output_columns is None
 
     def test_projects_columns_during_csv_parsing(self, tmp_path):
         # Proves the pruning actually reaches pandas' read_csv (usecols),
@@ -208,6 +238,13 @@ class TestCompressionConfig:
         codec = metadata.row_group(0).column(0).compression
         assert codec.lower() == "zstd"
 
+    def test_explicit_null_falls_back_to_the_default(self, tmp_path):
+        # converter.compression: (nothing typed under it yet) parses to
+        # None, not {}; used to crash with "'NoneType' object has no
+        # attribute 'get'" instead of falling through to zstd.
+        converter = GDELTConverter(_make_config(tmp_path, compression=None))
+        assert converter.compression == "zstd"
+
     def test_explicit_codec_overrides_the_default(self, tmp_path):
         cfg = _make_config(tmp_path, compression={"gdelt_event": "snappy"})
         zip_path = _write_flat_zip(tmp_path / "raw")
@@ -259,6 +296,15 @@ class TestRunConverterWarnsAboutCrossrefJoinKey:
         assert any(
             "GlobalEventID" in r.message and "crossref" in r.message for r in caplog.records
         )
+
+    def test_explicit_null_output_columns_does_not_crash_config_resolution(self, tmp_path):
+        # run_converter reads converter.output_columns independently from
+        # GDELTConverter.__init__ (its own warn-before-processing check);
+        # converter.output_columns: (nothing typed under it yet) parses to
+        # None, not {}, and used to crash here too before a single file
+        # was ever processed.
+        cfg = _make_config(tmp_path, output_columns=None)
+        run_converter(cfg)
 
     def test_no_warning_when_the_join_key_is_kept(self, tmp_path, caplog):
         cfg = _make_config(

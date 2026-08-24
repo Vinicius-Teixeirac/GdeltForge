@@ -400,6 +400,29 @@ class TestCollectLinksRequests:
         )
         assert by_url["http://data.gdeltproject.org/events/202006.zip"] == "a" * 32
 
+    def test_explicit_null_timeout_falls_back_to_the_default_not_none(self, monkeypatch):
+        # scraping.timeout: (nothing typed under it yet) parses to None,
+        # not the documented 30s default. requests.get(timeout=None)
+        # doesn't crash (it waits forever), but silently disabling the
+        # timeout is exactly the failure mode this guard exists to avoid.
+        class FakeResponse:
+            text = ""
+
+            def raise_for_status(self):
+                pass
+
+        captured = {}
+
+        def fake_get(*a, **kw):
+            captured.update(kw)
+            return FakeResponse()
+
+        monkeypatch.setattr(scraper.requests, "get", fake_get)
+
+        scraper._collect_gdelt_links_requests({"scraping": {"timeout": None}})
+
+        assert captured["timeout"] == 30
+
 
 # ------------------------------------------------------------
 # _collect_gdeltv2_links: masterfilelist.txt parsing
@@ -455,6 +478,23 @@ class TestCollectGdeltv2Links:
         assert len(files) == 1
         assert files[0].url.endswith("mentions.CSV.zip")
         assert files[0].size == 318084
+
+    def test_explicit_null_timeout_falls_back_to_the_default_not_none(self, monkeypatch):
+        # scraping.timeout: (nothing typed under it yet) parses to None,
+        # not the documented 30s default. requests.get(timeout=None)
+        # doesn't crash (it waits forever), but silently disabling the
+        # timeout is exactly the failure mode this guard exists to avoid.
+        captured = {}
+
+        def fake_get(*a, **kw):
+            captured.update(kw)
+            return self.FakeResponse(self._MASTERFILELIST)
+
+        monkeypatch.setattr(scraper.requests, "get", fake_get)
+
+        scraper._collect_gdeltv2_links({"scraping": {"timeout": None}}, "gdelt_gkg_v2")
+
+        assert captured["timeout"] == 30
 
     def test_malformed_lines_are_skipped_without_error(self, monkeypatch):
         monkeypatch.setattr(
@@ -582,6 +622,16 @@ class TestCollectGdeltLinksDispatch:
         monkeypatch.setattr(scraper, "_collect_gdelt_links_requests", lambda cfg: "requests-result")
         monkeypatch.setattr(scraper, "_collect_gdelt_links_selenium", lambda cfg: "selenium-result")
         assert collect_gdelt_links({}) == "requests-result"
+
+    def test_explicit_null_method_falls_back_to_requests_not_a_crash(self, monkeypatch):
+        # scraping.method: (nothing typed under it yet) parses to None,
+        # not the documented "requests" default; used to crash with
+        # "'NoneType' object has no attribute 'lower'" instead of falling
+        # through the same way a missing key already does above.
+        monkeypatch.setattr(scraper, "_collect_gdelt_links_requests", lambda cfg: "requests-result")
+        monkeypatch.setattr(scraper, "_collect_gdelt_links_selenium", lambda cfg: "selenium-result")
+        cfg = {"scraping": {"method": None}}
+        assert collect_gdelt_links(cfg) == "requests-result"
 
     def test_selenium_when_configured(self, monkeypatch):
         monkeypatch.setattr(scraper, "_collect_gdelt_links_requests", lambda cfg: "requests-result")
