@@ -78,6 +78,7 @@ from gdeltforge.scraping.scraper import (
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.io import (
     config_fingerprint,
+    delete_done_marker,
     is_marked_done,
     mark_done,
     warn_if_delete_source_drops_recoverable_data,
@@ -563,9 +564,16 @@ class GDELTFilter:
         (permissions, the file already gone) is logged and swallowed
         rather than counted as a filter failure: the filtering itself
         already succeeded, this is best-effort cleanup on top of it.
+
+        Also removes the parquet's own .done marker: once it's gone, the
+        marker gates nothing (a deleted parquet can never be found by
+        this method's own glob on a later run), so leaving it behind
+        just accumulates one orphaned file per deleted source in a
+        directory this flag's whole point was to shrink.
         """
         try:
             parquet_path.unlink()
+            delete_done_marker(parquet_path)
             logger.debug(
                 f"Deleted source parquet after successful filtering: {parquet_path.name}"
             )
