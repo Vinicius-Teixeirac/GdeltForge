@@ -70,9 +70,64 @@ _DAILY_PAT          = re.compile(r'^\d{8}\..+\.zip$',       re.IGNORECASE)
 # below for why nothing did).
 _QUARTER_HOURLY_PAT = re.compile(r'^\d{14}\..+\.zip$',      re.IGNORECASE)
 
-# Columns that are semantically integers; cast from float64 after pd.to_numeric.
-# Applies to both flat and historical writes for a consistent union schema.
-_DATE_INT_COLS = ("Year", "MonthYear", "Day")
+# pd.to_numeric coerces every configured numeric column, but a single blank
+# value anywhere in a real file (GDELT's own raw archive does this, e.g. a
+# real, live 20130901.export.CSV.zip carries a blank DATEADDED for literally
+# every row that day) forces the whole column to float64: plain int64 can't
+# represent NaN at all, only float64 and pandas' own nullable Int64 can.
+# Previously only Year/MonthYear/Day (the partition-key columns) were cast
+# back to Int64 afterward, which happened to be enough for partitioning but
+# left every other integer-semantic column, DATEADDED included, exposed to
+# silently becoming float64 the moment one blank value showed up anywhere
+# in the whole corpus, exactly the shape of a real report: codebook says
+# integer, converted output has float64, one blank row in one file out of
+# thousands was enough. This lists the exception instead of the rule: every
+# columns_numeric entry across every dataset is integer-semantic (an ID, a
+# type/flag code, a count, a YYYYMMDD[HHMMSS] timestamp) except the small,
+# genuinely fractional set named here. A future columns_numeric entry
+# defaults to being treated as an integer unless added here, matching how
+# the overwhelming majority of real entries are shaped, rather than
+# defaulting to unprotected the way DATEADDED was.
+#
+# Every entry below (and every column left out of it) was checked against
+# the actual "(integer)"/"(floating point)"/"(numeric)" type tag GDELT's
+# own codebooks give that field, not inferred from real data alone:
+# https://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf
+# (Events + Mentions) and
+# https://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook-V2.1.pdf
+# (GKG 2.1). Every entry matches its documented tag except one, kept here
+# deliberately against the letter of its tag:
+#
+# MentionDocTone is tagged "(integer)" in the Event Codebook V2.0's own
+# Mentions table section. Its full documented description is "The same
+# contents as the AvgTone field in the Events table, but computed for
+# this particular article", and AvgTone itself is tagged "(numeric)",
+# not integer, described there as ranging -100 to +100 with "common
+# values between -10 and +10". A field the codebook explicitly says
+# shares AvgTone's contents cannot correctly be a stricter type than
+# AvgTone. Real converted data confirms the contradiction resolves in
+# AvgTone's favor: MentionDocTone carries genuine fractional values
+# (e.g. -4.4776119402985 in real GKG-adjacent output), which a real
+# tone score computed the same way as AvgTone requires and an integer
+# cannot represent without discarding it. Treated here as a
+# documentation inconsistency in GDELT's own codebook, not a real type,
+# and kept in this float set accordingly, since casting it to Int64
+# would silently truncate genuine analytical precision to "fix" a
+# match against a tag that contradicts the same paragraph's own
+# description.
+_FLOAT_NUMERIC_COLUMNS = frozenset({
+    # gdelt_event / gdelt_event_15min
+    "FractionDate", "GoldsteinScale", "AvgTone",
+    "Actor1Geo_Lat", "Actor1Geo_Long",
+    "Actor2Geo_Lat", "Actor2Geo_Long",
+    "ActionGeo_Lat", "ActionGeo_Long",
+    # gdelt_mentions
+    "MentionDocTone",  # see the MentionDocTone note above
+    # gdelt_gkg_v1_counts (GKG 1.0's own, older codebook; not covered by
+    # either URL above, matched by analogy with GKG 2.1's own Location
+    # Latitude/Longitude fields and confirmed against real converted data)
+    "Geo_Lat", "Geo_Long",
+})
 
 # GKG 1.0 (both the main file and its separate Counts file) ships with a
 # literal header line (DATE\tNUMARTS\t...); Events, GKG 2.1, and Mentions
@@ -165,6 +220,12 @@ class GDELTConverter:
 
         self.COLUMN_NAMES    = config["columns"][dataset]
         self.NUMERIC_COLUMNS = config["columns_numeric"][dataset]
+        # See _FLOAT_NUMERIC_COLUMNS above for why this split exists at all.
+        # Computed once here, not per file: NUMERIC_COLUMNS is fixed for the
+        # lifetime of this converter instance.
+        self.INTEGER_NUMERIC_COLUMNS = [
+            c for c in self.NUMERIC_COLUMNS if c not in _FLOAT_NUMERIC_COLUMNS
+        ]
         # Optional, per dataset: restrict pandas to materializing only these
         # columns while parsing the CSV. self.COLUMN_NAMES is still passed
         # to read_csv in full, since that is what maps each tab-separated
@@ -555,6 +616,25 @@ class GDELTConverter:
 
         return df
 
+    def _restore_integer_dtypes(self, df: pd.DataFrame) -> None:
+        """
+        Casts every integer-semantic numeric column (see
+        _FLOAT_NUMERIC_COLUMNS above) that pd.to_numeric left as float64
+        back to pandas' nullable Int64, in place. Only touches columns
+        pd.to_numeric actually turned to float (is_float_dtype guard): a
+        column with no blank/unparseable values anywhere in this file
+        came back as a real int64 already and is left alone, since
+        Int64 (nullable) and int64 (plain) round-trip through parquet
+        identically for a column with no nulls, so there's nothing to
+        fix and no reason to touch it. Shared by both flat
+        (_save_parquet) and historical (_save_historical_parquet)
+        writes, so a file's schema doesn't depend on which path wrote
+        it.
+        """
+        for col in self.INTEGER_NUMERIC_COLUMNS:
+            if col in df.columns and pd.api.types.is_float_dtype(df[col]):
+                df[col] = df[col].astype("Int64")
+
     # ------------------------------------------------------------
     # SAVE PARQUET  (flat files)
     # ------------------------------------------------------------
@@ -566,11 +646,7 @@ class GDELTConverter:
         parquet_path = self.parquet_folder / f"{base_name}.parquet"
 
         try:
-            # Cast date/ID columns to Int64 so the schema is consistent with
-            # historical Hive files, enabling clean union datasets.
-            for col in _DATE_INT_COLS:
-                if col in df.columns and pd.api.types.is_float_dtype(df[col]):
-                    df[col] = df[col].astype("Int64")
+            self._restore_integer_dtypes(df)
 
             write_parquet_atomic(
                 df, parquet_path,
@@ -612,10 +688,11 @@ class GDELTConverter:
             logger.warning(f"No valid rows after dropping NaN in {by} for {zip_path.name}")
             return []
 
-        # Cast partition columns to int for clean directory names and
-        # consistent Arrow schema with the flat files.
-        for col in by:
-            df_clean[col] = df_clean[col].astype("Int64")
+        # Covers `by` (needed for clean directory names, e.g. Year=1979,
+        # not Year=1979.0) and every other integer-semantic column, so a
+        # historical write's schema matches a flat write's for the same
+        # dataset instead of only guaranteeing it for the partition keys.
+        self._restore_integer_dtypes(df_clean)
 
         # Only called when partitioning is enabled, which requires
         # historical_folder to be set (see __init__).
