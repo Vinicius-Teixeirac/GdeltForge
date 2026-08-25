@@ -217,6 +217,20 @@ class TestFilteredSamplerValidation:
         with pytest.raises(ValueError):
             FilteredSampler(str(folder), GDELT_COLUMNS, filter_dict={"NotAColumn": 1})
 
+    def test_a_corrupt_parquet_file_raises_a_clear_error_not_a_bare_arrow_one(
+        self, tmp_path
+    ):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+        (folder / "corrupt.parquet").write_text("not actually parquet content")
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS, filter_dict={"Actor1CountryCode": "USA"},
+        )
+        with pytest.raises(RuntimeError, match="filtered sample dataset"):
+            sampler.filter_dataset()
+
 
 class TestCountryCodeWarnings:
     """

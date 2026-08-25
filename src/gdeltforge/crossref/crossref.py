@@ -93,6 +93,7 @@ from gdeltforge.scraping.scraper import (
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
+from gdeltforge.utils.io import clearer_dataset_errors
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -439,31 +440,36 @@ def crossref_events_gkg_v1(
     event_id_set = set(event_id_col)
     events_side = events_df.assign(_GlobalEventID_str=event_id_col)
 
-    scanner = _dataset(
-        gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date
-    ).scanner(columns=read_columns, batch_size=64_000)
-
     matches: list[pd.DataFrame] = []
-    for batch in tqdm(scanner.to_batches(), desc="Cross-referencing GKG 1.0"):
-        df_batch = batch.to_pandas()
-        if df_batch.empty:
-            continue
+    # Wrapped from dataset construction onward: ds.dataset() itself can
+    # raise (schema inference reads at least the first file in the list),
+    # not only the later scanner consumption.
+    with clearer_dataset_errors(f"GKG 1.0 dataset in {gkg_folder}"):
+        scanner = _dataset(
+            gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date
+        ).scanner(columns=read_columns, batch_size=64_000)
 
-        exploded = df_batch.assign(
-            _matched_event_id=df_batch["EventIds"].fillna("").str.split(",")
-        ).explode("_matched_event_id")
-        exploded["_matched_event_id"] = exploded["_matched_event_id"].str.strip()
-        exploded = exploded[exploded["_matched_event_id"].isin(event_id_set)]
+        for batch in tqdm(scanner.to_batches(), desc="Cross-referencing GKG 1.0"):
+            df_batch = batch.to_pandas()
+            if df_batch.empty:
+                continue
 
-        if exploded.empty:
-            continue
+            exploded = df_batch.assign(
+                _matched_event_id=df_batch["EventIds"].fillna("").str.split(",")
+            ).explode("_matched_event_id")
+            exploded["_matched_event_id"] = exploded["_matched_event_id"].str.strip()
+            exploded = exploded[exploded["_matched_event_id"].isin(event_id_set)]
 
-        gkg_side = exploded.rename(columns={c: f"GKG_{c}" for c in df_batch.columns})
-        matches.append(
-            events_side.merge(
-                gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id", how="inner"
+            if exploded.empty:
+                continue
+
+            gkg_side = exploded.rename(columns={c: f"GKG_{c}" for c in df_batch.columns})
+            matches.append(
+                events_side.merge(
+                    gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
+                    how="inner",
+                )
             )
-        )
 
     if not matches:
         return pd.DataFrame()
@@ -560,27 +566,36 @@ def crossref_events_gkg_v2(
     # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
     # column unlike GKG 1.0's comma-packed EventIds, so this narrows
     # the scan at the row-group level instead of reading everything.
-    mentions_dataset = _dataset(mentions_folder, parse_gdeltv2_file_date, start_date, end_date)
-    mentions_schema_names = mentions_dataset.schema.names
-    for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
-        _require_column(mentions_schema_names, required, "mentions_folder")
+    # Wrapped from dataset construction onward: ds.dataset() itself can
+    # raise (schema inference reads at least the first file in the
+    # list), and so can the .schema access just below it, not only the
+    # final .to_table() read further down.
+    with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
+        mentions_dataset = _dataset(
+            mentions_folder, parse_gdeltv2_file_date, start_date, end_date
+        )
+        mentions_schema_names = mentions_dataset.schema.names
+        for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
+            _require_column(mentions_schema_names, required, "mentions_folder")
 
-    # Same existing/missing split as columns_to_check and output_columns
-    # elsewhere in the pipeline: read whichever optional payload columns
-    # this Mentions dataset actually has, and simply carry through fewer
-    # Mention_* fields for the ones it doesn't, rather than failing.
-    mentions_payload_columns = [
-        c for c in OPTIONAL_MENTIONS_PAYLOAD_COLUMNS if c in mentions_schema_names
-    ]
-    mentions_read_columns = list(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]) + mentions_payload_columns
+        # Same existing/missing split as columns_to_check and output_columns
+        # elsewhere in the pipeline: read whichever optional payload columns
+        # this Mentions dataset actually has, and simply carry through fewer
+        # Mention_* fields for the ones it doesn't, rather than failing.
+        mentions_payload_columns = [
+            c for c in OPTIONAL_MENTIONS_PAYLOAD_COLUMNS if c in mentions_schema_names
+        ]
+        mentions_read_columns = (
+            list(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]) + mentions_payload_columns
+        )
 
-    logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
-    mentions_filter = pc.field("GLOBALEVENTID").isin(list(event_id_set))
-    bridge_df = (
-        mentions_dataset
-        .to_table(columns=mentions_read_columns, filter=mentions_filter)
-        .to_pandas()
-    )
+        logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
+        mentions_filter = pc.field("GLOBALEVENTID").isin(list(event_id_set))
+        bridge_df = (
+            mentions_dataset
+            .to_table(columns=mentions_read_columns, filter=mentions_filter)
+            .to_pandas()
+        )
 
     if bridge_df.empty:
         return pd.DataFrame()
@@ -626,11 +641,12 @@ def crossref_events_gkg_v2(
     # of these events get read off disk.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     gkg_filter = pc.field("V2DOCUMENTIDENTIFIER").isin(list(urls))
-    gkg_df = (
-        _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
-        .to_table(columns=read_gkg_columns, filter=gkg_filter)
-        .to_pandas()
-    )
+    with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
+        gkg_df = (
+            _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+            .to_table(columns=read_gkg_columns, filter=gkg_filter)
+            .to_pandas()
+        )
 
     if gkg_df.empty:
         return pd.DataFrame()
