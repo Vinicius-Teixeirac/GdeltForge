@@ -36,6 +36,20 @@ class TestFileIndexBuild:
 
         assert index.total_rows == 10
 
+    def test_a_corrupt_parquet_file_raises_a_clear_error_not_a_bare_arrow_one(
+        self, tmp_path
+    ):
+        # Depending on where the corrupt file lands in the glob order,
+        # this can surface either at dataset construction (schema
+        # inference reads at least the first file) or at the later
+        # fragment.metadata access; both are wrapped in clearer_dataset_
+        # errors, so either way this raises the same clear RuntimeError.
+        _write_parquet(tmp_path / "a.parquet", 5)
+        (tmp_path / "b.parquet").write_text("not actually parquet content")
+
+        with pytest.raises(RuntimeError, match=r"reading 2 parquet file\(s\)"):
+            FileIndex(tmp_path)
+
 
 class TestLookup:
     def test_resolves_correct_file_and_relative_row(self, tmp_path):

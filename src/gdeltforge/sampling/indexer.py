@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.dataset as ds
 
+from gdeltforge.utils.io import clearer_dataset_errors
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -48,20 +49,26 @@ class FileIndex:
     # Build metadata via PyArrow
     # ----------------------------------------------------------
     def _build_arrow_metadata(self):
-        dataset = ds.dataset(self.files, format="parquet")
-
         self.stops: list[int] = []    # cumulative row end positions (+1)
         self.starts: list[int] = []   # starting global index for each file
         self.counts: list[int] = []   # rows per file
 
-        fragments = list(dataset.get_fragments())
-        cumulative = 0
-        for fragment in fragments:
-            nrows = fragment.metadata.num_rows
-            self.starts.append(cumulative)
-            cumulative += nrows
-            self.stops.append(cumulative)
-            self.counts.append(nrows)
+        # ds.dataset() itself can raise here: schema inference reads at
+        # least the first file in the list, so a corrupt/non-parquet file
+        # can surface at construction, not just at the fragment.metadata
+        # access below (which opens the rest to read their footers) --
+        # confirmed empirically that which one raises depends on where in
+        # the list the bad file happens to land, so both are wrapped.
+        with clearer_dataset_errors(f"{len(self.files)} parquet file(s)"):
+            dataset = ds.dataset(self.files, format="parquet")
+            fragments = list(dataset.get_fragments())
+            cumulative = 0
+            for fragment in fragments:
+                nrows = fragment.metadata.num_rows
+                self.starts.append(cumulative)
+                cumulative += nrows
+                self.stops.append(cumulative)
+                self.counts.append(nrows)
 
         self.total_rows = cumulative
         self.files = [Path(f.path) for f in fragments]
