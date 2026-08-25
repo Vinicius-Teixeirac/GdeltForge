@@ -1,8 +1,10 @@
 import os
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 
 from gdeltforge.utils.logging import get_logger
 
@@ -15,6 +17,48 @@ def ensure_exists(path: str | Path, description: str) -> Path:
     if not p.exists():
         raise FileNotFoundError(f"{description} does not exist: {p}")
     return p
+
+
+@contextmanager
+def clearer_dataset_errors(what: str):
+    """
+    Wraps a pyarrow.dataset read (construction, fragment metadata access,
+    .schema, .to_table(), .scanner().to_batches()) so a bare
+    ArrowInvalid/OSError, typically "Could not open Parquet input
+    source '<path>': ...", gets an actionable message on top instead of
+    surfacing as-is. pyarrow's own message already names the specific
+    file; this adds what gdeltforge was doing when it hit it and the
+    likely causes, since "a generic pyarrow error" with nothing else to
+    go on is hard to act on. Construction of a pyarrow.dataset.Dataset
+    from an explicit file list is NOT always lazy: schema inference reads
+    at least the first file in the list, so a corrupt/non-parquet file
+    can surface right there, not only at a later, separate read. Callers
+    must wrap starting from construction, confirmed empirically (which
+    of the two raises depends on where in the list the bad file lands).
+
+    FileNotFoundError is deliberately excluded even though it's an
+    OSError subclass: gdeltforge's own "no parquet files matched" checks
+    (empty glob, a date range excluding every file) raise it before ever
+    touching pyarrow, and that's a real, already-clear error in its own
+    right, not a pyarrow read failure to be reclassified as one.
+
+    Chained via `from`, so the original traceback is still there
+    underneath.
+    """
+    try:
+        yield
+    except FileNotFoundError:
+        raise
+    except (pa.ArrowException, OSError) as e:
+        raise RuntimeError(
+            f"Failed reading {what}: {e}\n"
+            f"The error above names the specific file that couldn't be "
+            f"opened as parquet. Common causes: an interrupted download "
+            f"or write left a corrupt/incomplete file, or a non-parquet "
+            f"file ended up matching the *.parquet glob. Removing or "
+            f"re-fetching the named file and rerunning (with --force if "
+            f"it was already marked done) usually resolves it."
+        ) from e
 
 
 def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs) -> None:
@@ -90,12 +134,16 @@ def read_parquet_path(path: str | Path) -> pd.DataFrame:
     Read a single Parquet file, or every Parquet file directly in a
     directory, concatenated into one DataFrame. A directory is globbed to
     *.parquet explicitly rather than handed to pandas as-is: convert and
-    filter's own resumability markers (mark_done above writes <name>.done
-    as a real sibling of the data) sit in exactly these directories by
-    design, and pandas has no notion of that convention, so handing it a
-    directory containing one tries to parse the marker as a Parquet file
-    and fails with a confusing "magic bytes not found" error instead of
-    just ignoring it.
+    filter's own resumability markers (mark_done above writes them as a
+    dot-prefixed sibling of the data, e.g. ".<name>.done") sit in exactly
+    these directories by design. Dot-prefixed files are the standard
+    Hadoop/Spark/Parquet convention for "not a data file" and both
+    pandas.read_parquet and pyarrow.dataset already skip them on their
+    own now, so this glob is belt-and-suspenders rather than the only
+    thing standing between a caller and a confusing "magic bytes not
+    found" error, kept anyway since an explicit *.parquet glob is
+    clearer about intent than relying on an implicit skip-hidden-files
+    convention, and it's what already existed here.
     """
     p = Path(path)
     if not p.is_dir():
@@ -104,7 +152,8 @@ def read_parquet_path(path: str | Path) -> pd.DataFrame:
     files = sorted(p.glob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
-    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
+        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
 
 
 def _fingerprint_value(value: object) -> str:
@@ -139,6 +188,31 @@ def config_fingerprint(**fields: object) -> str:
 
 
 def _done_marker_path(source_path: str | Path) -> Path:
+    # Dot-prefixed: filter's own marker sits next to its source, which is
+    # convert's *output* parquet directory, exactly the directory a user
+    # or notebook most naturally points a plain pd.read_parquet(directory)/
+    # pyarrow.dataset.dataset(directory) at. A bare directory read tries to
+    # open every file in it, and a non-dot-prefixed "<name>.parquet.done"
+    # (plain text, not parquet) fails with a bare, unhelpful
+    # "Parquet magic bytes not found in footer", confirmed against a
+    # real 30,000+-marker directory in this repo's own data. Dot-prefixed
+    # (hidden) files are the standard Hadoop/Spark/Parquet convention for
+    # "not a data file" (the same way _SUCCESS/.hidden are skipped), and
+    # both pandas.read_parquet and pyarrow.dataset already skip them
+    # automatically, confirmed empirically, not assumed. gdeltforge's
+    # own glob("*.parquet") call sites were never affected either way,
+    # since ".done" doesn't match that pattern regardless of the leading
+    # dot; this only matters for readers outside gdeltforge's own control.
+    source_path = Path(source_path)
+    return source_path.parent / ("." + source_path.name + ".done")
+
+
+def _legacy_done_marker_path(source_path: str | Path) -> Path:
+    """Pre-hidden-marker naming (not dot-prefixed): checked as a fallback
+    only, by is_marked_done, and migrated away (renamed to the current
+    scheme) the first time it's found valid, so an existing installation's
+    output directory cleans itself up over time without forcing every
+    already-processed file to be reprocessed."""
     source_path = Path(source_path)
     return source_path.parent / (source_path.name + ".done")
 
@@ -150,9 +224,24 @@ def is_marked_done(source_path: str | Path, fingerprint: str) -> bool:
     current configuration. A marker left by a differently-configured run,
     or no marker at all (including a pre-fingerprint empty marker from
     before this existed), returns False so the file gets (re)processed.
+
+    Falls back to the legacy (pre-hidden) marker name if the current one
+    isn't there, migrating it (rename, not copy) on a match so the
+    directory converges on the hidden naming without any reprocessing.
     """
     marker = _done_marker_path(source_path)
-    return marker.exists() and marker.read_text() == fingerprint
+    if marker.exists():
+        return marker.read_text() == fingerprint
+
+    legacy = _legacy_done_marker_path(source_path)
+    if legacy.exists() and legacy.read_text() == fingerprint:
+        try:
+            legacy.rename(marker)
+        except OSError:
+            pass  # best-effort migration; still correctly reports done
+        return True
+
+    return False
 
 
 def mark_done(source_path: str | Path, fingerprint: str) -> None:
@@ -162,17 +251,21 @@ def mark_done(source_path: str | Path, fingerprint: str) -> None:
 
 def delete_done_marker(source_path: str | Path) -> None:
     """
-    Remove source_path's .done marker, if any. Meant to be called right
-    after source_path itself is deleted (--delete-source): once the
-    source is gone, the marker has nothing left to gate, since a deleted
-    zip/parquet can never be found by process_all_files'/filter_all_files'
-    own glob again on a later run. Left behind, it just accumulates one
-    orphaned marker file per deleted source in a directory
-    --delete-source's whole point was to shrink. missing_ok=True: a
-    source that was never actually marked done (e.g. force=True skipped
-    the check that would have written one) isn't an error here.
+    Remove source_path's .done marker, if any: both the current
+    (hidden) and legacy naming, since either could be present depending
+    on whether is_marked_done has run since the migration to hidden
+    markers. Meant to be called right after source_path itself is
+    deleted (--delete-source): once the source is gone, the marker has
+    nothing left to gate, since a deleted zip/parquet can never be found
+    by process_all_files'/filter_all_files' own glob again on a later
+    run. Left behind, it just accumulates one orphaned marker file per
+    deleted source in a directory --delete-source's whole point was to
+    shrink. missing_ok=True: a source that was never actually marked
+    done (e.g. force=True skipped the check that would have written
+    one) isn't an error here.
     """
     _done_marker_path(source_path).unlink(missing_ok=True)
+    _legacy_done_marker_path(source_path).unlink(missing_ok=True)
 
 
 def warn_if_delete_source_drops_recoverable_data(

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from gdeltforge.utils.io import (
+    clearer_dataset_errors,
     config_fingerprint,
     delete_done_marker,
     is_marked_done,
@@ -166,15 +167,15 @@ class TestReadParquetPath:
 
     def test_ignores_done_resumability_markers_in_a_directory(self, tmp_path):
         # The real bug: convert/filter's own .done markers (mark_done above
-        # writes <name>.done as a real sibling of the data) sit in exactly
-        # these directories by design, and pandas' own directory read has
-        # no notion of that convention, so it tries to parse the marker as
-        # a parquet file and fails. A directory pointed at real convert/
-        # filter output always has these; this must not choke on them.
+        # writes them as a dot-prefixed sibling of the data) sit in exactly
+        # these directories by design. Now dot-prefixed specifically so a
+        # bare pandas/pyarrow directory read skips them on its own; this
+        # explicit glob is a second layer on top of that, not the only
+        # thing preventing the marker from being parsed as a parquet file.
         f = tmp_path / "20260811.export.parquet"
         pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(f)
         mark_done(f, "some-fingerprint")
-        assert (tmp_path / "20260811.export.parquet.done").exists()
+        assert (tmp_path / ".20260811.export.parquet.done").exists()
 
         result = read_parquet_path(tmp_path)
 
@@ -241,7 +242,7 @@ class TestDoneMarker:
         mark_done(src, "fp-1")
 
         assert is_marked_done(src, "fp-1")
-        assert (tmp_path / "20200101.zip.done").read_text() == "fp-1"
+        assert (tmp_path / ".20200101.zip.done").read_text() == "fp-1"
 
     def test_a_marker_from_a_different_fingerprint_is_not_done(self, tmp_path):
         src = tmp_path / "20200101.zip"
@@ -256,11 +257,64 @@ class TestDoneMarker:
         # touch()ed file): must be treated as not-done under the new
         # content-comparison scheme, forcing one harmless reprocess rather
         # than silently trusting a marker that predates fingerprinting.
+        # Also exercises the legacy (non-dot-prefixed) marker path below,
+        # since this old-format marker was never dot-prefixed either.
         src = tmp_path / "20200101.zip"
         src.write_bytes(b"data")
         (tmp_path / "20200101.zip.done").touch()
 
         assert not is_marked_done(src, "fp-1")
+
+    def test_a_legacy_non_dot_prefixed_marker_is_still_recognized(self, tmp_path):
+        # Real installations already have markers written under the old,
+        # non-dot-prefixed name; upgrading gdeltforge must not make every
+        # already-processed file look undone and force a mass reprocess.
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+        (tmp_path / "20200101.zip.done").write_text("fp-1")
+
+        assert is_marked_done(src, "fp-1")
+
+    def test_a_legacy_marker_is_migrated_to_the_dot_prefixed_name(self, tmp_path):
+        # The first is_marked_done check after upgrading should clean the
+        # old marker up rather than leaving it (and its eventual new
+        # sibling) both present forever.
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+        legacy = tmp_path / "20200101.zip.done"
+        legacy.write_text("fp-1")
+
+        assert is_marked_done(src, "fp-1")
+
+        assert not legacy.exists()
+        assert (tmp_path / ".20200101.zip.done").read_text() == "fp-1"
+
+    def test_a_legacy_marker_with_a_stale_fingerprint_is_not_done_and_not_migrated(
+        self, tmp_path
+    ):
+        # A legacy marker from a differently-configured run must still
+        # force reprocessing, the same as a current-format one would --
+        # migration only happens on an actual match.
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+        legacy = tmp_path / "20200101.zip.done"
+        legacy.write_text("fp-old")
+
+        assert not is_marked_done(src, "fp-new")
+
+        assert legacy.exists()
+        assert not (tmp_path / ".20200101.zip.done").exists()
+
+    def test_a_dot_prefixed_marker_takes_priority_over_a_legacy_one(self, tmp_path):
+        # If both happen to exist (e.g. mid-migration), the current-format
+        # marker is authoritative; the legacy one is never even read.
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+        (tmp_path / "20200101.zip.done").write_text("fp-old")
+        (tmp_path / ".20200101.zip.done").write_text("fp-new")
+
+        assert is_marked_done(src, "fp-new")
+        assert not is_marked_done(src, "fp-old")
 
 
 class TestDeleteDoneMarker:
@@ -276,17 +330,85 @@ class TestDeleteDoneMarker:
         src = tmp_path / "20200101.zip"
         src.write_bytes(b"data")
         mark_done(src, "fp-1")
-        assert (tmp_path / "20200101.zip.done").exists()
+        assert (tmp_path / ".20200101.zip.done").exists()
 
         delete_done_marker(src)
 
-        assert not (tmp_path / "20200101.zip.done").exists()
+        assert not (tmp_path / ".20200101.zip.done").exists()
 
     def test_no_marker_present_is_not_an_error(self, tmp_path):
         src = tmp_path / "20200101.zip"
         src.write_bytes(b"data")
 
         delete_done_marker(src)  # should not raise
+
+    def test_removes_a_legacy_marker_too(self, tmp_path):
+        # An installation mid-migration could have either naming still
+        # present; --delete-source must not leave either one orphaned.
+        src = tmp_path / "20200101.zip"
+        src.write_bytes(b"data")
+        (tmp_path / "20200101.zip.done").write_text("fp-1")
+
+        delete_done_marker(src)
+
+        assert not (tmp_path / "20200101.zip.done").exists()
+
+
+class TestClearerDatasetErrors:
+    """clearer_dataset_errors wraps a pyarrow.dataset read so a bare,
+    low-level ArrowInvalid/OSError, e.g. "Could not open Parquet input
+    source '<path>': ...", gets an actionable message on top, naming
+    what was being read and the likely causes, instead of surfacing as
+    a mystery "generic pyarrow error." Confirmed the real shape of this
+    against a genuinely corrupt file, not assumed."""
+
+    def test_an_arrow_error_is_wrapped_with_context(self):
+        import pyarrow as pa
+
+        with pytest.raises(RuntimeError, match=r"reading 3 parquet file\(s\)") as exc_info:
+            with clearer_dataset_errors("3 parquet file(s)"):
+                raise pa.ArrowInvalid("Could not open Parquet input source 'x': bad magic bytes")
+        assert "Common causes" in str(exc_info.value)
+
+    def test_the_original_exception_is_chained_not_discarded(self):
+        import pyarrow as pa
+
+        original = pa.ArrowInvalid("bad magic bytes")
+        with pytest.raises(RuntimeError) as exc_info:
+            with clearer_dataset_errors("1 parquet file(s)"):
+                raise original
+
+        assert exc_info.value.__cause__ is original
+
+    def test_an_os_error_is_also_wrapped(self):
+        with pytest.raises(RuntimeError, match="reading a dataset"):
+            with clearer_dataset_errors("a dataset"):
+                raise OSError("disk read failed")
+
+    def test_file_not_found_error_passes_through_unwrapped(self):
+        # FileNotFoundError is an OSError subclass, but gdeltforge's own
+        # "no parquet files matched" checks (empty glob, a date range
+        # excluding every file) raise it deliberately before ever
+        # touching pyarrow: that's already a clear, correct error and
+        # must not be reclassified as a generic pyarrow read failure.
+        # Real regression: the first version of this wrapper caught bare
+        # OSError, which silently also caught FileNotFoundError.
+        with pytest.raises(FileNotFoundError, match="no files matched"):
+            with clearer_dataset_errors("a dataset"):
+                raise FileNotFoundError("no files matched")
+
+    def test_an_unrelated_exception_passes_through_unwrapped(self):
+        # Only the two exception types pyarrow/OS-level read failures
+        # actually raise are caught; anything else (a real bug in the
+        # caller's own code, e.g.) must not be masked as a data problem.
+        with pytest.raises(ValueError, match="not a dataset problem"):
+            with clearer_dataset_errors("something"):
+                raise ValueError("not a dataset problem")
+
+    def test_no_exception_is_a_no_op(self):
+        with clearer_dataset_errors("something"):
+            result = 1 + 1
+        assert result == 2
 
 
 class TestWarnIfDeleteSourceDropsRecoverableData:
