@@ -117,6 +117,113 @@ class TestPartitionRuleRouting:
         assert (tmp_path / "parquet" / "20200101.export.parquet").exists()
 
 
+class TestIntegerDtypePreservation:
+    """Regression coverage for the real bug this was found from: GDELT's
+    own raw archive can carry a blank value for a genuinely integer field
+    (a real, live 20130901.export.CSV.zip has a blank DATEADDED for every
+    row that day), and pd.to_numeric's own NaN handling forces the whole
+    column to float64 the instant that happens, since plain int64 can't
+    represent NaN at all. Previously only Year/MonthYear/Day were cast
+    back to nullable Int64 afterward; every other integer-semantic
+    columns_numeric entry, DATEADDED included, was left exposed."""
+
+    @staticmethod
+    def _config(tmp_path, **converter_overrides):
+        cfg = {
+            "paths": {
+                "downloaded_data_directory": str(tmp_path / "raw"),
+                "unzipped_data_directory": str(tmp_path / "csv"),
+                "parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+            "columns": {
+                "gdelt_event": ["GlobalEventID", "Day", "Year", "DATEADDED", "GoldsteinScale"],
+            },
+            "columns_numeric": {
+                "gdelt_event": ["GlobalEventID", "Day", "Year", "DATEADDED", "GoldsteinScale"],
+            },
+        }
+        cfg["converter"].update(converter_overrides)
+        return cfg
+
+    def test_a_blank_value_anywhere_no_longer_leaks_float64_for_that_column(
+        self, tmp_path
+    ):
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(
+            tmp_path / "raw",
+            rows=(
+                "1\t20200101\t2020\t20200101000000\t-2.5\n"
+                # Row 2's DATEADDED is blank: the real shape GDELT's own
+                # archive carries for every row on 20130901/20130902, 2013.
+                "2\t20200101\t2020\t\t3.0\n"
+            ),
+        )
+
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        df = pd.read_parquet(outputs[0])
+        assert df["DATEADDED"].dtype == "Int64"
+        assert df["DATEADDED"].tolist() == [20200101000000, pd.NA]
+        # A genuinely fractional column must stay float64, not also get
+        # swept up into the integer cast just for sitting in the same
+        # columns_numeric list.
+        assert df["GoldsteinScale"].dtype == "float64"
+        assert df["GoldsteinScale"].tolist() == [-2.5, 3.0]
+
+    def test_a_clean_file_with_no_blanks_is_unaffected(self, tmp_path):
+        # The common case: no missing values anywhere, pd.to_numeric
+        # already produces int64 on its own, and the is_float_dtype guard
+        # skips the cast entirely rather than touching output that was
+        # already correct.
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(
+            tmp_path / "raw",
+            rows=(
+                "1\t20200101\t2020\t20200101000000\t-2.5\n"
+                "2\t20200101\t2020\t20200101010000\t3.0\n"
+            ),
+        )
+
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        df = pd.read_parquet(outputs[0])
+        assert df["DATEADDED"].tolist() == [20200101000000, 20200101010000]
+
+    def test_historical_hive_writes_get_the_same_protection(self, tmp_path):
+        # _save_historical_parquet used to only cast the partition (`by`)
+        # columns; every other integer column, DATEADDED included, could
+        # still leak float64 in a historical write even after the flat-
+        # write path was fixed.
+        cfg = self._config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(
+            tmp_path / "raw",
+            filename="1979.zip",
+            rows=(
+                "1\t19790101\t1979\t19790101000000\t-2.5\n"
+                "2\t19790101\t1979\t\t3.0\n"
+            ),
+        )
+
+        converter = GDELTConverter(cfg)
+        outputs = converter.process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        df = pd.read_parquet(outputs[0])
+        assert df["DATEADDED"].dtype == "Int64"
+        assert df["DATEADDED"].tolist() == [19790101000000, pd.NA]
+        # Year has no blank value in this file, so it's already a clean
+        # int64 straight out of pd.to_numeric; the is_float_dtype guard
+        # correctly leaves it as-is rather than needlessly promoting it.
+        assert df["Year"].tolist() == [1979, 1979]
+
+
 class TestMaxWorkersConfig:
     def test_defaults_to_none_so_executor_uses_cpu_count(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))
