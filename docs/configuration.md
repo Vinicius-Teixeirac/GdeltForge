@@ -170,6 +170,8 @@ Flat output (Events daily, GKG 1.0, GKG 2.1, Mentions) is tracked with the same 
 
 The marker records the run's own `output_columns` and `compression` settings, not just that a file was processed. Changing either between runs invalidates markers left by the old configuration, so a rerun reprocesses affected files instead of silently serving output shaped by settings that no longer match.
 
+Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the standard convention for "not a data file" that `pandas.read_parquet`/`pyarrow.dataset` already skip on their own. A directory `convert`/`filter` has written into is safe to point any tool at directly, no special handling needed, even though `filter`'s own source directory is `convert`'s output directory and therefore always ends up holding both. Markers from before this existed aren't dot-prefixed; they're recognized and quietly migrated to the current naming the next time that file is checked, without reprocessing it.
+
 ## `filter`
 
 | Key | Description |

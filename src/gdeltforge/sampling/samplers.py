@@ -22,6 +22,7 @@ import pyarrow.dataset as ds
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
+from gdeltforge.utils.io import clearer_dataset_errors
 from gdeltforge.utils.logging import get_logger
 
 from . import cameo_codes
@@ -411,11 +412,17 @@ class FilteredSampler:
         Yield pyarrow.RecordBatch objects matching the configured filter,
         using pyarrow.dataset Scanner with filter pushdown.
         """
-        dataset = self._dataset()
-        expr    = self._build_expression(self.filter_dict)
+        # Wrapped from dataset construction onward: ds.dataset() itself
+        # can raise (schema inference reads at least the first file in
+        # the list), not only the later scanner consumption. Confirmed
+        # empirically that which one raises depends on where in the list
+        # a corrupt/non-parquet file happens to land.
+        with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
+            dataset = self._dataset()
+            expr    = self._build_expression(self.filter_dict)
 
-        scanner = dataset.scanner(columns=needed_columns, filter=expr, batch_size=64_000)
-        yield from scanner.to_batches()
+            scanner = dataset.scanner(columns=needed_columns, filter=expr, batch_size=64_000)
+            yield from scanner.to_batches()
 
     def _needed_columns(self) -> list[str]:
         """Union of requested columns and any column referenced in the filter expression."""
