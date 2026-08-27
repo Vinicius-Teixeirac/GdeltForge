@@ -35,6 +35,7 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 - [Limitations and Roadmap](#limitations-and-roadmap)
 - [Contributing](#contributing)
 - [License](#license)
+- [Data Attribution](#data-attribution)
 
 ---
 
@@ -538,3 +539,7 @@ Found a security issue? See [SECURITY.md](.github/SECURITY.md) rather than openi
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
+
+## Data Attribution
+
+GdeltForge processes data published by [the GDELT Project](https://www.gdeltproject.org/), which makes it available for unlimited and unrestricted use, provided any use or redistribution includes a citation and a link to their site. GdeltForge itself is an independent, unofficial tool, not affiliated with, endorsed by, or sponsored by the GDELT Project.

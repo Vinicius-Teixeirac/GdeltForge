@@ -32,6 +32,8 @@ GDELT actually publishes several distinct tables, all of which GdeltForge proces
 
 `gdeltforge crossref` enriches a sampled Events output with GKG data, picking the right join strategy for the GKG generation you're using: GKG 1.0 carries `EventIds` directly (a direct join), while GKG 2.1 needs the two-hop join through Mentions. Both preserve the real many-to-many structure GDELT's data actually has, rather than silently collapsing it: one event can be covered by many articles, and one article can cover many events. See [CLI Reference](cli-reference.md#gdeltforge-crossref) for the full command, and [Comparison to Other Tools](comparison.md) for how this stacks up against other GDELT clients.
 
+GdeltForge processes data published by [the GDELT Project](https://www.gdeltproject.org/), which makes it available for unlimited and unrestricted use, provided any use or redistribution includes a citation and a link to their site. GdeltForge itself is an independent, unofficial tool, not affiliated with, endorsed by, or sponsored by the GDELT Project.
+
 ## Why this exists
 
 GDELT is extremely rich, but getting the *full* archive through official channels is genuinely difficult:
