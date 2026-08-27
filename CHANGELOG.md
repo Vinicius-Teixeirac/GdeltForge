@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- A Data Attribution section in the README and docs site, citing the GDELT Project and linking to gdeltproject.org per its terms of use, plus a matching `GDELT Project` link in `pyproject.toml`'s project URLs so it surfaces on the PyPI page too
+
 ## [0.8.0] - 2026-08-25
 
 ### Added

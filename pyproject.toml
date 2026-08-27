@@ -45,6 +45,7 @@ Documentation = "https://vinicius-teixeirac.github.io/GdeltForge/"
 Repository = "https://github.com/Vinicius-Teixeirac/GdeltForge"
 Issues = "https://github.com/Vinicius-Teixeirac/GdeltForge/issues"
 Changelog = "https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/CHANGELOG.md"
+"GDELT Project" = "https://www.gdeltproject.org/"
 
 # Only needed for scraping.method: selenium (opt-in fallback). The default
 # "requests" method has no browser dependency at all.
