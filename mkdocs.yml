@@ -36,6 +36,15 @@ theme:
 extra_css:
   - assets/brand.css
 
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Vinicius-Teixeirac/GdeltForge
+      name: GdeltForge on GitHub
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/gdeltforge/
+      name: GdeltForge on PyPI
+
 markdown_extensions:
   - admonition
   - footnotes
