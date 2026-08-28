@@ -8,16 +8,21 @@ theme:
   name: material
   logo: assets/emblem.png
   favicon: assets/favicon.png
+  font:
+    text: Poppins
+    code: JetBrains Mono
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -27,6 +32,9 @@ theme:
     - navigation.top
     - content.code.copy
     - content.action.edit
+
+extra_css:
+  - assets/brand.css
 
 markdown_extensions:
   - admonition
