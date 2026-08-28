@@ -1,0 +1,29 @@
+/* GdeltForge brand palette, from the Brand & Identity System v1.0.
+   Forge orange is the accent everywhere; Slate carries secondary text and
+   rules. The dark scheme also adopts Void/Panel for background and cards,
+   matching the system's own two-background rule; the light scheme keeps
+   Material's normal light surfaces and only takes over primary/accent so
+   body text stays readable, the system's light-mode guidance is narrowly
+   about the README header, not a full inverted theme. */
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0B1223;
+  --md-primary-fg-color--light: #33415C;
+  --md-primary-fg-color--dark: #070B16;
+  --md-primary-bg-color: #F2F3F7;
+  --md-accent-fg-color: #E8912A;
+  --md-accent-fg-color--transparent: #e8912a26;
+  --md-default-bg-color: #070B16;
+  --md-default-fg-color: #F2F3F7;
+  --md-default-fg-color--light: #9BA9C4;
+  --md-code-bg-color: #0B1223;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #0B1223;
+  --md-primary-fg-color--light: #33415C;
+  --md-primary-fg-color--dark: #070B16;
+  --md-primary-bg-color: #F2F3F7;
+  --md-accent-fg-color: #E8912A;
+  --md-accent-fg-color--transparent: #e8912a26;
+}
