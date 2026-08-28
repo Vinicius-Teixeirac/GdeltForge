@@ -1,17 +1,22 @@
-# <img src="docs/assets/emblem.png" alt="GdeltForge emblem: a world map globe resting on an anvil" width="50" align="center"> GdeltForge
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/brand/lockup-a-horizontal.png" alt="GdeltForge: Global Event Data Pipeline" width="640">
+</p>
+
+# GdeltForge
 
 ### Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet
 
 [![CI](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml/badge.svg)](https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Checked with pyright](https://img.shields.io/badge/type--checked-pyright-blue)](https://microsoft.github.io/pyright/)
-[![License: Apache 2.0](https://img.shields.io/github/license/Vinicius-Teixeirac/GdeltForge)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/tag/Vinicius-Teixeirac/GdeltForge?label=release)](https://github.com/Vinicius-Teixeirac/GdeltForge/releases)
+[![Checked with pyright](https://img.shields.io/badge/type--checked-pyright-E8912A?labelColor=33415C)](https://microsoft.github.io/pyright/)
+[![PyPI](https://img.shields.io/pypi/v/gdeltforge?labelColor=33415C&color=E8912A)](https://pypi.org/project/gdeltforge/)
+[![Python versions](https://img.shields.io/pypi/pyversions/gdeltforge?labelColor=33415C&color=6C7C9E)](https://pypi.org/project/gdeltforge/)
+[![License: Apache 2.0](https://img.shields.io/github/license/Vinicius-Teixeirac/GdeltForge?labelColor=33415C&color=6C7C9E)](LICENSE)
 
 📖 **[Full documentation](https://vinicius-teixeirac.github.io/GdeltForge/)**
 
 <p align="center">
-  <img src="docs/assets/terminal-demo.svg" alt="gdeltforge codes and gdeltforge sample running in a terminal, sampling 20 rows out of 542,483,885" width="640">
+  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/terminal-demo.svg" alt="gdeltforge codes and gdeltforge sample running in a terminal, sampling 20 rows out of 542,483,885" width="640">
 </p>
 
 GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, filters, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history. It also scrapes the Global Knowledge Graph (both current GKG 2.1 and legacy GKG 1.0) and Mentions, and can cross-reference a sampled Events output back onto GKG (themes, tone, people, organizations) with `crossref`.
