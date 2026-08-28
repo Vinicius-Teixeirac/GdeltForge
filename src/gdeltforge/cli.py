@@ -5,6 +5,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from gdeltforge import __version__
 from gdeltforge.conversion.converter import run_converter
 from gdeltforge.crossref.crossref import (
     crossref_events_gkg_auto,
@@ -23,6 +24,7 @@ from gdeltforge.sampling.samplers import (
 
 # Pipeline stages
 from gdeltforge.scraping.scraper import date_parser_for, run_scraping_pipeline
+from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
 from gdeltforge.utils.config import dataset_path_key, get_dict, load_config
 from gdeltforge.utils.io import (
     ensure_exists,
@@ -37,6 +39,32 @@ from gdeltforge.utils.logging import get_logger
 # ======================================================================
 
 logger = get_logger(__name__, log_to_file=True)
+
+_TAGLINE = "Global Event Data Pipeline"
+
+
+class _VersionAction(argparse.Action):
+    """Prints the full ASCII banner on a real terminal, or a plain
+    "gdeltforge X.Y.Z" line when output is piped/redirected, matching the
+    brand system's "never on piped output" rule. Registered as a custom
+    Action (not the built-in action="version") specifically so it can make
+    that distinction; like the built-in version action, it fires and exits
+    as soon as --version is parsed, before argparse's own required-
+    subcommand check ever runs.
+    """
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS,
+                 help="show GdeltForge's version and exit"):
+        super().__init__(
+            option_strings=option_strings, dest=dest, default=default, nargs=0, help=help
+        )
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if sys.stdout.isatty():
+            safe_print(full_banner(__version__, _TAGLINE))
+        else:
+            print(f"gdeltforge {__version__}")
+        parser.exit()
 
 # CLI-facing --dataset choices, mapped to the dataset keys used throughout
 # config (columns / columns_numeric / filter.columns_to_check / paths.*
@@ -452,6 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="GdeltForge: a data pipeline for the GDELT 2.0 Events Database"
     )
+    parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(
         "--config",
         metavar="PATH",
@@ -838,6 +867,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    if sys.stdout.isatty():
+        safe_print(compact_emblem(__version__))
 
     try:
         if args.command == "codes":
