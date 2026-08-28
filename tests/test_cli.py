@@ -1479,3 +1479,47 @@ class TestCliReferenceDocsSync:
                     f"gdeltforge {name} {flag}: docs list choices {documented_choices}, "
                     f"argparse actually accepts {real_choices}"
                 )
+
+
+class TestVersionFlag:
+    """--version is registered as a custom Action specifically so it can
+    print the full banner on a real terminal but plain text when piped,
+    matching the brand system's "never on piped output" rule. Like the
+    built-in action="version", it must fire and exit before argparse's
+    own required-subcommand check ever runs.
+    """
+
+    def test_works_without_a_subcommand(self, capsys):
+        parser = cli.build_parser()
+
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(["--version"])
+
+        assert exc_info.value.code == 0
+
+    def test_prints_plain_text_when_not_a_tty(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+        parser = cli.build_parser()
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--version"])
+
+        out = capsys.readouterr().out.strip()
+        assert out == f"gdeltforge {cli.__version__}"
+
+    def test_prints_the_full_banner_on_a_real_terminal(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+        parser = cli.build_parser()
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--version"])
+
+        out = capsys.readouterr().out
+        assert "GdeltForge" in out
+        assert cli.__version__ in out
+        assert cli._TAGLINE.lower() in out
+
+    def test_normal_commands_still_parse_with_version_now_registered(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["convert", "--dataset", "events"])
+        assert args.command == "convert"
