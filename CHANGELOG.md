@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Added
 - A Data Attribution section in the README and docs site, citing the GDELT Project and linking to gdeltproject.org per its terms of use, plus a matching `GDELT Project` link in `pyproject.toml`'s project URLs so it surfaces on the PyPI page too
 - The docs site now uses the project's brand system: Poppins/JetBrains Mono via Material's Google Fonts integration, and a custom palette (Forge orange as the one accent color, Void/Panel backgrounds in dark mode) replacing the generic Material indigo default
+- `gdeltforge --version` prints the brand system's ASCII banner on a real terminal (plain text when piped), and every command prints a one-line compact emblem at interactive start; both degrade gracefully instead of crashing on a legacy Windows console that can't encode the banner's box-drawing characters
 
 ## [0.8.0] - 2026-08-25
 
