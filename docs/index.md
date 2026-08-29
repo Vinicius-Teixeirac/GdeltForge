@@ -7,7 +7,7 @@ GdeltForge is a lightweight but scalable data pipeline to extract, transform, an
 - Large-scale event data, from the 1979 historical backfill through today
 - Events enriched with GKG (themes, tone, people, organizations), via a dedicated cross-reference stage that preserves the real many-to-many relationship instead of silently collapsing it
 - Efficient columnar storage (**Parquet**), with optional Hive partitioning for historical Events data
-- Reproducible sampling (indexed, daily, filtered, stratified)
+- Reproducible sampling (indexed, daily, and filtered modes; filtered mode also supports stratified sampling)
 - Transparent, modular data lineage: every stage is explicit, nothing runs "automagically"
 
 ```

@@ -14,6 +14,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - CI now tests against Python 3.11 and 3.13 in addition to 3.10/3.12, and both are added to `pyproject.toml`'s classifiers. Previously the classifiers just claimed support without CI verifying it; now they do. `Development Status` is bumped from Beta to Production/Stable
 - The docs site footer gains GitHub and PyPI links
 
+### Fixed
+- The README and docs site described sampling as having four parallel modes, indexed, daily, filtered, and stratified. `stratified` isn't a `--mode` value at all: `--stratify`/`--n-per-group` only apply within `--mode filtered`, and the CLI's own help text already said so. Reworded every mention to say so explicitly, not listing it as a peer of the three real modes
+
 ## [0.8.0] - 2026-08-25
 
 ### Added
