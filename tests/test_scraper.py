@@ -132,7 +132,7 @@ class TestIsGdeltDatasetFile:
             ("2020.zip", True),
             ("md5sums", False),
             ("filesizes", False),
-            ("GDELT.MASTERREDUCEDV2.1979-2013.zip", False),
+            ("GDELT.MASTERREDUCEDV2.1979-2013.zip", False),  # deliberate, see the docstring
             ("202003.csv", False),  # 6-digit prefix, right length, wrong suffix
             ("2020.csv", False),  # 4-digit prefix, right length, wrong suffix
         ],
