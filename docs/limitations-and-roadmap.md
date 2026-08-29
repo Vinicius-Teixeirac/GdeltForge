@@ -18,7 +18,7 @@ Only CSV -> Parquet is supported. The schema is preserved as-is, with no additio
 
 ## Sampling
 
-Supported modes: indexed random, daily, filtered, and stratified. Sampling is without replacement by default. Large samples (>20M rows) require significant disk I/O, since data is intentionally partitioned into many files to avoid extreme RAM usage.
+Supported modes: indexed random, daily, and filtered; filtered mode also supports stratified sampling (fixed N per group). Sampling is without replacement by default. Large samples (>20M rows) require significant disk I/O, since data is intentionally partitioned into many files to avoid extreme RAM usage.
 
 ## Roadmap
 
