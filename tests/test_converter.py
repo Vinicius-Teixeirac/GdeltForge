@@ -5,7 +5,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pyarrow.parquet as pq
 import pytest
 
@@ -163,20 +163,20 @@ class TestIntegerDtypePreservation:
         converter = GDELTConverter(cfg)
         outputs = converter.process_single_file(str(zip_path))
 
-        df = pd.read_parquet(outputs[0])
-        assert df["DATEADDED"].dtype == "Int64"
-        assert df["DATEADDED"].tolist() == [20200101000000, pd.NA]
+        df = pl.read_parquet(outputs[0])
+        assert df["DATEADDED"].dtype == pl.Int64
+        assert df["DATEADDED"].to_list() == [20200101000000, None]
         # A genuinely fractional column must stay float64, not also get
         # swept up into the integer cast just for sitting in the same
         # columns_numeric list.
-        assert df["GoldsteinScale"].dtype == "float64"
-        assert df["GoldsteinScale"].tolist() == [-2.5, 3.0]
+        assert df["GoldsteinScale"].dtype == pl.Float64
+        assert df["GoldsteinScale"].to_list() == [-2.5, 3.0]
 
     def test_a_clean_file_with_no_blanks_is_unaffected(self, tmp_path):
-        # The common case: no missing values anywhere, pd.to_numeric
-        # already produces int64 on its own, and the is_float_dtype guard
-        # skips the cast entirely rather than touching output that was
-        # already correct.
+        # The common case: no missing values anywhere; the cast to Int64
+        # is applied unconditionally based on column membership rather
+        # than any runtime dtype inspection, producing the same clean
+        # output whether or not nulls are present.
         cfg = self._config(tmp_path)
         zip_path = _write_flat_zip(
             tmp_path / "raw",
@@ -189,8 +189,8 @@ class TestIntegerDtypePreservation:
         converter = GDELTConverter(cfg)
         outputs = converter.process_single_file(str(zip_path))
 
-        df = pd.read_parquet(outputs[0])
-        assert df["DATEADDED"].tolist() == [20200101000000, 20200101010000]
+        df = pl.read_parquet(outputs[0])
+        assert df["DATEADDED"].to_list() == [20200101000000, 20200101010000]
 
     def test_historical_hive_writes_get_the_same_protection(self, tmp_path):
         # _save_historical_parquet used to only cast the partition (`by`)
@@ -215,13 +215,13 @@ class TestIntegerDtypePreservation:
         outputs = converter.process_single_file(str(zip_path))
 
         assert len(outputs) == 1
-        df = pd.read_parquet(outputs[0])
-        assert df["DATEADDED"].dtype == "Int64"
-        assert df["DATEADDED"].tolist() == [19790101000000, pd.NA]
-        # Year has no blank value in this file, so it's already a clean
-        # int64 straight out of pd.to_numeric; the is_float_dtype guard
-        # correctly leaves it as-is rather than needlessly promoting it.
-        assert df["Year"].tolist() == [1979, 1979]
+        df = pl.read_parquet(outputs[0])
+        assert df["DATEADDED"].dtype == pl.Int64
+        assert df["DATEADDED"].to_list() == [19790101000000, None]
+        # Year has no blank value in this file; the cast to Int64 leaves
+        # it unchanged regardless, since it was already a clean integer
+        # column with nothing to coerce.
+        assert df["Year"].to_list() == [1979, 1979]
 
 
 class TestMaxWorkersConfig:
@@ -291,7 +291,7 @@ class TestOutputColumnsConfig:
         assert converter.output_columns is None
 
     def test_projects_columns_during_csv_parsing(self, tmp_path):
-        # Proves the pruning actually reaches pandas' read_csv (usecols),
+        # Proves the pruning actually reaches polars' read_csv (columns),
         # not just that the config value is stored: the resulting parquet
         # must carry only the configured subset, in COLUMN_NAMES' relative
         # order, with numeric coercion still applied to whichever of those
@@ -306,9 +306,9 @@ class TestOutputColumnsConfig:
         converter = GDELTConverter(cfg)
         outputs = converter.process_single_file(str(zip_path))
 
-        df = pd.read_parquet(outputs[0])
+        df = pl.read_parquet(outputs[0])
         assert list(df.columns) == ["Day"]
-        assert df["Day"].tolist() == [20200101, 20200102]
+        assert df["Day"].to_list() == [20200101, 20200102]
 
     def test_a_configured_column_not_in_this_dataset_is_skipped_not_fatal(self, tmp_path):
         cfg = _make_config(
@@ -323,7 +323,7 @@ class TestOutputColumnsConfig:
         converter = GDELTConverter(cfg)
         outputs = converter.process_single_file(str(zip_path))
 
-        df = pd.read_parquet(outputs[0])
+        df = pl.read_parquet(outputs[0])
         assert list(df.columns) == ["Day"]
 
 
@@ -653,17 +653,17 @@ class TestConvertsNonEventsSchemaEndToEnd:
         outputs = converter.process_single_file(str(zip_path))
 
         assert len(outputs) == 1
-        df = pd.read_parquet(outputs[0])
+        df = pl.read_parquet(outputs[0])
         # Exactly one row: the header line must be consumed as a header,
         # not misread as a second, garbage data row.
         assert len(df) == 1
         assert list(df.columns) == ["Date", "NumArticles", "Counts", "Themes", "EventIds"]
-        assert df["Date"].iloc[0] == 20130401
-        assert df["NumArticles"].iloc[0] == 5
+        assert df["Date"][0] == 20130401
+        assert df["NumArticles"][0] == 5
         # Numeric coercion must be scoped to columns_numeric only: EventIds
         # is a comma-delimited list, not a scalar, and must survive untouched.
-        assert df["EventIds"].iloc[0] == "123456,789012"
-        assert df["Themes"].iloc[0] == "TAX_FNCACT;GENERAL_GOVERNMENT"
+        assert df["EventIds"][0] == "123456,789012"
+        assert df["Themes"][0] == "TAX_FNCACT;GENERAL_GOVERNMENT"
 
     def test_run_converter_wrapper_processes_a_non_events_dataset(self, tmp_path):
         cfg = self._config(tmp_path)
@@ -675,9 +675,9 @@ class TestConvertsNonEventsSchemaEndToEnd:
 
         assert failed == []
         assert len(outputs) == 1
-        out_df = pd.read_parquet(outputs[0])
+        out_df = pl.read_parquet(outputs[0])
         assert len(out_df) == 1
-        assert out_df["EventIds"].iloc[0] == "123456,789012"
+        assert out_df["EventIds"][0] == "123456,789012"
 
     def test_events_schema_stays_headerless(self, tmp_path):
         # Regression guard for _DATASETS_WITH_HEADER_ROW: Events (and, by
@@ -694,9 +694,9 @@ class TestConvertsNonEventsSchemaEndToEnd:
         converter = GDELTConverter(cfg)
         outputs = converter.process_single_file(str(zip_path))
 
-        df = pd.read_parquet(outputs[0])
+        df = pl.read_parquet(outputs[0])
         assert len(df) == 2
-        assert df["Day"].tolist() == [20200101, 20200102]
+        assert df["Day"].to_list() == [20200101, 20200102]
 
 
 def _write_flat_zip(raw_dir, filename="20200101.export.CSV.zip", rows="1\t20200101\n"):
@@ -771,7 +771,7 @@ class TestConversionResumability:
 
         GDELTConverter(cfg).process_all_files()
         out_path = tmp_path / "parquet" / "20200101.export.parquet"
-        assert list(pd.read_parquet(out_path).columns) == ["GlobalEventID", "Day"]
+        assert list(pl.read_parquet(out_path).columns) == ["GlobalEventID", "Day"]
 
         # Rerun with a narrower output_columns must not be skipped by the
         # marker left above, and must actually reproduce the narrower
@@ -783,7 +783,7 @@ class TestConversionResumability:
 
         assert failed == []
         assert len(outputs) == 1
-        assert list(pd.read_parquet(out_path).columns) == ["Day"]
+        assert list(pl.read_parquet(out_path).columns) == ["Day"]
 
     def test_a_zip_that_still_errors_is_not_marked_done(self, tmp_path, monkeypatch):
         # A failed conversion must stay eligible for retry on the next run,
@@ -901,7 +901,7 @@ class TestUnicodeDecodeRecovery:
         assert len(outputs) == 1
         # Both rows survived: the whole file wasn't discarded just
         # because one byte in it couldn't be decoded.
-        out = pd.read_parquet(outputs[0])
+        out = pl.read_parquet(outputs[0])
         assert len(out) == 2
 
     def test_invalid_utf8_byte_logs_a_warning(self, tmp_path):
@@ -1171,13 +1171,13 @@ class TestSaveParquetAtomicity:
         cfg = _make_config(tmp_path)
         converter = GDELTConverter(cfg)
 
-        def boom(self, path, **kwargs):
-            Path(path).write_bytes(b"partial write before a simulated crash")
+        def boom(self, file, **kwargs):
+            Path(file).write_bytes(b"partial write before a simulated crash")
             raise OSError("simulated crash mid-write")
 
-        monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+        monkeypatch.setattr(pl.DataFrame, "write_parquet", boom)
 
-        df = pd.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+        df = pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
         result = converter._save_parquet(df, "20200101")
 
         assert result is None
@@ -1196,13 +1196,13 @@ class TestSaveParquetAtomicity:
         cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
         converter = GDELTConverter(cfg)
 
-        def boom(table, path, **kwargs):
-            Path(path).write_bytes(b"partial write before a simulated crash")
+        def boom(self, file, **kwargs):
+            Path(file).write_bytes(b"partial write before a simulated crash")
             raise OSError("simulated crash mid-write")
 
-        monkeypatch.setattr(converter_module.pq, "write_table", boom)
+        monkeypatch.setattr(pl.DataFrame, "write_parquet", boom)
 
-        df = pd.DataFrame({"GlobalEventID": [1], "Day": [20200101], "Year": [2020]})
+        df = pl.DataFrame({"GlobalEventID": [1], "Day": [20200101], "Year": [2020]})
         with pytest.raises(OSError):
             converter._save_historical_parquet(df, Path("2020.zip"), "yearly")
 
