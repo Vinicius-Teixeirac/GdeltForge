@@ -34,7 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.26",
-    "pandas>=2.0",
+    "polars>=1.34",
     "pyarrow>=14.0",
     "pyyaml>=6.0",
     "requests>=2.28",
