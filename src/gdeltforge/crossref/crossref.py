@@ -81,11 +81,9 @@ Provides:
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
-import pandas as pd
-import pyarrow.compute as pc
-import pyarrow.dataset as ds
+import polars as pl
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import (
@@ -211,7 +209,7 @@ def _dataset(
     date_parser: Callable[[str], tuple[date | None, date | None]],
     start_date: date | None = None,
     end_date: date | None = None,
-) -> ds.Dataset:
+) -> pl.LazyFrame:
     files = _list_files(folder, date_parser, start_date, end_date)
     if not files:
         raise FileNotFoundError(
@@ -222,7 +220,27 @@ def _dataset(
                 else ""
             )
         )
-    return ds.dataset(files, format="parquet")
+    # polars' scan_parquet infers its schema from a single file rather
+    # than the union of every file's schema the way pyarrow.dataset.
+    # dataset() does, confirmed directly: a column present in some files
+    # and absent from others (exactly OPTIONAL_MENTIONS_PAYLOAD_COLUMNS'
+    # reason for existing, e.g. an older Mentions file predating
+    # Confidence/MentionTimeDate) raises "extra column ... outside of
+    # expected schema" for whichever file doesn't match the schema
+    # scan_parquet happened to infer, regardless of file order.
+    # missing_columns="insert" alone only null-fills a column the SCHEMA
+    # has but a given file lacks; it does nothing for a column a LATER
+    # file has that the inferred schema didn't already include. Reading
+    # every file's own footer schema first (cheap, metadata-only, the
+    # same order of cost pyarrow.dataset's own schema unification already
+    # paid) and passing the union explicitly as schema= reproduces that
+    # unification regardless of which file scan_parquet would otherwise
+    # have picked.
+    schema: dict[str, pl.DataType] = {}
+    for f in files:
+        for name, dtype in pl.read_parquet_schema(f).items():
+            schema.setdefault(name, dtype)
+    return pl.scan_parquet(files, schema=schema, missing_columns="insert")
 
 
 def _validate_columns(columns: set[str] | None, available: list[str]) -> set[str] | None:
@@ -275,7 +293,7 @@ def warn_if_output_columns_drops_join_key(
 
 
 def warn_if_events_predate_gkg_coverage(
-    gkg_label: str, coverage_start: int, events_df: pd.DataFrame
+    gkg_label: str, coverage_start: int, events_df: pl.DataFrame
 ) -> None:
     """
     Warn (not error) when some or all of events_df predates a GKG
@@ -298,8 +316,8 @@ def warn_if_events_predate_gkg_coverage(
     """
     if "DATEADDED" not in events_df.columns:
         return
-    date_added = events_df["DATEADDED"].dropna()
-    if date_added.empty:
+    date_added = events_df["DATEADDED"].drop_nulls()
+    if date_added.is_empty():
         return
     total = len(date_added)
     too_old = int((date_added < coverage_start).sum())
@@ -319,7 +337,7 @@ def warn_if_events_predate_gkg_coverage(
         )
 
 
-def warn_if_events_df_is_large(events_df: pd.DataFrame) -> None:
+def warn_if_events_df_is_large(events_df: pl.DataFrame) -> None:
     """
     Warn (not error) when events_df looks like the full Events archive
     rather than a bounded sample. This module's docstring already says
@@ -399,13 +417,13 @@ def warn_if_directory_is_large(
 
 
 def crossref_events_gkg_v1(
-    events_df: pd.DataFrame,
+    events_df: pl.DataFrame,
     gkg_folder: str,
     gkg_columns: list[str],
     columns: set[str] | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Direct join: events_df x a GKG 1.0-family dataset (the main file or
     its separate Counts file, both carry EventIds the same way, so this
@@ -436,50 +454,58 @@ def crossref_events_gkg_v1(
     columns = _validate_columns(columns, gkg_columns)
     read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
 
-    event_id_col = events_df["GlobalEventID"].astype("int64").astype(str)
-    event_id_set = set(event_id_col)
-    events_side = events_df.assign(_GlobalEventID_str=event_id_col)
+    event_id_col = events_df["GlobalEventID"].cast(pl.Int64).cast(pl.Utf8)
+    event_id_set = set(event_id_col.to_list())
+    events_side = events_df.with_columns(event_id_col.alias("_GlobalEventID_str"))
 
-    matches: list[pd.DataFrame] = []
-    # Wrapped from dataset construction onward: ds.dataset() itself can
-    # raise (schema inference reads at least the first file in the list),
-    # not only the later scanner consumption.
+    matches: list[pl.DataFrame] = []
+    # Wrapped from dataset construction onward: _dataset() itself can
+    # raise (every file's footer schema is read there, to build the
+    # union schema= scan_parquet needs), not only the later batch
+    # collection.
     with clearer_dataset_errors(f"GKG 1.0 dataset in {gkg_folder}"):
-        scanner = _dataset(
+        lf = _dataset(
             gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date
-        ).scanner(columns=read_columns, batch_size=64_000)
+        ).select(read_columns)
 
-        for batch in tqdm(scanner.to_batches(), desc="Cross-referencing GKG 1.0"):
-            df_batch = batch.to_pandas()
-            if df_batch.empty:
+        for df_batch in tqdm(
+            lf.collect_batches(chunk_size=64_000), desc="Cross-referencing GKG 1.0"
+        ):
+            if df_batch.is_empty():
                 continue
 
-            exploded = df_batch.assign(
-                _matched_event_id=df_batch["EventIds"].fillna("").str.split(",")
-            ).explode("_matched_event_id")
-            exploded["_matched_event_id"] = exploded["_matched_event_id"].str.strip()
-            exploded = exploded[exploded["_matched_event_id"].isin(event_id_set)]
+            original_columns = df_batch.columns
+            exploded = (
+                df_batch
+                .with_columns(
+                    pl.col("EventIds").fill_null("").str.split(",")
+                    .alias("_matched_event_id")
+                )
+                .explode("_matched_event_id", empty_as_null=False)
+                .with_columns(pl.col("_matched_event_id").str.strip_chars())
+                .filter(pl.col("_matched_event_id").is_in(event_id_set))
+            )
 
-            if exploded.empty:
+            if exploded.is_empty():
                 continue
 
-            gkg_side = exploded.rename(columns={c: f"GKG_{c}" for c in df_batch.columns})
+            gkg_side = exploded.rename({c: f"GKG_{c}" for c in original_columns})
             matches.append(
-                events_side.merge(
+                events_side.join(
                     gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
-                    how="inner",
+                    how="inner", coalesce=False,
                 )
             )
 
     if not matches:
-        return pd.DataFrame()
+        return pl.DataFrame()
 
-    result = pd.concat(matches, ignore_index=True)
-    return result.drop(columns=["_GlobalEventID_str", "_matched_event_id"])
+    result = pl.concat(matches)
+    return result.drop(["_GlobalEventID_str", "_matched_event_id"])
 
 
 def crossref_events_gkg_v2(
-    events_df: pd.DataFrame,
+    events_df: pl.DataFrame,
     mentions_folder: str,
     gkg_v2_folder: str,
     gkg_v2_columns: list[str],
@@ -488,7 +514,7 @@ def crossref_events_gkg_v2(
     dedupe_mentions: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Two-hop join for GKG 2.1, which carries no event id:
     Events -[GlobalEventID]-> Mentions -[document URL]-> GKG 2.1.
@@ -560,21 +586,21 @@ def crossref_events_gkg_v2(
         (columns if columns is not None else set(gkg_v2_columns)) | {"V2DOCUMENTIDENTIFIER"}
     )
 
-    event_id_col = events_df["GlobalEventID"].astype("int64")
-    event_id_set = set(event_id_col)
+    event_id_col = events_df["GlobalEventID"].cast(pl.Int64)
+    event_id_set = set(event_id_col.to_list())
 
     # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
     # column unlike GKG 1.0's comma-packed EventIds, so this narrows
     # the scan at the row-group level instead of reading everything.
-    # Wrapped from dataset construction onward: ds.dataset() itself can
-    # raise (schema inference reads at least the first file in the
-    # list), and so can the .schema access just below it, not only the
-    # final .to_table() read further down.
+    # Wrapped from dataset construction onward: _dataset() itself can
+    # raise (every file's footer schema is read there), and so can the
+    # collect_schema() access just below it, not only the final
+    # .collect() read further down.
     with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
-        mentions_dataset = _dataset(
+        mentions_lf = _dataset(
             mentions_folder, parse_gdeltv2_file_date, start_date, end_date
         )
-        mentions_schema_names = mentions_dataset.schema.names
+        mentions_schema_names = mentions_lf.collect_schema().names()
         for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
             _require_column(mentions_schema_names, required, "mentions_folder")
 
@@ -590,15 +616,15 @@ def crossref_events_gkg_v2(
         )
 
         logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
-        mentions_filter = pc.field("GLOBALEVENTID").isin(list(event_id_set))
         bridge_df = (
-            mentions_dataset
-            .to_table(columns=mentions_read_columns, filter=mentions_filter)
-            .to_pandas()
+            mentions_lf
+            .filter(pl.col("GLOBALEVENTID").is_in(event_id_set))
+            .select(mentions_read_columns)
+            .collect()
         )
 
-    if bridge_df.empty:
-        return pd.DataFrame()
+    if bridge_df.is_empty():
+        return pl.DataFrame()
 
     if dedupe_mentions:
         # Mentions records one row per sentence that references an
@@ -616,65 +642,66 @@ def crossref_events_gkg_v2(
         # kept row is the highest-confidence one when Confidence is
         # available at all.
         mention_counts = (
-            bridge_df.groupby(["GLOBALEVENTID", "MentionIdentifier"], sort=False)
-            .size()
-            .rename("Mention_Count")
-            .reset_index()
+            bridge_df.group_by(["GLOBALEVENTID", "MentionIdentifier"], maintain_order=False)
+            .len()
+            .rename({"len": "Mention_Count"})
         )
         if "Confidence" in bridge_df.columns:
-            bridge_df = bridge_df.sort_values(
-                "Confidence", ascending=False, na_position="last", kind="stable"
+            bridge_df = bridge_df.sort(
+                "Confidence", descending=True, nulls_last=True, maintain_order=True
             )
-        bridge_df = bridge_df.drop_duplicates(
-            subset=["GLOBALEVENTID", "MentionIdentifier"], keep="first"
+        bridge_df = bridge_df.unique(
+            subset=["GLOBALEVENTID", "MentionIdentifier"], keep="first", maintain_order=True
         )
-        bridge_df = bridge_df.merge(
+        bridge_df = bridge_df.join(
             mention_counts, on=["GLOBALEVENTID", "MentionIdentifier"], how="left"
         )
 
-    urls = set(bridge_df["MentionIdentifier"].dropna().unique())
+    urls = set(bridge_df["MentionIdentifier"].drop_nulls().unique().to_list())
     if not urls:
-        return pd.DataFrame()
+        return pl.DataFrame()
 
     # Hop 2: GKG 2.1, filter-pushdown on the document URL: again a real
-    # pyarrow predicate, so only rows for articles actually mentioning one
-    # of these events get read off disk.
+    # predicate pushed down into the scan, so only rows for articles
+    # actually mentioning one of these events get read off disk.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
-    gkg_filter = pc.field("V2DOCUMENTIDENTIFIER").isin(list(urls))
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
         gkg_df = (
             _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
-            .to_table(columns=read_gkg_columns, filter=gkg_filter)
-            .to_pandas()
+            .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
+            .select(read_gkg_columns)
+            .collect()
         )
 
-    if gkg_df.empty:
-        return pd.DataFrame()
+    if gkg_df.is_empty():
+        return pl.DataFrame()
 
     if on_duplicate_document == "latest":
-        gkg_df = gkg_df.drop_duplicates(subset=["V2DOCUMENTIDENTIFIER"], keep="last")
+        gkg_df = gkg_df.unique(subset=["V2DOCUMENTIDENTIFIER"], keep="last", maintain_order=True)
     elif on_duplicate_document == "earliest":
-        gkg_df = gkg_df.drop_duplicates(subset=["V2DOCUMENTIDENTIFIER"], keep="first")
+        gkg_df = gkg_df.unique(subset=["V2DOCUMENTIDENTIFIER"], keep="first", maintain_order=True)
     # "all": no dedup, every GKG record for a shared URL flows through.
-    gkg_df = gkg_df.rename(columns={c: f"GKG_{c}" for c in gkg_df.columns})
+    gkg_df = gkg_df.rename({c: f"GKG_{c}" for c in gkg_df.columns})
 
-    bridge_df = bridge_df.rename(columns={c: f"Mention_{c}" for c in mentions_payload_columns})
+    bridge_df = bridge_df.rename({c: f"Mention_{c}" for c in mentions_payload_columns})
 
-    joined = bridge_df.merge(
-        gkg_df, left_on="MentionIdentifier", right_on="GKG_V2DOCUMENTIDENTIFIER", how="inner"
+    joined = bridge_df.join(
+        gkg_df, left_on="MentionIdentifier", right_on="GKG_V2DOCUMENTIDENTIFIER",
+        how="inner", coalesce=False,
     )
-    if joined.empty:
-        return pd.DataFrame()
+    if joined.is_empty():
+        return pl.DataFrame()
 
-    events_side = events_df.assign(_GlobalEventID_int64=event_id_col)
-    result = events_side.merge(
-        joined, left_on="_GlobalEventID_int64", right_on="GLOBALEVENTID", how="inner"
+    events_side = events_df.with_columns(event_id_col.alias("_GlobalEventID_int64"))
+    result = events_side.join(
+        joined, left_on="_GlobalEventID_int64", right_on="GLOBALEVENTID",
+        how="inner", coalesce=False,
     )
-    return result.drop(columns=["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier"])
+    return result.drop(["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier"])
 
 
 def crossref_events_gkg_auto(
-    events_df: pd.DataFrame,
+    events_df: pl.DataFrame,
     gkg_v1_folder: str,
     gkg_v1_columns: list[str],
     mentions_folder: str,
@@ -686,7 +713,7 @@ def crossref_events_gkg_auto(
     dedupe_mentions: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Attempts every sampled event against both GKG generations rather than
     picking exactly one per event by DATEADDED, so a caller doesn't have
@@ -766,11 +793,11 @@ def crossref_events_gkg_auto(
         )
 
     eligible_mask = date_added >= GKG_V1_COVERAGE_START
-    eligible_events = cast(pd.DataFrame, events_df[eligible_mask])
+    eligible_events = events_df.filter(eligible_mask)
 
-    results: list[pd.DataFrame] = []
+    results: list[pl.DataFrame] = []
 
-    if not eligible_events.empty:
+    if not eligible_events.is_empty():
         logger.info(
             f"crossref_events_gkg_auto: attempting {len(eligible_events)} event(s) "
             f"against both GKG 1.0 and GKG 2.1; a DATEADDED before "
@@ -781,8 +808,8 @@ def crossref_events_gkg_auto(
             eligible_events, gkg_v1_folder, gkg_v1_columns, columns=v1_columns,
             start_date=start_date, end_date=end_date,
         )
-        if not v1_result.empty:
-            results.append(v1_result.assign(CrossrefSource="v1"))
+        if not v1_result.is_empty():
+            results.append(v1_result.with_columns(pl.lit("v1").alias("CrossrefSource")))
 
         v2_result = crossref_events_gkg_v2(
             eligible_events, mentions_folder, gkg_v2_folder, gkg_v2_columns,
@@ -791,9 +818,9 @@ def crossref_events_gkg_auto(
             dedupe_mentions=dedupe_mentions,
             start_date=start_date, end_date=end_date,
         )
-        if not v2_result.empty:
-            results.append(v2_result.assign(CrossrefSource="v2"))
+        if not v2_result.is_empty():
+            results.append(v2_result.with_columns(pl.lit("v2").alias("CrossrefSource")))
 
     if not results:
-        return pd.DataFrame()
-    return pd.concat(results, ignore_index=True, sort=False)
+        return pl.DataFrame()
+    return pl.concat(results, how="diagonal")

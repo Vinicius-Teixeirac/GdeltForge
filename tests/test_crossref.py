@@ -2,7 +2,8 @@ import logging
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
+import polars.testing as pl_testing
 import pytest
 
 import gdeltforge.crossref.crossref as crossref_module
@@ -120,13 +121,13 @@ class TestWarnIfEventsPredateGkgCoverage:
         assert GKG_V2_COVERAGE_START == 20150218
 
     def test_no_warning_when_all_events_are_within_coverage(self, caplog):
-        events_df = pd.DataFrame({"DATEADDED": [20200101, 20200102]})
+        events_df = pl.DataFrame({"DATEADDED": [20200101, 20200102]})
         with caplog.at_level(logging.WARNING):
             warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
         assert caplog.records == []
 
     def test_warns_when_all_events_predate_coverage(self, caplog):
-        events_df = pd.DataFrame({"DATEADDED": [20100101, 20120101]})
+        events_df = pl.DataFrame({"DATEADDED": [20100101, 20120101]})
         with caplog.at_level(logging.WARNING):
             warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
         assert any(
@@ -135,7 +136,7 @@ class TestWarnIfEventsPredateGkgCoverage:
         )
 
     def test_warns_with_a_partial_count_when_only_some_events_predate_coverage(self, caplog):
-        events_df = pd.DataFrame({"DATEADDED": [20100101, 20200101, 20200102]})
+        events_df = pl.DataFrame({"DATEADDED": [20100101, 20200101, 20200102]})
         with caplog.at_level(logging.WARNING):
             warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
         assert any("1 of 3" in r.message for r in caplog.records)
@@ -144,19 +145,19 @@ class TestWarnIfEventsPredateGkgCoverage:
         # A sample built with --columns that excluded DATEADDED: this is
         # a diagnostic on top of the join, not something the join itself
         # depends on, so it must degrade silently, not error.
-        events_df = pd.DataFrame({"GlobalEventID": [1, 2]})
+        events_df = pl.DataFrame({"GlobalEventID": [1, 2]})
         with caplog.at_level(logging.WARNING):
             warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
         assert caplog.records == []
 
     def test_no_warning_on_empty_dateadded(self, caplog):
-        events_df = pd.DataFrame({"DATEADDED": pd.Series([], dtype="float64")})
+        events_df = pl.DataFrame({"DATEADDED": pl.Series([], dtype=pl.Float64)})
         with caplog.at_level(logging.WARNING):
             warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
         assert caplog.records == []
 
     def test_null_dateadded_values_are_excluded_from_the_count(self, caplog):
-        events_df = pd.DataFrame({"DATEADDED": [20100101, None, 20200101]})
+        events_df = pl.DataFrame({"DATEADDED": [20100101, None, 20200101]})
         with caplog.at_level(logging.WARNING):
             warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
         # 1 real pre-coverage row out of 2 non-null rows, not 3.
@@ -171,14 +172,14 @@ class TestWarnIfEventsDfIsLarge:
 
     def test_no_warning_at_or_below_threshold(self, caplog):
         n = crossref_module._LARGE_EVENTS_JOIN_WARNING_THRESHOLD
-        events_df = pd.DataFrame({"GlobalEventID": range(n)})
+        events_df = pl.DataFrame({"GlobalEventID": range(n)})
         with caplog.at_level(logging.WARNING):
             warn_if_events_df_is_large(events_df)
         assert caplog.records == []
 
     def test_warns_above_threshold(self, caplog):
         n = crossref_module._LARGE_EVENTS_JOIN_WARNING_THRESHOLD + 1
-        events_df = pd.DataFrame({"GlobalEventID": range(n)})
+        events_df = pl.DataFrame({"GlobalEventID": range(n)})
         with caplog.at_level(logging.WARNING):
             warn_if_events_df_is_large(events_df)
         assert any(
@@ -186,7 +187,7 @@ class TestWarnIfEventsDfIsLarge:
         )
 
     def test_no_warning_for_a_typical_bounded_sample(self, caplog):
-        events_df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        events_df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
         with caplog.at_level(logging.WARNING):
             warn_if_events_df_is_large(events_df)
         assert caplog.records == []
@@ -266,7 +267,7 @@ class TestWarnIfDirectoryIsLarge:
 class TestCrossrefEventsGkgV1:
     @staticmethod
     def _events_df():
-        return pd.DataFrame({
+        return pl.DataFrame({
             "GlobalEventID": [1001, 1002, 1003],
             "Actor1Name": ["Alice", "Bob", "Carol"],
             "NumArticles": [5, 3, 7],
@@ -276,18 +277,18 @@ class TestCrossrefEventsGkgV1:
     def _write_gkg_v1(tmp_path):
         folder = tmp_path / "gkg_v1"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "Date": [20130401, 20130401],
             "EventIds": ["1001,1002", "9999"],
             "NumArticles": [10, 2],
             "Themes": ["TAX_FNCACT", "UNRELATED"],
-        }).to_parquet(folder / "20130401.gkg.parquet")
-        pd.DataFrame({
+        }).write_parquet(folder / "20130401.gkg.parquet")
+        pl.DataFrame({
             "Date": [20130402, 20130402],
             "EventIds": ["1001", None],
             "NumArticles": [4, 1],
             "Themes": ["ECON_STOCKMARKET", "EMPTY_TEST"],
-        }).to_parquet(folder / "20130402.gkg.parquet")
+        }).write_parquet(folder / "20130402.gkg.parquet")
         return str(folder)
 
     def test_basic_join_and_hand_computed_row_count(self, tmp_path):
@@ -312,7 +313,7 @@ class TestCrossrefEventsGkgV1:
 
         # The "1001,1002" row must produce two separate output rows (one
         # per event), sharing the same GKG-side data, not one merged row.
-        shared = result[result["GKG_EventIds"] == "1001,1002"]
+        shared = result.filter(pl.col("GKG_EventIds") == "1001,1002")
         assert sorted(shared["GlobalEventID"]) == [1001, 1002]
         assert len(set(shared["GKG_Themes"])) == 1
 
@@ -329,9 +330,9 @@ class TestCrossrefEventsGkgV1:
         folder = self._write_gkg_v1(tmp_path)
         result = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
 
-        row = result[
-            (result["GlobalEventID"] == 1001) & (result["GKG_EventIds"] == "1001,1002")
-        ].iloc[0]
+        row = result.filter(
+            (pl.col("GlobalEventID") == 1001) & (pl.col("GKG_EventIds") == "1001,1002")
+        ).row(0, named=True)
         assert row["NumArticles"] == 5       # Events' own NumArticles
         assert row["GKG_NumArticles"] == 10  # GKG's NumArticles, untouched
 
@@ -356,7 +357,7 @@ class TestCrossrefEventsGkgV1:
 
     def test_missing_global_event_id_column_raises(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
-        bad_events = self._events_df().drop(columns=["GlobalEventID"])
+        bad_events = self._events_df().drop(["GlobalEventID"])
         with pytest.raises(ValueError, match="GlobalEventID"):
             crossref_events_gkg_v1(bad_events, folder, GKG_V1_COLUMNS)
 
@@ -367,16 +368,16 @@ class TestCrossrefEventsGkgV1:
 
     def test_no_matches_returns_empty_dataframe(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
         result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
-        assert result.empty
+        assert result.is_empty()
 
     def test_warns_when_some_events_predate_gkg_v1_coverage(self, tmp_path, caplog):
         # Event 1001 (real match, DATEADDED within coverage) must still
         # join normally alongside event 1002 (pre-coverage, gets warned
         # about): the warning is a diagnostic, not a filter.
         folder = self._write_gkg_v1(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [1001, 1002],
             "DATEADDED": [20130401, 20120101],
         })
@@ -445,9 +446,7 @@ class TestCrossrefEventsGkgV1:
         )
         default = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
 
-        pd.testing.assert_frame_equal(
-            explicit.reset_index(drop=True), default.reset_index(drop=True)
-        )
+        pl_testing.assert_frame_equal(explicit, default)
 
     def test_date_range_excluding_every_file_raises(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
@@ -463,7 +462,7 @@ class TestCrossrefEventsGkgV1:
 class TestCrossrefEventsGkgV2:
     @staticmethod
     def _events_df():
-        return pd.DataFrame({
+        return pl.DataFrame({
             "GlobalEventID": [2001, 2002, 2003],
             "Actor1Name": ["Dave", "Erin", "Frank"],
         })
@@ -472,7 +471,7 @@ class TestCrossrefEventsGkgV2:
     def _write_mentions(tmp_path):
         folder = tmp_path / "mentions"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [2001, 2001, 2002, 9999],
             "MentionIdentifier": [
                 "http://a.com/article1",
@@ -482,23 +481,23 @@ class TestCrossrefEventsGkgV2:
             ],
             "MentionTimeDate": [20200101120000, 20200102120000, 20200101130000, 20200101000000],
             "Confidence": [80, 90, 70, 50],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         return str(folder)
 
     @staticmethod
     def _write_gkg_v2(tmp_path):
         folder = tmp_path / "gkg_v2"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://a.com/article1", "http://c.com/unrelated"],
             "GKGRECORDID": ["REC1-early", "REC-unrelated"],
             "V1THEMES": ["THEME_OLD", "THEME_X"],
-        }).to_parquet(folder / "20200101000000.gkg.parquet")
-        pd.DataFrame({
+        }).write_parquet(folder / "20200101000000.gkg.parquet")
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://a.com/article1", "http://a.com/article2"],
             "GKGRECORDID": ["REC1-late", "REC2"],
             "V1THEMES": ["THEME_NEW", "THEME_Y"],
-        }).to_parquet(folder / "20200102000000.gkg.parquet")
+        }).write_parquet(folder / "20200102000000.gkg.parquet")
         return str(folder)
 
     def test_basic_join_and_hand_computed_row_count(self, tmp_path):
@@ -538,7 +537,7 @@ class TestCrossrefEventsGkgV2:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
             on_duplicate_document="latest",
         )
-        article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
+        article1_rows = result.filter(pl.col("GKG_V2DOCUMENTIDENTIFIER") == "http://a.com/article1")
         assert sorted(article1_rows["GlobalEventID"]) == [2001, 2002]
 
     def test_reprocessed_article_deduped_keeping_the_latest_batch(self, tmp_path):
@@ -553,7 +552,7 @@ class TestCrossrefEventsGkgV2:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
             on_duplicate_document="latest",
         )
-        article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
+        article1_rows = result.filter(pl.col("GKG_V2DOCUMENTIDENTIFIER") == "http://a.com/article1")
         # Both the 2001 and 2002 rows for article1 must carry the SAME,
         # latest GKG record (REC1-late), not the earlier REC1-early, and
         # article1 must never contribute two GKG-side variants at once.
@@ -587,7 +586,7 @@ class TestCrossrefEventsGkgV2:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
             on_duplicate_document="latest",
         )
-        article1_rows = result[result["GKG_V2DOCUMENTIDENTIFIER"] == "http://a.com/article1"]
+        article1_rows = result.filter(pl.col("GKG_V2DOCUMENTIDENTIFIER") == "http://a.com/article1")
         assert set(article1_rows["GKG_GKGRECORDID"]) == {"REC1-late"}
 
     def test_unrelated_rows_on_either_side_never_leak_in(self, tmp_path):
@@ -618,11 +617,11 @@ class TestCrossrefEventsGkgV2:
         # that Mention_<name> column in the output.
         folder = tmp_path / "mentions_no_confidence"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [2001, 2002],
             "MentionIdentifier": ["http://a.com/article1", "http://a.com/article1"],
             "MentionTimeDate": [20200101120000, 20200101130000],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
@@ -637,10 +636,10 @@ class TestCrossrefEventsGkgV2:
     def test_missing_both_optional_payload_columns_still_joins(self, tmp_path):
         folder = tmp_path / "mentions_bare"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [2001],
             "MentionIdentifier": ["http://a.com/article1"],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         result = crossref_events_gkg_v2(
@@ -649,7 +648,7 @@ class TestCrossrefEventsGkgV2:
         )
 
         assert len(result) == 1
-        assert result["GlobalEventID"].iloc[0] == 2001
+        assert result["GlobalEventID"][0] == 2001
         assert "Mention_MentionTimeDate" not in result.columns
         assert "Mention_Confidence" not in result.columns
 
@@ -678,7 +677,7 @@ class TestCrossrefEventsGkgV2:
     def test_missing_global_event_id_column_raises(self, tmp_path):
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
-        bad_events = self._events_df().drop(columns=["GlobalEventID"])
+        bad_events = self._events_df().drop(["GlobalEventID"])
         with pytest.raises(ValueError, match="GlobalEventID"):
             crossref_events_gkg_v2(bad_events, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
 
@@ -697,11 +696,11 @@ class TestCrossrefEventsGkgV2:
         # gets.
         folder = tmp_path / "mentions_missing_event_id"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "MentionIdentifier": ["http://a.com/article1"],
             "MentionTimeDate": [20200101120000],
             "Confidence": [80],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         with pytest.raises(ValueError, match="GLOBALEVENTID"):
@@ -712,11 +711,11 @@ class TestCrossrefEventsGkgV2:
     def test_missing_mention_identifier_in_mentions_schema_raises_cleanly(self, tmp_path):
         folder = tmp_path / "mentions_missing_identifier"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [2001],
             "MentionTimeDate": [20200101120000],
             "Confidence": [80],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         gkg_folder = self._write_gkg_v2(tmp_path)
 
         with pytest.raises(ValueError, match="MentionIdentifier"):
@@ -727,9 +726,9 @@ class TestCrossrefEventsGkgV2:
     def test_no_matching_mentions_returns_empty_dataframe(self, tmp_path):
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [424242]})
+        events_df = pl.DataFrame({"GlobalEventID": [424242]})
         result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
-        assert result.empty
+        assert result.is_empty()
 
     def test_warns_when_some_events_predate_gdelt_2_coverage(self, tmp_path, caplog):
         # Event 2001 (real match, DATEADDED within coverage) must still
@@ -737,7 +736,7 @@ class TestCrossrefEventsGkgV2:
         # about): the warning is a diagnostic, not a filter.
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [2001, 2002],
             "DATEADDED": [20200101, 20140101],
         })
@@ -813,9 +812,7 @@ class TestCrossrefEventsGkgV2:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
         )
 
-        pd.testing.assert_frame_equal(
-            explicit.reset_index(drop=True), default.reset_index(drop=True)
-        )
+        pl_testing.assert_frame_equal(explicit, default)
 
     def test_date_range_excluding_the_mentions_file_raises(self, tmp_path):
         # The bound applies to both folders independently; narrowing past
@@ -843,7 +840,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
 
     @staticmethod
     def _events_df():
-        return pd.DataFrame({"GlobalEventID": [3001, 3002]})
+        return pl.DataFrame({"GlobalEventID": [3001, 3002]})
 
     @staticmethod
     def _write_mentions_with_sentence_duplicate(tmp_path):
@@ -853,7 +850,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
         # mention of a different article must be unaffected.
         folder = tmp_path / "mentions_dup"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [3001, 3001, 3002],
             "MentionIdentifier": [
                 "http://dup.com/article",
@@ -862,18 +859,18 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             ],
             "MentionTimeDate": [20200101120000, 20200101120000, 20200101130000],
             "Confidence": [60, 95, 80],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         return str(folder)
 
     @staticmethod
     def _write_gkg_v2_single(tmp_path):
         folder = tmp_path / "gkg_v2_dup"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://dup.com/article", "http://other.com/article"],
             "GKGRECORDID": ["REC-DUP", "REC-OTHER"],
             "V1THEMES": ["THEME_DUP", "THEME_OTHER"],
-        }).to_parquet(folder / "20200101120000.gkg.parquet")
+        }).write_parquet(folder / "20200101120000.gkg.parquet")
         return str(folder)
 
     def test_sentence_level_duplicate_is_kept_uncollapsed_by_default(self, tmp_path):
@@ -884,7 +881,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
         )
 
-        event_3001_rows = result[result["GlobalEventID"] == 3001]
+        event_3001_rows = result.filter(pl.col("GlobalEventID") == 3001)
         assert len(event_3001_rows) == 2
         assert "Mention_Count" not in result.columns
         assert sorted(event_3001_rows["Mention_Confidence"]) == [60, 95]
@@ -898,10 +895,10 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             dedupe_mentions=True,
         )
 
-        event_3001_rows = result[result["GlobalEventID"] == 3001]
+        event_3001_rows = result.filter(pl.col("GlobalEventID") == 3001)
         assert len(event_3001_rows) == 1
         assert "Mention_Count" in result.columns
-        assert event_3001_rows.iloc[0]["Mention_Count"] == 2
+        assert event_3001_rows.row(0, named=True)["Mention_Count"] == 2
 
     def test_dedupe_mentions_true_keeps_the_highest_confidence_row(self, tmp_path):
         mentions_folder = self._write_mentions_with_sentence_duplicate(tmp_path)
@@ -912,7 +909,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             dedupe_mentions=True,
         )
 
-        event_3001_row = result[result["GlobalEventID"] == 3001].iloc[0]
+        event_3001_row = result.filter(pl.col("GlobalEventID") == 3001).row(0, named=True)
         assert event_3001_row["Mention_Confidence"] == 95
 
     def test_dedupe_mentions_true_leaves_unrelated_event_at_count_one(self, tmp_path):
@@ -924,9 +921,9 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             dedupe_mentions=True,
         )
 
-        event_3002_rows = result[result["GlobalEventID"] == 3002]
+        event_3002_rows = result.filter(pl.col("GlobalEventID") == 3002)
         assert len(event_3002_rows) == 1
-        assert event_3002_rows.iloc[0]["Mention_Count"] == 1
+        assert event_3002_rows.row(0, named=True)["Mention_Count"] == 1
 
     def test_dedupe_mentions_false_matches_the_no_argument_default(self, tmp_path):
         # False is now the actual default (see the class above); this
@@ -944,34 +941,32 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
         )
 
-        pd.testing.assert_frame_equal(
-            explicit.reset_index(drop=True), default.reset_index(drop=True)
-        )
+        pl_testing.assert_frame_equal(explicit, default)
 
     @staticmethod
     def _write_gkg_v2_reprocessed(tmp_path):
         folder = tmp_path / "gkg_v2_reprocessed"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://dup.com/article"],
             "GKGRECORDID": ["REC-EARLY"],
             "V1THEMES": ["THEME_EARLY"],
-        }).to_parquet(folder / "20200101000000.gkg.parquet")
-        pd.DataFrame({
+        }).write_parquet(folder / "20200101000000.gkg.parquet")
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://dup.com/article"],
             "GKGRECORDID": ["REC-LATE"],
             "V1THEMES": ["THEME_LATE"],
-        }).to_parquet(folder / "20200102000000.gkg.parquet")
+        }).write_parquet(folder / "20200102000000.gkg.parquet")
         return str(folder)
 
     @staticmethod
     def _write_mentions_single(tmp_path):
         folder = tmp_path / "mentions_single"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [3001],
             "MentionIdentifier": ["http://dup.com/article"],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         return str(folder)
 
     def test_on_duplicate_document_earliest_keeps_the_first_record(self, tmp_path):
@@ -984,7 +979,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
         )
 
         assert len(result) == 1
-        assert result["GKG_GKGRECORDID"].iloc[0] == "REC-EARLY"
+        assert result["GKG_GKGRECORDID"][0] == "REC-EARLY"
 
     def test_on_duplicate_document_all_keeps_every_record(self, tmp_path):
         mentions_folder = self._write_mentions_single(tmp_path)
@@ -1014,9 +1009,7 @@ class TestCrossrefEventsGkgV2DuplicateHandling:
             self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
         )
 
-        pd.testing.assert_frame_equal(
-            explicit.reset_index(drop=True), default.reset_index(drop=True)
-        )
+        pl_testing.assert_frame_equal(explicit, default)
 
     def test_on_duplicate_document_invalid_value_raises(self, tmp_path):
         mentions_folder = self._write_mentions_single(tmp_path)
@@ -1039,31 +1032,31 @@ class TestCrossrefEventsGkgAuto:
     def _write_gkg_v1(tmp_path):
         folder = tmp_path / "gkg_v1"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "Date": [20130401],
             "EventIds": ["1001"],
             "Themes": ["TAX_FNCACT"],
-        }).to_parquet(folder / "20130401.gkg.parquet")
+        }).write_parquet(folder / "20130401.gkg.parquet")
         return str(folder)
 
     @staticmethod
     def _write_mentions(tmp_path):
         folder = tmp_path / "mentions"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [2001],
             "MentionIdentifier": ["http://a.com/article1"],
-        }).to_parquet(folder / "20200101120000.mentions.parquet")
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
         return str(folder)
 
     @staticmethod
     def _write_gkg_v2(tmp_path):
         folder = tmp_path / "gkg_v2"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://a.com/article1"],
             "V1THEMES": ["THEME_X"],
-        }).to_parquet(folder / "20200101000000.gkg.parquet")
+        }).write_parquet(folder / "20200101000000.gkg.parquet")
         return str(folder)
 
     def _paths(self, tmp_path):
@@ -1077,7 +1070,7 @@ class TestCrossrefEventsGkgAuto:
 
     def test_v1_era_event_with_only_a_v1_match_gets_a_v1_row(self, tmp_path):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+        events_df = pl.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
 
         result = crossref_events_gkg_auto(
             events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
@@ -1088,12 +1081,12 @@ class TestCrossrefEventsGkgAuto:
         # only ever has event 2001 in this fixture), finds nothing there,
         # and ends up with exactly the one v1 row.
         assert len(result) == 1
-        assert result["CrossrefSource"].iloc[0] == "v1"
-        assert result["GKG_Themes"].iloc[0] == "TAX_FNCACT"
+        assert result["CrossrefSource"][0] == "v1"
+        assert result["GKG_Themes"][0] == "TAX_FNCACT"
 
     def test_v2_era_event_with_only_a_v2_match_gets_a_v2_row(self, tmp_path):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20200101]})
+        events_df = pl.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20200101]})
 
         result = crossref_events_gkg_auto(
             events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
@@ -1104,8 +1097,8 @@ class TestCrossrefEventsGkgAuto:
         # has event 1001 in this fixture), finds nothing there, and ends
         # up with exactly the one v2 row.
         assert len(result) == 1
-        assert result["CrossrefSource"].iloc[0] == "v2"
-        assert result["GKG_V1THEMES"].iloc[0] == "THEME_X"
+        assert result["CrossrefSource"][0] == "v2"
+        assert result["GKG_V1THEMES"][0] == "THEME_X"
 
     def test_an_old_event_with_a_real_v2_only_match_now_finds_it(self, tmp_path):
         # The actual gap this module used to have, confirmed against real
@@ -1118,7 +1111,7 @@ class TestCrossrefEventsGkgAuto:
         # GlobalEventID is the one present in the fixture's Mentions/GKG
         # 2.1 data, not GKG 1.0's.
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20130401]})
+        events_df = pl.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20130401]})
 
         result = crossref_events_gkg_auto(
             events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
@@ -1126,8 +1119,8 @@ class TestCrossrefEventsGkgAuto:
         )
 
         assert len(result) == 1
-        assert result["CrossrefSource"].iloc[0] == "v2"
-        assert result["GKG_V1THEMES"].iloc[0] == "THEME_X"
+        assert result["CrossrefSource"][0] == "v2"
+        assert result["GKG_V1THEMES"][0] == "THEME_X"
 
     def test_a_new_event_with_a_real_v1_only_match_now_finds_it(self, tmp_path):
         # Symmetric case: GKG 1.0 remains live and daily-published today,
@@ -1135,7 +1128,7 @@ class TestCrossrefEventsGkgAuto:
         # Event 1001 here has a GKG-2.1-era DATEADDED but its
         # GlobalEventID is the one present in the fixture's GKG 1.0 data.
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20200101]})
+        events_df = pl.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20200101]})
 
         result = crossref_events_gkg_auto(
             events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
@@ -1143,8 +1136,8 @@ class TestCrossrefEventsGkgAuto:
         )
 
         assert len(result) == 1
-        assert result["CrossrefSource"].iloc[0] == "v1"
-        assert result["GKG_Themes"].iloc[0] == "TAX_FNCACT"
+        assert result["CrossrefSource"][0] == "v1"
+        assert result["GKG_Themes"][0] == "TAX_FNCACT"
 
     def test_a_single_event_matching_both_paths_contributes_a_row_to_each(self, tmp_path):
         # The other real shape the old routing couldn't produce at all:
@@ -1154,27 +1147,27 @@ class TestCrossrefEventsGkgAuto:
         # down to a single path.
         gkg_v1_folder = tmp_path / "gkg_v1"
         gkg_v1_folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "Date": [20130401], "EventIds": ["1001"], "Themes": ["TAX_FNCACT"],
-        }).to_parquet(gkg_v1_folder / "20130401.gkg.parquet")
+        }).write_parquet(gkg_v1_folder / "20130401.gkg.parquet")
 
         mentions_folder = tmp_path / "mentions"
         mentions_folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GLOBALEVENTID": [1001],
             "MentionIdentifier": ["http://a.com/article1"],
-        }).to_parquet(mentions_folder / "20200101120000.mentions.parquet")
+        }).write_parquet(mentions_folder / "20200101120000.mentions.parquet")
 
         gkg_v2_folder = tmp_path / "gkg_v2"
         gkg_v2_folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "V2DOCUMENTIDENTIFIER": ["http://a.com/article1"], "V1THEMES": ["THEME_X"],
-        }).to_parquet(gkg_v2_folder / "20200101000000.gkg.parquet")
+        }).write_parquet(gkg_v2_folder / "20200101000000.gkg.parquet")
 
         # DATEADDED in the GKG 1.0 era; the same GlobalEventID also has a
         # real Mentions/GKG 2.1 match, exactly the shape of the confirmed
         # real-world case (an old event re-mentioned much later).
-        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+        events_df = pl.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
 
         result = crossref_events_gkg_auto(
             events_df, str(gkg_v1_folder), ["Date", "EventIds", "Themes"],
@@ -1184,13 +1177,13 @@ class TestCrossrefEventsGkgAuto:
         assert len(result) == 2
         assert set(result["CrossrefSource"]) == {"v1", "v2"}
         assert set(result["GlobalEventID"]) == {1001}
-        v1_row = result[result["CrossrefSource"] == "v1"].iloc[0]
-        v2_row = result[result["CrossrefSource"] == "v2"].iloc[0]
+        v1_row = result.filter(pl.col("CrossrefSource") == "v1").row(0, named=True)
+        v2_row = result.filter(pl.col("CrossrefSource") == "v2").row(0, named=True)
         assert v1_row["GKG_Themes"] == "TAX_FNCACT"
         assert v2_row["GKG_V1THEMES"] == "THEME_X"
-        # Each row still carries NaN for the other schema's columns.
-        assert pd.isna(v1_row["GKG_V1THEMES"])
-        assert pd.isna(v2_row["GKG_Themes"])
+        # Each row still carries null for the other schema's columns.
+        assert v1_row["GKG_V1THEMES"] is None
+        assert v2_row["GKG_Themes"] is None
 
     def test_mixed_sample_gets_both_sources_in_one_result(self, tmp_path):
         # Two different events, each with a real match in only one path
@@ -1199,7 +1192,7 @@ class TestCrossrefEventsGkgAuto:
         # test_a_single_event_matching_both_paths_contributes_a_row_to_each
         # for the case of one event matching both.
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [1001, 2001],
             "DATEADDED": [20130401, 20200101],
         })
@@ -1212,15 +1205,15 @@ class TestCrossrefEventsGkgAuto:
         assert len(result) == 2
         assert set(result["CrossrefSource"]) == {"v1", "v2"}
         # Neither schema's GKG-side columns overlap: a v1 row must carry
-        # NaN for the v2-only column and vice versa, not raise or drop it.
-        v1_row = result[result["CrossrefSource"] == "v1"].iloc[0]
-        v2_row = result[result["CrossrefSource"] == "v2"].iloc[0]
-        assert pd.isna(v1_row["GKG_V1THEMES"])
-        assert pd.isna(v2_row["GKG_Themes"])
+        # null for the v2-only column and vice versa, not raise or drop it.
+        v1_row = result.filter(pl.col("CrossrefSource") == "v1").row(0, named=True)
+        v2_row = result.filter(pl.col("CrossrefSource") == "v2").row(0, named=True)
+        assert v1_row["GKG_V1THEMES"] is None
+        assert v2_row["GKG_Themes"] is None
 
     def test_events_before_gkg_v1_coverage_are_skipped_and_warned(self, tmp_path, caplog):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [999], "DATEADDED": [20100101]})
+        events_df = pl.DataFrame({"GlobalEventID": [999], "DATEADDED": [20100101]})
 
         with caplog.at_level("WARNING"):
             result = crossref_events_gkg_auto(
@@ -1228,14 +1221,14 @@ class TestCrossrefEventsGkgAuto:
                 paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
             )
 
-        assert result.empty
+        assert result.is_empty()
         assert any(
             "1 of 1" in r.message and "20130401" in r.message for r in caplog.records
         )
 
     def test_partial_pre_coverage_still_routes_the_valid_events(self, tmp_path, caplog):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [999, 1001],
             "DATEADDED": [20100101, 20130401],
         })
@@ -1247,7 +1240,7 @@ class TestCrossrefEventsGkgAuto:
             )
 
         assert len(result) == 1
-        assert result["GlobalEventID"].iloc[0] == 1001
+        assert result["GlobalEventID"][0] == 1001
         assert any("1 of 2" in r.message for r in caplog.records)
 
     def test_start_date_is_forwarded_to_the_v1_path(self, tmp_path):
@@ -1259,10 +1252,10 @@ class TestCrossrefEventsGkgAuto:
         # crossref_events_gkg_v1 through the auto path, not just
         # crossref_events_gkg_v2.
         paths = self._paths(tmp_path)
-        pd.DataFrame({
+        pl.DataFrame({
             "Date": [20130101], "EventIds": ["1001"], "Themes": ["EXCLUDED_BY_START_DATE"],
-        }).to_parquet(Path(paths["gkg_v1_folder"]) / "20130101.gkg.parquet")
-        events_df = pd.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+        }).write_parquet(Path(paths["gkg_v1_folder"]) / "20130101.gkg.parquet")
+        events_df = pl.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
 
         result = crossref_events_gkg_auto(
             events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
@@ -1270,13 +1263,13 @@ class TestCrossrefEventsGkgAuto:
             start_date=date(2013, 4, 1),
         )
 
-        v1_rows = result[result["CrossrefSource"] == "v1"]
+        v1_rows = result.filter(pl.col("CrossrefSource") == "v1")
         assert "EXCLUDED_BY_START_DATE" not in set(v1_rows["GKG_Themes"])
         assert set(v1_rows["GKG_Themes"]) == {"TAX_FNCACT"}
 
     def test_missing_dateadded_raises(self, tmp_path):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"GlobalEventID": [1001]})
+        events_df = pl.DataFrame({"GlobalEventID": [1001]})
 
         with pytest.raises(ValueError, match="DATEADDED"):
             crossref_events_gkg_auto(
@@ -1286,7 +1279,7 @@ class TestCrossrefEventsGkgAuto:
 
     def test_missing_global_event_id_raises(self, tmp_path):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({"DATEADDED": [20130401]})
+        events_df = pl.DataFrame({"DATEADDED": [20130401]})
 
         with pytest.raises(ValueError, match="GlobalEventID"):
             crossref_events_gkg_auto(
@@ -1296,7 +1289,7 @@ class TestCrossrefEventsGkgAuto:
 
     def test_no_matches_in_either_path_returns_empty_dataframe(self, tmp_path):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [424242, 434343],
             "DATEADDED": [20130401, 20200101],
         })
@@ -1306,11 +1299,11 @@ class TestCrossrefEventsGkgAuto:
             paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
         )
 
-        assert result.empty
+        assert result.is_empty()
 
     def test_v1_columns_and_v2_columns_restrict_each_path_independently(self, tmp_path):
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [1001, 2001],
             "DATEADDED": [20130401, 20200101],
         })
@@ -1336,7 +1329,7 @@ class TestCrossrefEventsGkgAuto:
         # expensive joins, not one.
         monkeypatch.setattr(crossref_module, "_LARGE_EVENTS_JOIN_WARNING_THRESHOLD", 1)
         paths = self._paths(tmp_path)
-        events_df = pd.DataFrame({
+        events_df = pl.DataFrame({
             "GlobalEventID": [1001, 2001],
             "DATEADDED": [20130401, 20200101],
         })
