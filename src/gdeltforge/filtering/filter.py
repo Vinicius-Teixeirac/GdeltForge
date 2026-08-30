@@ -62,10 +62,15 @@ from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
+from typing import cast
 
-import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.parquet as pq
+import polars as pl
+
+# polars genuinely exports this type alias at runtime; it's just under a
+# private-looking module name, the same shape of stub gap pyproject.toml's
+# reportPrivateImportUsage = false already exists for (pyarrow.dataset's
+# Expression/field/Dataset).
+from polars._typing import ParquetCompression
 from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
@@ -301,7 +306,7 @@ class GDELTFilter:
 
         # Each file is filtered independently (its own read, own output
         # path), so file-level parallelism across processes is safe --
-        # this is CPU-bound (per-batch pandas dropna + parquet write), so
+        # this is CPU-bound (predicate evaluation + parquet write), so
         # ProcessPoolExecutor beats threads here, matching GDELTConverter's
         # identical reasoning for process_all_files.
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
@@ -369,10 +374,12 @@ class GDELTFilter:
     ) -> tuple[int, int]:
         """
         Filter a single parquet file and return (rows_before, rows_after).
-        Streams the file in batches to keep peak RAM bounded, and writes
-        through a temp file + atomic rename so a worker process killed
-        mid-write leaves nothing at output_path rather than a truncated
-        file, matching the pattern already used for converter output.
+        Built as a single lazy chain (scan, filter, project, sink) rather
+        than a hand-rolled batch loop: polars' own streaming engine is
+        what keeps peak RAM bounded here, and sink_parquet writes through
+        a temp file + atomic rename so a worker process killed mid-write
+        leaves nothing at output_path rather than a truncated file,
+        matching the pattern already used for converter output.
 
         output_path overrides the default flat naming convention; used to
         preserve Hive subdirectory structure for historical files.
@@ -391,13 +398,20 @@ class GDELTFilter:
         file_path = Path(parquet_path)
         logger.debug(f"Filtering file: {file_path.name}")
 
-        pf = pq.ParquetFile(file_path)
+        lf = pl.scan_parquet(file_path)
+        # Metadata-only: confirmed directly (the query plan shows
+        # "PROJECT 0/N COLUMNS") that counting rows this way never reads
+        # a single column's data, matching pq.ParquetFile(...).metadata.
+        # num_rows' own cheapness under the previous pyarrow-based
+        # implementation.
+        rows_before = lf.select(pl.len()).collect().item()
 
-        if pf.metadata.num_rows == 0:
+        if rows_before == 0:
             logger.warning(f"Empty parquet file skipped: {file_path.name}")
             return 0, 0
 
-        schema_cols = pf.schema_arrow.names
+        schema = lf.collect_schema()
+        schema_cols = schema.names()
         existing_columns = [c for c in self.columns_to_check if c in schema_cols]
         missing_columns  = [c for c in self.columns_to_check if c not in schema_cols]
 
@@ -407,20 +421,37 @@ class GDELTFilter:
             )
 
         # An empty columns_to_check (the bundled default config ships this
-        # for every dataset) is a deliberate no-op, not an error: dropna
-        # against an empty column list is a documented no-op, so every row
-        # is meant to survive. That's a different case from columns_to_check
-        # being non-empty but matching nothing in this file's schema, which
-        # genuinely can't be checked and bails out below without writing.
+        # for every dataset) is a deliberate no-op, not an error: every
+        # row is meant to survive, so the null-check filter below is
+        # skipped entirely rather than handed an empty column list, which
+        # polars rejects outright ("cannot return empty fold because the
+        # number of output rows is unknown"), confirmed directly. That's
+        # a different case from columns_to_check being non-empty but
+        # matching nothing in this file's schema, which genuinely can't
+        # be checked and bails out below without writing.
         if self.columns_to_check and not existing_columns:
             logger.error(f"{file_path.name}: None of the filter columns exist.")
-            return pf.metadata.num_rows, pf.metadata.num_rows
+            return rows_before, rows_before
 
         if output_path is None:
             output_path = self.output_folder / f"{file_path.stem}_filtered.parquet"
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_name(output_path.name + ".tmp")
+
+        if existing_columns:
+            lf = lf.filter(
+                ~pl.any_horizontal([pl.col(c).is_null() for c in existing_columns])
+            )
+
+        # Counted right after the null-check filter, before the output
+        # shaping below: this is a separate pass over whichever columns
+        # existing_columns actually needs (confirmed via the query plan
+        # to project down to just those, not this file's full, possibly
+        # much wider schema), not derived from the write itself, since
+        # sink_parquet (below) streams straight to disk without handing
+        # back a row count.
+        rows_after = lf.select(pl.len()).collect().item()
 
         # Same existing/missing split as columns_to_check above: a
         # configured output column that isn't in this file's schema is
@@ -431,63 +462,34 @@ class GDELTFilter:
             if self.output_columns is not None
             else None
         )
+        selected_columns = keep_columns if keep_columns is not None else schema_cols
         # Same existing/missing split as columns_to_check and output_columns
         # above, plus this only applies to columns that are actually
-        # floating-point in this file's schema: a configured column that
-        # doesn't exist, or exists but isn't a float (e.g. a stale config
-        # pointed at a renamed/retyped column), is skipped rather than
+        # floating-point in this file's schema and survive output_columns'
+        # own projection: a configured column that doesn't exist, isn't a
+        # float (e.g. a stale config pointed at a renamed/retyped column),
+        # or was itself excluded by output_columns, is skipped rather than
         # treated as fatal.
         float32_cols = (
             [
                 c for c in self.float32_columns
-                if c in schema_cols and pa.types.is_floating(pf.schema_arrow.field(c).type)
+                if c in selected_columns and schema[c].is_float()
             ]
             if self.float32_columns is not None
             else []
         )
 
-        write_schema = (
-            pf.schema_arrow
-            if keep_columns is None
-            else pa.schema([pf.schema_arrow.field(c) for c in keep_columns])
-        )
+        lf = lf.select(selected_columns)
         if float32_cols:
-            write_schema = pa.schema([
-                pa.field(f.name, pa.float32()) if f.name in float32_cols else f
-                for f in write_schema
-            ])
+            lf = lf.with_columns([pl.col(c).cast(pl.Float32) for c in float32_cols])
 
-        rows_before = 0
-        rows_after  = 0
-
-        writer = pq.ParquetWriter(tmp_path, write_schema, compression=self.compression)
         try:
-            for batch in pf.iter_batches(batch_size=64_000):
-                df_batch = batch.to_pandas()
-                rows_before += len(df_batch)
-
-                df_clean = df_batch.dropna(subset=existing_columns)
-                rows_after += len(df_clean)
-
-                if not df_clean.empty:
-                    table = pa.Table.from_pandas(df_clean, preserve_index=False)
-                    if keep_columns is not None:
-                        table = table.select(keep_columns)
-                    for c in float32_cols:
-                        if c in table.column_names:
-                            table = table.set_column(
-                                table.column_names.index(c), c,
-                                pc.cast(table.column(c), pa.float32()),
-                            )
-                    writer.write_table(table)
+            lf.sink_parquet(tmp_path, compression=cast(ParquetCompression, self.compression))
+            os.replace(tmp_path, output_path)
         except Exception:
-            writer.close()
             if tmp_path.exists():
                 tmp_path.unlink()
             raise
-        else:
-            writer.close()
-            os.replace(tmp_path, output_path)
 
         logger.debug(f"Saved filtered file -> {output_path}")
         return rows_before, rows_after
@@ -512,7 +514,12 @@ class GDELTFilter:
         logger.info(f"Validating column presence in: {sample_path.name}")
 
         try:
-            schema_cols = pq.read_schema(sample_path).names
+            # read_parquet_schema's own stubs declare a plain dict return
+            # type (its real runtime type, polars.schema.Schema, is a
+            # dict subclass with a .names() convenience method the stubs
+            # don't expose), so this reads it through the documented dict
+            # API instead of relying on the unstubbed runtime extra.
+            schema_cols = list(pl.read_parquet_schema(sample_path).keys())
             existing = [c for c in self.columns_to_check if c in schema_cols]
             missing  = [c for c in self.columns_to_check if c not in schema_cols]
 
