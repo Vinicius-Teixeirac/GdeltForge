@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -11,7 +11,7 @@ from gdeltforge.filtering.filter import GDELTFilter, run_filter
 
 
 def _write_parquet(path, data):
-    pd.DataFrame(data).to_parquet(path)
+    pl.DataFrame(data).write_parquet(path)
 
 
 class TestMaxWorkersConfig:
@@ -44,8 +44,8 @@ class TestFilterSingleFile:
         assert rows_before == 4
         assert rows_after == 2  # rows 2 and 3 each have one NaN in a checked column
 
-        result = pd.read_parquet(out_path)
-        assert sorted(result["GlobalEventID"].tolist()) == [1, 4]
+        result = pl.read_parquet(out_path)
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 4]
 
     def test_missing_columns_are_skipped_not_fatal(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -82,8 +82,8 @@ class TestFilterSingleFile:
 
         assert (rows_before, rows_after) == (3, 3)
         assert out_path.exists()
-        result = pd.read_parquet(out_path)
-        assert sorted(result["GlobalEventID"].tolist()) == [1, 2, 3]
+        result = pl.read_parquet(out_path)
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3]
 
     def test_configured_columns_all_missing_still_skips_writing(self, tmp_path, caplog):
         # Distinct from the empty-columns_to_check case above: here the
@@ -109,7 +109,7 @@ class TestFilterSingleFile:
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "empty.parquet"
-        _write_parquet(src, {"GlobalEventID": pd.Series([], dtype="int64")})
+        _write_parquet(src, {"GlobalEventID": pl.Series([], dtype=pl.Int64)})
 
         filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["GlobalEventID"])
         rows_before, rows_after = filt.filter_single_file(src, tmp_path / "out" / "o.parquet")
@@ -150,8 +150,8 @@ class TestFilterAllFiles:
         out_dir = tmp_path / "out"
         assert (out_dir / "a_filtered.parquet").exists()
         assert (out_dir / "b_filtered.parquet").exists()
-        assert len(pd.read_parquet(out_dir / "a_filtered.parquet")) == 2
-        assert len(pd.read_parquet(out_dir / "b_filtered.parquet")) == 3
+        assert len(pl.read_parquet(out_dir / "a_filtered.parquet")) == 2
+        assert len(pl.read_parquet(out_dir / "b_filtered.parquet")) == 3
 
     def test_counts_a_corrupt_file_as_failed(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -180,8 +180,8 @@ class TestFilterAllFiles:
         processed, failed = filt.filter_all_files()
 
         assert (processed, failed) == (1, 1)
-        out = pd.read_parquet(tmp_path / "out" / "good_filtered.parquet")
-        assert out["GlobalEventID"].tolist() == [1]
+        out = pl.read_parquet(tmp_path / "out" / "good_filtered.parquet")
+        assert out["GlobalEventID"].to_list() == [1]
 
     def test_preserves_historical_directory_structure(self, tmp_path):
         flat_in = tmp_path / "flat_in"
@@ -245,7 +245,7 @@ class TestFilterResumability:
         GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
         out_path = tmp_path / "out" / "a_filtered.parquet"
         # QuadClass alone: only row 2 (index 1) has a NaN there.
-        assert sorted(pd.read_parquet(out_path)["GlobalEventID"].tolist()) == [1, 3]
+        assert sorted(pl.read_parquet(out_path)["GlobalEventID"].to_list()) == [1, 3]
 
         # Rerun with a different columns_to_check must not be skipped by
         # the marker left above, and must actually re-filter by the new
@@ -255,7 +255,7 @@ class TestFilterResumability:
         ).filter_all_files()
 
         assert (processed, failed) == (1, 0)
-        assert sorted(pd.read_parquet(out_path)["GlobalEventID"].tolist()) == [2, 3]
+        assert sorted(pl.read_parquet(out_path)["GlobalEventID"].to_list()) == [2, 3]
 
     def test_a_changed_output_columns_forces_reprocessing(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -268,14 +268,14 @@ class TestFilterResumability:
             str(input_dir), str(tmp_path / "out"), ["QuadClass"], output_columns=["GlobalEventID"]
         ).filter_all_files()
         out_path = tmp_path / "out" / "a_filtered.parquet"
-        assert list(pd.read_parquet(out_path).columns) == ["GlobalEventID"]
+        assert list(pl.read_parquet(out_path).columns) == ["GlobalEventID"]
 
         processed, failed = GDELTFilter(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"], output_columns=None
         ).filter_all_files()
 
         assert (processed, failed) == (1, 0)
-        assert list(pd.read_parquet(out_path).columns) == ["GlobalEventID", "QuadClass"]
+        assert list(pl.read_parquet(out_path).columns) == ["GlobalEventID", "QuadClass"]
 
     def test_an_unchanged_config_across_reordered_columns_still_skips(self, tmp_path, caplog):
         # columns_to_check=["A", "B"] and ["B", "A"] enforce the same set;
@@ -597,7 +597,7 @@ class TestOutputColumns:
         out_path = tmp_path / "out" / "data_filtered.parquet"
         filt.filter_single_file(src, out_path)
 
-        result = pd.read_parquet(out_path)
+        result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID", "QuadClass"]
 
     def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(self, tmp_path):
@@ -615,7 +615,7 @@ class TestOutputColumns:
         out_path = tmp_path / "out" / "data_filtered.parquet"
         filt.filter_single_file(src, out_path)
 
-        result = pd.read_parquet(out_path)
+        result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID"]
 
     def test_row_filtering_is_unaffected_by_column_projection(self, tmp_path):
@@ -638,8 +638,8 @@ class TestOutputColumns:
         rows_before, rows_after = filt.filter_single_file(src, out_path)
 
         assert (rows_before, rows_after) == (3, 2)
-        result = pd.read_parquet(out_path)
-        assert sorted(result["GlobalEventID"].tolist()) == [1, 3]
+        result = pl.read_parquet(out_path)
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 3]
         assert "Actor1Name" not in result.columns
 
 
@@ -711,7 +711,7 @@ class TestFloat32Columns:
         assert schema.field("AvgTone").type == pa.float32()
         assert schema.field("QuadClass").type != pa.float32()
 
-        result = pd.read_parquet(out_path)
+        result = pl.read_parquet(out_path)
         # The value actually changed under float32 rounding, proving the
         # cast ran rather than the column merely being typed float32 on
         # an unchanged 64-bit value. float() is required here, not
@@ -719,7 +719,7 @@ class TestFloat32Columns:
         # float silently compares at float32 precision (numpy downcasts
         # the Python float rather than upcasting the float32), which
         # would make this assertion pass even without narrowing at all.
-        assert float(result["AvgTone"].iloc[0]) != 0.0284010224368077
+        assert float(result["AvgTone"][0]) != 0.0284010224368077
 
     def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -833,15 +833,15 @@ class TestRunFilterDatasetParameter:
 
     def test_defaults_to_events_for_backward_compatibility(self, tmp_path):
         cfg, events_in, _ = self._config(tmp_path)
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": [1, 2], "Actor1Name": ["A", None],
-        }).to_parquet(events_in / "a.parquet")
+        }).write_parquet(events_in / "a.parquet")
 
         processed, failed = run_filter(cfg)
 
         assert (processed, failed) == (1, 0)
-        out = pd.read_parquet(cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet")
-        assert out["GlobalEventID"].tolist() == [1]
+        out = pl.read_parquet(cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet")
+        assert out["GlobalEventID"].to_list() == [1]
 
     def test_non_events_dataset_reads_its_own_directory_and_check_list(self, tmp_path):
         # Actor1Name (gdelt_event's own check column) doesn't exist on the
@@ -851,24 +851,24 @@ class TestRunFilterDatasetParameter:
         # through unfiltered instead of enforcing V2DOCUMENTIDENTIFIER, so
         # a wrong dataset resolution here would show up as len(out) == 2.
         cfg, _, gkg_in = self._config(tmp_path)
-        pd.DataFrame({
+        pl.DataFrame({
             "GKGRECORDID": ["r1", "r2"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com", None],
-        }).to_parquet(gkg_in / "a.parquet")
+        }).write_parquet(gkg_in / "a.parquet")
 
         processed, failed = run_filter(cfg, dataset="gdelt_gkg_v2")
 
         assert (processed, failed) == (1, 0)
         out_dir = cfg["paths"]["gkg_v2_filtered_data_directory"]
-        out = pd.read_parquet(out_dir + "/a_filtered.parquet")
-        assert out["GKGRECORDID"].tolist() == ["r1"]
+        out = pl.read_parquet(out_dir + "/a_filtered.parquet")
+        assert out["GKGRECORDID"].to_list() == ["r1"]
 
     def test_passes_max_workers_through_to_the_filterer(self, tmp_path, monkeypatch):
         cfg, events_in, _ = self._config(tmp_path)
         cfg["filter"]["max_workers"] = 3
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
-        ).to_parquet(events_in / "a.parquet")
+        ).write_parquet(events_in / "a.parquet")
 
         captured = {}
         real_init = GDELTFilter.__init__
@@ -887,9 +887,9 @@ class TestRunFilterDatasetParameter:
         # config["filter"] historically had no max_workers key at all
         # (pre-dating this feature); run_filter must not KeyError on it.
         cfg, events_in, _ = self._config(tmp_path)
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
-        ).to_parquet(events_in / "a.parquet")
+        ).write_parquet(events_in / "a.parquet")
 
         processed, failed = run_filter(cfg)
 
@@ -902,15 +902,15 @@ class TestRunFilterDatasetParameter:
         # current default) rather than erroring for lack of an explicit
         # per-dataset override.
         cfg, events_in, _ = self._config(tmp_path)
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
-        ).to_parquet(events_in / "a.parquet")
+        ).write_parquet(events_in / "a.parquet")
 
         processed, failed = run_filter(cfg)
 
         assert (processed, failed) == (1, 0)
         out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
-        out = pd.read_parquet(out_path)
+        out = pl.read_parquet(out_path)
         assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
         assert codec.lower() == "zstd"
@@ -927,15 +927,15 @@ class TestRunFilterDatasetParameter:
         cfg["filter"]["output_columns"] = None
         cfg["filter"]["compression"] = None
         cfg["filter"]["float32_columns"] = None
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
-        ).to_parquet(events_in / "a.parquet")
+        ).write_parquet(events_in / "a.parquet")
 
         processed, failed = run_filter(cfg)
 
         assert (processed, failed) == (1, 0)
         out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
-        out = pd.read_parquet(out_path)
+        out = pl.read_parquet(out_path)
         assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
         assert codec.lower() == "zstd"
@@ -947,15 +947,15 @@ class TestRunFilterDatasetParameter:
         # the documented, deliberate [] no-op.
         cfg, events_in, _ = self._config(tmp_path)
         cfg["filter"]["columns_to_check"]["gdelt_event"] = None
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1, 2], "Actor1Name": ["A", None]}
-        ).to_parquet(events_in / "a.parquet")
+        ).write_parquet(events_in / "a.parquet")
 
         processed, failed = run_filter(cfg)
 
         assert (processed, failed) == (1, 0)
         out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
-        out = pd.read_parquet(out_path)
+        out = pl.read_parquet(out_path)
         assert len(out) == 2
 
     def test_explicit_null_converter_partitioning_is_treated_as_disabled(self, tmp_path):
@@ -964,9 +964,9 @@ class TestRunFilterDatasetParameter:
         # attribute 'get'" before ever reaching a real file.
         cfg, events_in, _ = self._config(tmp_path)
         cfg["converter"]["partitioning"] = None
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
-        ).to_parquet(events_in / "a.parquet")
+        ).write_parquet(events_in / "a.parquet")
 
         processed, failed = run_filter(cfg)
 
@@ -978,17 +978,17 @@ class TestRunFilterDatasetParameter:
             "gdelt_gkg_v2": ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"],
         }
         cfg["filter"]["compression"] = {"gdelt_gkg_v2": "zstd"}
-        pd.DataFrame({
+        pl.DataFrame({
             "GKGRECORDID": ["r1", "r2"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com", "http://b.com"],
             "V2GCAM": ["unused", "unused"],
-        }).to_parquet(gkg_in / "a.parquet")
+        }).write_parquet(gkg_in / "a.parquet")
 
         processed, failed = run_filter(cfg, dataset="gdelt_gkg_v2")
 
         assert (processed, failed) == (1, 0)
         out_path = Path(cfg["paths"]["gkg_v2_filtered_data_directory"]) / "a_filtered.parquet"
-        out = pd.read_parquet(out_path)
+        out = pl.read_parquet(out_path)
         assert list(out.columns) == ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"]
 
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
@@ -997,14 +997,14 @@ class TestRunFilterDatasetParameter:
     def test_float32_columns_is_resolved_per_dataset(self, tmp_path):
         cfg, events_in, gkg_in = self._config(tmp_path)
         cfg["filter"]["float32_columns"] = {"gdelt_gkg_v2": ["Tone"]}
-        pd.DataFrame({
+        pl.DataFrame({
             "GKGRECORDID": ["r1"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com"],
             "Tone": [1.5],
-        }).to_parquet(gkg_in / "a.parquet")
-        pd.DataFrame({
+        }).write_parquet(gkg_in / "a.parquet")
+        pl.DataFrame({
             "GlobalEventID": [1], "Actor1Name": ["A"], "GoldsteinScale": [2.8],
-        }).to_parquet(events_in / "a.parquet")
+        }).write_parquet(events_in / "a.parquet")
 
         # events_in has no float32_columns entry configured for it, so it
         # must be unaffected by gdelt_gkg_v2's setting.
@@ -1037,10 +1037,10 @@ class TestCrossrefJoinKeyWarning:
             # Missing V2DOCUMENTIDENTIFIER, gdelt_gkg_v2's join key.
             "gdelt_gkg_v2": ["GKGRECORDID"],
         }
-        pd.DataFrame({
+        pl.DataFrame({
             "GKGRECORDID": ["r1"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com"],
-        }).to_parquet(gkg_in / "a.parquet")
+        }).write_parquet(gkg_in / "a.parquet")
 
         with caplog.at_level("WARNING"):
             run_filter(cfg, dataset="gdelt_gkg_v2")
@@ -1055,10 +1055,10 @@ class TestCrossrefJoinKeyWarning:
         cfg["filter"]["output_columns"] = {
             "gdelt_gkg_v2": ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"],
         }
-        pd.DataFrame({
+        pl.DataFrame({
             "GKGRECORDID": ["r1"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com"],
-        }).to_parquet(gkg_in / "a.parquet")
+        }).write_parquet(gkg_in / "a.parquet")
 
         with caplog.at_level("WARNING"):
             run_filter(cfg, dataset="gdelt_gkg_v2")
@@ -1069,10 +1069,10 @@ class TestCrossrefJoinKeyWarning:
         # output_columns=None means every column survives; nothing to warn
         # about even though gdelt_gkg_v2 does have a required join key.
         cfg, _, gkg_in = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({
+        pl.DataFrame({
             "GKGRECORDID": ["r1"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com"],
-        }).to_parquet(gkg_in / "a.parquet")
+        }).write_parquet(gkg_in / "a.parquet")
 
         with caplog.at_level("WARNING"):
             run_filter(cfg, dataset="gdelt_gkg_v2")
@@ -1091,7 +1091,7 @@ class TestRunFilterWarnsAboutDeleteSource:
         self, tmp_path, caplog
     ):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
 
@@ -1105,7 +1105,7 @@ class TestRunFilterWarnsAboutDeleteSource:
 
     def test_no_warning_when_delete_source_is_false(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
 
@@ -1117,7 +1117,7 @@ class TestRunFilterWarnsAboutDeleteSource:
     def test_no_warning_when_nothing_narrows_the_output(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
         cfg["filter"]["columns_to_check"]["gdelt_event"] = []
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
 
@@ -1138,7 +1138,7 @@ class TestVerboseLogging:
     def test_off_by_default_logger_level_is_unchanged(self, tmp_path):
         filter_module.logger.setLevel(logging.INFO)
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
 
@@ -1148,7 +1148,7 @@ class TestVerboseLogging:
 
     def test_verbose_lowers_the_logger_to_debug(self, tmp_path):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
         try:
@@ -1159,7 +1159,7 @@ class TestVerboseLogging:
 
     def test_verbose_reveals_the_per_file_row_count_line(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
         try:
@@ -1179,7 +1179,7 @@ class TestVerboseLogging:
         cfg["filter"]["columns_to_check"]["gdelt_gkg_v1_counts"] = ["Date"]
         # Missing EventIds, gdelt_gkg_v1_counts' join key.
         cfg["filter"]["output_columns"] = {"gdelt_gkg_v1_counts": ["Date"]}
-        pd.DataFrame({"Date": [20130401], "EventIds": ["1,2"]}).to_parquet(
+        pl.DataFrame({"Date": [20130401], "EventIds": ["1,2"]}).write_parquet(
             events_in / "a.parquet"
         )
 
@@ -1199,7 +1199,7 @@ class TestQuietLogging:
 
     def test_quiet_raises_the_logger_to_warning(self, tmp_path):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
         try:
@@ -1210,7 +1210,7 @@ class TestQuietLogging:
 
     def test_quiet_suppresses_the_summary_line(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        pd.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
         try:
@@ -1237,10 +1237,10 @@ class TestFilterSingleFileAtomicity:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        def boom(self, table, **kwargs):
+        def boom(self, *args, **kwargs):
             raise OSError("simulated crash mid-write")
 
-        monkeypatch.setattr(filter_module.pq.ParquetWriter, "write_table", boom)
+        monkeypatch.setattr(pl.LazyFrame, "sink_parquet", boom)
 
         filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
         out_path = tmp_path / "out" / "data_filtered.parquet"
