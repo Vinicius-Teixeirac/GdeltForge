@@ -3,7 +3,7 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pyarrow as pa
 
 from gdeltforge.utils.logging import get_logger
@@ -22,25 +22,31 @@ def ensure_exists(path: str | Path, description: str) -> Path:
 @contextmanager
 def clearer_dataset_errors(what: str):
     """
-    Wraps a pyarrow.dataset read (construction, fragment metadata access,
-    .schema, .to_table(), .scanner().to_batches()) so a bare
-    ArrowInvalid/OSError, typically "Could not open Parquet input
-    source '<path>': ...", gets an actionable message on top instead of
-    surfacing as-is. pyarrow's own message already names the specific
-    file; this adds what gdeltforge was doing when it hit it and the
-    likely causes, since "a generic pyarrow error" with nothing else to
-    go on is hard to act on. Construction of a pyarrow.dataset.Dataset
-    from an explicit file list is NOT always lazy: schema inference reads
-    at least the first file in the list, so a corrupt/non-parquet file
-    can surface right there, not only at a later, separate read. Callers
-    must wrap starting from construction, confirmed empirically (which
-    of the two raises depends on where in the list the bad file lands).
+    Wraps a parquet dataset read, pyarrow.dataset-based (construction,
+    fragment metadata access, .schema, .to_table(), .scanner().to_batches(),
+    still used directly by indexer.py) or polars-based (scan_parquet/
+    read_parquet and anything chained off them, used everywhere else in
+    the pipeline), so a bare ArrowInvalid/ComputeError/OSError, typically
+    "Could not open Parquet input source '<path>': ..." or "File out of
+    specification: ...", gets an actionable message on top instead of
+    surfacing as-is. The underlying library's own message already names
+    the specific file; this adds what gdeltforge was doing when it hit it
+    and the likely causes, since a generic low-level read error with
+    nothing else to go on is hard to act on. Both engines share the same
+    hazard around laziness: a pyarrow.dataset.Dataset built from an
+    explicit file list reads at least the first file's schema at
+    construction time, not only later; a polars LazyFrame instead defers
+    that to the first .collect_schema()/.collect() call. Either way, a
+    corrupt/non-parquet file can surface at a different point in the call
+    chain depending on where in the list it lands, confirmed empirically
+    for both engines, so callers must wrap starting from construction/
+    scan, not just the final materializing call.
 
     FileNotFoundError is deliberately excluded even though it's an
     OSError subclass: gdeltforge's own "no parquet files matched" checks
     (empty glob, a date range excluding every file) raise it before ever
-    touching pyarrow, and that's a real, already-clear error in its own
-    right, not a pyarrow read failure to be reclassified as one.
+    touching pyarrow or polars, and that's a real, already-clear error in
+    its own right, not a dataset read failure to be reclassified as one.
 
     Chained via `from`, so the original traceback is still there
     underneath.
@@ -49,7 +55,7 @@ def clearer_dataset_errors(what: str):
         yield
     except FileNotFoundError:
         raise
-    except (pa.ArrowException, OSError) as e:
+    except (pa.ArrowException, pl.exceptions.ComputeError, OSError) as e:
         raise RuntimeError(
             f"Failed reading {what}: {e}\n"
             f"The error above names the specific file that couldn't be "
@@ -61,15 +67,15 @@ def clearer_dataset_errors(what: str):
         ) from e
 
 
-def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs) -> None:
+def write_parquet_atomic(df: pl.DataFrame, out: str | Path, **write_parquet_kwargs) -> None:
     """
     Write a DataFrame to Parquet via a temp file plus an atomic rename, so a
     process killed mid-write leaves either a complete file at the
     destination path or no file at all there, never a corrupt or empty one.
 
-    to_parquet_kwargs are passed straight through to DataFrame.to_parquet
-    (e.g. engine, compression), for callers that need more control than
-    the pandas default.
+    write_parquet_kwargs are passed straight through to DataFrame.
+    write_parquet (e.g. compression), for callers that need more control
+    than polars' own default (zstd, already matching this project's own).
     """
     out = Path(out)
     tmp_path = out.with_name(out.name + ".tmp")
@@ -81,7 +87,7 @@ def write_parquet_atomic(df: pd.DataFrame, out: str | Path, **to_parquet_kwargs)
         )
 
     try:
-        df.to_parquet(tmp_path, **to_parquet_kwargs)
+        df.write_parquet(tmp_path, **write_parquet_kwargs)
         os.replace(tmp_path, out)
     except Exception:
         tmp_path.unlink(missing_ok=True)
@@ -92,15 +98,15 @@ _EXPORT_FORMATS = ("parquet", "csv")
 
 
 def write_dataframe_atomic(
-    df: pd.DataFrame, out: str | Path, export_format: str = "parquet", **kwargs
+    df: pl.DataFrame, out: str | Path, export_format: str = "parquet", **kwargs
 ) -> None:
     """
     Same atomic tmp-then-rename guarantee as write_parquet_atomic, generalized
     to sample/crossref's --export-format. export_format="parquet" (the
     default) delegates straight to write_parquet_atomic; convert/filter's own
-    writes (_save_parquet, pq.ParquetWriter) are untouched and never call this:
-    their per-file streaming architecture has no reason to share a code
-    path with a single already-in-memory DataFrame's final write.
+    writes (_save_parquet, the lazy sink pipeline) are untouched and never
+    call this: their per-file streaming architecture has no reason to share a
+    code path with a single already-in-memory DataFrame's final write.
     """
     if export_format == "parquet":
         write_parquet_atomic(df, out, **kwargs)
@@ -122,38 +128,40 @@ def write_dataframe_atomic(
         )
 
     try:
-        df.to_csv(tmp_path, index=False, **kwargs)
+        df.write_csv(tmp_path, **kwargs)
         os.replace(tmp_path, out)
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
 
 
-def read_parquet_path(path: str | Path) -> pd.DataFrame:
+def read_parquet_path(path: str | Path) -> pl.DataFrame:
     """
     Read a single Parquet file, or every Parquet file directly in a
     directory, concatenated into one DataFrame. A directory is globbed to
-    *.parquet explicitly rather than handed to pandas as-is: convert and
+    *.parquet explicitly rather than handed to polars as-is: convert and
     filter's own resumability markers (mark_done above writes them as a
     dot-prefixed sibling of the data, e.g. ".<name>.done") sit in exactly
-    these directories by design. Dot-prefixed files are the standard
-    Hadoop/Spark/Parquet convention for "not a data file" and both
-    pandas.read_parquet and pyarrow.dataset already skip them on their
-    own now, so this glob is belt-and-suspenders rather than the only
-    thing standing between a caller and a confusing "magic bytes not
-    found" error, kept anyway since an explicit *.parquet glob is
-    clearer about intent than relying on an implicit skip-hidden-files
-    convention, and it's what already existed here.
+    these directories by design. pyarrow.dataset (and pandas.read_parquet,
+    when this project still used it) silently skips dot-prefixed files on
+    a bare directory read, the standard Hadoop/Spark/Parquet convention
+    for "not a data file". polars.read_parquet on a bare directory does
+    not: confirmed directly, it raises InvalidOperationError on the
+    mixed .parquet/.done extensions rather than skipping the marker, a
+    clearer failure than pandas/pyarrow's silent tolerance would have
+    produced but still a failure. The explicit *.parquet glob here avoids
+    the question either way, by construction rather than by relying on
+    whichever behavior the current engine happens to have.
     """
     p = Path(path)
     if not p.is_dir():
-        return pd.read_parquet(p)
+        return pl.read_parquet(p)
 
     files = sorted(p.glob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
-        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+        return pl.concat([pl.read_parquet(f) for f in files])
 
 
 def _fingerprint_value(value: object) -> str:
