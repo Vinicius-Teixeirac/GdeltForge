@@ -201,11 +201,18 @@ GdeltForge follows a standard `src/` package layout, installable via `uv sync` /
 ```
 project_root/
 ├── config/
-│ └── settings.yaml # Global configuration for all pipeline stages
+│ └── settings.example.yaml # Annotated starting point; copy to settings.yaml and edit
 │
 ├── src/gdeltforge/
 │ ├── py.typed # PEP 561 marker: this package ships inline type hints
 │ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
+│ ├── _version.py # Generated at build time from the git tag (hatch-vcs); not hand-edited
+│ │
+│ ├── config/
+│ │ └── default_settings.yaml # Bundled fallback config, used when no settings.yaml/--config is found at all
+│ │
+│ ├── data/
+│ │ └── cameo_codes.json # Bundled CAMEO/FIPS code -> name reference data, backs the `codes` command
 │ │
 │ ├── conversion/
 │ │ └── converter.py # CSV -> Parquet conversion logic
@@ -217,7 +224,7 @@ project_root/
 │ │ └── filter.py # Filtering logic (drop invalid rows)
 │ │
 │ ├── sampling/
-│ │ ├── cameo_codes.py # Bundled CAMEO/FIPS reference data, backs the `codes` command
+│ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command
 │ │ ├── indexer.py # File indexing for reproducible sampling
 │ │ ├── rng.py # Random number generation helpers
 │ │ └── samplers.py # Indexed, daily, and filtered sampling
@@ -226,10 +233,12 @@ project_root/
 │ │ └── scraper.py # Downloader for Events, GKG 2.1, GKG 1.0, and Mentions
 │ │
 │ └── utils/
-│   ├── config.py # Config resolution (--config / env var / CWD) and YAML loading
+│   ├── branding.py # Terminal ANSI colors and the --version banner (brand system's terminal voice)
+│   ├── config.py # Config resolution (--config / env var / CWD / bundled default) and YAML loading
 │   ├── io.py # File and chunked-IO helpers
 │   └── logging.py # Central logging system
 │
+├── docs/assets/brand/ # Emblem, favicon, wordmark lockups, icon set, GitHub social preview
 ├── tests/ # pytest suite (unit tests, no network/browser required)
 │
 ├── main.py # Backward-compatible shim: `python main.py <command>` still works
@@ -328,7 +337,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 
 <br>
 
-The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `1979.zip`, `200601.zip`) rather than daily files. When you are working with the full archive (1971-2025), keeping those as flat Parquet files means every query scans thousands of files. Enabling Hive partitioning routes those files into a structured directory tree, so filters on `Year` or `MonthYear` skip irrelevant files entirely.
+The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `1979.zip`, `200601.zip`) rather than daily files. When you are working with the full archive (1979-present), keeping those as flat Parquet files means every query scans thousands of files. Enabling Hive partitioning routes those files into a structured directory tree, so filters on `Year` or `MonthYear` skip irrelevant files entirely.
 
 **This feature is off by default.** To enable it, add the following to `settings.yaml`:
 
@@ -410,7 +419,7 @@ This samples 10000 instances considering the entire data.
 gdeltforge sample --dataset events --mode daily --per-day 20 --out daily.parquet
 ```
 
-This samples 20 instances per day from the entire period (1971 - 20xx).
+This samples 20 instances per day from the entire period (1979-present).
 
 #### Filtered Sampling (Using JSON Filters)
 
@@ -425,13 +434,13 @@ gdeltforge sample \
     --out qc12.parquet
 ```
 
-2000 "Verbal Cooperation" events that happened in "USA":
+2000 "Verbal Cooperation" events that happened in the USA (`ActionGeo_CountryCode` is a FIPS 2-letter code, `US`, not the 3-letter CAMEO code `USA` that `Actor1CountryCode`/`Actor2CountryCode` use):
 
 ```bash
 gdeltforge sample \
     --dataset events \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"], "QuadClass": [1]}' \
     -n 2000
 ```
 
@@ -441,7 +450,7 @@ You can select specific columns of interest, which is a memory friendly practice
 gdeltforge sample \
     --dataset events \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"], "QuadClass": [1]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"], "QuadClass": [1]}' \
     --columns GlobalEventID Year Actor1Code \
     -n 1000
 ```
@@ -456,7 +465,7 @@ Combines a filter with stratified reservoir sampling: draws exactly `--n-per-gro
 gdeltforge sample \
     --dataset events \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"]}' \
     --stratify QuadClass \
     --n-per-group 500 \
     --out stratified.parquet
@@ -524,7 +533,7 @@ gdeltforge filter --dataset events
 gdeltforge sample \
     --dataset events \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["USA"]}' \
+    --filter '{"ActionGeo_CountryCode": ["US"]}' \
     -n 3000
 ```
 

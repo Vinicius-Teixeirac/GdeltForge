@@ -110,6 +110,6 @@ Then open `http://127.0.0.1:8000/`.
   <a class="gf-card gf-card--link" href="../recipes/"><h3>Recipes →</h3><p>Runnable, end-to-end workflows.</p></a>
   <a class="gf-card gf-card--link" href="../filtered-sampling/"><h3>Filtered Sampling →</h3><p>The complete filter syntax.</p></a>
   <a class="gf-card gf-card--link" href="../configuration/"><h3>Configuration →</h3><p>The full <code>settings.yaml</code> reference.</p></a>
-  <a class="gf-card gf-card--link" href="../crossref-join-semantics/"><h3>Crossref Semantics →</h3><p>What the Events↔GKG join really produces.</p></a>
+  <a class="gf-card gf-card--link" href="../crossref-join-semantics/"><h3>Crossref Semantics →</h3><p>What the Events<->GKG join really produces.</p></a>
   <a class="gf-card gf-card--link" href="../comparison/"><h3>Comparison →</h3><p>When another tool is the better choice.</p></a>
 </div>
