@@ -139,7 +139,7 @@ selection, for close to zero information loss.
 
 Exact integer/string identities, not correlations:
 
-```
+```text
 MonthYear     == Day // 100
 Year          == Day // 10000
 EventBaseCode == EventCode[:3]
