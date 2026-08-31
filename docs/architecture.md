@@ -40,11 +40,18 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     ```text
     project_root/
     ├── config/
-    │ └── settings.yaml # Global configuration for all pipeline stages
+    │ └── settings.example.yaml # Annotated starting point; copy to settings.yaml and edit
     │
     ├── src/gdeltforge/
     │ ├── py.typed # PEP 561 marker: this package ships inline type hints
     │ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
+    │ ├── _version.py # Generated at build time from the git tag (hatch-vcs); not hand-edited
+    │ │
+    │ ├── config/
+    │ │ └── default_settings.yaml # Bundled fallback config, used when no settings.yaml/--config is found at all
+    │ │
+    │ ├── data/
+    │ │ └── cameo_codes.json # Bundled CAMEO/FIPS code -> name reference data, backs the `codes` command
     │ │
     │ ├── conversion/
     │ │ └── converter.py # CSV -> Parquet conversion logic
@@ -56,7 +63,7 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ │ └── filter.py # Filtering logic (drop invalid rows)
     │ │
     │ ├── sampling/
-    │ │ ├── cameo_codes.py # Bundled CAMEO/FIPS reference data, backs the `codes` command
+    │ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command
     │ │ ├── indexer.py # File indexing for reproducible sampling
     │ │ ├── rng.py # Random number generation helpers
     │ │ └── samplers.py # Indexed, daily, and filtered sampling
@@ -65,10 +72,12 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ │ └── scraper.py # Downloader for Events, GKG 2.1, GKG 1.0, and Mentions
     │ │
     │ └── utils/
-    │   ├── config.py # Config resolution (--config / env var / CWD) and YAML loading
+    │   ├── branding.py # Terminal ANSI colors and the --version banner (brand system's terminal voice)
+    │   ├── config.py # Config resolution (--config / env var / CWD / bundled default) and YAML loading
     │   ├── io.py # File and chunked-IO helpers
     │   └── logging.py # Central logging system
     │
+    ├── docs/assets/brand/ # Emblem, favicon, wordmark lockups, icon set, GitHub social preview
     ├── tests/ # pytest suite (unit tests, no network/browser required)
     │
     ├── main.py # Backward-compatible shim: `python main.py <command>` still works
