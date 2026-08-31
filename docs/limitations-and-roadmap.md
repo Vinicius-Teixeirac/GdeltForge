@@ -27,7 +27,5 @@ Supported modes: indexed random, daily, filtered, and stratified. Sampling is wi
 - [ ] CLI pipelines (e.g., `gdeltforge run all`)
 - [ ] GPU-aware sampling (cuDF / RAPIDS)
 - [ ] More advanced sampling techniques
-- [ ] Evaluate migrating performance-critical DataFrame code (CSV parsing in `convert`, row filtering in `filter`) from pandas to Polars
-- [ ] Evaluate a different Parquet writer library altogether (fastparquet, DuckDB, Polars' own writer) instead of pyarrow; most relevant bundled with the pandas -> Polars evaluation above rather than adopted on its own
 
 Shipped work previously tracked here now lives in [CHANGELOG.md](https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/CHANGELOG.md); the numbers behind past decisions (compression codec, dtype narrowing, column pruning) live in [Configuration](configuration.md#capacity-planning-real-measured-numbers).

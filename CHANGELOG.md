@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+- Every DataFrame operation across the pipeline (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins) moves from pandas/pyarrow.dataset to polars. `pyarrow` is kept as a direct dependency (`indexer.py`'s metadata-only reads stay on `pyarrow.dataset`, and polars uses Arrow internally regardless); `pandas` is dropped entirely. Measured via `scripts/benchmark_pandas_vs_polars.py` (new, committed) against real CLI runs on identical synthetic fixtures: `convert` throughput improves from parity at 10,000 rows up to 14.2x at 10,000,000 rows, widening with scale; `crossref` improves a more modest, roughly constant 1.1-1.3x at the row counts measured (see `docs/configuration.md`'s Capacity Planning section for the full tables and what does and doesn't explain the difference in scaling behavior between the two)
+
 ### Added
 - A Data Attribution section in the README and docs site, citing the GDELT Project and linking to gdeltproject.org per its terms of use, plus a matching `GDELT Project` link in `pyproject.toml`'s project URLs so it surfaces on the PyPI page too
 - The docs site now uses the project's brand system: Poppins/JetBrains Mono via Material's Google Fonts integration, and a custom palette (Forge orange as the one accent color, Void/Panel backgrounds in dark mode) replacing the generic Material indigo default
