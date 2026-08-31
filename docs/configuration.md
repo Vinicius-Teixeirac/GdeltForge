@@ -305,4 +305,30 @@ The GKG 2.1 codec numbers earlier in this page don't automatically transfer to E
 
 Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, this isn't a tradeoff to weigh the way `float32_columns` is: there's no case where `snappy` is the better default. `filter.compression` defaults to `zstd` for every dataset as of 2026-08-07; `compression.<dataset>` remains available to override to a specific codec if one is ever needed.
 
+### pandas vs polars: real measured throughput
+
+The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with `scripts/benchmark_pandas_vs_polars.py` (committed, reusable) via the real `gdeltforge convert`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
+
+**`convert`**, a single Events-shaped file at each row count:
+
+| Rows | pandas | polars | Speedup |
+|------|--------|--------|---------|
+| 10,000 | 2.04s | 1.63s | 1.25x |
+| 100,000 | 3.30s | 1.44s | 2.30x |
+| 1,000,000 | 22.72s | 3.45s | 6.59x |
+| 10,000,000 | 796.46s | 56.08s | 14.20x |
+
+The gap widens sharply with size rather than staying fixed: at 10,000 rows both engines spend most of their wall-clock on process/interpreter startup, not CSV parsing, so there's little for a faster parser to win back yet. Past that, polars' advantage compounds, reaching over 14x at 10M rows, comfortably ahead of what the raw row-count growth (1,000x from 10k to 10M) alone would predict for a fixed-overhead explanation.
+
+**`crossref`**, Events joined against synthetic Mentions/GKG 2.1 (roughly 80% of events finding at least one match):
+
+| Events | pandas | polars | Speedup |
+|--------|--------|--------|---------|
+| 1,000 | 0.78s | 0.62s | 1.26x |
+| 5,000 | 0.74s | 0.65s | 1.14x |
+| 10,000 | 0.79s | 0.65s | 1.22x |
+| 100,000 | 2.37s | 2.11s | 1.12x |
+
+`crossref` does not show the same widening pattern: the speedup stays in a narrow 1.1-1.3x band across two full orders of magnitude in event count, unlike `convert`'s clear scaling trend. The most likely explanation is that this benchmark's own fixture is a single Mentions file and a single GKG 2.1 file per size, so the join itself (a hash join against an in-memory key set either engine handles well) is a smaller fraction of total wall-clock than process startup, config/schema loading, and Python-level orchestration, none of which the engine swap touches. This doesn't rule out a bigger real-world win at archive scale (thousands of Mentions/GKG 2.1 files, where `_dataset`'s own per-file footer-schema read and predicate pushdown do proportionally more work), just that this benchmark's own fixture shape doesn't exercise that path; a genuine multi-file archive-scale crossref benchmark is a natural follow-up, not yet measured.
+
 `converter.compression` defaults to `zstd` too, for the same reason: it wasn't independently re-measured against converter's own (unfiltered, wider-row-count) output, but a lossless codec with no measured downside on real GDELT data has no case for defaulting to `snappy` there either. It was previously hardcoded to `snappy` with no way to change it; it's now a normal per-dataset setting, same shape as `filter.compression`.
