@@ -15,10 +15,10 @@ Below is the complete specification. For runnable end-to-end examples built on i
 **Equality**
 
 ```json
-{ "ActionGeo_CountryCode": "USA" }
+{ "ActionGeo_CountryCode": "US" }
 ```
 
-Equivalent to `ActionGeo_CountryCode == "USA"`.
+Equivalent to `ActionGeo_CountryCode == "US"`.
 
 **IN list**
 
@@ -40,7 +40,7 @@ Equivalent to `0 ≤ GoldsteinScale ≤ 5`.
 
 !!! warning "Arrays are lists, never ranges"
 
-    A JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), matching exactly 0 or 5 — not the range 0–5. Ranges need the explicit `{"op": "between"}` form above.
+    A JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), matching exactly 0 or 5, not the range 0-5. Ranges need the explicit `{"op": "between"}` form above.
 
 ## Dictionary operator (explicit)
 
@@ -64,25 +64,25 @@ All of the above apply to any numeric or categorical GDELT column.
 
 ```json
 {
-  "ActionGeo_CountryCode": "USA",
+  "ActionGeo_CountryCode": "US",
   "QuadClass": [1, 2]
 }
 ```
 
-Equivalent to `CountryCode="USA" AND QuadClass in {1,2}`.
+Equivalent to `ActionGeo_CountryCode="US" AND QuadClass in {1,2}`.
 
 **Top-level OR**
 
 ```json
 {
   "OR": {
-    "ActionGeo_CountryCode": "USA",
+    "ActionGeo_CountryCode": "US",
     "Actor1CountryCode": "USA"
   }
 }
 ```
 
-Equivalent to `CountryCode="USA" OR Actor1CountryCode="USA"`.
+Equivalent to `ActionGeo_CountryCode="US" OR Actor1CountryCode="USA"`.
 
 **Nested AND inside OR**
 
@@ -107,7 +107,7 @@ Example: keep USA events and events where either actor is Russia:
 ```json
 {
   "AND": {
-    "ActionGeo_CountryCode": "USA",
+    "ActionGeo_CountryCode": "US",
     "OR": {
       "Actor1CountryCode": "RUS",
       "Actor2CountryCode": "RUS"
@@ -116,7 +116,7 @@ Example: keep USA events and events where either actor is Russia:
 }
 ```
 
-Equivalent to `ActionGeoCountry="USA" AND (Actor1="RUS" OR Actor2="RUS")`.
+Equivalent to `ActionGeo_CountryCode="US" AND (Actor1="RUS" OR Actor2="RUS")`.
 
 **Deeply nested example**
 
@@ -147,7 +147,7 @@ You may restrict the output to specific columns, which is a memory-friendly prac
 gdeltforge sample \
   --dataset events \
   --mode filtered \
-  --filter '{"ActionGeo_CountryCode": "USA"}' \
+  --filter '{"ActionGeo_CountryCode": "US"}' \
   --columns GlobalEventID Year Actor1Code \
   -n 1000
 ```
@@ -168,7 +168,7 @@ gdeltforge sample --dataset events --mode filtered -n 5000 --filter '{"QuadClass
 gdeltforge sample \
     --dataset events \
     --mode filtered \
-    --filter '{"ActionGeo_CountryCode":"USA"}' \
+    --filter '{"ActionGeo_CountryCode":"US"}' \
     --stratify QuadClass \
     --n-per-group 500
 ```

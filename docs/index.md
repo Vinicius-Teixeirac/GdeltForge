@@ -7,7 +7,7 @@ hide:
 <div class="gf-hero">
   <div class="gf-hero__grid">
     <div>
-      <img class="gf-hero__lockup" src="assets/brand/lockup-a-horizontal.png" alt="GdeltForge — Global Event Data Pipeline">
+      <img class="gf-hero__lockup" src="assets/brand/lockup-a-horizontal.png" alt="GdeltForge: Global Event Data Pipeline">
       <h1>Global event data,<br><em>forged.</em></h1>
       <p>Raw GDELT in. Clean, reproducibly-sampled, cross-referenced Parquet out. One CLI, one machine, the whole archive.</p>
       <div class="gf-install"><span class="gf-prompt">$</span> pip install gdeltforge</div>
@@ -18,7 +18,7 @@ hide:
       </div>
       <div class="gf-facts">
         <span><b>542M+</b> rows indexed</span>
-        <span><b>1979</b>–present</span>
+        <span><b>1979</b>-present</span>
         <span><b>Apache-2.0</b></span>
       </div>
     </div>
@@ -52,7 +52,7 @@ hide:
     <div class="gf-card"><img src="assets/brand/icons/icon-global.svg" alt=""><h3>The whole archive</h3><p>The 1979 historical backfill through today, not the last three months the API allows.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-store.svg" alt=""><h3>Columnar storage</h3><p>Parquet throughout, with optional Hive partitioning for yearly and monthly historical dumps.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-pipeline.svg" alt=""><h3>Transparent lineage</h3><p>Every stage explicit and independently testable. Nothing runs automagically.</p></div>
-    <div class="gf-card"><img src="assets/brand/icons/icon-dataset.svg" alt=""><h3>Four datasets</h3><p>Events, GKG 2.1, legacy GKG 1.0 and Mentions, each through the same stages.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-dataset.svg" alt=""><h3>Six datasets</h3><p>Events (daily and native 15-minute granularity), GKG 2.1, legacy GKG 1.0 (plus its separate Counts file), and Mentions, each through the same stages.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-codes.svg" alt=""><h3>Bundled CAMEO codes</h3><p><code>gdeltforge codes</code> looks up valid values across seven column families, offline.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-warn.svg" alt=""><h3>Honest scope</h3><p>No orchestration, no VGKG, no hosted infrastructure. The comparison page says when to use something else.</p></div>
   </div>
@@ -65,7 +65,7 @@ hide:
       <div class="gf-mode"><b>indexed</b><span>Uniform random across the whole archive.</span></div>
       <div class="gf-mode"><b>daily</b><span>N rows per day, evenly across the period.</span></div>
       <div class="gf-mode"><b>filtered</b><span>JSON column filters, pushed down before sampling.</span></div>
-      <div class="gf-mode"><b>stratified</b><span>Fixed N per group — balanced classes regardless of the natural distribution.</span></div>
+      <div class="gf-mode"><b>stratified</b><span>Fixed N per group, balanced classes regardless of the natural distribution.</span></div>
     </div>
     <div class="gf-card">
       <h3>Why it matters</h3>
@@ -93,7 +93,7 @@ See [Comparison to Other Tools](comparison.md) for the full breakdown.
 
 ## Quickstart
 
-One week of data, end to end. No config file needed — GdeltForge writes a conservative default on first run.
+One week of data, end to end. No config file needed: GdeltForge writes a conservative default on first run.
 
 ```bash
 pip install gdeltforge
