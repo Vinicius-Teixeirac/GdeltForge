@@ -1,5 +1,6 @@
 site_name: GdeltForge
 site_description: Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet
+site_url: https://vinicius-teixeirac.github.io/GdeltForge/
 repo_url: https://github.com/Vinicius-Teixeirac/GdeltForge
 repo_name: GdeltForge
 edit_uri: edit/main/docs/
@@ -30,11 +31,18 @@ theme:
     - navigation.instant
     - navigation.tracking
     - navigation.top
+    - navigation.sections      # group the sidebar under section headings
+    - navigation.indexes
+    - toc.follow
     - content.code.copy
+    - content.code.annotate
     - content.action.edit
+    - search.suggest
+    - search.highlight
 
 extra_css:
   - assets/brand.css
+  - assets/home.css
 
 extra:
   social:
@@ -47,7 +55,9 @@ extra:
 
 markdown_extensions:
   - admonition
+  - attr_list
   - footnotes
+  - md_in_html
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.tabbed:
@@ -56,15 +66,21 @@ markdown_extensions:
   - toc:
       permalink: true
 
+# Grouped nav: "get it running" first, then reference, then the deeper
+# semantics pages that used to sit flat in a list of eleven.
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - Comparison to Other Tools: comparison.md
-  - CLI Reference: cli-reference.md
-  - Filtered Sampling: filtered-sampling.md
-  - Recipes: recipes.md
-  - Configuration: configuration.md
-  - Column Redundancy: column-redundancy.md
-  - Crossref Join Semantics: crossref-join-semantics.md
-  - Architecture: architecture.md
-  - Limitations & Roadmap: limitations-and-roadmap.md
+  - Start here:
+      - Getting Started: getting-started.md
+      - Recipes: recipes.md
+      - Comparison to Other Tools: comparison.md
+  - Reference:
+      - CLI Reference: cli-reference.md
+      - Configuration: configuration.md
+      - Filtered Sampling: filtered-sampling.md
+  - Data semantics:
+      - Crossref Join Semantics: crossref-join-semantics.md
+      - Column Redundancy: column-redundancy.md
+  - Project:
+      - Architecture: architecture.md
+      - Limitations & Roadmap: limitations-and-roadmap.md

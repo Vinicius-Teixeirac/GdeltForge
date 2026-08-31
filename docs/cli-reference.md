@@ -1,6 +1,6 @@
 # CLI Reference
 
-```
+```bash
 gdeltforge <command> [options]
 ```
 
@@ -15,9 +15,20 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 | `crossref` | Enrich a sampled Events output with GKG (themes, tone, people, organizations) |
 | `codes`   | Look up valid CAMEO/FIPS codes for filter values |
 
-`scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
+<div class="gf-grid gf-grid--3">
+  <a class="gf-card gf-card--link" href="#gdeltforge-scrape"><h3>scrape →</h3><p>Download the raw archive, checksum-verified.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-convert"><h3>convert →</h3><p>CSV to Parquet, optionally Hive-partitioned.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-filter"><h3>filter →</h3><p>Drop rows missing your configured columns.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-sample"><h3>sample →</h3><p>Indexed, daily, filtered, stratified.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-crossref"><h3>crossref →</h3><p>Join a sample back onto GKG.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-codes"><h3>codes →</h3><p>Look up CAMEO/FIPS values offline.</p></a>
+</div>
 
-Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130.
+!!! info "Exit codes"
+
+    `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
+
+    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130.
 
 ## Global options
 
@@ -29,13 +40,13 @@ Any command that fails prints `Error: <message>` to stderr and exits with status
 
 Download the entire archive:
 
-```
+```bash
 gdeltforge scrape --dataset events
 ```
 
 Download only files within a date range (any combination of bounds is valid):
 
-```
+```bash
 gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
 gdeltforge scrape --dataset events --start-date 2022-01-01          # from date onward
 gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
@@ -75,7 +86,7 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 
 ## `gdeltforge convert`
 
-```
+```bash
 gdeltforge convert --dataset events
 ```
 
@@ -96,7 +107,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 
 `--start-date`/`--end-date` narrow which already-downloaded ZIPs get converted, the same date filter `scrape` applies to what gets downloaded:
 
-```
+```bash
 gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
@@ -114,7 +125,7 @@ See [Configuration](configuration.md#hive-partitioning-for-historical-data) for 
 
 ## `gdeltforge filter`
 
-```
+```bash
 gdeltforge filter --dataset events
 ```
 
@@ -158,6 +169,8 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 ## `gdeltforge sample`
 
+![The four sampling modes: indexed, daily, filtered and stratified](assets/sampling-modes.svg)
+
 All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping.
 
 | Flag | Applies to | Description |
@@ -183,7 +196,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 ### Indexed sampling (uniform random)
 
-```
+```bash
 gdeltforge sample --dataset events --mode indexed -n 10000 --seed 123 --out sample.parquet
 ```
 
@@ -191,7 +204,7 @@ Samples 10,000 rows uniformly across the entire dataset.
 
 ### Daily sampling (N rows per day)
 
-```
+```bash
 gdeltforge sample --dataset events --mode daily --per-day 20 --out daily.parquet
 ```
 
@@ -201,7 +214,7 @@ Samples 20 rows per day across the entire period covered by your downloaded data
 
 5,000 events whose `QuadClass` is in `{1, 2}`:
 
-```
+```bash
 gdeltforge sample \
     --dataset events \
     --mode filtered \
@@ -212,7 +225,7 @@ gdeltforge sample \
 
 2,000 "Verbal Cooperation" events that happened in the USA:
 
-```
+```bash
 gdeltforge sample \
     --dataset events \
     --mode filtered \
@@ -222,7 +235,7 @@ gdeltforge sample \
 
 Selecting specific columns keeps memory use down:
 
-```
+```bash
 gdeltforge sample \
     --dataset events \
     --mode filtered \
@@ -233,13 +246,15 @@ gdeltforge sample \
 
 Filters support nested `AND`/`OR` blocks; see the example pipelines below for an `OR` example across multiple columns.
 
-GDELT has two distinct country-code schemes that are easy to mix up: `Actor1CountryCode`/`Actor2CountryCode` use 3-letter CAMEO codes (`USA`), while `ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, and `Actor2Geo_CountryCode` use 2-letter FIPS 10-4 codes (`US`). A value that doesn't match the right scheme for its column logs a warning rather than failing outright (FIPS 10-4 was retired in 2008 and can lag newer countries), but it also means the filter silently matches nothing. Run `gdeltforge codes` to check.
+!!! warning "Two country-code schemes, easy to mix up"
+
+    GDELT has two distinct country-code schemes: `Actor1CountryCode`/`Actor2CountryCode` use 3-letter CAMEO codes (`USA`), while `ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, and `Actor2Geo_CountryCode` use 2-letter FIPS 10-4 codes (`US`). A value that doesn't match the right scheme for its column logs a warning rather than failing outright (FIPS 10-4 was retired in 2008 and can lag newer countries), but it also means the filter silently matches nothing. Run [`gdeltforge codes`](#gdeltforge-codes) to check.
 
 ### Stratified sampling (fixed N per group)
 
 Combines a filter with stratified reservoir sampling: draws exactly `--n-per-group` rows for each distinct value of a chosen column, producing a class-balanced dataset regardless of the natural distribution.
 
-```
+```bash
 gdeltforge sample \
     --dataset events \
     --mode filtered \
@@ -253,13 +268,15 @@ This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-p
 
 ## `gdeltforge crossref`
 
+![GKG 2.1 joins to Events in two hops through Mentions on the article URL; GKG 1.0 joins directly on EventIds](assets/crossref-join.svg)
+
 Enriches a sampled Events output with GKG: themes, tone, people, organizations extracted from the news coverage of each event. Takes a Parquet file (the output of `gdeltforge sample`) rather than the full archive, since joining against the entire Events dataset by default would be a much heavier operation than enriching a bounded sample.
 
 Nothing stops `--events` from actually pointing at the full archive (or a directory of files) instead, since a genuinely archive-scale join is sometimes exactly what's wanted, so this isn't blocked, but it logs a warning (not a hard stop, matching how a large `scrape` already warns) once `--events` crosses 1,000,000 rows: every file in the configured Mentions/GKG directory gets scanned regardless of `--events` size, and just building the join key set was measured at roughly 100 MB and a second per million events (10M: ~800 MB; 50M: ~5.2 GB), before that scan even starts. If that wasn't intentional, run `gdeltforge sample` first.
 
 The configured Mentions/GKG directory itself gets the same treatment, independent of `--events` size: past 50,000 files, a warning fires for that directory specifically (`Mentions`/`GKG 2.1`/`GKG 1.0` checked separately, so either one being the large one is called out by name), since crossref lists and opens every file in it on every run, regardless of how selective the join ends up being (real measurement: ~75 microseconds/file, so ~29s for the full historical GKG 2.1/Mentions archive just to list and open, before a single row is read). `--start-date`/`--end-date`, same as `scrape`/`convert`/`filter`, narrow which files in that directory get listed and opened at all; pointing `paths.*` at a smaller, already-narrowed directory reduces it further. Both flags only narrow the Mentions/GKG side, not `--events`: a Mentions row is timestamped by when it was recorded, not by its event's `DATEADDED` (see `auto`'s description below), so narrowing by date can exclude a legitimate late mention of an in-range event, a real scope decision rather than a risk-free filter.
 
-```
+```bash
 gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parquet
 ```
 
@@ -286,14 +303,14 @@ Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure ra
 
 `v2`'s two-hop join has two further, independent sources of repeated rows for what's really the same (event, article) pair, each controlled by its own flag above, both defaulting to keeping everything rather than silently discarding anything: GKG 2.1 occasionally carries more than one record for the same document URL, all of them kept by default (`--on-duplicate-document`), and Mentions records one row per sentence that references an event, so an event quoted several times in one article produces several near-identical raw rows, also kept uncollapsed by default (`--collapse-duplicate-mentions` to fold them into one row with a `Mention_Count` column instead). See [Crossref Join Semantics](crossref-join-semantics.md) for the real-data numbers behind both.
 
-```
+```bash
 gdeltforge sample --dataset events --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
 gdeltforge crossref --events us_events.parquet --gkg-version v2 --out us_events_enriched.parquet
 ```
 
 For a sample spanning the 2013-2015 window specifically (see [Recipes](recipes.md) for the full worked example):
 
-```
+```bash
 gdeltforge sample --dataset events --mode filtered --filter '{"DATEADDED": {"op": "between", "min": 20130101, "max": 20160101}}' -n 5000 --out gap_events.parquet
 gdeltforge crossref --events gap_events.parquet --gkg-version auto --out gap_events_enriched.parquet
 ```
@@ -320,19 +337,19 @@ A handful of real `EventCode`/`EventBaseCode`/`EventRootCode` values (`"X"`, `"-
 
 List which columns have a reference list:
 
-```
+```bash
 gdeltforge codes
 ```
 
 List every code for a column:
 
-```
+```bash
 gdeltforge codes ActionGeo_CountryCode
 ```
 
 Search within a column by code or name (case-insensitive substring match):
 
-```
+```bash
 gdeltforge codes ActionGeo_CountryCode --search korea
 ```
 
@@ -343,71 +360,75 @@ gdeltforge codes ActionGeo_CountryCode --search korea
 
 ## Full pipeline examples
 
-Sample 10,000 rows end-to-end:
+Every one of these runs the four stages in order; only the last line differs.
 
-```
-gdeltforge scrape --dataset events
-gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode indexed -n 10000
-```
+??? example "Sample 10,000 rows end-to-end"
 
-Reproducible sampling (fixed seed):
+    ```bash
+    gdeltforge scrape --dataset events
+    gdeltforge convert --dataset events
+    gdeltforge filter --dataset events
+    gdeltforge sample --dataset events --mode indexed -n 10000
+    ```
 
-```
-gdeltforge scrape --dataset events
-gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
-```
+??? example "Reproducible sampling (fixed seed)"
 
-USA-only events:
+    ```bash
+    gdeltforge scrape --dataset events
+    gdeltforge convert --dataset events
+    gdeltforge filter --dataset events
+    gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
+    ```
 
-```
-gdeltforge scrape --dataset events
-gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample \
-    --dataset events \
-    --mode filtered \
-    --filter '{"ActionGeo_CountryCode": ["US"]}' \
-    -n 3000
-```
+??? example "USA-only events"
 
-30 events per day:
+    ```bash
+    gdeltforge scrape --dataset events
+    gdeltforge convert --dataset events
+    gdeltforge filter --dataset events
+    gdeltforge sample \
+        --dataset events \
+        --mode filtered \
+        --filter '{"ActionGeo_CountryCode": ["US"]}' \
+        -n 3000
+    ```
 
-```
-gdeltforge scrape --dataset events
-gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode daily --per-day 30
-```
+??? example "30 events per day"
 
-Date-restricted pipeline (the date flags apply only to `scrape`; later stages operate on whatever files are already on disk):
+    ```bash
+    gdeltforge scrape --dataset events
+    gdeltforge convert --dataset events
+    gdeltforge filter --dataset events
+    gdeltforge sample --dataset events --mode daily --per-day 30
+    ```
 
-```
-gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode indexed -n 10000
-```
+??? example "Date-restricted pipeline"
 
-Bash one-liner:
+    The date flags apply only to `scrape`; later stages operate on whatever files are already on disk.
 
-```bash
-gdeltforge scrape --dataset events && \
-gdeltforge convert --dataset events && \
-gdeltforge filter --dataset events && \
-gdeltforge sample --dataset events --mode indexed -n 10000
-```
+    ```bash
+    gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+    gdeltforge convert --dataset events
+    gdeltforge filter --dataset events
+    gdeltforge sample --dataset events --mode indexed -n 10000
+    ```
 
-PowerShell loop:
+??? example "Bash one-liner"
 
-```powershell
-foreach ($c in "scrape", "convert", "filter") {
-    gdeltforge $c --dataset events
-}
-gdeltforge sample --dataset events --mode indexed -n 10000
-```
+    ```bash
+    gdeltforge scrape --dataset events && \
+    gdeltforge convert --dataset events && \
+    gdeltforge filter --dataset events && \
+    gdeltforge sample --dataset events --mode indexed -n 10000
+    ```
+
+??? example "PowerShell loop"
+
+    ```powershell
+    foreach ($c in "scrape", "convert", "filter") {
+        gdeltforge $c --dataset events
+    }
+    gdeltforge sample --dataset events --mode indexed -n 10000
+    ```
 
 For the complete filter syntax (nested `AND`/`OR` blocks, all operators) see [Filtered Sampling](filtered-sampling.md); for complete runnable examples see [Recipes](recipes.md).

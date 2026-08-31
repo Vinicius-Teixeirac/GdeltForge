@@ -1,4 +1,4 @@
-# Filtered Sampling: Filter Syntax Reference
+# Filtered sampling: filter syntax reference
 
 `FilteredSampler` (the `gdeltforge sample --mode filtered` command) filters GDELT Parquet files using a flexible JSON dictionary passed via `--filter`. Filters define what rows are kept before sampling, and support:
 
@@ -8,9 +8,9 @@
 - relational operators (`>`, `<`)
 - nested `AND` / `OR` logical blocks
 
-Below is the complete specification.
+Below is the complete specification. For runnable end-to-end examples built on it, see [Recipes](recipes.md); to check that a filter value is a valid code before running, see [`gdeltforge codes`](cli-reference.md#gdeltforge-codes).
 
-## Basic Filter Types (Single Column)
+## Basic filter types (single column)
 
 **Equality**
 
@@ -38,9 +38,11 @@ Range filters require the explicit dictionary form (see below):
 
 Equivalent to `0 ≤ GoldsteinScale ≤ 5`.
 
-Note: a JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), not a range.
+!!! warning "Arrays are lists, never ranges"
 
-## Dictionary Operator (Explicit)
+    A JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), matching exactly 0 or 5 — not the range 0–5. Ranges need the explicit `{"op": "between"}` form above.
+
+## Dictionary operator (explicit)
 
 All operator forms:
 
@@ -54,7 +56,7 @@ All operator forms:
 
 All of the above apply to any numeric or categorical GDELT column.
 
-## Logical Groups
+## Logical groups
 
 `filter_dict` can contain nested `AND` / `OR` blocks to build richer logic.
 
@@ -137,11 +139,11 @@ You can combine arbitrarily:
 
 Equivalent to `(IsRootEvent=1 AND QuadClass in {1,2}) OR (Actor1="CHN" OR Actor2="CHN")`.
 
-## Selecting Specific Columns
+## Selecting specific columns
 
 You may restrict the output to specific columns, which is a memory-friendly practice:
 
-```
+```bash
 gdeltforge sample \
   --dataset events \
   --mode filtered \
@@ -150,19 +152,19 @@ gdeltforge sample \
   -n 1000
 ```
 
-## Sampling Methods Compatible With Filters
+## Sampling methods compatible with filters
 
 Once the filter is applied, sampling works normally:
 
 **Random sample**
 
-```
+```bash
 gdeltforge sample --dataset events --mode filtered -n 5000 --filter '{"QuadClass":[1,2]}'
 ```
 
 **Stratified by column**
 
-```
+```bash
 gdeltforge sample \
     --dataset events \
     --mode filtered \
@@ -171,7 +173,7 @@ gdeltforge sample \
     --n-per-group 500
 ```
 
-## Quick Reference
+## Quick reference
 
 | Filter type | Example JSON | Meaning |
 |-------------|--------------|---------|
