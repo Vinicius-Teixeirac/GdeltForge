@@ -10,6 +10,7 @@ GdeltForge follows a **single-responsibility, single-stage execution model**: ea
 | `convert` | transform CSV -> Parquet |
 | `filter` | remove rows with missing values |
 | `sample` | reproducibly sample from Parquet files |
+| `crossref` | join a sampled Events output back onto GKG |
 
 This is intentionally transparent and low-magic:
 
@@ -18,12 +19,9 @@ This is intentionally transparent and low-magic:
 - each module is individually testable
 - any stage can be re-run without affecting the others
 
-```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Scraper   │ ---> │  Converter  │ ---> │   Filter    │ ---> │   Sampler   │
-└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
-      CSV                Parquet            Cleaned data         Sampled data
-```
+![The five pipeline stages: scrape produces CSV, convert produces Parquet, filter produces cleaned data, sample produces a sample, crossref produces a sample enriched with GKG](assets/pipeline-diagram.svg)
+
+The same stages run independently per dataset (`--dataset events`, `gkg-v2`, `mentions`, ...). `crossref` is the one stage that reads two datasets at once, joining a sampled Events output against a GKG dataset processed the same way.
 
 Each stage consumes the previous stage's output, which gives you:
 
@@ -35,43 +33,48 @@ Each stage consumes the previous stage's output, which gives you:
 
 ## Project structure
 
-GdeltForge is a standard installable `src/` package:
+GdeltForge is a standard installable `src/` package. Each package under `src/gdeltforge/` corresponds to one pipeline stage, plus `utils/` for shared, stage-agnostic helpers (config loading, logging, I/O).
 
-```
-project_root/
-├── config/
-│ └── settings.yaml # Global configuration for all pipeline stages
-│
-├── src/gdeltforge/
-│ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
-│ │
-│ ├── conversion/
-│ │ └── converter.py # CSV -> Parquet conversion logic
-│ │
-│ ├── filtering/
-│ │ └── filter.py # Filtering logic (drop invalid rows)
-│ │
-│ ├── sampling/
-│ │ ├── indexer.py # File indexing for reproducible sampling
-│ │ ├── rng.py # Random number generation helpers
-│ │ └── samplers.py # Indexed, daily, and filtered sampling
-│ │
-│ ├── scraping/
-│ │ └── scraper.py # Downloader for raw GDELT event files
-│ │
-│ └── utils/
-│   ├── config.py # Config resolution (--config / env var / CWD) and YAML loading
-│   ├── io.py # File and chunked-IO helpers
-│   └── logging.py # Central logging system
-│
-├── tests/ # pytest suite (unit tests, no network/browser required)
-│
-├── main.py # Backward-compatible shim: `python main.py <command>` still works
-├── pyproject.toml # Package metadata, build backend, gdeltforge console-script entry point
-└── README.md
-```
+??? abstract "Full source tree"
 
-Each package under `src/gdeltforge/` corresponds to one pipeline stage, plus `utils/` for shared, stage-agnostic helpers (config loading, logging, I/O).
+    ```text
+    project_root/
+    ├── config/
+    │ └── settings.yaml # Global configuration for all pipeline stages
+    │
+    ├── src/gdeltforge/
+    │ ├── py.typed # PEP 561 marker: this package ships inline type hints
+    │ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
+    │ │
+    │ ├── conversion/
+    │ │ └── converter.py # CSV -> Parquet conversion logic
+    │ │
+    │ ├── crossref/
+    │ │ └── crossref.py # Events<->GKG join (direct for GKG 1.0, two-hop via Mentions for GKG 2.1)
+    │ │
+    │ ├── filtering/
+    │ │ └── filter.py # Filtering logic (drop invalid rows)
+    │ │
+    │ ├── sampling/
+    │ │ ├── cameo_codes.py # Bundled CAMEO/FIPS reference data, backs the `codes` command
+    │ │ ├── indexer.py # File indexing for reproducible sampling
+    │ │ ├── rng.py # Random number generation helpers
+    │ │ └── samplers.py # Indexed, daily, and filtered sampling
+    │ │
+    │ ├── scraping/
+    │ │ └── scraper.py # Downloader for Events, GKG 2.1, GKG 1.0, and Mentions
+    │ │
+    │ └── utils/
+    │   ├── config.py # Config resolution (--config / env var / CWD) and YAML loading
+    │   ├── io.py # File and chunked-IO helpers
+    │   └── logging.py # Central logging system
+    │
+    ├── tests/ # pytest suite (unit tests, no network/browser required)
+    │
+    ├── main.py # Backward-compatible shim: `python main.py <command>` still works
+    ├── pyproject.toml # Package metadata, build backend, gdeltforge console-script entry point
+    └── README.md
+    ```
 
 ## Logging
 
