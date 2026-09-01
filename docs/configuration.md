@@ -307,7 +307,7 @@ Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, 
 
 ### pandas vs polars: real measured throughput
 
-The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with `scripts/benchmark_pandas_vs_polars.py` (committed, reusable) via the real `gdeltforge convert`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
+The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with `scripts/benchmark_pandas_vs_polars.py` (committed, reusable) via the real `gdeltforge convert`/`gdeltforge filter`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
 
 **`convert`**, a single Events-shaped file at each row count:
 
@@ -319,6 +319,17 @@ The pipeline moved from pandas to polars for every DataFrame operation (`convert
 | 10,000,000 | 796.46s | 56.08s | 14.20x |
 
 The gap widens sharply with size rather than staying fixed: at 10,000 rows both engines spend most of their wall-clock on process/interpreter startup, not CSV parsing, so there's little for a faster parser to win back yet. Past that, polars' advantage compounds, reaching over 14x at 10M rows, comfortably ahead of what the raw row-count growth (1,000x from 10k to 10M) alone would predict for a fixed-overhead explanation.
+
+**`filter`**, a single already-converted Events file at each row count, dropping rows with a null in any of three geo lat/long pairs (roughly 39% of rows dropped, a chosen rate for exercising real work, not a measured real-world geocoding-failure rate):
+
+| Rows | pandas | polars | Speedup |
+|------|--------|--------|---------|
+| 10,000 | 1.78s | 2.29s | 0.78x |
+| 100,000 | 1.60s | 1.65s | 0.97x |
+| 1,000,000 | 3.93s | 1.99s | 1.97x |
+| 10,000,000 | 107.31s | 4.04s | 26.56x |
+
+`filter` is the one stage where polars is measurably *slower* at small sizes, not just less ahead: at 10,000 rows it's about 1.3x slower than pandas, and the two are within noise of each other at 100,000. The likely cause is architectural, not a regression: the polars port reports `rows_before`/`rows_after` as two separate `lf.select(pl.len())` passes plus the actual `sink_parquet` write, three passes over the file, where the pandas implementation's single streaming batch loop (`pyarrow.ParquetFile.iter_batches` + per-batch `dropna` + write) made do with one. That fixed per-pass cost dominates at small files and is completely swallowed at scale: by 10M rows polars finishes in 4 seconds what takes pandas over a minute and a half, a 26.6x difference, the largest gap measured anywhere in this comparison.
 
 **`crossref`**, Events joined against synthetic Mentions/GKG 2.1 (roughly 80% of events finding at least one match):
 
