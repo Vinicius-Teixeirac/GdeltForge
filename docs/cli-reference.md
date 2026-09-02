@@ -90,7 +90,7 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 gdeltforge convert --dataset events
 ```
 
-Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores).
+Extracts all CSV files from the downloaded ZIP archives and converts them to Parquet. Each ZIP is processed independently, so conversion runs across a pool of worker processes (`converter.max_workers`; `null`, the default, uses all available CPU cores). A bare `.csv` matched by `converter.file_pattern` (e.g. `"*.csv"`, for a file that didn't come from a fresh `scrape`) is read directly instead, with no extraction step; see [Configuration](configuration.md#converter).
 
 | Flag | Description |
 |------|-------------|
