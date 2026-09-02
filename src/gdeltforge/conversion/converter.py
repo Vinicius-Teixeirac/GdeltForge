@@ -52,7 +52,7 @@ from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
-from gdeltforge.utils.config import dataset_path_key, get_dict
+from gdeltforge.utils.config import dataset_is_always_historical, dataset_path_key, get_dict
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -141,7 +141,26 @@ _FLOAT_NUMERIC_COLUMNS = frozenset({
     # either URL above, matched by analogy with GKG 2.1's own Location
     # Latitude/Longitude fields and confirmed against real converted data)
     "Geo_Lat", "Geo_Long",
+    # gdelt_event_reduced: GDELT.MASTERREDUCEDV2.1979-2013.zip, confirmed
+    # against its own real header and sample rows, not a codebook (this
+    # file predates both codebooks linked above and has none of its own).
+    # Source/Target/CAMEOCode are excluded from columns_numeric entirely
+    # (CAMEOCode carries meaningful leading zeros, e.g. "043"), so every
+    # other column in this dataset is integer-semantic except these seven.
+    "Goldstein",
+    "SourceGeoLat", "SourceGeoLong",
+    "TargetGeoLat", "TargetGeoLong",
+    "ActionGeoLat", "ActionGeoLong",
 })
+
+# GDELT.MASTERREDUCEDV2.1979-2013.zip's single member is 6.58GB / roughly
+# 87.3M rows uncompressed; reading it whole with schema_overrides=pl.Utf8
+# for every column (every other dataset's individual files are small
+# enough for this) would need tens of GB of RAM. 500,000 is a starting
+# estimate (rough overhead reasoning: on the order of 1-2GB peak per
+# in-flight chunk before numeric casting shrinks it), to be confirmed
+# against the real file rather than treated as final.
+_EVENT_REDUCED_CHUNK_SIZE = 500_000
 
 # GKG 1.0 (both the main file and its separate Counts file) ships with a
 # literal header line (DATE\tNUMARTS\t...); Events, GKG 2.1, and Mentions
@@ -246,6 +265,25 @@ class GDELTConverter:
         self.output_columns: list[str] | None = get_dict(
             config["converter"], "output_columns"
         ).get(dataset)
+        # gdelt_event_reduced's Year partition key is computed from its own
+        # Date column during conversion (see process_reduced_file), not
+        # read from the filename the way every other dataset's partition
+        # key is: this file's name carries no date at all. Narrowing
+        # output_columns to drop Date would make that computation
+        # impossible, so it is rejected here rather than failing later,
+        # confusingly, mid-conversion.
+        if (
+            dataset == "gdelt_event_reduced"
+            and self.output_columns is not None
+            and "Date" not in self.output_columns
+        ):
+            raise ValueError(
+                "converter.output_columns for gdelt_event_reduced must "
+                "include \"Date\": its historical Hive partition key "
+                "(Year) is computed from that column during conversion, "
+                "not read from the filename the way every other "
+                "dataset's partition key is."
+            )
         # zstd default, matching filter.compression: measured ~30% smaller
         # than snappy on real Events data at comparable or faster write
         # speed, and lossless, so there's no accuracy tradeoff to weigh
@@ -259,15 +297,24 @@ class GDELTConverter:
         self._partitioning_enabled = part_cfg.get("enabled", False)
         self._partition_rules: list[dict] = part_cfg.get("rules", [])
 
+        # gdelt_event_reduced has no flat output mode at all: its converted
+        # output only ever exists Hive-partitioned by Year, so its
+        # historical directory must resolve regardless of
+        # converter.partitioning.enabled, a toggle that otherwise only
+        # ever governed Events' own opt-in yearly/monthly split.
         self.historical_folder: Path | None = None
-        if self._partitioning_enabled:
+        if self._partitioning_enabled or dataset_is_always_historical(dataset):
             hist_key = dataset_path_key(dataset, "parquet_historical_directory")
             hist_path = config["paths"].get(hist_key)
             if not hist_path:
-                raise ValueError(
-                    f"converter.partitioning.enabled is true but "
-                    f"paths.{hist_key} is not set."
+                reason = (
+                    f"{dataset} has no flat output mode; its historical "
+                    f"directory is required regardless of "
+                    f"converter.partitioning.enabled"
+                    if dataset_is_always_historical(dataset)
+                    else "converter.partitioning.enabled is true"
                 )
+                raise ValueError(f"{reason} but paths.{hist_key} is not set.")
             self.historical_folder = Path(hist_path)
 
         # Determines whether a .done marker from a previous run is still
@@ -425,13 +472,23 @@ class GDELTConverter:
         all_outputs: list[str] = []
         failed: list[str] = []
 
+        # gdelt_event_reduced's single file needs a genuinely different
+        # reader (chunked, no flat write path at all, see
+        # process_reduced_file); every other dataset's individual files
+        # are small enough for process_single_file's whole-file read.
+        worker = (
+            self.process_reduced_file
+            if self.dataset == "gdelt_event_reduced"
+            else self.process_single_file
+        )
+
         # Each zip is processed independently (its own extracted CSV names,
         # own output parquet paths), so file-level parallelism across
         # processes is safe: this is CPU-bound (CSV parsing + parquet
         # writing), so ProcessPoolExecutor beats threads here.
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(self.process_single_file, zip_file): zip_file
+                executor.submit(worker, zip_file): zip_file
                 for zip_file in to_process
             }
 
@@ -583,6 +640,134 @@ class GDELTConverter:
         return created_parquets
 
     # ------------------------------------------------------------
+    # PROCESS THE SINGLE gdelt_event_reduced FILE  (chunked, always
+    # Hive-partitioned by Year, no flat write path at all)
+    # ------------------------------------------------------------
+    def process_reduced_file(self, zip_path: str) -> list[str]:
+        """
+        Converts GDELT.MASTERREDUCEDV2.1979-2013.zip, the one file
+        gdelt_event_reduced ever has. Reads its single ~6.58GB / 87.3M-row
+        member in chunks via a lazy scan rather than loading it whole the
+        way process_single_file does for every other dataset's much
+        smaller individual files, and always writes Hive-partitioned by
+        Year (computed from this file's own Date column, since its
+        filename carries no date at all), never as a flat file: there is
+        no flat mode for this dataset, see dataset_is_always_historical.
+
+        Year is directory-only, never written as a column: it doesn't
+        exist in the raw file the way Events' own Year/MonthYear
+        partition keys do, and keeping columns.gdelt_event_reduced as
+        exactly its real 17 columns keeps that list unambiguous for both
+        this read and FilteredSampler's column whitelist. Row-level year
+        filtering is still fully available after conversion through the
+        real Date column (e.g. {"Date": {"op": "between", ...}}).
+
+        Reads with encoding="utf8-lossy" directly rather than _read_csv's
+        own utf8-then-retry-on-ComputeError pattern: retrying a partially
+        streamed chunked read from scratch would mean re-writing every
+        chunk already committed before a bad one turned up, where a plain
+        eager read just discards its one in-memory frame and starts over.
+        utf8-lossy costs nothing on the genuinely valid UTF-8 this file is
+        expected to contain (no free-text fields at all, unlike GKG 2.1's
+        quotations/all-names), and only substitutes U+FFFD for the rare
+        undecodable byte instead of failing the whole file over it.
+
+        Part files are named deterministically from the chunk index, so a
+        rerun (--force, or a retry after a mid-run crash) overwrites the
+        same filenames rather than accumulating duplicates; the .done
+        marker set by process_all_files afterward is all-or-nothing for
+        this dataset, since there is only ever one source file.
+        """
+        if self.verbose:
+            logger.setLevel(logging.DEBUG)
+        elif self.quiet:
+            logger.setLevel(logging.WARNING)
+
+        zip_p = Path(zip_path)
+        logger.debug(f"Processing ZIP: {zip_p.name}")
+
+        extracted_files = unzip_file(zip_path, self.unzip_folder)
+        txt_files = [p for p in extracted_files if p.suffix.upper() == ".TXT"]
+        if len(txt_files) != 1:
+            raise RuntimeError(
+                f"Expected exactly one .TXT member in {zip_p.name}, found "
+                f"{len(txt_files)}: {[p.name for p in extracted_files]}"
+            )
+        txt_path = txt_files[0]
+
+        usecols = (
+            [c for c in self.output_columns if c in self.COLUMN_NAMES]
+            if self.output_columns is not None
+            else self.COLUMN_NAMES
+        )
+
+        # gdelt_event_reduced is always in dataset_is_always_historical
+        # (see __init__), which guarantees historical_folder is set.
+        assert self.historical_folder is not None
+
+        # has_header=True + new_columns=... together mean "the first line
+        # is a real header, skip it, then use our own names instead of
+        # its literal text" (same idiom _read_csv uses; a real header row
+        # here is confirmed by opening this file directly). scan_csv has
+        # no columns= position-selection parameter the way read_csv does,
+        # so every column is named via new_columns and narrowed to
+        # usecols via select() below instead; confirmed directly (via
+        # .explain()) that polars still pushes that projection down into
+        # the scan itself, decoding only the selected columns rather than
+        # reading every column and dropping the rest afterward.
+        lf = pl.scan_csv(
+            txt_path,
+            separator="\t",
+            has_header=True,
+            new_columns=self.COLUMN_NAMES,
+            schema_overrides={c: pl.Utf8 for c in self.COLUMN_NAMES},
+            truncate_ragged_lines=True,
+            null_values=[""],
+            encoding="utf8-lossy",
+        ).select(usecols)
+
+        created: set[Path] = set()
+        try:
+            for chunk_idx, chunk in enumerate(
+                lf.collect_batches(chunk_size=_EVENT_REDUCED_CHUNK_SIZE)
+            ):
+                cast_exprs = [
+                    pl.col(col).cast(
+                        pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64,
+                        strict=False,
+                    )
+                    for col in self.NUMERIC_COLUMNS
+                    if col in chunk.columns
+                ]
+                if cast_exprs:
+                    chunk = chunk.with_columns(cast_exprs)
+
+                chunk = chunk.with_columns((pl.col("Date") // 10000).alias("_Year"))
+                n_unparseable = chunk["_Year"].null_count()
+                if n_unparseable:
+                    logger.warning(
+                        f"{zip_p.name} chunk {chunk_idx}: dropping "
+                        f"{n_unparseable} row(s) with an unparseable Date "
+                        f"(Year can't be computed for partitioning)."
+                    )
+                chunk = chunk.drop_nulls(subset=["_Year"])
+
+                # Polars' own group_by always yields a tuple key, even for
+                # a single-column group_by (see _save_historical_parquet's
+                # identical note on this).
+                for (year,), group in chunk.group_by("_Year", maintain_order=False):
+                    out_dir = self.historical_folder / f"Year={int(year)}"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = out_dir / f"{zip_p.stem}.part{chunk_idx:05d}.parquet"
+                    self._write_partition_file(group.drop("_Year"), out_path)
+                    created.add(out_path)
+        finally:
+            if not self.keep_unzipped:
+                txt_path.unlink(missing_ok=True)
+
+        return [str(p) for p in sorted(created)]
+
+    # ------------------------------------------------------------
     # READ CSV
     # ------------------------------------------------------------
     def _read_csv(self, csv_path: str | Path) -> pl.DataFrame:
@@ -700,6 +885,33 @@ class GDELTConverter:
             return None
 
     # ------------------------------------------------------------
+    # WRITE ONE PARTITION FILE
+    # ------------------------------------------------------------
+    def _write_partition_file(self, df: pl.DataFrame, out_path: Path) -> None:
+        """
+        Write df to out_path via a temp file plus an atomic rename, so a
+        kill or crash mid-write never leaves a truncated file at out_path.
+        Shared by _save_historical_parquet (Events' own opt-in yearly/
+        monthly partitioning) and process_reduced_file (events-reduced's
+        always-partitioned chunked write) instead of each duplicating the
+        same tmp-then-rename guarantee.
+        """
+        tmp_path = out_path.with_name(out_path.name + ".tmp")
+        try:
+            # self.compression is user config, a plain str at gdeltforge's
+            # own boundary; polars' own write_parquet narrows it to a
+            # specific Literal set for its own internal type-checking, so
+            # an actually-invalid codec name still surfaces as a real
+            # error from polars itself at write time, just not one
+            # pyright can prove here.
+            df.write_parquet(tmp_path, compression=cast(ParquetCompression, self.compression))
+            os.replace(tmp_path, out_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+
+    # ------------------------------------------------------------
     # SAVE HISTORICAL PARQUET  (Hive-partitioned)
     # ------------------------------------------------------------
     def _save_historical_parquet(
@@ -744,28 +956,7 @@ class GDELTConverter:
             out_dir.mkdir(parents=True, exist_ok=True)
 
             out_path = out_dir / f"{zip_path.stem}.parquet"
-            tmp_path = out_path.with_name(out_path.name + ".tmp")
-            try:
-                # self.compression is user config, a plain str at
-                # gdeltforge's own boundary; polars' own write_parquet
-                # narrows it to a specific Literal set for its own
-                # internal type-checking, so an actually-invalid codec
-                # name still surfaces as a real error from polars itself
-                # at write time, just not one pyright can prove here.
-                group.write_parquet(
-                    tmp_path, compression=cast(ParquetCompression, self.compression)
-                )
-                os.replace(tmp_path, out_path)
-            except Exception:
-                # Same atomic tmp-then-rename guarantee as _save_parquet's
-                # write_parquet_atomic, just against a raw write_parquet
-                # call inside a per-group loop instead of the whole-file
-                # helper: a kill or crash mid-write must never leave a
-                # truncated file at out_path, since nothing here would
-                # ever detect or clean it up later.
-                if tmp_path.exists():
-                    tmp_path.unlink()
-                raise
+            self._write_partition_file(group, out_path)
             created.append(out_path)
             logger.debug(f"Written: {out_path}")
 

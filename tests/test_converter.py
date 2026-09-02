@@ -1368,3 +1368,188 @@ class TestSaveParquetAtomicity:
         out_path = tmp_path / "historical" / "Year=2020" / "2020.parquet"
         assert not out_path.exists()
         assert not out_path.with_name(out_path.name + ".tmp").exists()
+
+
+_REDUCED_COLUMNS = [
+    "Date", "Source", "Target", "CAMEOCode", "NumEvents", "NumArts",
+    "QuadClass", "Goldstein", "SourceGeoType", "SourceGeoLat", "SourceGeoLong",
+    "TargetGeoType", "TargetGeoLat", "TargetGeoLong", "ActionGeoType",
+    "ActionGeoLat", "ActionGeoLong",
+]
+_REDUCED_NUMERIC_COLUMNS = [
+    c for c in _REDUCED_COLUMNS if c not in ("Source", "Target", "CAMEOCode")
+]
+
+
+def _reduced_config(tmp_path, **converter_overrides):
+    cfg = {
+        "paths": {
+            "event_reduced_downloaded_data_directory": str(tmp_path / "raw"),
+            "event_reduced_unzipped_data_directory": str(tmp_path / "csv"),
+            "event_reduced_parquet_data_directory": str(tmp_path / "parquet"),
+            "event_reduced_parquet_historical_directory": str(tmp_path / "historical"),
+        },
+        "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+        "columns": {"gdelt_event_reduced": _REDUCED_COLUMNS},
+        "columns_numeric": {"gdelt_event_reduced": _REDUCED_NUMERIC_COLUMNS},
+    }
+    cfg["converter"].update(converter_overrides)
+    return cfg
+
+
+def _write_reduced_zip(raw_dir, rows, filename="GDELT.MASTERREDUCEDV2.1979-2013.zip"):
+    """A real header row followed by tab-separated data rows, matching
+    GDELT.MASTERREDUCEDV2.1979-2013.zip's own single .TXT member (confirmed
+    against the real file: a header line, no per-file date in the name at
+    all, unlike every other dataset this converter handles)."""
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    txt_name = "GDELT.MASTERREDUCEDV2.1979-2013.txt"
+    txt_path = raw_dir / txt_name
+    txt_path.write_text("\t".join(_REDUCED_COLUMNS) + "\n" + "\n".join(rows) + "\n")
+    zip_path = raw_dir / filename
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.write(txt_path, arcname=txt_name)
+    txt_path.unlink()
+    return zip_path
+
+
+def _reduced_row(
+    date, source="USA", target="GBR", cameo="010", num_events=5, num_arts=3, quad=1,
+    goldstein=1.5,
+):
+    return "\t".join([
+        date, source, target, cameo, str(num_events), str(num_arts), str(quad),
+        str(goldstein), "1", "10.0", "-20.0", "1", "11.0", "-21.0", "1", "12.0", "-22.0",
+    ])
+
+
+class TestProcessReducedFile:
+    """gdelt_event_reduced's dedicated conversion path: unlike every other
+    dataset, its single file is too large to read whole (see
+    _EVENT_REDUCED_CHUNK_SIZE) and carries no date in its filename, so its
+    Year partition key has to come from the file's own Date column instead."""
+
+    def test_partitions_rows_by_year_derived_from_the_date_column(self, tmp_path):
+        zip_path = _write_reduced_zip(
+            tmp_path / "raw",
+            rows=[_reduced_row("19790101"), _reduced_row("20131231")],
+        )
+        converter = GDELTConverter(_reduced_config(tmp_path), dataset="gdelt_event_reduced")
+
+        outputs = converter.process_reduced_file(str(zip_path))
+
+        assert sorted(Path(p).relative_to(tmp_path / "historical").as_posix() for p in outputs) == [
+            "Year=1979/GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
+            "Year=2013/GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
+        ]
+        year_1979_dir = tmp_path / "historical" / "Year=1979"
+        df_1979 = pl.read_parquet(
+            year_1979_dir / "GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet"
+        )
+        assert df_1979["Date"].to_list() == [19790101]
+        # Year is directory-only: it must never leak into the written columns.
+        assert "Year" not in df_1979.columns
+        assert "_Year" not in df_1979.columns
+
+    def test_numeric_columns_are_cast_and_leading_zero_codes_stay_strings(self, tmp_path):
+        zip_path = _write_reduced_zip(
+            tmp_path / "raw",
+            rows=[_reduced_row("19790101", cameo="043", goldstein=-3.5)],
+        )
+        converter = GDELTConverter(_reduced_config(tmp_path), dataset="gdelt_event_reduced")
+
+        outputs = converter.process_reduced_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["Date"][0] == 19790101
+        assert df["NumEvents"][0] == 5
+        assert df["Goldstein"][0] == -3.5
+        # CAMEOCode's leading zero must survive: it's excluded from
+        # columns_numeric on purpose.
+        assert df["CAMEOCode"][0] == "043"
+
+    def test_unparseable_date_is_dropped_with_a_warning(self, tmp_path, caplog):
+        zip_path = _write_reduced_zip(
+            tmp_path / "raw",
+            rows=[_reduced_row("19790101"), _reduced_row("notadate")],
+        )
+        converter = GDELTConverter(_reduced_config(tmp_path), dataset="gdelt_event_reduced")
+
+        with caplog.at_level("WARNING", logger="gdeltforge.conversion.converter"):
+            outputs = converter.process_reduced_file(str(zip_path))
+
+        assert len(outputs) == 1
+        df = pl.read_parquet(outputs[0])
+        assert df["Date"].to_list() == [19790101]
+        assert any("dropping 1 row" in r.message for r in caplog.records)
+
+    def test_reruns_overwrite_the_same_deterministic_part_files(self, tmp_path):
+        zip_path = _write_reduced_zip(
+            tmp_path / "raw",
+            rows=[_reduced_row("19790101")],
+        )
+        converter = GDELTConverter(_reduced_config(tmp_path), dataset="gdelt_event_reduced")
+        converter.process_reduced_file(str(zip_path))
+
+        # A second, independent extraction (e.g. --force) must overwrite the
+        # same part filenames rather than accumulating new ones alongside them.
+        zip_path = _write_reduced_zip(
+            tmp_path / "raw",
+            rows=[_reduced_row("19790101"), _reduced_row("19790615")],
+        )
+        outputs = converter.process_reduced_file(str(zip_path))
+
+        assert len(outputs) == 1
+        df = pl.read_parquet(outputs[0])
+        assert df["Date"].to_list() == [19790101, 19790615]
+
+    def test_chunked_read_still_partitions_correctly_across_chunk_boundaries(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(converter_module, "_EVENT_REDUCED_CHUNK_SIZE", 1)
+        zip_path = _write_reduced_zip(
+            tmp_path / "raw",
+            rows=[_reduced_row("19790101"), _reduced_row("19790615"), _reduced_row("20131231")],
+        )
+        converter = GDELTConverter(_reduced_config(tmp_path), dataset="gdelt_event_reduced")
+
+        outputs = converter.process_reduced_file(str(zip_path))
+
+        # 3 rows at chunk_size=1 is 3 chunks; two land in Year=1979, each its
+        # own part file since each chunk is written independently.
+        assert sorted(Path(p).name for p in outputs) == [
+            "GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
+            "GDELT.MASTERREDUCEDV2.1979-2013.part00001.parquet",
+            "GDELT.MASTERREDUCEDV2.1979-2013.part00002.parquet",
+        ]
+        all_dates = sorted(
+            date for p in outputs for date in pl.read_parquet(p)["Date"].to_list()
+        )
+        assert all_dates == [19790101, 19790615, 20131231]
+
+    def test_rejects_output_columns_that_exclude_date(self, tmp_path):
+        cfg = _reduced_config(
+            tmp_path, output_columns={"gdelt_event_reduced": ["Source", "Target"]}
+        )
+
+        with pytest.raises(ValueError, match="Date"):
+            GDELTConverter(cfg, dataset="gdelt_event_reduced")
+
+    def test_historical_folder_is_required_even_when_partitioning_is_disabled(self, tmp_path):
+        cfg = _reduced_config(tmp_path)
+        del cfg["paths"]["event_reduced_parquet_historical_directory"]
+        # partitioning.enabled isn't set at all here, matching the default:
+        # gdelt_event_reduced must still require its historical directory.
+
+        with pytest.raises(ValueError, match="historical"):
+            GDELTConverter(cfg, dataset="gdelt_event_reduced")
+
+    def test_process_all_files_dispatches_to_the_reduced_worker(self, tmp_path):
+        _write_reduced_zip(tmp_path / "raw", rows=[_reduced_row("19790101")])
+        converter = GDELTConverter(_reduced_config(tmp_path), dataset="gdelt_event_reduced")
+
+        outputs, failed = converter.process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert "Year=1979" in outputs[0]

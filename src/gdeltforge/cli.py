@@ -25,7 +25,12 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import date_parser_for, run_scraping_pipeline
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
-from gdeltforge.utils.config import dataset_path_key, get_dict, load_config
+from gdeltforge.utils.config import (
+    dataset_is_always_historical,
+    dataset_path_key,
+    get_dict,
+    load_config,
+)
 from gdeltforge.utils.io import (
     ensure_exists,
     read_parquet_path,
@@ -72,10 +77,14 @@ class _VersionAction(argparse.Action):
 # the current, actively-produced "v2") are different schemas with
 # different files, so they're exposed as distinct choices rather than
 # one ambiguous "gkg".
-_DATASET_CHOICES = ["events", "events-15min", "gkg-v1", "gkg-v1-counts", "gkg-v2", "mentions"]
+_DATASET_CHOICES = [
+    "events", "events-15min", "events-reduced",
+    "gkg-v1", "gkg-v1-counts", "gkg-v2", "mentions",
+]
 _DATASET_CLI_TO_CONFIG = {
     "events": "gdelt_event",
     "events-15min": "gdelt_event_15min",
+    "events-reduced": "gdelt_event_reduced",
     "gkg-v1": "gdelt_gkg_v1",
     "gkg-v1-counts": "gdelt_gkg_v1_counts",
     "gkg-v2": "gdelt_gkg_v2",
@@ -90,6 +99,7 @@ _DATASET_CLI_TO_CONFIG = {
 _CALENDAR_DATE_SPECS = {
     "events": "Day",
     "events-15min": "Day",
+    "events-reduced": "Date",
     "gkg-v1": "Date",
     "gkg-v1-counts": "Date",
     "gkg-v2": "V2.1DATE",
@@ -108,8 +118,19 @@ _CROSSREF_GKG_TO_CONFIG = {
 }
 
 
-def _historical_folder(config: dict, path_key: str) -> str | None:
-    """Return the historical directory path when partitioning is enabled, else None."""
+def _historical_folder(config: dict, path_key: str, dataset: str) -> str | None:
+    """
+    Return the historical directory path when partitioning is enabled for
+    this dataset, else None.
+
+    gdelt_event_reduced bypasses the partitioning.enabled check entirely:
+    it has no flat output mode at all, so its historical directory must
+    resolve regardless of that toggle, the same bypass converter.py's own
+    historical_folder resolution already applies (see
+    dataset_is_always_historical).
+    """
+    if dataset_is_always_historical(dataset):
+        return config["paths"].get(path_key)
     part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     if not part_cfg.get("enabled", False):
         return None
@@ -270,7 +291,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    hist_folder = _historical_folder(config, historical_key)
+    hist_folder = _historical_folder(config, historical_key, dataset)
     columns = set(args.columns) if args.columns else None
 
     # -----------------------------
