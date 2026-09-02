@@ -27,18 +27,21 @@ An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a path that turns out to 
 
 ## Datasets and `--dataset`
 
-`convert`, `filter`, `sample`, and `scrape` all accept `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there is no default. This selects which set of `columns`/`columns_numeric`/`filter.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
+`convert`, `filter`, `sample`, and `scrape` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there is no default. This selects which set of `columns`/`columns_numeric`/`filter.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
 
 | `--dataset` | Config key | Status |
 |---|---|---|
 | `events` | `gdelt_event` | Full support |
 | `events-15min` | `gdelt_event_15min` | Full support (Events at native GDELT 2.0 granularity; genuinely a different, 61-column schema from `events`' 58, not just finer granularity, see below) |
+| `events-reduced` | `gdelt_event_reduced` | Full support (a single static 1979-2013 historical dump, pre-aggregated and structurally unlike every other dataset here, see below) |
 | `gkg-v2` | `gdelt_gkg_v2` | Full support (GKG 2.1, the current format, live since Feb 2015) |
 | `mentions` | `gdelt_mentions` | Full support (the bridge table between Events and GKG; see [Comparison](comparison.md) for why) |
 | `gkg-v1` | `gdelt_gkg_v1` | Full support (legacy format, April 2013 through February 2015 as the primary feed, still published daily since) |
 | `gkg-v1-counts` | `gdelt_gkg_v1_counts` | Full support (GKG 1.0's separate, narrower "Counts" file, one row per count mention rather than per document) |
 
-`events` and `events-15min` cover the same underlying events at different granularity and schema richness, not the same file at two speeds: `events` is the daily/monthly/yearly archive, still served in the older, GDELT-1.0-compatible 58-column format for backward compatibility; `events-15min` is discovered from the same 15-minute master file list `gkg-v2`/`mentions` use, in native GDELT 2.0's 61-column format, with an `ADM2Code` field added to each of the three geo blocks (`Actor1Geo`/`Actor2Geo`/`ActionGeo`) that the daily format doesn't carry. They deliberately get separate `paths.*` directories (see below) so pulling both for an overlapping date range can never double-count the same events into one pipeline's output. The same `/events/` listing also serves `GDELT.MASTERREDUCEDV2.1979-2013.zip`, a single-file historical bulk dump; `events` intentionally never fetches it as part of its own scrape, not because it's redundant, opening it directly showed it's a genuinely different product (pre-aggregated daily rollups, no `GlobalEventID`), not a narrower copy of what `events` already covers.
+`events` and `events-15min` cover the same underlying events at different granularity and schema richness, not the same file at two speeds: `events` is the daily/monthly/yearly archive, still served in the older, GDELT-1.0-compatible 58-column format for backward compatibility; `events-15min` is discovered from the same 15-minute master file list `gkg-v2`/`mentions` use, in native GDELT 2.0's 61-column format, with an `ADM2Code` field added to each of the three geo blocks (`Actor1Geo`/`Actor2Geo`/`ActionGeo`) that the daily format doesn't carry. They deliberately get separate `paths.*` directories (see below) so pulling both for an overlapping date range can never double-count the same events into one pipeline's output.
+
+`events-reduced` is `GDELT.MASTERREDUCEDV2.1979-2013.zip`, served from the same `/events/` listing `events` scrapes but never fetched by `events`' own scrape: opening it directly showed it's a genuinely different product, not a narrower copy of what `events` already covers. It's a single static file (no per-day/month/year archive, so `--start-date`/`--end-date` don't apply to `scrape --dataset events-reduced`, see [CLI Reference](cli-reference.md)), roughly 1.08 GB zipped and 6.58 GB / ~87.3M rows uncompressed, collapsed on `DATE`+`ACTOR1`+`ACTOR2`+`EVENTCODE` rather than one row per event: its 17 columns (`Date`, `Source`, `Target`, `CAMEOCode`, `NumEvents`, `NumArts`, `QuadClass`, `Goldstein`, and the `Source`/`Target`/`Action` geo triples) carry no `GlobalEventID`, `SOURCEURL`, or `DATEADDED` at all. That makes `crossref` categorically impossible against it (there's no per-event or per-article identity left to bridge through Mentions/GKG), and rules out narrowing the scrape itself by date; row-level narrowing after `convert` still works normally through its own `Date` column, e.g. `--filter '{"Date": {"op": "between", "min": 19900101, "max": 19991231}}'`. Because the raw file is too large to read into memory whole, `convert` processes it in chunks and always writes it Hive-partitioned by `Year` (computed from `Date`, since the filename carries none), regardless of `converter.partitioning.enabled`, a toggle that otherwise only ever governs Events' own opt-in yearly/monthly split; see below.
 
 ## `columns`
 
@@ -52,12 +55,13 @@ GKG's own repeated/structured sub-fields (themes, persons, GCAM scores, `EventId
 
 All directories the pipeline reads from or writes to. Absolute or relative paths both work. Events keeps its original, unprefixed keys; every other dataset uses a prefixed sibling key for the same four stages, since mixing different datasets' files in one directory would be a real correctness hazard, not just an organizational one. The actual config key is `<prefix><base key>`, e.g. `gkg_v1_counts_` + `downloaded_data_directory` = `gkg_v1_counts_downloaded_data_directory`.
 
-The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/filtered`, ...) rather than a flat `data/<dataset>_<stage>`, so the six datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
+The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/filtered`, ...) rather than a flat `data/<dataset>_<stage>`, so the seven datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
 
 | `--dataset` | Path prefix |
 |---|---|
 | `events` | *(none, unprefixed)* |
 | `events-15min` | `event_15min_` |
+| `events-reduced` | `event_reduced_` |
 | `gkg-v2` | `gkg_v2_` |
 | `mentions` | `mentions_` |
 | `gkg-v1` | `gkg_v1_` |
@@ -70,7 +74,7 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 | `parquet_data_directory` | convert, filter, sample | Flat Parquet output |
 | `filtered_data_directory` | filter, sample | Flat filtered Parquet output |
 
-Two further keys exist for Events only: `parquet_historical_directory` and `filtered_historical_directory` (Hive-partitioned Parquet for yearly/monthly source files, only used when `converter.partitioning.enabled` is true). None of `events-15min`, GKG 2.1, Mentions, or GKG 1.0/Counts have a pre-2013 yearly/monthly archive to partition, so they have no historical variant.
+Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `filtered_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
 
 ## `scraping`
 
@@ -164,6 +168,8 @@ data/
 
 Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, unaffected by this setting. Historical ZIPs that have already been converted are tracked with `.done` marker files, so re-running `convert` skips them safely. `filter` and `sample` detect the historical directory automatically from the config and include its data without any extra flags.
 
+`events-reduced` is a related but separate case, not governed by `converter.partitioning.enabled` at all: it always writes Hive-partitioned by `Year` (never `MonthYear`, since its one file carries no month-level structure of its own), because it has no flat output mode to fall back to in the first place. Its `parquet_historical_directory`/`filtered_historical_directory` are required as soon as `--dataset events-reduced` is used, whether or not `partitioning.enabled` is set for Events.
+
 ### Resumability
 
 Flat output (Events daily, GKG 1.0, GKG 2.1, Mentions) is tracked with the same kind of `.done` marker historical output gets above: an interrupted `convert` run resumes from wherever it stopped instead of reprocessing every file from the start, the same way `scrape` skips already-downloaded files.
@@ -200,6 +206,8 @@ Both `converter.output_columns` and `filter.output_columns` share this same haza
 [^gdelt2]: The `v2` path has nothing to join before 2015-02-18: Mentions and GKG 2.1 didn't exist until GDELT 2.0 launched that day. `v1`/`v1-counts` reaches back further, to April 2013.
 
 Note that `SOURCEURL` is *not* on this list: the two-hop join to GKG 2.1 goes through Mentions' `MentionIdentifier` (which captures every article that mentioned an event), not through Events' own `SOURCEURL` (which only ever holds one representative article). Pruning `SOURCEURL` doesn't affect crossref at all.
+
+`gdelt_event_reduced` has no entry in this table at all, and can't gain one: `crossref` needs a per-event or per-article identity to bridge through, and its pre-aggregated `DATE`+`ACTOR1`+`ACTOR2`+`EVENTCODE` rows carry none, no `GlobalEventID`, `SOURCEURL`, or `DATEADDED`. Sampling it and passing the result to `crossref` raises the same clear "must include a 'GlobalEventID' column" error as any other dataset missing its required column, not a special case.
 
 See [Crossref Join Semantics](crossref-join-semantics.md) for how often an event ends up joined to more than one article (and vice versa) on real data, and for `on_duplicate_document`/`dedupe_mentions`, the two knobs controlling what happens when GKG 2.1 or Mentions themselves carry more than one record for what the join treats as a single (event, article) pair.
 
