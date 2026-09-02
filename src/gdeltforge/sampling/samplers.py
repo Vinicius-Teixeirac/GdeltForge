@@ -335,10 +335,37 @@ class CalendarSampler:
         needed = list(self.columns | {self.date_column}) if self.columns else None
         prefix_len = self._PERIOD_PREFIX_LENGTH[self.period]
 
+        # A dataset scan built over files with differing schemas fills a
+        # column absent from SOME of them with null when it's present in
+        # at least one (missing_columns="insert" on _scan_dataset), so a
+        # single stray file missing date_column doesn't need special
+        # handling here: those rows just come back null and get counted
+        # as unparseable below. But date_column absent from EVERY file
+        # isn't in the union schema at all, and each batch's own "column
+        # not in df_batch.columns" check below would then just skip every
+        # batch silently, the same silent-skip flaw this class replaces
+        # DailySampler specifically to fix. Checked explicitly here
+        # instead, so a misconfigured --date-column fails with a message
+        # about the actual problem rather than a quietly empty result.
+        with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
+            files = _discover_dataset_files(
+                self.folder, self.historical_folder,
+                self.start_date, self.end_date, self.date_parser,
+            )
+            schema_names = _scan_dataset(files).collect_schema().names()
+        if self.date_column not in schema_names:
+            raise ValueError(
+                f"{self.date_column!r} is not a column in any file under {self.folder}"
+                + (f" or {self.historical_folder}" if self.historical_folder else "")
+                + ". Check --date-column (or the per-dataset default) against this "
+                  "dataset's real schema."
+            )
+
         fill_chunks:    dict[Any, list[pl.DataFrame]]    = {}
         filled:         dict[Any, int]                   = {}
         reservoir_cols: dict[Any, dict[str, np.ndarray]] = {}
         total_seen:     dict[Any, int]                   = {}
+        n_unparseable = 0
 
         for df_batch in tqdm(self._batches(needed), desc="Sampling (calendar)"):
             if df_batch.is_empty() or self.date_column not in df_batch.columns:
@@ -348,6 +375,18 @@ class CalendarSampler:
                 pl.col(self.date_column).cast(pl.Utf8).str.slice(0, prefix_len)
                 .alias(self._PERIOD_KEY)
             )
+            n_unparseable += keyed_batch[self._PERIOD_KEY].null_count()
+
+            # Unlike get_stratified_sample's fillna("__NA__") (which keeps
+            # a null stratum as its own real group), a row whose date
+            # can't be resolved to a period has nothing meaningful to be
+            # grouped under, so it's dropped here (counted above instead)
+            # rather than sampled as if "unparseable" were itself a
+            # calendar period. Polars' own group_by, unlike pandas'
+            # groupby's dropna=True default, keeps a null key as its own
+            # group, so this has to be explicit rather than assumed.
+            keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
+
             for (period_key,), group_df in keyed_batch.group_by(
                 self._PERIOD_KEY, maintain_order=False
             ):
@@ -388,6 +427,12 @@ class CalendarSampler:
                 )
 
                 total_seen[period_key] += group_size
+
+        if n_unparseable:
+            logger.warning(
+                f"{n_unparseable} row(s) with an unparseable {self.date_column} "
+                f"were dropped from calendar sampling."
+            )
 
         reservoirs: dict[Any, pl.DataFrame] = {
             g: pl.DataFrame(cols) for g, cols in reservoir_cols.items()

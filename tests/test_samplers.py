@@ -146,15 +146,20 @@ class TestCalendarSampler:
 
         assert len(df) == 2
 
-    def test_skips_files_without_date_column(self, tmp_path):
+    def test_date_column_missing_from_every_file_raises_clearly(self, tmp_path):
+        # Replaces the old DailySampler's own flaw of silently skipping a
+        # file missing its date column and returning an empty result: a
+        # misconfigured --date-column (or a dataset's real date column
+        # renamed upstream) should fail with a message naming the actual
+        # problem, not a quietly empty sample indistinguishable from
+        # "correctly found nothing."
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(folder / "no_day.parquet")
 
         sampler = CalendarSampler(str(folder), random_state=1)
-        df = sampler.get_calendar_samples(samples_per_period=5)
-
-        assert df.is_empty()
+        with pytest.raises(ValueError, match="'Day' is not a column"):
+            sampler.get_calendar_samples(samples_per_period=5)
 
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
@@ -306,6 +311,27 @@ class TestCalendarSampler:
         # 10 total rows for 20200101, spread across two files: capped at
         # 3 for the whole day, not 3 per file (which would give 6).
         assert len(df) == 3
+
+    def test_unparseable_date_is_dropped_with_a_warning(self, tmp_path, caplog):
+        # A null date_column value has nothing meaningful to be grouped
+        # under. Polars' own group_by, unlike pandas' groupby's dropna=
+        # True default, keeps a null key as its own group rather than
+        # excluding it, so this has to be handled explicitly rather than
+        # assumed: dropped and counted, not sampled as if "unparseable"
+        # were itself a real calendar period.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3],
+            "Day": [20200101, None, 20200102],
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), date_column="Day", random_state=1)
+        with caplog.at_level(logging.WARNING):
+            df = sampler.get_calendar_samples(samples_per_period=10)
+
+        assert sorted(df["GlobalEventID"].to_list()) == [1, 3]
+        assert "1 row(s) with an unparseable Day" in caplog.text
 
 
 class TestFilteredSamplerValidation:
