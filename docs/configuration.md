@@ -9,7 +9,7 @@ GdeltForge reads a single YAML file, resolved in this order:
 
 For a real, ongoing project, start from the template:
 
-```
+```bash
 cp config/settings.example.yaml config/settings.yaml
 ```
 
@@ -148,7 +148,7 @@ converter:
 
 With partitioning enabled, `gdeltforge convert` produces two separate output areas:
 
-```
+```text
 data/
 ├── parquet/                        # daily files (2013-present), unchanged
 │   ├── 20130401.export.parquet

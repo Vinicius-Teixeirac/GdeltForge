@@ -11,6 +11,9 @@ join has two separate, independent sources of repeated rows for the same
 records the real-data investigation behind both, and the resulting
 `on_duplicate_document`/`dedupe_mentions` parameters.
 
+
+![GKG 2.1 joins to Events in two hops through Mentions on the article URL; GKG 1.0 joins directly on EventIds. Both preserve the many-to-many structure.](assets/crossref-join.svg)
+
 ## Two events sharing an article get identical GKG features
 
 Ran the real `crossref_events_gkg_v2` against 5,000 real events from
@@ -58,7 +61,7 @@ Scanned `GKGRECORDID`/`V2DOCUMENTIDENTIFIER` across the full local
 `gkg_v2/parquet` dataset (3,368,659 rows): **3 URLs out of 3,368,654**
 distinct ones appear more than once. Rare, but real:
 
-```
+```text
 GKGRECORDID              V2DOCUMENTIDENTIFIER
 20200101040000-94        https://www.nbcchicago.com/tag/east-garfield-park/
 20230601010000-1643      https://www.nbcchicago.com/tag/east-garfield-park/
@@ -109,7 +112,7 @@ differ in `Confidence` and/or `SentenceID`** across their duplicate rows.
 Example, the same event mentioned twice in what turned out to be the
 same sentence, detected as Actor1 in one raw row and Actor2 in the other:
 
-```
+```text
 GLOBALEVENTID  SentenceID  Confidence  Actor1CharOffset  Actor2CharOffset
 813416601      1           50          -1                377
 813416601      1           50          377               -1

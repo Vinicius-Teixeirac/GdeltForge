@@ -1,53 +1,118 @@
-# GdeltForge
+---
+title: GdeltForge
+hide:
+  - toc
+---
 
-**Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet.**
+<div class="gf-hero">
+  <div class="gf-hero__grid">
+    <div>
+      <img class="gf-hero__lockup" src="assets/brand/lockup-a-horizontal.png" alt="GdeltForge: Global Event Data Pipeline">
+      <h1>Global event data,<br><em>forged.</em></h1>
+      <p>Raw GDELT in. Clean, reproducibly-sampled, cross-referenced Parquet out. One CLI, one machine, the whole archive.</p>
+      <div class="gf-install"><span class="gf-prompt">$</span> pip install gdeltforge</div>
+      <div class="gf-cta">
+        <a class="gf-btn gf-btn--primary" href="getting-started/">Get started</a>
+        <a class="gf-btn" href="cli-reference/">CLI reference</a>
+        <a class="gf-btn" href="https://github.com/Vinicius-Teixeirac/GdeltForge">GitHub</a>
+      </div>
+      <div class="gf-facts">
+        <span><b>542M+</b> rows indexed</span>
+        <span><b>1979</b>-present</span>
+        <span><b>Apache-2.0</b></span>
+      </div>
+    </div>
+    <img class="gf-hero__demo" src="assets/terminal-demo.svg" alt="gdeltforge sample, crossref and codes running in a terminal">
+  </div>
+</div>
 
-GdeltForge is a lightweight but scalable data pipeline to extract, transform, and load [GDELT 2.0](https://www.gdeltproject.org/): the Events table, the Global Knowledge Graph (both the current GKG 2.1 and the legacy GKG 1.0), and Mentions, the bridge table between them. It's designed for research workflows that need:
+<div class="gf-section">
+  <p class="gf-eyebrow">The pipeline <span>Five stages. Each one a separate command, re-runnable in isolation.</span></p>
+  <div class="gf-grid gf-grid--5">
+    <div class="gf-card"><img src="assets/brand/icons/icon-scrape.svg" alt=""><h3>scrape</h3><p>Checksum-verified, concurrent download of the raw archive.</p><span class="gf-card__io">→ CSV</span></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-convert.svg" alt=""><h3>convert</h3><p>CSV → Parquet, with optional Hive partitioning for historical data.</p><span class="gf-card__io">→ Parquet</span></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-filter.svg" alt=""><h3>filter</h3><p>Drop rows missing your configured columns.</p><span class="gf-card__io">→ Cleaned</span></div>
+    <div class="gf-card gf-card--hot"><img src="assets/brand/icons/icon-sample.svg" alt=""><h3>sample</h3><p>Seeded reservoir sampling in a single streaming pass.</p><span class="gf-card__io">→ Sample</span></div>
+    <div class="gf-card gf-card--hot"><img src="assets/brand/icons/icon-crossref.svg" alt=""><h3>crossref</h3><p>Join a sampled Events output back onto GKG.</p><span class="gf-card__io">→ Sample + GKG</span></div>
+  </div>
+</div>
 
-- Large-scale event data, from the 1979 historical backfill through today
-- Events enriched with GKG (themes, tone, people, organizations), via a dedicated cross-reference stage that preserves the real many-to-many relationship instead of silently collapsing it
-- Efficient columnar storage (**Parquet**), with optional Hive partitioning for historical Events data
-- Reproducible sampling (indexed, daily, filtered, stratified)
-- Transparent, modular data lineage: every stage is explicit, nothing runs "automagically"
+<div class="gf-section">
+  <p class="gf-eyebrow">Why it exists <span>The full archive is public. Getting it is the hard part.</span></p>
+  <div class="gf-grid gf-grid--3">
+    <div class="gf-reason"><h3>The GDELT API</h3><p>Built for small, recent queries: tight time windows, a ~250-row cap per query, and rate limits. The full history is out of reach.</p></div>
+    <div class="gf-reason"><h3>The BigQuery mirror</h3><p>Complete, but free-tier quotas (1TB query, 10GB storage, 1GB egress) don't cover the hundreds of GB involved, and full scans get expensive.</p></div>
+    <div class="gf-reason gf-reason--hot"><h3>The raw bulk archive</h3><p>Complete and free, but thousands of individual files with no tooling. That's the path GdeltForge automates, end to end, locally.</p></div>
+  </div>
+</div>
 
-```
+<div class="gf-section">
+  <p class="gf-eyebrow">What you get</p>
+  <div class="gf-grid gf-grid--3">
+    <div class="gf-card"><img src="assets/brand/icons/icon-global.svg" alt=""><h3>The whole archive</h3><p>The 1979 historical backfill through today, not the last three months the API allows.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-store.svg" alt=""><h3>Columnar storage</h3><p>Parquet throughout, with optional Hive partitioning for yearly and monthly historical dumps.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-pipeline.svg" alt=""><h3>Transparent lineage</h3><p>Every stage explicit and independently testable. Nothing runs automagically.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-dataset.svg" alt=""><h3>Six datasets</h3><p>Events (daily and native 15-minute granularity), GKG 2.1, legacy GKG 1.0 (plus its separate Counts file), and Mentions, each through the same stages.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-codes.svg" alt=""><h3>Bundled CAMEO codes</h3><p><code>gdeltforge codes</code> looks up valid values across seven column families, offline.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-warn.svg" alt=""><h3>Honest scope</h3><p>No orchestration, no VGKG, no hosted infrastructure. The comparison page says when to use something else.</p></div>
+  </div>
+</div>
+
+<div class="gf-section">
+  <p class="gf-eyebrow">Sampling modes <span>Reproducible sampling is a first-class stage, not an afterthought.</span></p>
+  <div class="gf-grid gf-grid--2">
+    <div class="gf-modes">
+      <div class="gf-mode"><b>indexed</b><span>Uniform random across the whole archive.</span></div>
+      <div class="gf-mode"><b>daily</b><span>N rows per day, evenly across the period.</span></div>
+      <div class="gf-mode"><b>filtered</b><span>JSON column filters, pushed down before sampling.</span></div>
+      <div class="gf-mode"><b>stratified</b><span>Fixed N per group, balanced classes regardless of the natural distribution.</span></div>
+    </div>
+    <div class="gf-card">
+      <h3>Why it matters</h3>
+      <p>Every mode is seeded, so the same command reproduces the same sample. All of them stream over an archive far larger than RAM in a single pass, on one machine, with no cluster or warehouse. See <a href="filtered-sampling/">Filtered Sampling</a> for the full syntax.</p>
+    </div>
+  </div>
+</div>
+
+<div class="gf-section">
+  <p class="gf-eyebrow">Crossref <span>Events enriched with GKG, without collapsing the join.</span></p>
+  <img class="gf-diagram" src="assets/crossref-join.svg" alt="Crossref join: Events to Mentions to GKG 2.1 by article URL; Events to GKG 1.0 directly by EventIds">
+</div>
+
+## When to reach for what
+
+| Need | Reach for |
+|---|---|
+| Reproducible, seeded, class-balanced samples of the full Events archive, offline | **GdeltForge** |
+| Events enriched with GKG, many-to-many preserved | **GdeltForge** (`crossref`) |
+| Recent article/tone queries over a small time window | A DOC 2.0 API client |
+| Whole-archive SQL analytics, nothing to install | BigQuery's public dataset |
+| An existing Spark or DuckDB pipeline | Stay on it |
+
+See [Comparison to Other Tools](comparison.md) for the full breakdown.
+
+## Quickstart
+
+One week of data, end to end. No config file needed: GdeltForge writes a conservative default on first run.
+
+```bash
 pip install gdeltforge
-gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+
+gdeltforge scrape  --dataset events --start-date 2024-01-01 --end-date 2024-01-07
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode indexed -n 10000
+gdeltforge filter  --dataset events
+gdeltforge sample  --dataset events --mode indexed -n 1000 --out sample.parquet
 ```
 
-See [Getting Started](getting-started.md) for configuration and an installation-from-source option, useful if you're contributing to GdeltForge itself.
-
-## About GDELT
-
-[GDELT](https://www.gdeltproject.org/) (the Global Database of Events, Language, and Tone) monitors broadcast, print, and web news from nearly every country, in over 100 languages (translating 65 of them into English in realtime), processing it continuously with new records published every 15 minutes. It's one of the largest open datasets of global news activity available.
-
-GDELT actually publishes several distinct tables, all of which GdeltForge processes:
-
-- **Events**: structured, CAMEO-coded records of who-did-what-to-whom-where. Each row is a single event extracted from a news article: two actors, an action, a date, and a location.
-- **Global Knowledge Graph (GKG)**: themes, emotions (2,300+ dimensions via GDELT's GCAM sentiment engine), people, organizations, and imagery/video, extracted from the same articles. GDELT has published two generations: **GKG 2.1**, the current format (live since Feb 2015, updated every 15 minutes), and legacy **GKG 1.0** (the primary feed April 2013 through February 2015, still published daily since for backwards compatibility).
-- **Mentions**: every re-report of an Event by a different article over time, not just the first. It's the bridge table between Events and GKG 2.1: GKG 2.1 carries no event ID of its own, only the source article's URL, so joining it to Events means going through Mentions.
-
-`gdeltforge crossref` enriches a sampled Events output with GKG data, picking the right join strategy for the GKG generation you're using: GKG 1.0 carries `EventIds` directly (a direct join), while GKG 2.1 needs the two-hop join through Mentions. Both preserve the real many-to-many structure GDELT's data actually has, rather than silently collapsing it: one event can be covered by many articles, and one article can cover many events. See [CLI Reference](cli-reference.md#gdeltforge-crossref) for the full command, and [Comparison to Other Tools](comparison.md) for how this stacks up against other GDELT clients.
-
-GdeltForge processes data published by [the GDELT Project](https://www.gdeltproject.org/), which makes it available for unlimited and unrestricted use, provided any use or redistribution includes a citation and a link to their site. GdeltForge itself is an independent, unofficial tool, not affiliated with, endorsed by, or sponsored by the GDELT Project.
-
-## Why this exists
-
-GDELT is extremely rich, but getting the *full* archive through official channels is genuinely difficult:
-
-- **The GDELT API** is built for small, recent queries: tight time windows, a ~250-row cap per query, and rate limits that make pulling the full historical dataset impractical.
-- **The BigQuery mirror** has full data, but free-tier quotas (1TB/month query, 10GB storage, 1GB egress) are far too small for the hundreds of GB involved, and full-table scans get expensive fast.
-- **The raw bulk archives** are available and complete, but they're thousands (for GKG 2.1/Mentions' 15-minute cadence, hundreds of thousands) of individual files that need automated downloading, streaming/chunked processing, columnar storage, and memory-safe filtering and sampling before they're actually usable.
-
-GdeltForge automates that last path end-to-end: scrape -> convert -> filter -> sample, each stage independent and re-runnable, plus `crossref` to join a sampled Events output back to GKG once you have both.
-
-## Where to go next
-
-- [Getting Started](getting-started.md): install it and run your first pipeline
-- [CLI Reference](cli-reference.md): every command, every flag, with real examples
-- [Configuration](configuration.md): the full `settings.yaml` reference
-- [Architecture](architecture.md): how the pipeline is put together, and why
-- [Limitations & Roadmap](limitations-and-roadmap.md): what's not supported yet, and what's next
+<div class="gf-section">
+  <p class="gf-eyebrow">Where to go next</p>
+  <div class="gf-grid gf-grid--3">
+    <a class="gf-card gf-card--link" href="getting-started/"><h3>Getting Started →</h3><p>Install it and run your first pipeline.</p></a>
+    <a class="gf-card gf-card--link" href="cli-reference/"><h3>CLI Reference →</h3><p>Every command, every flag, with real examples.</p></a>
+    <a class="gf-card gf-card--link" href="recipes/"><h3>Recipes →</h3><p>Runnable, end-to-end workflows.</p></a>
+    <a class="gf-card gf-card--link" href="configuration/"><h3>Configuration →</h3><p>The full <code>settings.yaml</code> reference.</p></a>
+    <a class="gf-card gf-card--link" href="architecture/"><h3>Architecture →</h3><p>How the pipeline is put together, and why.</p></a>
+    <a class="gf-card gf-card--link" href="limitations-and-roadmap/"><h3>Limitations &amp; Roadmap →</h3><p>What's out of scope, and what's next.</p></a>
+  </div>
+  <p class="gf-attrib">GdeltForge processes data published by <a href="https://www.gdeltproject.org/">the GDELT Project</a>, which makes it available for unlimited and unrestricted use, provided any use or redistribution includes a citation and a link to their site. GdeltForge itself is an independent, unofficial tool, not affiliated with, endorsed by, or sponsored by the GDELT Project.</p>
+</div>
