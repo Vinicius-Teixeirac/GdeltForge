@@ -1,0 +1,148 @@
+/* GdeltForge docs home ("hero" landing page).
+   Scoped to .gf-* classes so it only affects docs/index.md; every other
+   page stays plain Material. Palette comes from brand.css. */
+
+:root {
+  --gf-orange: #E8912A;
+  --gf-slate: #6C7C9E;
+  --gf-panel: #0B1223;
+  --gf-void: #070B16;
+  --gf-line: rgba(140, 160, 200, 0.14);
+}
+[data-md-color-scheme="default"] {
+  --gf-panel: #F5F6FA;
+  --gf-void: #FFFFFF;
+  --gf-slate: #5A6885;
+  --gf-line: rgba(11, 18, 35, 0.12);
+}
+
+/* The home page is full-bleed. Detected by the hero block itself, so no
+   theme override or extra front matter is needed. */
+.md-content__inner:has(> .gf-hero) { padding: 0; margin: 0; }
+.md-content__inner:has(> .gf-hero) > :first-child { margin-top: 0; }
+.md-content__inner:has(> .gf-hero) .md-content__button { display: none; }
+
+.gf-section { max-width: 60rem; margin: 0 auto; padding: 2.6rem 1.2rem; }
+/* Plain markdown between the HTML blocks (tables, quickstart) gets the same
+   measure and gutter so the page reads as one column. */
+.md-content__inner:has(> .gf-hero) > h2,
+.md-content__inner:has(> .gf-hero) > p,
+.md-content__inner:has(> .gf-hero) > ul,
+.md-content__inner:has(> .gf-hero) > table,
+.md-content__inner:has(> .gf-hero) > .highlight,
+.md-content__inner:has(> .gf-hero) > .tabbed-set {
+  max-width: 60rem; margin-left: auto; margin-right: auto;
+  padding-left: 1.2rem; padding-right: 1.2rem; box-sizing: border-box;
+}
+.md-content__inner:has(> .gf-hero) > h2 { margin-top: 2.4rem; }
+.md-content__inner:has(> .gf-hero) > table { display: table; width: 100%; }
+.gf-eyebrow {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.62rem; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--gf-orange); margin: 0 0 0.9rem;
+}
+.gf-eyebrow span { color: var(--gf-slate); letter-spacing: 0; text-transform: none; margin-left: 0.8rem; }
+
+/* Hero */
+.gf-hero {
+  background: radial-gradient(48rem 22rem at 22% -10%, rgba(232,145,42,0.10), transparent 70%);
+  border-bottom: 1px solid var(--gf-line);
+  padding: 3.2rem 1.2rem 2.8rem;
+}
+.gf-hero__grid {
+  max-width: 60rem; margin: 0 auto;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2.6rem; align-items: center;
+}
+.gf-hero__lockup { width: 19rem; max-width: 100%; margin: 0 0 0.4rem -0.6rem; }
+.gf-hero h1 {
+  font-size: 2.3rem; line-height: 1.12; font-weight: 600; letter-spacing: -0.02em;
+  margin: 0 0 0.8rem; text-wrap: balance;
+}
+.gf-hero h1 em { font-style: normal; color: var(--gf-orange); }
+.gf-hero p { color: var(--md-default-fg-color--light); font-size: 0.9rem; max-width: 32ch; text-wrap: pretty; }
+.gf-install {
+  display: inline-flex; gap: 0.6rem; align-items: center;
+  font-family: var(--md-code-font-family, monospace); font-size: 0.72rem;
+  background: var(--gf-panel); border: 1px solid var(--gf-line);
+  border-radius: 0.2rem; padding: 0.6rem 0.85rem; margin: 0.9rem 0;
+}
+.gf-install .gf-prompt { color: var(--gf-slate); }
+.gf-cta { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 1rem; }
+.gf-btn {
+  display: inline-block; padding: 0.55rem 1rem; border-radius: 0.15rem;
+  font-size: 0.7rem; font-weight: 600; border: 1px solid var(--gf-line);
+  color: var(--md-default-fg-color); text-decoration: none;
+}
+.gf-btn:hover { border-color: var(--gf-orange); color: var(--gf-orange); }
+.gf-btn--primary { background: var(--gf-orange); border-color: var(--gf-orange); color: #070B16; }
+.gf-btn--primary:hover { background: #f5a94d; border-color: #f5a94d; color: #070B16; }
+.gf-facts {
+  display: flex; flex-wrap: wrap; gap: 1.3rem;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.62rem; letter-spacing: 0.04em; color: var(--gf-slate);
+}
+.gf-facts b { color: var(--md-default-fg-color); font-weight: 600; }
+.gf-hero__demo { width: 100%; border-radius: 0.7rem; }
+
+/* Card grids */
+.gf-grid { display: grid; gap: 0.8rem; }
+.gf-grid--5 { grid-template-columns: repeat(5, 1fr); }
+.gf-grid--3 { grid-template-columns: repeat(3, 1fr); }
+.gf-grid--2 { grid-template-columns: repeat(2, 1fr); }
+.gf-card {
+  background: var(--gf-panel); border: 1px solid var(--gf-line);
+  border-radius: 0.25rem; padding: 0.95rem;
+}
+.gf-card img { width: 1.15rem; height: 1.15rem; display: block; margin-bottom: 0.5rem; }
+.gf-card h3 { margin: 0 0 0.35rem; font-size: 0.8rem; font-weight: 600; }
+.gf-card p { margin: 0; font-size: 0.68rem; line-height: 1.55; color: var(--md-default-fg-color--light); }
+.gf-card--hot { border-color: rgba(232,145,42,0.4); }
+.gf-card--hot h3 { color: var(--gf-orange); }
+.gf-card code, .gf-card__io {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.62rem; color: var(--gf-slate); letter-spacing: 0.05em;
+}
+.gf-card__io { display: block; margin-top: 0.5rem; }
+.gf-card--link { text-decoration: none; display: block; }
+.gf-card--link h3 { color: var(--gf-orange); }
+.gf-card--link:hover { border-color: var(--gf-orange); }
+
+/* Reason columns */
+.gf-reason { border-left: 2px solid var(--gf-slate); padding: 0.1rem 0 0.1rem 0.9rem; }
+.gf-reason--hot { border-left-color: var(--gf-orange); }
+.gf-reason h3 { margin: 0 0 0.35rem; font-size: 0.82rem; font-weight: 600; }
+.gf-reason p { margin: 0; font-size: 0.72rem; line-height: 1.6; color: var(--md-default-fg-color--light); }
+
+/* Mode rows */
+.gf-modes { border: 1px solid var(--gf-line); border-radius: 0.25rem; overflow: hidden; }
+.gf-mode { display: flex; gap: 0.9rem; padding: 0.7rem 0.85rem; background: var(--gf-panel); }
+.gf-mode + .gf-mode { border-top: 1px solid var(--gf-line); }
+.gf-mode b {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.68rem; color: var(--gf-orange); flex: none; width: 5rem; font-weight: 400;
+}
+.gf-mode span { font-size: 0.72rem; color: var(--md-default-fg-color--light); }
+
+.gf-diagram { width: 100%; border-radius: 0.4rem; }
+
+/* Card grids used on inner pages (Getting Started, CLI Reference, Recipes,
+   Comparison) sit in normal article flow, so they need their own spacing. */
+.md-typeset .gf-grid { margin: 1.4rem 0; }
+.md-typeset .gf-card h3 { margin: 0 0 0.35rem; font-size: 0.8rem; }
+.md-typeset .gf-card p { margin: 0; }
+/* Diagrams dropped into prose: full width, no theme border/shadow. */
+.md-typeset img[src$="pipeline-diagram.svg"],
+.md-typeset img[src$="sampling-modes.svg"],
+.md-typeset img[src$="crossref-join.svg"] {
+  width: 100%; border-radius: 0.4rem; margin: 1.2rem 0;
+}
+.gf-attrib { font-size: 0.66rem; line-height: 1.7; color: var(--gf-slate); border-top: 1px solid var(--gf-line); padding-top: 1.2rem; }
+
+@media screen and (max-width: 76.1875em) {
+  .gf-hero__grid { grid-template-columns: 1fr; }
+  .gf-grid--5 { grid-template-columns: repeat(2, 1fr); }
+}
+@media screen and (max-width: 44.9375em) {
+  .gf-grid--5, .gf-grid--3, .gf-grid--2 { grid-template-columns: 1fr; }
+  .gf-hero h1 { font-size: 1.8rem; }
+}

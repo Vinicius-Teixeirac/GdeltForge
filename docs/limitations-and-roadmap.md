@@ -6,7 +6,7 @@ GdeltForge is intentionally simple and transparent. Current limitations:
 
 Only one pipeline stage per command. No automatic chaining, no dependency resolution. This is **not** supported:
 
-```
+```bash
 gdeltforge scrape convert sample
 ```
 

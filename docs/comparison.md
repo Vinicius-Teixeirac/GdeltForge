@@ -37,3 +37,8 @@ The other is `crossref`: GKG 2.1 carries no event ID at all, only the source art
 ## For temporal knowledge-graph / event-forecasting work
 
 If you're building on GDELT for research in this space (event-based forecasting, CAMEO-quadruple knowledge graphs), GdeltForge is a reasonable ingestion/sampling front-end: it produces a clean, reproducible, filterable Parquet slice, which you then feed into whatever modeling stack you're using. It doesn't do any of the modeling itself.
+
+<div class="gf-grid gf-grid--2">
+  <a class="gf-card gf-card--link" href="../getting-started/"><h3>Getting Started →</h3><p>Install it and run a one-week pipeline.</p></a>
+  <a class="gf-card gf-card--link" href="../limitations-and-roadmap/"><h3>Limitations &amp; Roadmap →</h3><p>What's deliberately out of scope.</p></a>
+</div>
