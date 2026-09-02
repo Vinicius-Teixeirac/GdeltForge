@@ -21,6 +21,12 @@ config defines a rule for). Everything else, daily and quarter-hourly included,
 goes to parquet_data_directory as flat files, same as when partitioning is off
 entirely.
 
+A bare .csv, matched directly by converter.file_pattern, is also accepted
+alongside the ZIP archives above: it's read as-is, with no extraction step,
+for a CSV that didn't come from a fresh `scrape` (see process_single_file's
+is_bare_csv). Its filename plays no part in file-type detection, so it
+always flat-writes regardless of converter.partitioning.enabled.
+
 This module provides:
     - GDELTConverter: class responsible for performing file-by-file conversion
     - run_converter: wrapper that calls the main conversion routine `process_all_files`
@@ -490,6 +496,16 @@ class GDELTConverter:
         # daily and quarter_hourly correctly fall through to a flat write
         # the same as when partitioning is off, without a per-file "no
         # partition rule" warning for every single one of them.
+        #
+        # _detect_file_type's own patterns all require a literal .zip
+        # suffix, so a bare .csv input (see is_bare_csv below) always
+        # comes back "unknown" here regardless of what its name otherwise
+        # looks like, and therefore always flat-writes even when
+        # partitioning is enabled. Deliberately conservative rather than
+        # rewriting those patterns to also recognize a .csv-suffixed
+        # name: the real yearly/monthly historical shape this partitioning
+        # exists for is a scrape artifact (1979.zip, 200601.zip), not
+        # something a bare .csv input is expected to represent.
         file_type = (
             self._detect_file_type(zip_p.name)
             if self._partitioning_enabled
@@ -499,10 +515,22 @@ class GDELTConverter:
             self._partition_rule_for(file_type) if self._partitioning_enabled else None
         )
 
-        extracted_files = unzip_file(zip_path, self.unzip_folder)
-        if not extracted_files:
-            logger.warning(f"No extracted files from {zip_p.name}")
-            return created_parquets
+        # A bare .csv pointed at directly (converter.file_pattern set to
+        # match one, e.g. for CSVs that didn't come from a fresh `scrape`)
+        # needs no extraction at all: it already is the file _read_csv
+        # wants, unlike every other input this method handles, which is
+        # always an archive unzip_file has to open first. Detected here
+        # rather than left to fail into unzip_file's own zipfile.ZipFile
+        # call, which raised a confusing BadZipFile for this input before
+        # this branch existed.
+        is_bare_csv = zip_p.suffix.lower() == ".csv"
+        if is_bare_csv:
+            extracted_files = [zip_p]
+        else:
+            extracted_files = unzip_file(zip_path, self.unzip_folder)
+            if not extracted_files:
+                logger.warning(f"No extracted files from {zip_p.name}")
+                return created_parquets
 
         failed_csvs = []
         for csv_path in extracted_files:
@@ -523,7 +551,14 @@ class GDELTConverter:
                     if parquet_path:
                         created_parquets.append(str(parquet_path))
 
-                if not self.keep_unzipped:
+                # is_bare_csv's csv_path IS zip_p, the source file itself,
+                # not a scratch copy unzip_file extracted into
+                # self.unzip_folder: only --delete-source (via
+                # process_all_files' own _delete_source, gated on that
+                # flag) is allowed to remove it. Deleting it here
+                # regardless of keep_unzipped would silently destroy the
+                # only copy of a source that was never actually unzipped.
+                if not is_bare_csv and not self.keep_unzipped:
                     csv_path.unlink()
 
             except Exception as e:
