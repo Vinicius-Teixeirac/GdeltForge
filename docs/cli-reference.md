@@ -19,7 +19,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
   <a class="gf-card gf-card--link" href="#gdeltforge-scrape"><h3>scrape →</h3><p>Download the raw archive, checksum-verified.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-convert"><h3>convert →</h3><p>CSV to Parquet, optionally Hive-partitioned.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-filter"><h3>filter →</h3><p>Drop rows missing your configured columns.</p></a>
-  <a class="gf-card gf-card--link" href="#gdeltforge-sample"><h3>sample →</h3><p>Indexed, daily, filtered, stratified.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-sample"><h3>sample →</h3><p>Indexed, calendar, filtered, plus a stratified sub-mode.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-crossref"><h3>crossref →</h3><p>Join a sample back onto GKG.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-codes"><h3>codes →</h3><p>Look up CAMEO/FIPS values offline.</p></a>
 </div>
@@ -170,7 +170,7 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 ## `gdeltforge sample`
 
-![The four sampling modes: indexed, calendar, filtered and stratified](assets/sampling-modes.svg)
+![The three sampling modes, indexed, calendar and filtered, plus stratified as filtered's own optional sub-mode](assets/sampling-modes.svg)
 
 All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping.
 
