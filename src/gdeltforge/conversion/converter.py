@@ -33,10 +33,15 @@ import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
+from typing import cast
 
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+import polars as pl
+
+# polars genuinely exports this type alias at runtime; it's just under a
+# private-looking module name, the same shape of stub gap pyproject.toml's
+# reportPrivateImportUsage = false already exists for (pyarrow.dataset's
+# Expression/field/Dataset).
+from polars._typing import ParquetCompression
 from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
@@ -70,24 +75,27 @@ _DAILY_PAT          = re.compile(r'^\d{8}\..+\.zip$',       re.IGNORECASE)
 # below for why nothing did).
 _QUARTER_HOURLY_PAT = re.compile(r'^\d{14}\..+\.zip$',      re.IGNORECASE)
 
-# pd.to_numeric coerces every configured numeric column, but a single blank
-# value anywhere in a real file (GDELT's own raw archive does this, e.g. a
-# real, live 20130901.export.CSV.zip carries a blank DATEADDED for literally
-# every row that day) forces the whole column to float64: plain int64 can't
-# represent NaN at all, only float64 and pandas' own nullable Int64 can.
-# Previously only Year/MonthYear/Day (the partition-key columns) were cast
-# back to Int64 afterward, which happened to be enough for partitioning but
-# left every other integer-semantic column, DATEADDED included, exposed to
-# silently becoming float64 the moment one blank value showed up anywhere
-# in the whole corpus, exactly the shape of a real report: codebook says
-# integer, converted output has float64, one blank row in one file out of
-# thousands was enough. This lists the exception instead of the rule: every
-# columns_numeric entry across every dataset is integer-semantic (an ID, a
-# type/flag code, a count, a YYYYMMDD[HHMMSS] timestamp) except the small,
-# genuinely fractional set named here. A future columns_numeric entry
-# defaults to being treated as an integer unless added here, matching how
-# the overwhelming majority of real entries are shaped, rather than
-# defaulting to unprotected the way DATEADDED was.
+# Every configured numeric column is cast to either pl.Int64 or pl.Float64
+# in _read_csv, and this set decides which: every columns_numeric entry
+# across every dataset is integer-semantic (an ID, a type/flag code, a
+# count, a YYYYMMDD[HHMMSS] timestamp) except the small, genuinely
+# fractional set named here, so this lists the exception rather than the
+# rule. A future columns_numeric entry defaults to being cast as an
+# integer unless added here, matching how the overwhelming majority of
+# real entries are shaped.
+#
+# This distinction mattered even more under the previous pandas
+# implementation: pd.to_numeric(errors="coerce") forced a column to
+# float64 the moment a single blank value appeared anywhere in a real
+# file (GDELT's own raw archive does this, e.g. a real, live
+# 20130901.export.CSV.zip carries a blank DATEADDED for literally every
+# row that day), since plain int64 can't represent NaN at all, requiring
+# a separate restore-to-nullable-Int64 pass afterward or the column
+# silently stayed float64 forever. Polars' Int64 is natively nullable, so
+# casting straight to it with strict=False already produces the correct
+# integer column with nulls where needed, no separate restore step
+# needed; this set's job is now purely picking the correct target dtype
+# up front, not working around a downstream footgun.
 #
 # Every entry below (and every column left out of it) was checked against
 # the actual "(integer)"/"(floating point)"/"(numeric)" type tag GDELT's
@@ -220,20 +228,14 @@ class GDELTConverter:
 
         self.COLUMN_NAMES    = config["columns"][dataset]
         self.NUMERIC_COLUMNS = config["columns_numeric"][dataset]
-        # See _FLOAT_NUMERIC_COLUMNS above for why this split exists at all.
-        # Computed once here, not per file: NUMERIC_COLUMNS is fixed for the
-        # lifetime of this converter instance.
-        self.INTEGER_NUMERIC_COLUMNS = [
-            c for c in self.NUMERIC_COLUMNS if c not in _FLOAT_NUMERIC_COLUMNS
-        ]
-        # Optional, per dataset: restrict pandas to materializing only these
-        # columns while parsing the CSV. self.COLUMN_NAMES is still passed
-        # to read_csv in full, since that is what maps each tab-separated
-        # position to a name on files that carry no header row. pandas' C
-        # parser still skips allocating and decoding the columns left out
-        # of usecols, though, which is where GKG 2.1's free-text fields
-        # (quotations, all-names, GCAM, extras XML, image/video embeds)
-        # cost the most CPU and RAM.
+        # Optional, per dataset: restrict _read_csv to materializing only
+        # these columns while parsing the CSV, by integer position (see
+        # _read_csv itself for why position, not name). self.COLUMN_NAMES
+        # is what maps each tab-separated position to a name in the first
+        # place, on files that carry no header row of their own; this is
+        # where GKG 2.1's free-text fields (quotations, all-names, GCAM,
+        # extras XML, image/video embeds) cost the most CPU and RAM once
+        # narrowed away.
         # None (the default) parses every column, matching prior behavior.
         self.output_columns: list[str] | None = get_dict(
             config["converter"], "output_columns"
@@ -510,7 +512,7 @@ class GDELTConverter:
 
             try:
                 df = self._read_csv(csv_path)
-                if df.empty:
+                if df.is_empty():
                     continue
 
                 if partition_rule is not None:
@@ -548,112 +550,108 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # READ CSV
     # ------------------------------------------------------------
-    def _read_csv(self, csv_path: str | Path) -> pd.DataFrame:
-        # header=0 + names=... together mean "the first line is a real
-        # header, skip it, then use our own names instead of its literal
-        # text", not "there's no header at all" (that's header=None).
-        header = 0 if self.dataset in _DATASETS_WITH_HEADER_ROW else None
+    def _read_csv(self, csv_path: str | Path) -> pl.DataFrame:
+        # has_header=True + new_columns=... together mean "the first line
+        # is a real header, skip it, then use our own names instead of
+        # its literal text" (confirmed directly: new_columns renames past
+        # whatever the real header row said), not "there's no header at
+        # all" (that's has_header=False).
+        has_header = self.dataset in _DATASETS_WITH_HEADER_ROW
+
         # usecols must reference names from the full COLUMN_NAMES list
-        # (pandas resolves position -> name from `names` first, then
-        # applies usecols), and drops any configured name that isn't
-        # actually one of this dataset's columns rather than erroring,
-        # matching how columns_to_check/output_columns are handled
-        # elsewhere in the pipeline.
+        # (position -> name is COLUMN_NAMES' own order, header or not),
+        # and drops any configured name that isn't actually one of this
+        # dataset's columns rather than erroring, matching how
+        # columns_to_check/output_columns are handled elsewhere in the
+        # pipeline. Passed to read_csv as integer positions (not the
+        # names themselves): confirmed directly that selecting by
+        # position at parse time, rather than reading every column and
+        # projecting down afterward, is what makes polars skip
+        # allocating/decoding the dropped columns at all, the same
+        # optimization pandas' own usecols gave GKG 2.1's expensive
+        # free-text fields under output_columns. It also happens to be
+        # what keeps a genuinely too-wide raw line from silently growing
+        # the schema with an extra autogenerated column, confirmed
+        # directly: an explicit schema_overrides naming every column
+        # does that when columns= is left unset, even with
+        # truncate_ragged_lines=True (which only helps the too-short
+        # case, kept below for that real, verified hazard in this
+        # project's own downloaded data).
         usecols = (
             [c for c in self.output_columns if c in self.COLUMN_NAMES]
             if self.output_columns is not None
-            else None
+            else self.COLUMN_NAMES
         )
+        positions = [self.COLUMN_NAMES.index(c) for c in usecols]
+
+        read_kwargs = {
+            "separator": "\t",
+            "has_header": has_header,
+            "columns": positions,
+            "new_columns": usecols,
+            "schema_overrides": {c: pl.Utf8 for c in usecols},
+            "truncate_ragged_lines": True,
+            # polars' own default keeps a blank tab-separated field as "",
+            # not null; pandas' read_csv treats a blank field as NaN by
+            # default. Without this, every string column left blank in the
+            # source (Actor1EthnicCode, Actor1Religion1Code, and their
+            # Actor2 equivalents among others) comes out "" instead of
+            # null, which silently breaks columns_to_check's documented
+            # contract (configuration.md: "rows with a NaN/null value in
+            # any of these columns are dropped") for anyone who lists a
+            # string column there, confirmed via a real content-equality
+            # diff against pandas' output on a 10M-row fixture.
+            "null_values": [""],
+        }
         try:
-            df = pd.read_csv(
-                csv_path,
-                sep="\t",
-                header=header,
-                dtype=str,
-                encoding="utf-8",
-                low_memory=False,
-                names=self.COLUMN_NAMES,
-                usecols=usecols,
-                on_bad_lines="warn",
-            )
-        except UnicodeDecodeError:
+            df = pl.read_csv(csv_path, encoding="utf8", **read_kwargs)
+        except pl.exceptions.ComputeError:
             # GKG 2.1's free-text fields (quotations, all-names) routinely
             # carry a handful of non-UTF-8 bytes from non-English source
             # articles GDELT scraped; confirmed against a real 373K-file
             # run where ~6.7% of files hit this. The old behavior caught
             # every exception here, including this one, and returned an
-            # empty DataFrame, which process_single_file's `if df.empty:
-            # continue` then treated as "nothing to write," so the zip
-            # still got marked done with zero output and never showed up
-            # in the run's failed count. Retrying with encoding_errors=
-            # "replace" keeps every row that WAS valid UTF-8 intact and
-            # substitutes U+FFFD only for the genuinely undecodable bytes,
-            # instead of silently discarding the whole file. Anything
-            # other than a decode error (a truly malformed file, a
-            # permissions issue) is not retried here; it propagates to
-            # process_single_file's caller, which now correctly counts
-            # the zip as failed instead of marking it done.
+            # empty DataFrame, which process_single_file's `if df.is_
+            # empty(): continue` then treated as "nothing to write," so
+            # the zip still got marked done with zero output and never
+            # showed up in the run's failed count. Retrying with
+            # encoding="utf8-lossy" keeps every row that WAS valid UTF-8
+            # intact and substitutes U+FFFD only for the genuinely
+            # undecodable bytes, instead of silently discarding the whole
+            # file. Anything other than a decode error (a truly malformed
+            # file, a permissions issue) is not retried here; it
+            # propagates to process_single_file's caller, which now
+            # correctly counts the zip as failed instead of marking it done.
             logger.warning(
                 f"{csv_path}: not valid UTF-8, retrying with byte-level "
                 f"replacement (undecodable bytes become U+FFFD)"
             )
-            df = pd.read_csv(
-                csv_path,
-                sep="\t",
-                header=header,
-                dtype=str,
-                encoding="utf-8",
-                encoding_errors="replace",
-                low_memory=False,
-                names=self.COLUMN_NAMES,
-                usecols=usecols,
-                on_bad_lines="warn",
-            )
+            df = pl.read_csv(csv_path, encoding="utf8-lossy", **read_kwargs)
 
-        for col in self.NUMERIC_COLUMNS:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+        cast_exprs = [
+            pl.col(col).cast(
+                pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64, strict=False
+            )
+            for col in self.NUMERIC_COLUMNS
+            if col in df.columns
+        ]
+        if cast_exprs:
+            df = df.with_columns(cast_exprs)
 
         return df
-
-    def _restore_integer_dtypes(self, df: pd.DataFrame) -> None:
-        """
-        Casts every integer-semantic numeric column (see
-        _FLOAT_NUMERIC_COLUMNS above) that pd.to_numeric left as float64
-        back to pandas' nullable Int64, in place. Only touches columns
-        pd.to_numeric actually turned to float (is_float_dtype guard): a
-        column with no blank/unparseable values anywhere in this file
-        came back as a real int64 already and is left alone, since
-        Int64 (nullable) and int64 (plain) round-trip through parquet
-        identically for a column with no nulls, so there's nothing to
-        fix and no reason to touch it. Shared by both flat
-        (_save_parquet) and historical (_save_historical_parquet)
-        writes, so a file's schema doesn't depend on which path wrote
-        it.
-        """
-        for col in self.INTEGER_NUMERIC_COLUMNS:
-            if col in df.columns and pd.api.types.is_float_dtype(df[col]):
-                df[col] = df[col].astype("Int64")
 
     # ------------------------------------------------------------
     # SAVE PARQUET  (flat files)
     # ------------------------------------------------------------
-    def _save_parquet(self, df: pd.DataFrame, base_name: str) -> Path | None:
-        if df.empty:
+    def _save_parquet(self, df: pl.DataFrame, base_name: str) -> Path | None:
+        if df.is_empty():
             logger.warning(f"DataFrame empty, skipping parquet: {base_name}")
             return None
 
         parquet_path = self.parquet_folder / f"{base_name}.parquet"
 
         try:
-            self._restore_integer_dtypes(df)
-
-            write_parquet_atomic(
-                df, parquet_path,
-                engine="pyarrow",
-                compression=self.compression,
-                index=False,
-            )
+            write_parquet_atomic(df, parquet_path, compression=self.compression)
             return parquet_path
 
         except Exception as e:
@@ -664,7 +662,7 @@ class GDELTConverter:
     # SAVE HISTORICAL PARQUET  (Hive-partitioned)
     # ------------------------------------------------------------
     def _save_historical_parquet(
-        self, df: pd.DataFrame, zip_path: Path, file_type: str
+        self, df: pl.DataFrame, zip_path: Path, file_type: str
     ) -> list[Path]:
         """
         Write df into the historical Hive directory, partitioned by the columns
@@ -683,16 +681,10 @@ class GDELTConverter:
             result = self._save_parquet(df, zip_path.stem)
             return [result] if result else []
 
-        df_clean = df.dropna(subset=by).copy()
-        if df_clean.empty:
+        df_clean = df.drop_nulls(subset=by)
+        if df_clean.is_empty():
             logger.warning(f"No valid rows after dropping NaN in {by} for {zip_path.name}")
             return []
-
-        # Covers `by` (needed for clean directory names, e.g. Year=1979,
-        # not Year=1979.0) and every other integer-semantic column, so a
-        # historical write's schema matches a flat write's for the same
-        # dataset instead of only guaranteeing it for the partition keys.
-        self._restore_integer_dtypes(df_clean)
 
         # Only called when partitioning is enabled, which requires
         # historical_folder to be set (see __init__).
@@ -700,26 +692,36 @@ class GDELTConverter:
 
         created: list[Path] = []
 
-        for key, group in df_clean.groupby(by, sort=True):
-            if not isinstance(key, tuple):
-                key = (key,)
-
+        # Polars' own group_by always yields a tuple key, even for a
+        # single-column `by` (confirmed directly; pandas' groupby instead
+        # returns a bare scalar in that case, which the old code had to
+        # normalize with an isinstance check), so no such guard is needed
+        # here.
+        for key, group in df_clean.group_by(by, maintain_order=True):
             dir_parts = "/".join(f"{col}={int(val)}" for col, val in zip(by, key, strict=True))
             out_dir = self.historical_folder / dir_parts
             out_dir.mkdir(parents=True, exist_ok=True)
 
             out_path = out_dir / f"{zip_path.stem}.parquet"
             tmp_path = out_path.with_name(out_path.name + ".tmp")
-            table = pa.Table.from_pandas(group, preserve_index=False)
             try:
-                pq.write_table(table, tmp_path, compression=self.compression)
+                # self.compression is user config, a plain str at
+                # gdeltforge's own boundary; polars' own write_parquet
+                # narrows it to a specific Literal set for its own
+                # internal type-checking, so an actually-invalid codec
+                # name still surfaces as a real error from polars itself
+                # at write time, just not one pyright can prove here.
+                group.write_parquet(
+                    tmp_path, compression=cast(ParquetCompression, self.compression)
+                )
                 os.replace(tmp_path, out_path)
             except Exception:
                 # Same atomic tmp-then-rename guarantee as _save_parquet's
-                # write_parquet_atomic, just against pq.write_table's Table
-                # API instead of DataFrame.to_parquet: a kill or crash
-                # mid-write must never leave a truncated file at out_path,
-                # since nothing here would ever detect or clean it up later.
+                # write_parquet_atomic, just against a raw write_parquet
+                # call inside a per-group loop instead of the whole-file
+                # helper: a kill or crash mid-write must never leave a
+                # truncated file at out_path, since nothing here would
+                # ever detect or clean it up later.
                 if tmp_path.exists():
                     tmp_path.unlink()
                 raise

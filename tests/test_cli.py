@@ -4,7 +4,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 import gdeltforge.cli as cli
@@ -628,7 +628,7 @@ class TestRunSamplingCmdSource:
                 captured["columns"] = columns
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
@@ -673,7 +673,7 @@ class TestRunSamplingCmdSource:
                 captured["historical_folder"] = historical_folder
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
@@ -702,7 +702,7 @@ class TestRunSamplingCmdSource:
                 captured["columns"] = columns
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
@@ -728,7 +728,7 @@ class TestRunSamplingCmdSource:
                 captured["columns"] = columns
 
             def get_daily_samples(self, samples_per_day):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "DailySampler", FakeDailySampler)
 
@@ -756,7 +756,7 @@ class TestRunSamplingCmdSource:
                 pass
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 3]})
+                return pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 3]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
@@ -770,9 +770,9 @@ class TestRunSamplingCmdSource:
         out_csv = tmp_path / "o.csv"
         assert out_csv.exists()
         assert not (tmp_path / "o.parquet").exists()
-        result = pd.read_csv(out_csv)
-        assert result["GlobalEventID"].tolist() == [1, 2]
-        assert result["QuadClass"].tolist() == [1, 3]
+        result = pl.read_csv(out_csv)
+        assert result["GlobalEventID"].to_list() == [1, 2]
+        assert result["QuadClass"].to_list() == [1, 3]
 
 
 class TestRunSamplingCmdDateFiltering:
@@ -816,7 +816,7 @@ class TestRunSamplingCmdDateFiltering:
                 captured["end_date"] = end_date
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
@@ -858,7 +858,7 @@ class TestRunSamplingCmdDateFiltering:
                 pass
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
 
@@ -882,7 +882,7 @@ class TestRunSamplingCmdDateFiltering:
                 pass
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
@@ -903,7 +903,7 @@ class TestRunSamplingCmdDateFiltering:
                 pass
 
             def get_random_sample(self, n):
-                return pd.DataFrame({"GlobalEventID": [1]})
+                return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
 
@@ -945,7 +945,7 @@ class TestRunCrossrefCmd:
     @staticmethod
     def _events_path(tmp_path):
         events = tmp_path / "events.parquet"
-        pd.DataFrame({"GlobalEventID": [1]}).to_parquet(events)
+        pl.DataFrame({"GlobalEventID": [1]}).write_parquet(events)
         return str(events)
 
     def _args(self, tmp_path, **overrides):
@@ -967,7 +967,7 @@ class TestRunCrossrefCmd:
             lambda events_df, folder, cols, columns=None, start_date=None,
             end_date=None: captured.update(
                 folder=folder, gkg_columns=cols, columns=columns
-            ) or pd.DataFrame(),
+            ) or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1"))
@@ -983,7 +983,7 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
             end_date=None: captured.update(folder=folder)
-            or pd.DataFrame(),
+            or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1-counts"))
@@ -1000,7 +1000,7 @@ class TestRunCrossrefCmd:
             on_duplicate_document="all", dedupe_mentions=False, start_date=None,
             end_date=None: captured.update(
                 mentions_folder=mentions_folder, gkg_folder=gkg_folder
-            ) or pd.DataFrame(),
+            ) or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v2"))
@@ -1018,7 +1018,7 @@ class TestRunCrossrefCmd:
             on_duplicate_document="all", dedupe_mentions=False, start_date=None,
             end_date=None: captured.update(
                 on_duplicate_document=on_duplicate_document, dedupe_mentions=dedupe_mentions
-            ) or pd.DataFrame(),
+            ) or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(
@@ -1043,7 +1043,7 @@ class TestRunCrossrefCmd:
             start_date=None, end_date=None: captured.update(
                 gkg_v1_folder=gkg_v1_folder, mentions_folder=mentions_folder,
                 gkg_v2_folder=gkg_v2_folder,
-            ) or pd.DataFrame(),
+            ) or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="auto"))
@@ -1068,7 +1068,7 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
             end_date=None: captured.update(folder=folder)
-            or pd.DataFrame(),
+            or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(
@@ -1085,7 +1085,7 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
             end_date=None: captured.update(columns=columns)
-            or pd.DataFrame(),
+            or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(
@@ -1101,7 +1101,7 @@ class TestRunCrossrefCmd:
             cli, "write_parquet_atomic",
             lambda df, out: written.update(df=df, out=out),
         )
-        expected = pd.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
+        expected = pl.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
@@ -1120,7 +1120,7 @@ class TestRunCrossrefCmd:
         # verify the real file that lands on disk, not just that the
         # right function got called.
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
-        expected = pd.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
+        expected = pl.DataFrame({"GlobalEventID": [1], "GKG_Date": [20130401]})
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
@@ -1135,9 +1135,9 @@ class TestRunCrossrefCmd:
         out_csv = tmp_path / "o.csv"
         assert out_csv.exists()
         assert not (tmp_path / "o.parquet").exists()
-        result = pd.read_csv(out_csv)
-        assert result["GlobalEventID"].tolist() == [1]
-        assert result["GKG_Date"].tolist() == [20130401]
+        result = pl.read_csv(out_csv)
+        assert result["GlobalEventID"].to_list() == [1]
+        assert result["GKG_Date"].to_list() == [20130401]
 
     def test_date_strings_are_parsed_and_passed_through(self, tmp_path, monkeypatch):
         captured = {}
@@ -1148,7 +1148,7 @@ class TestRunCrossrefCmd:
             lambda events_df, folder, cols, columns=None, start_date=None,
             end_date=None: captured.update(
                 start_date=start_date, end_date=end_date
-            ) or pd.DataFrame(),
+            ) or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(
@@ -1183,7 +1183,7 @@ class TestRunCrossrefCmd:
         # parquet.
         events_dir = tmp_path / "events"
         events_dir.mkdir()
-        pd.DataFrame({"GlobalEventID": [1001]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [1001]}).write_parquet(
             events_dir / "20260811.export.parquet"
         )
         (events_dir / "20260811.export.parquet.done").write_text("some-fingerprint")
@@ -1195,8 +1195,8 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
             end_date=None: captured.update(
-                n_events=len(events_df), ids=events_df["GlobalEventID"].tolist()
-            ) or pd.DataFrame(),
+                n_events=len(events_df), ids=events_df["GlobalEventID"].to_list()
+            ) or pl.DataFrame(),
         )
 
         cli.run_crossref_cmd(
