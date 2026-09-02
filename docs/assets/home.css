@@ -68,14 +68,24 @@
 }
 .gf-install .gf-prompt { color: var(--gf-slate); }
 .gf-cta { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 1rem; }
-.gf-btn {
+/* .md-typeset a{color:var(--md-typeset-a-color)} outranks a bare .gf-btn
+   class selector (one class beats one class+element only by source order,
+   too fragile to rely on), silently overriding every color set below:
+   confirmed directly by screenshotting the built page, where --primary's
+   "Get started" text was invisible (orange on orange, once the link-color
+   contrast fix above pinned --md-typeset-a-color to the same orange) and
+   the plain variant's text didn't switch to accent orange on :hover the
+   way it visibly should have, both hidden until that fix made the clash
+   observable. .md-typeset scoped in front of every rule here settles it
+   unambiguously on specificity rather than stylesheet order. */
+.md-typeset a.gf-btn {
   display: inline-block; padding: 0.55rem 1rem; border-radius: 0.15rem;
   font-size: 0.7rem; font-weight: 600; border: 1px solid var(--gf-line);
   color: var(--md-default-fg-color); text-decoration: none;
 }
-.gf-btn:hover { border-color: var(--gf-orange); color: var(--gf-orange); }
-.gf-btn--primary { background: var(--gf-orange); border-color: var(--gf-orange); color: #070B16; }
-.gf-btn--primary:hover { background: #f5a94d; border-color: #f5a94d; color: #070B16; }
+.md-typeset a.gf-btn:hover { border-color: var(--gf-orange); color: var(--gf-orange); }
+.md-typeset a.gf-btn--primary { background: var(--gf-orange); border-color: var(--gf-orange); color: #070B16; }
+.md-typeset a.gf-btn--primary:hover { background: #f5a94d; border-color: #f5a94d; color: #070B16; }
 .gf-facts {
   display: flex; flex-wrap: wrap; gap: 1.3rem;
   font-family: var(--md-code-font-family, monospace);
