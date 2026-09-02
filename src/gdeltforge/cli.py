@@ -25,7 +25,12 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import date_parser_for, run_scraping_pipeline
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
-from gdeltforge.utils.config import dataset_path_key, get_dict, load_config
+from gdeltforge.utils.config import (
+    dataset_is_always_historical,
+    dataset_path_key,
+    get_dict,
+    load_config,
+)
 from gdeltforge.utils.io import (
     ensure_exists,
     read_parquet_path,
@@ -98,8 +103,19 @@ _CROSSREF_GKG_TO_CONFIG = {
 }
 
 
-def _historical_folder(config: dict, path_key: str) -> str | None:
-    """Return the historical directory path when partitioning is enabled, else None."""
+def _historical_folder(config: dict, path_key: str, dataset: str) -> str | None:
+    """
+    Return the historical directory path when partitioning is enabled for
+    this dataset, else None.
+
+    gdelt_event_reduced bypasses the partitioning.enabled check entirely:
+    it has no flat output mode at all, so its historical directory must
+    resolve regardless of that toggle, the same bypass converter.py's own
+    historical_folder resolution already applies (see
+    dataset_is_always_historical).
+    """
+    if dataset_is_always_historical(dataset):
+        return config["paths"].get(path_key)
     part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     if not part_cfg.get("enabled", False):
         return None
@@ -260,7 +276,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    hist_folder = _historical_folder(config, historical_key)
+    hist_folder = _historical_folder(config, historical_key, dataset)
     columns = set(args.columns) if args.columns else None
 
     # -----------------------------
