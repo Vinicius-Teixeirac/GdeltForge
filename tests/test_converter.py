@@ -1117,6 +1117,83 @@ class TestDeleteSource:
         )
 
 
+class TestBareCsvInput:
+    """converter.file_pattern set to match a bare .csv (rather than the
+    ZIP archives every real scrape produces) used to fail unconditionally:
+    process_single_file always called unzip_file, which opened the input
+    with zipfile.ZipFile regardless of its actual extension, raising a
+    confusing BadZipFile for a CSV that never was a ZIP. is_bare_csv skips
+    straight to _read_csv for a .csv-suffixed input instead."""
+
+    @staticmethod
+    def _write_bare_csv(raw_dir, filename="20200101.export.csv", rows="1\t20200101\n"):
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = raw_dir / filename
+        csv_path.write_text(rows)
+        return csv_path
+
+    def test_converts_successfully_instead_of_raising_bad_zip_file(self, tmp_path):
+        self._write_bare_csv(tmp_path / "raw", rows="1\t20200101\n2\t20200102\n")
+        cfg = _make_config(tmp_path, file_pattern="*.csv")
+
+        outputs, failed = GDELTConverter(cfg).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        df = pl.read_parquet(outputs[0])
+        assert df["Day"].to_list() == [20200101, 20200102]
+
+    def test_source_csv_survives_by_default(self, tmp_path):
+        # keep_unzipped=False (the default) must not delete a bare-csv
+        # input: it's the source itself, not a scratch copy unzip_file
+        # extracted, so only --delete-source is allowed to remove it.
+        csv_path = self._write_bare_csv(tmp_path / "raw")
+        cfg = _make_config(tmp_path, file_pattern="*.csv", keep_unzipped=False)
+
+        outputs, failed = GDELTConverter(cfg).process_all_files()
+
+        assert failed == []
+        assert csv_path.exists()
+
+    def test_delete_source_still_removes_the_bare_csv(self, tmp_path):
+        csv_path = self._write_bare_csv(tmp_path / "raw")
+        cfg = _make_config(tmp_path, file_pattern="*.csv")
+
+        outputs, failed = GDELTConverter(cfg, delete_source=True).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert not csv_path.exists()
+
+    def test_stays_flat_even_when_partitioning_is_enabled(self, tmp_path):
+        # _detect_file_type's patterns all require a literal .zip suffix,
+        # so a bare .csv input always comes back "unknown" there and
+        # never matches a partitioning.rules entry, regardless of what
+        # its own name looks like.
+        self._write_bare_csv(tmp_path / "raw", filename="1979.csv")
+        cfg = _make_config(
+            tmp_path, file_pattern="*.csv",
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+
+        outputs, failed = GDELTConverter(cfg).process_all_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert (tmp_path / "parquet" / "1979.parquet").exists()
+        assert list((tmp_path / "historical").rglob("*.parquet")) == []
+
+    def test_process_single_file_called_directly_on_a_bare_csv(self, tmp_path):
+        csv_path = self._write_bare_csv(tmp_path / "raw")
+        converter = GDELTConverter(_make_config(tmp_path, file_pattern="*.csv"))
+
+        outputs = converter.process_single_file(str(csv_path))
+
+        assert len(outputs) == 1
+        assert pl.read_parquet(outputs[0])["GlobalEventID"].to_list() == [1]
+
+
 class TestForce:
     """force (CLI: --force) bypasses the .done marker check in
     process_all_files, so a zip already marked done is reprocessed and
