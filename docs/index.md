@@ -52,7 +52,7 @@ hide:
     <div class="gf-card"><img src="assets/brand/icons/icon-global.svg" alt=""><h3>The whole archive</h3><p>The 1979 historical backfill through today, not the last three months the API allows.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-store.svg" alt=""><h3>Columnar storage</h3><p>Parquet throughout, with optional Hive partitioning for yearly and monthly historical dumps.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-pipeline.svg" alt=""><h3>Transparent lineage</h3><p>Every stage explicit and independently testable. Nothing runs automagically.</p></div>
-    <div class="gf-card"><img src="assets/brand/icons/icon-dataset.svg" alt=""><h3>Six datasets</h3><p>Events (daily and native 15-minute granularity), GKG 2.1, legacy GKG 1.0 (plus its separate Counts file), and Mentions, each through the same stages.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-dataset.svg" alt=""><h3>Seven datasets</h3><p>Events (daily, native 15-minute granularity, and the 1979-2013 historical dump), GKG 2.1, legacy GKG 1.0 (plus its separate Counts file), and Mentions, each through the same stages.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-codes.svg" alt=""><h3>Bundled CAMEO codes</h3><p><code>gdeltforge codes</code> looks up valid values across seven column families, offline.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-warn.svg" alt=""><h3>Honest scope</h3><p>No orchestration, no VGKG, no hosted infrastructure. The comparison page says when to use something else.</p></div>
   </div>

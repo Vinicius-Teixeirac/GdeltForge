@@ -18,7 +18,11 @@ Only CSV -> Parquet is supported. The schema is preserved as-is, with no additio
 
 ## Sampling
 
-Supported modes: indexed random, daily, and filtered; filtered mode also supports stratified sampling (fixed N per group). Sampling is without replacement by default. Large samples (>20M rows) require significant disk I/O, since data is intentionally partitioned into many files to avoid extreme RAM usage.
+Supported modes: indexed random, calendar, and filtered; filtered mode also supports stratified sampling (fixed N per group). Sampling is without replacement by default. Large samples (>20M rows) require significant disk I/O, since data is intentionally partitioned into many files to avoid extreme RAM usage.
+
+`--mode calendar` reservoir-samples the true per-period group across every contributing file in a single streamed scan, so it caps correctly regardless of how many files a period's rows are spread across, including `--dataset events-reduced`'s own chunked conversion, which routinely splits a single calendar day's rows across several part-files within one `Year=YYYY/` directory (confirmed directly: a day split across 3 part-files still caps at the requested count, not 3x it).
+
+`gdeltforge crossref` cannot be run against `--dataset events-reduced` samples at all: see [Configuration](configuration.md#output_columns-and-crossref-four-columns-you-cant-prune-away) for why.
 
 ## Roadmap
 

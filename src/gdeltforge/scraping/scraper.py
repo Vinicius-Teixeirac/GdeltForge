@@ -7,13 +7,15 @@ real-time feed (https://data.gdeltproject.org/gdeltv2/), and the legacy
 GKG 1.0 daily archive (https://data.gdeltproject.org/gkg/), which predates
 the 15-minute architecture and still publishes daily for compatibility.
 
-Two discovery mechanisms, not three: Events and GKG 1.0 both scrape an
-HTML directory listing (same GCS-bucket-backed static index, and both
-paths hit the identical TLS cert mismatch documented below, strong
-evidence they're the same underlying serving infrastructure, just with a
+Three discovery mechanisms: Events and GKG 1.0 both scrape an HTML
+directory listing (same GCS-bucket-backed static index, and both paths
+hit the identical TLS cert mismatch documented below, strong evidence
+they're the same underlying serving infrastructure, just with a
 different base URL and filename shape); GKG 2.1/Mentions are looked up in
 a single master file list covering every 15-minute batch published since
-Feb 2015.
+Feb 2015; events-reduced is a single frozen historical file at a fixed,
+hardcoded URL, never updated since it was published, so there's nothing
+to discover at all.
 
 Provides:
     - collect_gdelt_links: retrieves all downloadable file links for a dataset
@@ -53,6 +55,17 @@ from gdeltforge.utils.logging import get_logger
 logger = get_logger(__name__)
 
 GDELT_EVENTS_URL = "https://data.gdeltproject.org/events/"
+
+# A single static historical bulk dump GDELT has never updated since
+# publishing it (see _is_gdelt_dataset_file's own docstring for why the
+# regular Events listing scrape deliberately never matches this filename).
+# Plain http, same as every other file this module serves, for the same
+# TLS-cert-mismatch reason documented on the urllib3.disable_warnings call
+# below.
+GDELT_EVENT_REDUCED_URL = "http://data.gdeltproject.org/events/GDELT.MASTERREDUCEDV2.1979-2013.zip"
+_GDELT_SINGLE_FILE_URLS = {
+    "gdelt_event_reduced": GDELT_EVENT_REDUCED_URL,
+}
 
 GDELT_V2_BASE_URL = "http://data.gdeltproject.org/gdeltv2/"
 GDELT_V2_MASTERFILELIST_URL = GDELT_V2_BASE_URL + "masterfilelist.txt"
@@ -132,8 +145,11 @@ def _is_gdelt_dataset_file(filename: str) -> bool:
     showed it's a genuinely different product (pre-aggregated daily
     rollups, no GlobalEventID), not a narrower copy of the same events
     this scrape already covers, so conflating the two under one dataset
-    key would be wrong. Confirmed no other aggregate file of this shape
-    lives here as of this check.
+    key would be wrong. It's available separately as its own dataset via
+    --dataset events-reduced (gdelt_event_reduced), fetched directly by
+    its own hardcoded URL rather than through this listing scrape at all,
+    see collect_gdelt_links's single-file branch. Confirmed no other
+    aggregate file of this shape lives here as of this check.
     """
     if not filename.endswith(".zip"):
         return False
@@ -475,7 +491,27 @@ def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[Gdel
     if dataset in _GDELT_GKG_V1_SUFFIXES:
         return _collect_gdelt_gkg_v1_links(config, dataset)
 
+    if dataset in _GDELT_SINGLE_FILE_URLS:
+        return _collect_single_file_link(dataset)
+
     raise NotImplementedError(f"Scraping for dataset {dataset!r} isn't implemented yet.")
+
+
+def _collect_single_file_link(dataset: str) -> list[GdeltFile]:
+    """
+    Returns a single hardcoded GdeltFile for a dataset served as one static
+    file rather than discovered via a directory listing or master file
+    list. There is nothing to discover: GDELT.MASTERREDUCEDV2.1979-2013.zip
+    is a frozen historical snapshot, never updated since it was published,
+    so its URL never changes and no network request is needed just to find
+    it. md5 stays None: GDELT's own separate md5sums file at this same URL
+    has never been fetched or parsed by this codebase, and its real line
+    format is unconfirmed; download_gdelt_files already tolerates a falsy
+    md5 as a no-verification file, the same path an unparsed checksum on
+    any other dataset already takes.
+    """
+    logger.info(f"{dataset} is a single static file; no discovery request needed.")
+    return [GdeltFile(url=_GDELT_SINGLE_FILE_URLS[dataset])]
 
 
 # ------------------------------------------------------------
@@ -1008,6 +1044,22 @@ def run_scraping_pipeline(
     making any network request; it is checked after force so the preview
     reflects force's effect on which files would be skipped.
     """
+    if dataset == "gdelt_event_reduced" and (start_date or end_date):
+        raise ValueError(
+            "--start-date/--end-date can't narrow scraping for --dataset "
+            "events-reduced: GDELT.MASTERREDUCEDV2.1979-2013.zip is one "
+            "static file covering its entire 1979-2013 range, not a "
+            "per-day/month/year archive, so its filename carries no "
+            "parseable date for filter_urls_by_date to match against. "
+            "Passing either flag here would silently download zero files "
+            "instead of raising (an unparseable filename is excluded, not "
+            "kept, when filtering a remote listing), so it's rejected "
+            "explicitly instead. Scrape the whole file with no date flags, "
+            "then narrow rows by its own Date column after `convert`, e.g. "
+            "gdeltforge sample --dataset events-reduced --mode filtered "
+            '--filter \'{"Date": {"op": "between", "min": ..., "max": ...}}\''
+        )
+
     if verbose:
         logger.setLevel(logging.DEBUG)
     elif quiet:
