@@ -277,7 +277,7 @@ Below are practical, beginner-friendly examples covering all common workflows.
 
 ### Scrape Raw Data
 
-Download the entire archive (`--dataset` is required on every command; see [CLI Reference](https://vinicius-teixeirac.github.io/GdeltForge/cli-reference/#-dataset) for the other five choices):
+Download the entire archive (`--dataset` is required on every command; see [CLI Reference](https://vinicius-teixeirac.github.io/GdeltForge/cli-reference/#-dataset) for the other six choices):
 
 ```bash
 gdeltforge scrape --dataset events
