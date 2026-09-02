@@ -14,11 +14,10 @@ from collections.abc import Callable
 from datetime import date
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
-import pandas as pd
-import pyarrow.dataset as ds
+import polars as pl
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
@@ -95,7 +94,7 @@ class IndexedSampler:
             f"{self.index.total_rows:,} total rows."
         )
 
-    def get_random_sample(self, n: int) -> pd.DataFrame:
+    def get_random_sample(self, n: int) -> pl.DataFrame:
         """Sample n rows uniformly across all parquet files."""
         if n > self.index.total_rows:
             raise ValueError("Requested sample size > total available rows")
@@ -109,10 +108,10 @@ class IndexedSampler:
         read_columns = list(self.columns) if self.columns else None
         sampled = []
         for file_path, relative_rows in tqdm(indices_by_file.items(), desc="Loading samples"):
-            df = pd.read_parquet(file_path, columns=read_columns)
-            sampled.append(df.iloc[relative_rows])
+            df = pl.read_parquet(file_path, columns=read_columns)
+            sampled.append(df.gather(relative_rows))
 
-        return pd.concat(sampled, ignore_index=True)
+        return pl.concat(sampled)
 
 
 # ----------------------------------------------------------
@@ -148,7 +147,7 @@ class DailySampler:
         self.date_parser = date_parser
         self.rng = ReproducibleRNG(random_state)
 
-    def get_daily_samples(self, samples_per_day: int = 10) -> pd.DataFrame:
+    def get_daily_samples(self, samples_per_day: int = 10) -> pl.DataFrame:
         flat_files = list(self.folder.glob("*.parquet"))
         hist_files = (
             list(self.historical_folder.rglob("*.parquet"))
@@ -176,27 +175,30 @@ class DailySampler:
         # file would silently look like it has no date column and get skipped.
         read_columns = list(self.columns | {self.date_column}) if self.columns else None
 
-        daily: dict[Any, list[pd.DataFrame]] = {}
+        daily: dict[Any, list[pl.DataFrame]] = {}
 
         for file_path in tqdm(parquet_files, desc="Daily sampling"):
-            df = pd.read_parquet(file_path, columns=read_columns)
+            df = pl.read_parquet(file_path, columns=read_columns)
             if self.date_column not in df.columns:
                 continue
 
-            for day, group in df.groupby(self.date_column):
+            # polars' own group_by always yields a tuple key, even for a
+            # single-column group_by (confirmed directly; pandas' groupby
+            # instead returns a bare scalar in that case).
+            for (day,), group in df.group_by(self.date_column, maintain_order=False):
                 size = min(samples_per_day, len(group))
                 if size == 0:
                     continue
 
                 idx = self.rng.choice(len(group), size=size, replace=False)
-                sample = group.iloc[idx]
+                sample = group.gather(idx)
                 daily.setdefault(day, []).append(sample)
 
         if not daily:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
-        all_samples = [pd.concat(chunks) for chunks in daily.values()]
-        return pd.concat(all_samples, ignore_index=True)
+        all_samples = [pl.concat(chunks) for chunks in daily.values()]
+        return pl.concat(all_samples)
 
 
 # ----------------------------------------------------------
@@ -204,8 +206,8 @@ class DailySampler:
 # ----------------------------------------------------------
 class FilteredSampler:
     """
-    Filter + sample from folder of parquet files using PyArrow dataset scanning
-    + batch streaming.
+    Filter + sample from folder of parquet files using a polars lazy scan
+    with predicate pushdown + batch streaming.
 
     When historical_folder is provided the sampler unions a Hive-partitioned
     historical dataset with the flat daily files. Filters that reference Year
@@ -314,15 +316,15 @@ class FilteredSampler:
                 cols.add(key)
         return cols
 
-    # ---------- convert simple condition -> pyarrow expression ----------
-    def _expr_for_condition(self, column: str, cond: Any) -> ds.Expression:
-        f = ds.field(column)
+    # ---------- convert simple condition -> polars expression ----------
+    def _expr_for_condition(self, column: str, cond: Any) -> pl.Expr:
+        f = pl.col(column)
 
         if isinstance(cond, (str, int, float, bool)):
             return f == cond
 
         if isinstance(cond, list):
-            return f.isin(cond)
+            return f.is_in(cond)
 
         if isinstance(cond, tuple) and len(cond) == 2:
             lo, hi = cond
@@ -333,7 +335,7 @@ class FilteredSampler:
             if op == FilterType.EQUALS.value:
                 return f == cond["value"]
             if op == FilterType.IN_LIST.value:
-                return f.isin(cond["values"])
+                return f.is_in(cond["values"])
             if op == FilterType.GREATER_THAN.value:
                 return f > cond["value"]
             if op == FilterType.LESS_THAN.value:
@@ -343,12 +345,12 @@ class FilteredSampler:
 
         raise ValueError(f"Invalid condition for {column}: {cond}")
 
-    # ---------- recursive builder: filter_dict -> pyarrow.dataset expression ----------
+    # ---------- recursive builder: filter_dict -> polars expression ----------
     def _build_expression(
         self, block: dict[str, Any], _join_with: str = "AND"
-    ) -> ds.Expression | None:
+    ) -> pl.Expr | None:
         """
-        Return a pyarrow.dataset Expression or None if block is empty.
+        Return a polars Expr or None if block is empty.
         Supports nested AND/OR and base column conditions.
         """
         if not block:
@@ -356,7 +358,7 @@ class FilteredSampler:
 
         expr = None
 
-        def _combine(acc: ds.Expression | None, new: ds.Expression) -> ds.Expression:
+        def _combine(acc: pl.Expr | None, new: pl.Expr) -> pl.Expr:
             if acc is None:
                 return new
             return (acc & new) if _join_with == "AND" else (acc | new)
@@ -381,7 +383,7 @@ class FilteredSampler:
         return expr
 
     # ---------- dataset: union of flat daily + historical partition files ----------
-    def _dataset(self) -> ds.Dataset:
+    def _dataset(self) -> pl.LazyFrame:
         all_files: list[Path] = list(self.folder.glob("*.parquet"))
 
         if self.historical_folder and self.historical_folder.exists():
@@ -401,28 +403,45 @@ class FilteredSampler:
                 )
             )
 
-        # Pass files as a flat list so PyArrow uses a single physical schema.
-        # Predicate pushdown on Year / MonthYear works via row-group statistics:
-        # each historical partition file has constant values for those columns,
-        # so non-matching files are skipped without reading any row data.
-        return ds.dataset(all_files, format="parquet")
+        # polars' scan_parquet infers its schema from a single file rather
+        # than the union of every file's schema the way pyarrow.dataset.
+        # dataset() does, confirmed directly: a column present in some
+        # files and absent from others (e.g. a historical partition file
+        # converted under an older, narrower output_columns) raises
+        # "extra column ... outside of expected schema" for whichever
+        # file doesn't match the schema scan_parquet happened to infer,
+        # regardless of file order. Reading every file's own footer
+        # schema first (cheap, metadata-only, the same order of cost
+        # pyarrow.dataset's own schema unification already paid) and
+        # passing the union explicitly as schema= reproduces that
+        # unification regardless of which file scan_parquet would
+        # otherwise have picked. Predicate pushdown on Year / MonthYear
+        # still works via row-group statistics: each historical partition
+        # file has constant values for those columns, so non-matching
+        # files are skipped without reading any row data.
+        schema: dict[str, pl.DataType] = {}
+        for f in all_files:
+            for name, dtype in pl.read_parquet_schema(f).items():
+                schema.setdefault(name, dtype)
+        return pl.scan_parquet(all_files, schema=schema, missing_columns="insert")
 
     def _batches(self, needed_columns: list[str]):
         """
-        Yield pyarrow.RecordBatch objects matching the configured filter,
-        using pyarrow.dataset Scanner with filter pushdown.
+        Yield polars DataFrame batches matching the configured filter, via
+        a lazy scan with predicate pushdown.
         """
-        # Wrapped from dataset construction onward: ds.dataset() itself
-        # can raise (schema inference reads at least the first file in
-        # the list), not only the later scanner consumption. Confirmed
-        # empirically that which one raises depends on where in the list
-        # a corrupt/non-parquet file happens to land.
+        # Wrapped from dataset construction onward: _dataset() itself can
+        # raise (every file's footer schema is read there), not only the
+        # later batch collection. Confirmed empirically that which one
+        # raises depends on where in the list a corrupt/non-parquet file
+        # happens to land.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            dataset = self._dataset()
-            expr    = self._build_expression(self.filter_dict)
-
-            scanner = dataset.scanner(columns=needed_columns, filter=expr, batch_size=64_000)
-            yield from scanner.to_batches()
+            lf = self._dataset()
+            expr = self._build_expression(self.filter_dict)
+            if expr is not None:
+                lf = lf.filter(expr)
+            lf = lf.select(needed_columns)
+            yield from lf.collect_batches(chunk_size=64_000)
 
     def _needed_columns(self) -> list[str]:
         """Union of requested columns and any column referenced in the filter expression."""
@@ -464,11 +483,14 @@ class FilteredSampler:
         new) array to write back into the caller's dict.
 
         A batch row can carry a NaN in a column that's been int64 so far
-        (nullable numeric GDELT fields). Checked this against plain numpy
-        assignment directly: unlike pandas, numpy does NOT raise here --
-        `int_arr[idx] = nan_values` silently casts NaN to INT64_MIN with
-        only a RuntimeWarning, so a try/except around the assignment can't
-        catch it. Compute the correct common dtype up front instead (via
+        (nullable numeric GDELT fields; polars' own nullable Int64 upcasts
+        to float64+NaN the same way through .to_numpy(), confirmed
+        directly, so this hazard survived the pandas-to-polars port
+        unchanged). Checked this against plain numpy assignment directly:
+        unlike pandas, numpy does NOT raise here -- `int_arr[idx] =
+        nan_values` silently casts NaN to INT64_MIN with only a
+        RuntimeWarning, so a try/except around the assignment can't catch
+        it. Compute the correct common dtype up front instead (via
         np.result_type, e.g. int64+float64 -> float64) and upcast before
         ever writing, rather than reacting to a write that already
         corrupted data.
@@ -483,60 +505,59 @@ class FilteredSampler:
     def _apply_reservoir_replacements(
         cls,
         reservoir_cols: dict[str, np.ndarray],
-        batch: pd.DataFrame,
+        batch: pl.DataFrame,
         rand_slots: np.ndarray,
         capacity: int,
     ) -> None:
         """
         Write accepted rows into their drawn reservoir slots, in place,
-        column by column as plain numpy arrays rather than through pandas'
-        DataFrame.iloc setter. On a wide reservoir (GDELT has ~58 columns),
-        iloc's positional-index setter costs roughly 15x more per write
-        than direct numpy array assignment, since it goes through pandas'
-        block manager instead of touching each column's array directly;
-        that gap is what dominates a full-archive scan's wall-clock time,
-        not the number of individual per-column calls. The reservoir is
-        only turned back into a DataFrame once, at the very end of the
-        scan (see get_random_sample / get_stratified_sample).
+        column by column as plain numpy arrays rather than through a
+        DataFrame-level positional setter. On a wide reservoir (GDELT has
+        ~58 columns), that route costs roughly 15x more per write than
+        direct numpy array assignment under the previous pandas
+        implementation (iloc's positional-index setter goes through
+        pandas' block manager instead of touching each column's array
+        directly); that gap is what dominates a full-archive scan's
+        wall-clock time, not the number of individual per-column calls.
+        The reservoir is only turned back into a DataFrame once, at the
+        very end of the scan (see get_random_sample / get_stratified_sample).
         """
         target_slots, source_pos = cls._dedup_last_write_per_slot(rand_slots, capacity)
         if target_slots.size == 0:
             return
 
-        accepted = batch.iloc[source_pos]
+        accepted = batch.gather(source_pos)
         for col, arr in reservoir_cols.items():
             reservoir_cols[col] = cls._assign_column(arr, target_slots, accepted[col].to_numpy())
 
     # ---------- API ----------
-    def filter_dataset(self) -> pd.DataFrame:
+    def filter_dataset(self) -> pl.DataFrame:
         needed = self._needed_columns()
 
-        frames: list[pd.DataFrame] = []
+        frames: list[pl.DataFrame] = []
         for batch in tqdm(self._batches(needed), desc="Filtering parquet files"):
             try:
-                df_batch = batch.to_pandas()
-                if not df_batch.empty:
-                    frames.append(df_batch[needed])
+                if not batch.is_empty():
+                    frames.append(batch.select(needed))
             except Exception as e:
                 logger.warning(f"Skipping batch due to error: {e}")
 
         if not frames:
-            return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True)
+            return pl.DataFrame()
+        return pl.concat(frames)
 
     # ---------- reservoir sampling for random sample ----------
-    def get_random_sample(self, n: int) -> pd.DataFrame:
+    def get_random_sample(self, n: int) -> pl.DataFrame:
         if n <= 0:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
         needed = self._needed_columns()
-        fill_chunks: list[pd.DataFrame] = []
+        fill_chunks: list[pl.DataFrame] = []
         filled    = 0
         reservoir_cols: dict[str, np.ndarray] | None = None
         total_seen = 0
 
-        for batch in tqdm(self._batches(needed), desc="Sampling (random)"):
-            df_batch   = batch.to_pandas()
+        for df_batch in tqdm(self._batches(needed), desc="Sampling (random)"):
             batch_size = len(df_batch)
             if batch_size == 0:
                 continue
@@ -546,21 +567,27 @@ class FilteredSampler:
             # _apply_reservoir_replacements for why.
             if filled < n:
                 take = min(n - filled, batch_size)
-                fill_chunks.append(df_batch.iloc[:take])
+                fill_chunks.append(df_batch.head(take))
                 filled     += take
                 total_seen += take
 
                 if filled == n:
-                    filled_df = pd.concat(fill_chunks, ignore_index=True)
+                    filled_df = pl.concat(fill_chunks)
+                    # writable=True forces a genuinely independent copy:
+                    # polars' own to_numpy() otherwise returns a read-only
+                    # array sharing memory with the source column
+                    # (confirmed directly; assigning into it without this
+                    # raises "assignment destination is read-only"), unlike
+                    # pandas' to_numpy(copy=True) equivalent this replaces.
                     reservoir_cols = {
-                        c: filled_df[c].to_numpy(copy=True) for c in filled_df.columns
+                        c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
                     }
                     fill_chunks.clear()
 
                 if take == batch_size:
                     continue
 
-                df_batch   = df_batch.iloc[take:].reset_index(drop=True)
+                df_batch   = df_batch.slice(take)
                 batch_size = len(df_batch)
 
             # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
@@ -576,41 +603,55 @@ class FilteredSampler:
             total_seen += batch_size
 
         reservoir = (
-            pd.DataFrame(reservoir_cols) if reservoir_cols is not None
-            else pd.concat(fill_chunks, ignore_index=True) if fill_chunks
+            pl.DataFrame(reservoir_cols) if reservoir_cols is not None
+            else pl.concat(fill_chunks) if fill_chunks
             else None
         )
 
-        if reservoir is None or reservoir.empty:
-            return pd.DataFrame()
+        if reservoir is None or reservoir.is_empty():
+            return pl.DataFrame()
 
         keep_cols = [c for c in self._gdelt_columns_ordered if c in reservoir.columns]
-        # Indexing a DataFrame with a list of columns always returns a
-        # DataFrame at runtime; pandas-stubs' overloads can't always prove
-        # that statically.
-        return cast(pd.DataFrame, reservoir.reset_index(drop=True).loc[:, keep_cols])
+        return reservoir.select(keep_cols)
 
     # ---------- stratified reservoir sampling ----------
-    def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pd.DataFrame:
+    # A dedicated grouping-key column, added and dropped inside the loop
+    # below rather than substituting nulls into stratify_col itself: the
+    # substitution must only affect which group a row lands in, not the
+    # actual stratify_col value carried through to the final output (a
+    # row with a genuine null in that column must still show a null
+    # there, not the literal string "__NA__").
+    _STRATIFY_GROUP_KEY = "__stratify_group_key__"
+
+    def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pl.DataFrame:
         if n_per_group <= 0:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
         needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
-        fill_chunks:    dict[Any, list[pd.DataFrame]]   = {}
+        fill_chunks:    dict[Any, list[pl.DataFrame]]   = {}
         filled:         dict[Any, int]                  = {}
         reservoir_cols: dict[Any, dict[str, np.ndarray]] = {}
         total_seen:     dict[Any, int]                  = {}
 
-        for batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
-            df_batch = batch.to_pandas()
-            if df_batch.empty or stratify_col not in df_batch.columns:
+        for df_batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
+            if df_batch.is_empty() or stratify_col not in df_batch.columns:
                 continue
 
-            for g, group_df in df_batch.groupby(
-                df_batch[stratify_col].fillna("__NA__"), sort=False
+            # polars' group_by keeps null as its own group natively
+            # (unlike pandas, which drops null-key groups by default),
+            # but the "__NA__" sentinel is kept anyway rather than relied
+            # on for a group KEY, since it's the group's dict key returned
+            # to the caller too, and None and the literal string "__NA__"
+            # need to be distinguishable there the same way they were
+            # before this port.
+            keyed_batch = df_batch.with_columns(
+                pl.col(stratify_col).fill_null("__NA__").alias(self._STRATIFY_GROUP_KEY)
+            )
+            for (g,), group_df in keyed_batch.group_by(
+                self._STRATIFY_GROUP_KEY, maintain_order=False
             ):
-                group_df   = group_df.reset_index(drop=True)
+                group_df   = group_df.drop([self._STRATIFY_GROUP_KEY])
                 group_size = len(group_df)
 
                 if g not in total_seen:
@@ -622,21 +663,23 @@ class FilteredSampler:
                 # pattern, once per stratify group.
                 if filled[g] < n_per_group:
                     take = min(n_per_group - filled[g], group_size)
-                    fill_chunks[g].append(group_df.iloc[:take])
+                    fill_chunks[g].append(group_df.head(take))
                     filled[g]      += take
                     total_seen[g]  += take
 
                     if filled[g] == n_per_group:
-                        filled_df = pd.concat(fill_chunks[g], ignore_index=True)
+                        filled_df = pl.concat(fill_chunks[g])
+                        # writable=True: see get_random_sample's identical
+                        # fill-phase comment for why this can't be omitted.
                         reservoir_cols[g] = {
-                            c: filled_df[c].to_numpy(copy=True) for c in filled_df.columns
+                            c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
                         }
                         fill_chunks[g] = []
 
                     if take == group_size:
                         continue
 
-                    group_df   = group_df.iloc[take:].reset_index(drop=True)
+                    group_df   = group_df.slice(take)
                     group_size = len(group_df)
 
                 # Replacement phase: vectorized slot selection via Vitter's Algorithm R
@@ -648,16 +691,16 @@ class FilteredSampler:
 
                 total_seen[g] += group_size
 
-        reservoirs: dict[Any, pd.DataFrame] = {
-            g: pd.DataFrame(cols) for g, cols in reservoir_cols.items()
+        reservoirs: dict[Any, pl.DataFrame] = {
+            g: pl.DataFrame(cols) for g, cols in reservoir_cols.items()
         }
         for g, chunks in fill_chunks.items():
             if chunks and g not in reservoirs:
-                reservoirs[g] = pd.concat(chunks, ignore_index=True)
+                reservoirs[g] = pl.concat(chunks)
 
         if not reservoirs:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
-        sample    = pd.concat(list(reservoirs.values()), ignore_index=True)
+        sample    = pl.concat(list(reservoirs.values()))
         keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
-        return cast(pd.DataFrame, sample.loc[:, keep_cols])
+        return sample.select(keep_cols)

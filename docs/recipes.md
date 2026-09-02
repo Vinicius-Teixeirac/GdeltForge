@@ -106,7 +106,7 @@ gdeltforge sample \
 
 ## GKG-Enriched Events
 
-Sample Events, then enrich the sample with GKG (themes, tone, people, organizations) via `crossref`. GKG 2.1, the current format, carries no event ID at all, only the source article's URL, so it needs Mentions too, as the bridge to Events; legacy GKG 1.0 carries `EventIds` directly, so it skips straight to GKG. See [Comparison](comparison.md#what-gdeltforge-actually-does-differently) for why that two-hop join is worth a dedicated command rather than a one-line pandas merge.
+Sample Events, then enrich the sample with GKG (themes, tone, people, organizations) via `crossref`. GKG 2.1, the current format, carries no event ID at all, only the source article's URL, so it needs Mentions too, as the bridge to Events; legacy GKG 1.0 carries `EventIds` directly, so it skips straight to GKG. See [Comparison](comparison.md#what-gdeltforge-actually-does-differently) for why that two-hop join is worth a dedicated command rather than a one-line dataframe merge.
 
 **GKG 2.1** (live since Feb 2015, updated every 15 minutes):
 
