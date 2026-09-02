@@ -113,7 +113,7 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | Key | Default | Description |
 |-----|---------|--------------|
 | `keep_unzipped` | `false` | Keep extracted CSVs after conversion instead of deleting them |
-| `file_pattern` | `"*.zip"` | Glob pattern for which files in `downloaded_data_directory` to convert |
+| `file_pattern` | `"*.zip"` | Glob pattern for which files in `downloaded_data_directory` to convert. A bare `.csv` matched here (e.g. `"*.csv"`) is read directly, no extraction step, for a CSV that didn't come from a fresh `scrape`; see below |
 | `max_workers` | `null` | Worker processes for conversion. `null` uses `os.cpu_count()` |
 | `max_workers_by_dataset.<dataset>` | none | Overrides `max_workers` for one dataset. See "Capacity planning" below: a worker count safe for one dataset isn't necessarily safe for another, since it depends on peak per-worker memory |
 | `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `columns.<dataset>` is still needed in full (it's what maps each raw position to a name on files with no header row), but the pruned subset is passed to `polars.read_csv` as integer positions, not names: this is what makes polars skip allocating/decoding whatever isn't in `output_columns`, the same optimization pandas' own `usecols` gave under the previous implementation. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
@@ -123,6 +123,8 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`.
 
 `output_columns` is worth setting for GKG 2.1 in particular: most of its columns are free-text fields (quotations, all-names, GCAM, extras XML, image/video embeds) that a themes/tone/persons/orgs crossref never reads. See "Capacity planning" below for what dropping them and raising `max_workers_by_dataset` measurably bought on real data.
+
+A bare `.csv` input (not inside a ZIP) is accepted alongside the archives real GDELT scrapes distribute, matched the same way, via `file_pattern`. It's read as-is with no extraction step; `--delete-source`/`keep_unzipped` still apply the same way (deleting or keeping the source once its parquet output is confirmed written), except `keep_unzipped` has nothing to keep, since nothing was ever extracted. Its filename plays no part in file-type detection (that requires a literal `.zip` suffix), so it always flat-writes to `parquet_data_directory`, regardless of `converter.partitioning.enabled`.
 
 ### Hive partitioning for historical data
 
