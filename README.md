@@ -35,7 +35,7 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 - Full historical archive, not just the last 3 months the API allows
 - Events enriched with GKG via `crossref`, preserving the real many-to-many structure instead of collapsing it
 - Efficient columnar storage (**Parquet**) instead of raw CSV/ZIP
-- Reproducible sampling: indexed, daily, and filtered modes, filtered mode also supports stratified sampling (fixed N per group)
+- Reproducible sampling: indexed, calendar, and filtered modes, filtered mode also supports stratified sampling (fixed N per group)
 - Each stage (`scrape`/`convert`/`filter`/`sample`/`crossref`) runs independently and inspectably
 
 ## Contents
@@ -100,7 +100,7 @@ This pipeline automates these steps end-to-end.
 
 ## Comparison to Other GDELT Tools
 
-GdeltForge's genuinely distinguishing feature is treating **reproducible sampling as a first-class pipeline stage**, not download-and-convert alone: seeded indexed, daily, and filtered reservoir sampling over the full archive in a single streaming pass, filtered mode also supports stratified sampling. The other is `crossref`: GKG 2.1 carries no event ID at all, only the source article's URL, so joining it to Events means a two-hop trip through Mentions that's easy to get subtly wrong; `crossref` does that join with filter pushdown and keeps the real many-to-many structure intact instead of silently collapsing it.
+GdeltForge's genuinely distinguishing feature is treating **reproducible sampling as a first-class pipeline stage**, not download-and-convert alone: seeded indexed, calendar, and filtered reservoir sampling over the full archive in a single streaming pass, filtered mode also supports stratified sampling. The other is `crossref`: GKG 2.1 carries no event ID at all, only the source article's URL, so joining it to Events means a two-hop trip through Mentions that's easy to get subtly wrong; `crossref` does that join with filter pushdown and keeps the real many-to-many structure intact instead of silently collapsing it.
 
 See [Comparison to Other Tools](https://vinicius-teixeirac.github.io/GdeltForge/comparison/) for an honest breakdown of when GdeltForge fits and when a DOC API client, BigQuery, or an existing Spark/DuckDB pipeline is the better choice.
 
@@ -398,7 +398,7 @@ Drops rows with missing values in the columns defined in settings.yaml. Also acc
 ### Sampling
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/sampling-modes.svg" alt="The four sampling modes: indexed, calendar, filtered and stratified" width="900">
+  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/sampling-modes.svg" alt="The three sampling modes, indexed, calendar and filtered, plus stratified as filtered's own optional sub-mode" width="900">
 </p>
 
 All sampling modes read from the filtered directory by default. Pass `--source converted` to sample from raw converted Parquet instead, skipping the `filter` stage entirely.
