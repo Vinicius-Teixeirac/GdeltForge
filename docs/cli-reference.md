@@ -54,7 +54,7 @@ gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (required; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (required; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -94,7 +94,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (required; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (required; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -133,7 +133,7 @@ Drops rows with missing values in the columns defined under `filter.columns_to_c
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (required; see [`--dataset`](#-dataset) below) |
+| `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (required; see [`--dataset`](#-dataset) below) |
 | `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -158,7 +158,7 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 ## `--dataset`
 
-`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there's no default, so every invocation of these four commands names its dataset explicitly. This was a deliberate breaking change (see the changelog): with two Events-flavored choices now available, a silent default risked someone meaning to opt into the finer, slower one falling back to the daily archive instead with no error.
+`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there's no default, so every invocation of these four commands names its dataset explicitly. This was a deliberate breaking change (see the changelog): with two Events-flavored choices now available, a silent default risked someone meaning to opt into the finer, slower one falling back to the daily archive instead with no error.
 
 - `events`: the daily/monthly/yearly Events archive. Not real-time (updates once a day), but far smaller and faster than `events-15min` for the same date range.
 - `events-15min`: Events at native GDELT 2.0 granularity, discovered from the same 15-minute master file list as `gkg-v2`/`mentions`, not the daily archive's directory listing. Genuinely a different, richer schema, not just finer granularity: 61 columns against the daily archive's 58, with an `ADM2Code` field added to each of the three geo blocks (`Actor1Geo`/`Actor2Geo`/`ActionGeo`) that the older, GDELT-1.0-compatible daily format doesn't carry. Opt-in and much slower in practice: real measurement puts the full 2015-present archive at 396,086 files (~81x the daily archive's file count for the same span) and ~40 GB total. File count, not raw size, is what dominates the cost here, since Events rows are compact structured data rather than GKG's free text. Reach for this only when you need intraday freshness or the extra geo precision; `events` is the right default-shaped choice otherwise.
@@ -175,7 +175,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
-| `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
+| `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
 | `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
 | `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
