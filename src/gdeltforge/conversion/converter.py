@@ -591,16 +591,22 @@ class GDELTConverter:
             "new_columns": usecols,
             "schema_overrides": {c: pl.Utf8 for c in usecols},
             "truncate_ragged_lines": True,
-            # polars' own default keeps a blank tab-separated field as "",
-            # not null; pandas' read_csv treats a blank field as NaN by
-            # default. Without this, every string column left blank in the
-            # source (Actor1EthnicCode, Actor1Religion1Code, and their
-            # Actor2 equivalents among others) comes out "" instead of
-            # null, which silently breaks columns_to_check's documented
-            # contract (configuration.md: "rows with a NaN/null value in
-            # any of these columns are dropped") for anyone who lists a
-            # string column there, confirmed via a real content-equality
-            # diff against pandas' output on a 10M-row fixture.
+            # A bare, unquoted blank tab-separated field (real GDELT's own
+            # shape) is already null by polars' own default, confirmed
+            # directly; this is only for a QUOTED empty field (""), which
+            # polars otherwise keeps as a real empty-string value rather
+            # than null, diverging from pandas' read_csv default of
+            # nulling it too. Without this, a string column whose source
+            # quotes a blank value (Actor1EthnicCode, Actor1Religion1Code,
+            # and their Actor2 equivalents among others, if a source ever
+            # does this) comes out "" instead of null, which silently
+            # breaks columns_to_check's documented contract
+            # (configuration.md: "rows with a NaN/null value in any of
+            # these columns are dropped") for anyone who lists such a
+            # column there. Confirmed via a real content-equality diff
+            # against pandas' output on a 10M-row fixture; see
+            # TestBlankStringFieldsBecomeNull for the full story on why
+            # only the quoted form was ever actually broken.
             "null_values": [""],
         }
         try:
