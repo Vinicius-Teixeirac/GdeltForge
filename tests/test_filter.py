@@ -883,6 +883,48 @@ class TestRunFilterDatasetParameter:
 
         assert captured["max_workers"] == 3
 
+    def test_events_reduced_resolves_historical_folders_regardless_of_partitioning(
+        self, tmp_path, monkeypatch
+    ):
+        # gdelt_event_reduced has no flat output mode at all (see
+        # converter.py's dataset_is_always_historical), so its historical
+        # directories must resolve here even with converter.partitioning
+        # disabled, unlike every other dataset (confirmed below:
+        # gdelt_event's own historical directories stay unresolved under
+        # the identical config).
+        reduced_in = tmp_path / "reduced_in"
+        reduced_out = tmp_path / "reduced_out"
+        reduced_in.mkdir()
+        cfg = {
+            "paths": {
+                "event_reduced_parquet_data_directory": str(reduced_in),
+                "event_reduced_filtered_data_directory": str(reduced_out),
+                "event_reduced_parquet_historical_directory": "/reduced_hist",
+                "event_reduced_filtered_historical_directory": "/reduced_hist_out",
+                "parquet_data_directory": str(reduced_in),
+                "filtered_data_directory": str(reduced_out),
+            },
+            "filter": {"columns_to_check": {"gdelt_event_reduced": [], "gdelt_event": []}},
+            "converter": {"partitioning": {"enabled": False}},
+        }
+
+        captured = {}
+        real_init = GDELTFilter.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(GDELTFilter, "__init__", spy_init)
+
+        run_filter(cfg, dataset="gdelt_event_reduced")
+        assert captured["historical_input_folder"] == "/reduced_hist"
+        assert captured["historical_output_folder"] == "/reduced_hist_out"
+
+        run_filter(cfg, dataset="gdelt_event")
+        assert captured["historical_input_folder"] is None
+        assert captured["historical_output_folder"] is None
+
     def test_missing_max_workers_key_defaults_to_none(self, tmp_path):
         # config["filter"] historically had no max_workers key at all
         # (pre-dating this feature); run_filter must not KeyError on it.

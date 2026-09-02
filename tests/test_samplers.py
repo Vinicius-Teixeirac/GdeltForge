@@ -93,6 +93,28 @@ class TestIndexedSampler:
         with pytest.raises(FileNotFoundError):
             IndexedSampler(str(folder), random_state=1)
 
+    def test_works_with_a_historical_only_tree_and_no_flat_siblings(self, tmp_path):
+        # gdelt_event_reduced always writes Hive-partitioned by Year and
+        # never has a flat sibling at all (see converter.py's
+        # dataset_is_always_historical), unlike every other dataset,
+        # which always has at least some flat files even when
+        # partitioning is enabled for part of its output. folder_path
+        # here is empty (not even created), the same as gdelt_event_
+        # reduced's always-unused flat directory in a real run.
+        flat_folder = tmp_path / "flat"
+        historical_folder = tmp_path / "historical" / "Year=1979"
+        historical_folder.mkdir(parents=True)
+        pl.DataFrame({"Date": range(20)}).write_parquet(historical_folder / "a.parquet")
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(tmp_path / "historical"),
+            random_state=42,
+        )
+        df = sampler.get_random_sample(5)
+
+        assert len(df) == 5
+        assert df["Date"].n_unique() == len(df)
+
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()

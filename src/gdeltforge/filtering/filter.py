@@ -80,7 +80,7 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
-from gdeltforge.utils.config import dataset_path_key, get_dict
+from gdeltforge.utils.config import dataset_is_always_historical, dataset_path_key, get_dict
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -632,7 +632,11 @@ def run_filter(
     part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     historical_input = historical_output = None
 
-    if part_cfg.get("enabled", False):
+    # gdelt_event_reduced has no flat output mode at all (see converter.py's
+    # dataset_is_always_historical), so its historical directories must
+    # resolve here regardless of converter.partitioning.enabled, the same
+    # bypass converter.py and cli.py's own _historical_folder already apply.
+    if part_cfg.get("enabled", False) or dataset_is_always_historical(dataset):
         historical_input = config["paths"].get(
             dataset_path_key(dataset, "parquet_historical_directory")
         )

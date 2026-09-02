@@ -689,6 +689,55 @@ class TestRunSamplingCmdSource:
 
         assert captured["historical_folder"] is None
 
+    def test_events_reduced_resolves_historical_folder_regardless_of_partitioning(
+        self, tmp_path, monkeypatch
+    ):
+        # gdelt_event_reduced has no flat output mode at all (see
+        # converter.py's dataset_is_always_historical), so its historical
+        # directory must resolve here even with converter.partitioning
+        # left unset, unlike every other dataset (confirmed below:
+        # gdelt_event's own historical directory stays None under the
+        # identical config).
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                captured["historical_folder"] = historical_folder
+
+            def get_random_sample(self, n):
+                return pl.DataFrame({"Date": [19790101]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        config = {
+            "paths": {
+                "event_reduced_parquet_data_directory": "/reduced_flat",
+                "event_reduced_parquet_historical_directory": "/reduced_hist",
+                "parquet_data_directory": "/converted",
+                "parquet_historical_directory": "/converted_hist",
+            },
+            "columns": {"gdelt_event_reduced": ["Date"], "gdelt_event": ["GlobalEventID"]},
+        }
+        args = argparse.Namespace(
+            dataset="events-reduced", mode="indexed", source="converted", n=10, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+
+        cli.run_sampling_cmd(config, args)
+        assert captured["historical_folder"] == "/reduced_hist"
+
+        # Same config, gdelt_event instead: no dataset_is_always_historical
+        # bypass applies, so its historical directory stays unresolved.
+        args.dataset = "events"
+        cli.run_sampling_cmd(config, args)
+        assert captured["historical_folder"] is None
+
     def test_columns_arg_reaches_indexed_sampler(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
@@ -714,6 +763,47 @@ class TestRunSamplingCmdSource:
         cli.run_sampling_cmd(self._config(), args)
 
         assert captured["columns"] == {"GlobalEventID", "QuadClass"}
+
+    def test_events_reduced_has_a_calendar_date_column_default(self, tmp_path, monkeypatch):
+        # _CALENDAR_DATE_SPECS is keyed by every real --dataset choice;
+        # events-reduced missing an entry there would KeyError the moment
+        # --mode calendar/daily ran against it without an explicit
+        # --date-column, rather than falling back to its real Date column
+        # the way every other dataset already does.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeCalendarSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                date_column="Day", period="day",
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                captured["date_column"] = date_column
+
+            def get_calendar_samples(self, samples_per_period):
+                return pl.DataFrame({"Date": [19790101]})
+
+        monkeypatch.setattr(cli, "CalendarSampler", FakeCalendarSampler)
+
+        config = {
+            "paths": {
+                "event_reduced_parquet_data_directory": "/reduced_flat",
+                "event_reduced_parquet_historical_directory": "/reduced_hist",
+            },
+            "columns": {"gdelt_event_reduced": ["Date"]},
+        }
+        args = argparse.Namespace(
+            dataset="events-reduced", mode="calendar", source="converted",
+            per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            out=str(tmp_path / "o.parquet"), columns=None,
+            export_format="parquet", start_date=None, end_date=None,
+        )
+
+        cli.run_sampling_cmd(config, args)
+
+        assert captured["date_column"] == "Date"
 
     def test_columns_arg_reaches_calendar_sampler(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
