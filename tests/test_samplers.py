@@ -2,7 +2,7 @@ import logging
 from datetime import date
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 from gdeltforge.sampling.samplers import DailySampler, FilteredSampler, IndexedSampler
@@ -27,7 +27,7 @@ GDELT_COLUMNS = [
 
 
 def _make_dataset(folder):
-    pd.DataFrame({
+    pl.DataFrame({
         "GlobalEventID": [1, 2, 3, 4, 5, 6],
         "Day": [20200101] * 6,
         "QuadClass": [1, 2, 3, 4, 1, 2],
@@ -37,25 +37,34 @@ def _make_dataset(folder):
         "ActionGeo_CountryCode": ["US", "BR", "US", "CH", "RU", "BR"],
         "GoldsteinScale": [-5.0, 0.0, 3.0, 5.0, -2.0, 1.0],
         "NumArticles": [1, 20, 5, 50, 3, 10],
-    }).to_parquet(folder / "data.parquet")
+    }).write_parquet(folder / "data.parquet")
+
+
+def _size_by_group(df: pl.DataFrame, col: str) -> dict:
+    """pandas' groupby(col).size() returns a Series indexed by group key;
+    polars' group_by(col).len() returns a plain [col, "len"] DataFrame
+    instead, so this reshapes it into the same key -> count mapping the
+    tests below index into."""
+    grouped = df.group_by(col).len()
+    return dict(zip(grouped[col].to_list(), grouped["len"].to_list(), strict=True))
 
 
 class TestIndexedSampler:
     def test_sample_size_and_uniqueness(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({"GlobalEventID": range(20)}).to_parquet(folder / "a.parquet")
+        pl.DataFrame({"GlobalEventID": range(20)}).write_parquet(folder / "a.parquet")
 
         sampler = IndexedSampler(str(folder), random_state=42)
         df = sampler.get_random_sample(5)
 
         assert len(df) == 5
-        assert df["GlobalEventID"].is_unique
+        assert df["GlobalEventID"].n_unique() == len(df)
 
     def test_raises_when_n_exceeds_total_rows(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({"GlobalEventID": range(5)}).to_parquet(folder / "a.parquet")
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
 
         sampler = IndexedSampler(str(folder), random_state=1)
         with pytest.raises(ValueError):
@@ -64,7 +73,7 @@ class TestIndexedSampler:
     def test_reproducible_with_same_seed(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({"GlobalEventID": range(50)}).to_parquet(folder / "a.parquet")
+        pl.DataFrame({"GlobalEventID": range(50)}).write_parquet(folder / "a.parquet")
 
         s1 = IndexedSampler(str(folder), random_state=7).get_random_sample(10)
         s2 = IndexedSampler(str(folder), random_state=7).get_random_sample(10)
@@ -80,9 +89,9 @@ class TestIndexedSampler:
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(20), "QuadClass": [1] * 20, "GoldsteinScale": [0.0] * 20,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = IndexedSampler(str(folder), random_state=42, columns={"GlobalEventID"})
         df = sampler.get_random_sample(5)
@@ -92,9 +101,9 @@ class TestIndexedSampler:
     def test_no_columns_arg_returns_everything(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(10), "QuadClass": [1] * 10,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = IndexedSampler(str(folder), random_state=1)
         df = sampler.get_random_sample(5)
@@ -106,24 +115,24 @@ class TestDailySampler:
     def test_caps_at_samples_per_day(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(10),
             "Day": [20200101] * 3 + [20200102] * 7,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = DailySampler(str(folder), random_state=1)
         df = sampler.get_daily_samples(samples_per_day=2)
 
-        counts = df.groupby("Day").size()
+        counts = _size_by_group(df, "Day")
         assert counts[20200101] == 2
         assert counts[20200102] == 2
 
     def test_takes_all_rows_when_fewer_than_requested(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame(
+        pl.DataFrame(
             {"GlobalEventID": [1, 2], "Day": [20200101, 20200101]}
-        ).to_parquet(folder / "a.parquet")
+        ).write_parquet(folder / "a.parquet")
 
         sampler = DailySampler(str(folder), random_state=1)
         df = sampler.get_daily_samples(samples_per_day=10)
@@ -133,19 +142,19 @@ class TestDailySampler:
     def test_skips_files_without_day_column(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(folder / "no_day.parquet")
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(folder / "no_day.parquet")
 
         sampler = DailySampler(str(folder), random_state=1)
         df = sampler.get_daily_samples(samples_per_day=5)
 
-        assert df.empty
+        assert df.is_empty()
 
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(6), "Day": [20200101] * 6, "GoldsteinScale": [0.0] * 6,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = DailySampler(str(folder), random_state=1, columns={"GlobalEventID"})
         df = sampler.get_daily_samples(samples_per_day=3)
@@ -161,14 +170,14 @@ class TestDailySampler:
         # not silently make every file look like it has no Day column.
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(6), "Day": [20200101] * 6, "GoldsteinScale": [0.0] * 6,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = DailySampler(str(folder), random_state=1, columns={"GlobalEventID"})
         df = sampler.get_daily_samples(samples_per_day=3)
 
-        assert not df.empty
+        assert not df.is_empty()
         assert "Day" in df.columns
 
     def test_date_column_can_be_overridden_for_non_events_schemas(self, tmp_path):
@@ -177,15 +186,15 @@ class TestDailySampler:
         # configurable rather than hardcoded.
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "DocumentIdentifier": range(10),
             "V21Date": [20200101] * 3 + [20200102] * 7,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = DailySampler(str(folder), random_state=1, date_column="V21Date")
         df = sampler.get_daily_samples(samples_per_day=2)
 
-        counts = df.groupby("V21Date").size()
+        counts = _size_by_group(df, "V21Date")
         assert counts[20200101] == 2
         assert counts[20200102] == 2
 
@@ -194,7 +203,7 @@ class TestDailySampler:
         # "Day" so existing Events callers are unaffected.
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).to_parquet(folder / "a.parquet")
+        pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(folder / "a.parquet")
 
         sampler = DailySampler(str(folder), random_state=1)
         assert sampler.date_column == "Day"
@@ -370,22 +379,22 @@ class TestFilteredSamplerReservoirSampling:
     def test_sample_size_matches_request(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(30), "QuadClass": [1] * 30,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         df = sampler.get_random_sample(10)
 
         assert len(df) == 10
-        assert df["GlobalEventID"].is_unique
+        assert df["GlobalEventID"].n_unique() == len(df)
 
     def test_takes_everything_when_n_equals_total(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(15), "QuadClass": [1] * 15,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         df = sampler.get_random_sample(15)
@@ -395,9 +404,9 @@ class TestFilteredSamplerReservoirSampling:
     def test_reproducible_with_same_seed(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(100), "QuadClass": [1] * 100,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         cols = ["GlobalEventID", "QuadClass"]
         s1 = FilteredSampler(str(folder), cols, random_state=99).get_random_sample(20)
@@ -408,10 +417,10 @@ class TestFilteredSamplerReservoirSampling:
     def test_respects_filter_before_sampling(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(20),
             "QuadClass": [1 if i < 5 else 2 for i in range(20)],
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = FilteredSampler(
             str(folder), ["GlobalEventID", "QuadClass"],
@@ -494,7 +503,7 @@ class TestApplyReservoirReplacements:
     @staticmethod
     def _make_df(n, seed):
         rng = np.random.default_rng(seed)
-        return pd.DataFrame({
+        return pl.DataFrame({
             "GlobalEventID": rng.integers(0, 10**9, n),
             "QuadClass": rng.integers(1, 5, n),
             "Actor1CountryCode": rng.choice(["USA", "BRA", "CHN", "RUS", "FRA"], n),
@@ -503,7 +512,12 @@ class TestApplyReservoirReplacements:
 
     @staticmethod
     def _to_cols(df):
-        return {c: df[c].to_numpy(copy=True) for c in df.columns}
+        # writable=True forces a genuinely independent copy: polars' own
+        # to_numpy() otherwise returns a read-only array sharing memory
+        # with the source column (confirmed directly; assigning into it
+        # without this raises "assignment destination is read-only"),
+        # unlike pandas' to_numpy(copy=True) equivalent this replaces.
+        return {c: df[c].to_numpy(writable=True) for c in df.columns}
 
     def test_matches_true_sequential_application_under_heavy_collisions(self):
         n_reservoir = 50
@@ -518,20 +532,28 @@ class TestApplyReservoirReplacements:
         # Fold into a small slot range to force many in-batch collisions.
         rand_slots = rng.integers(0, positions + 1) % n_reservoir
 
+        # polars frames have no in-place row setter the way pandas' iloc
+        # does; the true-sequential reference is instead built by mutating
+        # plain Python row dicts one at a time, in position order, then
+        # rebuilding a DataFrame from the result. Independent of the
+        # vectorized implementation under test either way.
+        reservoir_rows = reservoir_ref.to_dicts()
+        batch_rows = batch.to_dicts()
         for k in range(batch_size):
             if rand_slots[k] < n_reservoir:
-                reservoir_ref.iloc[int(rand_slots[k])] = batch.iloc[k]
+                reservoir_rows[int(rand_slots[k])] = batch_rows[k]
+        reservoir_ref = pl.DataFrame(reservoir_rows)
 
         FilteredSampler._apply_reservoir_replacements(
             reservoir_cols, batch, rand_slots, n_reservoir
         )
 
-        reservoir_vec = pd.DataFrame(reservoir_cols)
+        reservoir_vec = pl.DataFrame(reservoir_cols)
         assert reservoir_ref.equals(reservoir_vec)
-        assert (reservoir_ref.dtypes == reservoir_vec.dtypes).all()
+        assert reservoir_ref.schema == reservoir_vec.schema
 
     def test_upcasts_int_column_when_incoming_row_has_a_null(self):
-        # A batch row can carry NaN in a column that's int64 in the
+        # A batch row can carry a null in a column that's int64 in the
         # reservoir (nullable numeric GDELT fields, e.g. NumArticles).
         # Plain numpy assignment raises rather than upcasting on its own;
         # _assign_column upcasts just that column and retries.
@@ -540,9 +562,13 @@ class TestApplyReservoirReplacements:
             "NumArticles": np.array([10, 20, 30], dtype=np.int64),
             "Actor1CountryCode": np.array(["USA", "BRA", "CHN"], dtype=object),
         }
-        batch = pd.DataFrame({
+        # None (not float("nan")), so polars infers a genuine nullable
+        # Int64 column here rather than an already-float64 one: real
+        # GDELT nullable numeric fields carry an actual null in the
+        # source parquet, not a float NaN literal.
+        batch = pl.DataFrame({
             "GlobalEventID": [101, 102],
-            "NumArticles": [5, np.nan],
+            "NumArticles": [5, None],
             "Actor1CountryCode": ["RUS", "FRA"],
         })
         rand_slots = np.array([0, 1])
@@ -570,30 +596,30 @@ class TestStratifiedSampling:
     def test_exact_n_per_group(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(40),
             "QuadClass": [1] * 10 + [2] * 10 + [3] * 10 + [4] * 10,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         df = sampler.get_stratified_sample("QuadClass", n_per_group=4)
 
-        counts = df.groupby("QuadClass").size()
-        assert (counts == 4).all()
+        counts = _size_by_group(df, "QuadClass")
+        assert all(v == 4 for v in counts.values())
         assert len(df) == 16
 
     def test_takes_all_when_group_smaller_than_requested(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": range(12),
             "QuadClass": [1] * 2 + [2] * 10,
-        }).to_parquet(folder / "a.parquet")
+        }).write_parquet(folder / "a.parquet")
 
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         df = sampler.get_stratified_sample("QuadClass", n_per_group=5)
 
-        counts = df.groupby("QuadClass").size()
+        counts = _size_by_group(df, "QuadClass")
         assert counts[1] == 2
         assert counts[2] == 5
 
@@ -603,7 +629,7 @@ class TestStratifiedSampling:
 # ----------------------------------------------------------
 def _write_daily_file(folder, day: str, ids: list[int]):
     """day is YYYYMMDD; filename matches parse_file_date's daily pattern."""
-    pd.DataFrame({"GlobalEventID": ids, "Day": [int(day)] * len(ids)}).to_parquet(
+    pl.DataFrame({"GlobalEventID": ids, "Day": [int(day)] * len(ids)}).write_parquet(
         folder / f"{day}.export.parquet"
     )
 
@@ -655,7 +681,7 @@ class TestIndexedSamplerDateFiltering:
         folder = tmp_path / "data"
         folder.mkdir()
         _write_daily_file(folder, "20150101", [1, 2])
-        pd.DataFrame({"GlobalEventID": [99], "Day": [19790101]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [99], "Day": [19790101]}).write_parquet(
             folder / "misc.parquet"
         )
 
@@ -665,7 +691,7 @@ class TestIndexedSamplerDateFiltering:
         )
         df = sampler.get_random_sample(1)
 
-        assert df["GlobalEventID"].tolist() == [99]
+        assert df["GlobalEventID"].to_list() == [99]
 
     def test_fully_excluded_range_raises(self, tmp_path):
         folder = tmp_path / "data"
@@ -684,8 +710,8 @@ class TestIndexedSamplerDateFiltering:
         # but is a valid GKG 1.0-style filename under parse_gdelt_gkg_v1_file_date.
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(folder / "20150101.parquet")
-        pd.DataFrame({"GlobalEventID": [3, 4]}).to_parquet(folder / "20150201.parquet")
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(folder / "20150101.parquet")
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(folder / "20150201.parquet")
 
         sampler = IndexedSampler(
             str(folder), random_state=1,
@@ -717,7 +743,7 @@ class TestDailySamplerDateFiltering:
         folder = tmp_path / "data"
         folder.mkdir()
         _write_daily_file(folder, "20150101", [1, 2])
-        pd.DataFrame({"GlobalEventID": [99], "Day": [19790101]}).to_parquet(
+        pl.DataFrame({"GlobalEventID": [99], "Day": [19790101]}).write_parquet(
             folder / "misc.parquet"
         )
 
@@ -727,7 +753,7 @@ class TestDailySamplerDateFiltering:
         )
         df = sampler.get_daily_samples(samples_per_day=10)
 
-        assert df["GlobalEventID"].tolist() == [99]
+        assert df["GlobalEventID"].to_list() == [99]
 
     def test_fully_excluded_range_raises(self, tmp_path):
         folder = tmp_path / "data"
@@ -764,16 +790,16 @@ class TestFilteredSamplerDateFiltering:
         # one replacing the other.
         folder = tmp_path / "data"
         folder.mkdir()
-        pd.DataFrame({
+        pl.DataFrame({
             "GlobalEventID": [1, 2, 3, 4],
             "Day": [20150102] * 4,
             "QuadClass": [1, 2, 1, 2],
-        }).to_parquet(folder / "20150102.export.parquet")
-        pd.DataFrame({
+        }).write_parquet(folder / "20150102.export.parquet")
+        pl.DataFrame({
             "GlobalEventID": [5, 6],
             "Day": [20150103] * 2,
             "QuadClass": [1, 1],
-        }).to_parquet(folder / "20150103.export.parquet")
+        }).write_parquet(folder / "20150103.export.parquet")
 
         sampler = FilteredSampler(
             str(folder), ["GlobalEventID", "Day", "QuadClass"], random_state=1,

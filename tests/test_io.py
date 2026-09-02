@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from gdeltforge.utils.io import (
@@ -20,12 +20,12 @@ from gdeltforge.utils.io import (
 class TestWriteParquetAtomic:
     def test_writes_file_and_leaves_no_tmp_behind(self, tmp_path):
         out = tmp_path / "sample.parquet"
-        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
 
         write_parquet_atomic(df, out)
 
         assert out.exists()
-        assert pd.read_parquet(out)["GlobalEventID"].tolist() == [1, 2, 3]
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
         assert not (tmp_path / "sample.parquet.tmp").exists()
 
     def test_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
@@ -33,31 +33,29 @@ class TestWriteParquetAtomic:
         tmp_path_leftover = tmp_path / "sample.parquet.tmp"
         tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
 
-        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
         with caplog.at_level(logging.WARNING):
             write_parquet_atomic(df, out)
 
         assert "leftover incomplete file" in caplog.text
-        assert pd.read_parquet(out)["GlobalEventID"].tolist() == [1, 2, 3]
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
         assert not tmp_path_leftover.exists()
 
-    def test_extra_kwargs_are_passed_through_to_to_parquet(self, tmp_path, monkeypatch):
+    def test_extra_kwargs_are_passed_through_to_write_parquet(self, tmp_path, monkeypatch):
         out = tmp_path / "sample.parquet"
         captured = {}
 
-        real_to_parquet = pd.DataFrame.to_parquet
+        real_write_parquet = pl.DataFrame.write_parquet
 
         def spy(self, path, **kwargs):
             captured.update(kwargs)
-            return real_to_parquet(self, path, **kwargs)
+            return real_write_parquet(self, path, **kwargs)
 
-        monkeypatch.setattr(pd.DataFrame, "to_parquet", spy)
+        monkeypatch.setattr(pl.DataFrame, "write_parquet", spy)
 
-        write_parquet_atomic(
-            pd.DataFrame({"a": [1]}), out, engine="pyarrow", compression="snappy", index=False,
-        )
+        write_parquet_atomic(pl.DataFrame({"a": [1]}), out, compression="snappy")
 
-        assert captured == {"engine": "pyarrow", "compression": "snappy", "index": False}
+        assert captured == {"compression": "snappy"}
 
     def test_cleans_up_tmp_and_reraises_on_write_failure(self, tmp_path, monkeypatch):
         out = tmp_path / "sample.parquet"
@@ -66,10 +64,10 @@ class TestWriteParquetAtomic:
             Path(path).write_bytes(b"partial write before failure")
             raise OSError("disk full")
 
-        monkeypatch.setattr(pd.DataFrame, "to_parquet", boom)
+        monkeypatch.setattr(pl.DataFrame, "write_parquet", boom)
 
         with pytest.raises(OSError):
-            write_parquet_atomic(pd.DataFrame({"a": [1]}), out)
+            write_parquet_atomic(pl.DataFrame({"a": [1]}), out)
 
         assert not out.exists()
         assert not (tmp_path / "sample.parquet.tmp").exists()
@@ -84,45 +82,50 @@ class TestWriteDataframeAtomic:
 
     def test_parquet_delegates_to_write_parquet_atomic(self, tmp_path):
         out = tmp_path / "sample.parquet"
-        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
 
         write_dataframe_atomic(df, out, export_format="parquet")
 
         assert out.exists()
-        assert pd.read_parquet(out)["GlobalEventID"].tolist() == [1, 2, 3]
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
         assert not (tmp_path / "sample.parquet.tmp").exists()
 
     def test_csv_writes_a_real_readable_file(self, tmp_path):
         out = tmp_path / "sample.csv"
-        df = pd.DataFrame({"GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3]})
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3]})
 
         write_dataframe_atomic(df, out, export_format="csv")
 
         assert out.exists()
-        result = pd.read_csv(out)
-        assert result["GlobalEventID"].tolist() == [1, 2, 3]
-        assert result["QuadClass"].tolist() == [1, 2, 3]
+        result = pl.read_csv(out)
+        assert result["GlobalEventID"].to_list() == [1, 2, 3]
+        assert result["QuadClass"].to_list() == [1, 2, 3]
         assert not (tmp_path / "sample.csv.tmp").exists()
 
-    def test_csv_writes_without_a_pandas_index_column(self, tmp_path):
+    def test_csv_writes_without_an_index_column(self, tmp_path):
+        # Regression guard carried over from the pandas implementation,
+        # where this required an explicit index=False: polars frames have
+        # no index concept at all, so there's nothing to suppress here,
+        # but the guarantee (no synthetic extra column in the output)
+        # still deserves its own test rather than being assumed.
         out = tmp_path / "sample.csv"
-        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
 
         write_dataframe_atomic(df, out, export_format="csv")
 
-        assert list(pd.read_csv(out).columns) == ["GlobalEventID"]
+        assert pl.read_csv(out).columns == ["GlobalEventID"]
 
     def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
         out = tmp_path / "sample.csv"
         tmp_path_leftover = tmp_path / "sample.csv.tmp"
         tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
 
-        df = pd.DataFrame({"GlobalEventID": [1, 2, 3]})
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
         with caplog.at_level(logging.WARNING):
             write_dataframe_atomic(df, out, export_format="csv")
 
         assert "leftover incomplete file" in caplog.text
-        assert pd.read_csv(out)["GlobalEventID"].tolist() == [1, 2, 3]
+        assert pl.read_csv(out)["GlobalEventID"].to_list() == [1, 2, 3]
         assert not tmp_path_leftover.exists()
 
     def test_csv_cleans_up_tmp_and_reraises_on_write_failure(self, tmp_path, monkeypatch):
@@ -132,10 +135,10 @@ class TestWriteDataframeAtomic:
             Path(path).write_bytes(b"partial write before failure")
             raise OSError("disk full")
 
-        monkeypatch.setattr(pd.DataFrame, "to_csv", boom)
+        monkeypatch.setattr(pl.DataFrame, "write_csv", boom)
 
         with pytest.raises(OSError):
-            write_dataframe_atomic(pd.DataFrame({"a": [1]}), out, export_format="csv")
+            write_dataframe_atomic(pl.DataFrame({"a": [1]}), out, export_format="csv")
 
         assert not out.exists()
         assert not (tmp_path / "sample.csv.tmp").exists()
@@ -143,7 +146,7 @@ class TestWriteDataframeAtomic:
     def test_unsupported_format_raises_clearly(self, tmp_path):
         out = tmp_path / "sample.json"
         with pytest.raises(ValueError, match="Unsupported export format: 'json'"):
-            write_dataframe_atomic(pd.DataFrame({"a": [1]}), out, export_format="json")
+            write_dataframe_atomic(pl.DataFrame({"a": [1]}), out, export_format="json")
 
         assert not out.exists()
 
@@ -151,35 +154,36 @@ class TestWriteDataframeAtomic:
 class TestReadParquetPath:
     def test_reads_a_single_file_directly(self, tmp_path):
         f = tmp_path / "sample.parquet"
-        pd.DataFrame({"GlobalEventID": [1, 2, 3]}).to_parquet(f)
+        pl.DataFrame({"GlobalEventID": [1, 2, 3]}).write_parquet(f)
 
         result = read_parquet_path(f)
 
-        assert result["GlobalEventID"].tolist() == [1, 2, 3]
+        assert result["GlobalEventID"].to_list() == [1, 2, 3]
 
     def test_reads_every_parquet_file_in_a_directory(self, tmp_path):
-        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(tmp_path / "a.parquet")
-        pd.DataFrame({"GlobalEventID": [3, 4, 5]}).to_parquet(tmp_path / "b.parquet")
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({"GlobalEventID": [3, 4, 5]}).write_parquet(tmp_path / "b.parquet")
 
         result = read_parquet_path(tmp_path)
 
-        assert sorted(result["GlobalEventID"].tolist()) == [1, 2, 3, 4, 5]
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3, 4, 5]
 
     def test_ignores_done_resumability_markers_in_a_directory(self, tmp_path):
         # The real bug: convert/filter's own .done markers (mark_done above
         # writes them as a dot-prefixed sibling of the data) sit in exactly
-        # these directories by design. Now dot-prefixed specifically so a
-        # bare pandas/pyarrow directory read skips them on its own; this
-        # explicit glob is a second layer on top of that, not the only
-        # thing preventing the marker from being parsed as a parquet file.
+        # these directories by design. This explicit *.parquet glob is what
+        # keeps them out, not an assumption that the underlying engine
+        # skips dot-prefixed files on its own (polars' own bare-directory
+        # read does not, confirmed directly; see read_parquet_path's own
+        # docstring).
         f = tmp_path / "20260811.export.parquet"
-        pd.DataFrame({"GlobalEventID": [1, 2]}).to_parquet(f)
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(f)
         mark_done(f, "some-fingerprint")
         assert (tmp_path / ".20260811.export.parquet.done").exists()
 
         result = read_parquet_path(tmp_path)
 
-        assert result["GlobalEventID"].tolist() == [1, 2]
+        assert result["GlobalEventID"].to_list() == [1, 2]
 
     def test_empty_directory_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="No parquet files"):
@@ -355,12 +359,16 @@ class TestDeleteDoneMarker:
 
 
 class TestClearerDatasetErrors:
-    """clearer_dataset_errors wraps a pyarrow.dataset read so a bare,
-    low-level ArrowInvalid/OSError, e.g. "Could not open Parquet input
-    source '<path>': ...", gets an actionable message on top, naming
-    what was being read and the likely causes, instead of surfacing as
-    a mystery "generic pyarrow error." Confirmed the real shape of this
-    against a genuinely corrupt file, not assumed."""
+    """clearer_dataset_errors wraps a dataset read so a bare, low-level
+    ArrowInvalid/ComputeError/OSError, e.g. "Could not open Parquet input
+    source '<path>': ..." or "File out of specification: ...", gets an
+    actionable message on top, naming what was being read and the likely
+    causes, instead of surfacing as a mystery low-level engine error.
+    Two engines' own exception types are both live call sites today:
+    indexer.py still reads via pyarrow.dataset directly (ArrowException),
+    while read_parquet_path and everything ported to polars raises
+    ComputeError instead. Confirmed the real shape of both against a
+    genuinely corrupt file, not assumed."""
 
     def test_an_arrow_error_is_wrapped_with_context(self):
         import pyarrow as pa
@@ -369,6 +377,31 @@ class TestClearerDatasetErrors:
             with clearer_dataset_errors("3 parquet file(s)"):
                 raise pa.ArrowInvalid("Could not open Parquet input source 'x': bad magic bytes")
         assert "Common causes" in str(exc_info.value)
+
+    def test_a_polars_compute_error_is_wrapped_with_context(self):
+        with pytest.raises(RuntimeError, match=r"reading 3 parquet file\(s\)") as exc_info:
+            with clearer_dataset_errors("3 parquet file(s)"):
+                raise pl.exceptions.ComputeError("File out of specification: bad magic bytes")
+        assert "Common causes" in str(exc_info.value)
+
+    def test_a_real_corrupt_file_raises_a_wrapped_error_through_read_parquet_path(
+        self, tmp_path
+    ):
+        # Not a synthetic raise: a real, genuinely non-parquet file run
+        # through the actual read_parquet_path/polars call chain this
+        # wrapper protects, confirming the exception type polars really
+        # raises for this case is one the except clause actually catches.
+        # A single-file path isn't itself wrapped (read_parquet_path only
+        # wraps its multi-file directory branch), so the corrupt file is
+        # placed inside a directory to exercise that branch for real.
+        parquet_dir = tmp_path / "parquet"
+        parquet_dir.mkdir()
+        (parquet_dir / "corrupt.parquet").write_bytes(
+            b"not a real parquet file, just garbage bytes"
+        )
+
+        with pytest.raises(RuntimeError, match="Common causes"):
+            read_parquet_path(parquet_dir)
 
     def test_the_original_exception_is_chained_not_discarded(self):
         import pyarrow as pa
@@ -398,7 +431,7 @@ class TestClearerDatasetErrors:
                 raise FileNotFoundError("no files matched")
 
     def test_an_unrelated_exception_passes_through_unwrapped(self):
-        # Only the two exception types pyarrow/OS-level read failures
+        # Only the exception types pyarrow/polars/OS-level read failures
         # actually raise are caught; anything else (a real bug in the
         # caller's own code, e.g.) must not be masked as a data problem.
         with pytest.raises(ValueError, match="not a dataset problem"):

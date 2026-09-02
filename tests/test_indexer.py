@@ -1,13 +1,13 @@
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 from gdeltforge.sampling.indexer import FileIndex
 
 
 def _write_parquet(path, n_rows, start_id=0):
-    df = pd.DataFrame({"GlobalEventID": range(start_id, start_id + n_rows)})
-    df.to_parquet(path)
+    df = pl.DataFrame({"GlobalEventID": range(start_id, start_id + n_rows)})
+    df.write_parquet(path)
 
 
 class TestFileIndexBuild:

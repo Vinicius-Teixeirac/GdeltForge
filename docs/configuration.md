@@ -116,8 +116,8 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | `file_pattern` | `"*.zip"` | Glob pattern for which files in `downloaded_data_directory` to convert |
 | `max_workers` | `null` | Worker processes for conversion. `null` uses `os.cpu_count()` |
 | `max_workers_by_dataset.<dataset>` | none | Overrides `max_workers` for one dataset. See "Capacity planning" below: a worker count safe for one dataset isn't necessarily safe for another, since it depends on peak per-worker memory |
-| `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `names` is still passed in full to `pandas.read_csv` (it's what maps each raw position to a name on files with no header row), but pandas skips allocating/decoding whatever isn't in `output_columns`. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
-| `compression.<dataset>` | `zstd` | Parquet codec for converter's own output (`parquet_data_directory`), independent of `filter.compression` below for the filtered output that follows it. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
+| `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `columns.<dataset>` is still needed in full (it's what maps each raw position to a name on files with no header row), but the pruned subset is passed to `polars.read_csv` as integer positions, not names: this is what makes polars skip allocating/decoding whatever isn't in `output_columns`, the same optimization pandas' own `usecols` gave under the previous implementation. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
+| `compression.<dataset>` | `zstd` | Parquet codec for converter's own output (`parquet_data_directory`), independent of `filter.compression` below for the filtered output that follows it. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
 | `partitioning` | see below | Optional Hive partitioning for historical (pre-daily) files |
 
 Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`.
@@ -179,7 +179,7 @@ Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the 
 | `max_workers` | Worker processes for filtering, same tradeoffs as `converter.max_workers`. `null` (default) uses `os.cpu_count()` |
 | `columns_to_check.<dataset>` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
 | `output_columns.<dataset>` | Projects the filtered output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
-| `compression.<dataset>` | Parquet codec for the filtered output. Unset defaults to `zstd`. pyarrow already ships `zstd`, `gzip`, `brotli`, and `lz4`, so this needs no new dependency |
+| `compression.<dataset>` | Parquet codec for the filtered output. Unset defaults to `zstd`. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
 | `float32_columns.<dataset>` | Narrows these float64 columns to float32 on write. Unset keeps every float column at full float64 precision. See "Capacity planning" below before using this: it's a real precision change, not free compression |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate. See [Column Redundancy](column-redundancy.md) for which columns are safe to prune from `output_columns` because they duplicate another column, measured against real GDELT data, and which look redundant but aren't.
@@ -304,5 +304,42 @@ The GKG 2.1 codec numbers earlier in this page don't automatically transfer to E
 | `zstd` (current default) | 330.4 MB | 56.8 | 50.5s |
 
 Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, this isn't a tradeoff to weigh the way `float32_columns` is: there's no case where `snappy` is the better default. `filter.compression` defaults to `zstd` for every dataset as of 2026-08-07; `compression.<dataset>` remains available to override to a specific codec if one is ever needed.
+
+### pandas vs polars: real measured throughput
+
+The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with `scripts/benchmark_pandas_vs_polars.py` (committed, reusable) via the real `gdeltforge convert`/`gdeltforge filter`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
+
+**`convert`**, a single Events-shaped file at each row count:
+
+| Rows | pandas | polars | Speedup |
+|------|--------|--------|---------|
+| 10,000 | 2.04s | 1.63s | 1.25x |
+| 100,000 | 3.30s | 1.44s | 2.30x |
+| 1,000,000 | 22.72s | 3.45s | 6.59x |
+| 10,000,000 | 796.46s | 56.08s | 14.20x |
+
+The gap widens sharply with size rather than staying fixed: at 10,000 rows both engines spend most of their wall-clock on process/interpreter startup, not CSV parsing, so there's little for a faster parser to win back yet. Past that, polars' advantage compounds, reaching over 14x at 10M rows, comfortably ahead of what the raw row-count growth (1,000x from 10k to 10M) alone would predict for a fixed-overhead explanation.
+
+**`filter`**, a single already-converted Events file at each row count, dropping rows with a null in any of three geo lat/long pairs (roughly 39% of rows dropped, a chosen rate for exercising real work, not a measured real-world geocoding-failure rate):
+
+| Rows | pandas | polars | Speedup |
+|------|--------|--------|---------|
+| 10,000 | 1.78s | 2.29s | 0.78x |
+| 100,000 | 1.60s | 1.65s | 0.97x |
+| 1,000,000 | 3.93s | 1.99s | 1.97x |
+| 10,000,000 | 107.31s | 4.04s | 26.56x |
+
+`filter` is the one stage where polars is measurably *slower* at small sizes, not just less ahead: at 10,000 rows it's about 1.3x slower than pandas, and the two are within noise of each other at 100,000. The likely cause is architectural, not a regression: the polars port reports `rows_before`/`rows_after` as two separate `lf.select(pl.len())` passes plus the actual `sink_parquet` write, three passes over the file, where the pandas implementation's single streaming batch loop (`pyarrow.ParquetFile.iter_batches` + per-batch `dropna` + write) made do with one. That fixed per-pass cost dominates at small files and is completely swallowed at scale: by 10M rows polars finishes in 4 seconds what takes pandas over a minute and a half, a 26.6x difference, the largest gap measured anywhere in this comparison.
+
+**`crossref`**, Events joined against synthetic Mentions/GKG 2.1 (roughly 80% of events finding at least one match):
+
+| Events | pandas | polars | Speedup |
+|--------|--------|--------|---------|
+| 1,000 | 0.78s | 0.62s | 1.26x |
+| 5,000 | 0.74s | 0.65s | 1.14x |
+| 10,000 | 0.79s | 0.65s | 1.22x |
+| 100,000 | 2.37s | 2.11s | 1.12x |
+
+`crossref` does not show the same widening pattern: the speedup stays in a narrow 1.1-1.3x band across two full orders of magnitude in event count, unlike `convert`'s clear scaling trend. The most likely explanation is that this benchmark's own fixture is a single Mentions file and a single GKG 2.1 file per size, so the join itself (a hash join against an in-memory key set either engine handles well) is a smaller fraction of total wall-clock than process startup, config/schema loading, and Python-level orchestration, none of which the engine swap touches. This doesn't rule out a bigger real-world win at archive scale (thousands of Mentions/GKG 2.1 files, where `_dataset`'s own per-file footer-schema read and predicate pushdown do proportionally more work), just that this benchmark's own fixture shape doesn't exercise that path; a genuine multi-file archive-scale crossref benchmark is a natural follow-up, not yet measured.
 
 `converter.compression` defaults to `zstd` too, for the same reason: it wasn't independently re-measured against converter's own (unfiltered, wider-row-count) output, but a lossless codec with no measured downside on real GDELT data has no case for defaulting to `snappy` there either. It was previously hardcoded to `snappy` with no way to change it; it's now a normal per-dataset setting, same shape as `filter.compression`.
