@@ -64,8 +64,7 @@ hide:
     <div class="gf-modes">
       <div class="gf-mode"><b>indexed</b><span>Uniform random across the whole archive.</span></div>
       <div class="gf-mode"><b>daily</b><span>N rows per day, evenly across the period.</span></div>
-      <div class="gf-mode"><b>filtered</b><span>JSON column filters, pushed down before sampling.</span></div>
-      <div class="gf-mode"><b>stratified</b><span>Fixed N per group, balanced classes regardless of the natural distribution.</span></div>
+      <div class="gf-mode"><b>filtered</b><span>JSON column filters, pushed down before sampling; also supports a stratified sub-mode (fixed N per group, balanced classes regardless of the natural distribution).</span></div>
     </div>
     <div class="gf-card">
       <h3>Why it matters</h3>
