@@ -5,7 +5,14 @@ import numpy as np
 import polars as pl
 import pytest
 
-from gdeltforge.sampling.samplers import DailySampler, FilteredSampler, IndexedSampler
+from gdeltforge.sampling.samplers import (
+    CalendarSampler,
+    FilteredSampler,
+    IndexedSampler,
+    _apply_reservoir_replacements,
+    _assign_column,
+    _dedup_last_write_per_slot,
+)
 from gdeltforge.scraping.scraper import parse_gdelt_gkg_v1_file_date
 
 # A small, hand-verifiable dataset covering equality, IN-list, range, and
@@ -111,8 +118,8 @@ class TestIndexedSampler:
         assert set(df.columns) == {"GlobalEventID", "QuadClass"}
 
 
-class TestDailySampler:
-    def test_caps_at_samples_per_day(self, tmp_path):
+class TestCalendarSampler:
+    def test_caps_at_samples_per_period(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({
@@ -120,8 +127,8 @@ class TestDailySampler:
             "Day": [20200101] * 3 + [20200102] * 7,
         }).write_parquet(folder / "a.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1)
-        df = sampler.get_daily_samples(samples_per_day=2)
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=2)
 
         counts = _size_by_group(df, "Day")
         assert counts[20200101] == 2
@@ -134,18 +141,18 @@ class TestDailySampler:
             {"GlobalEventID": [1, 2], "Day": [20200101, 20200101]}
         ).write_parquet(folder / "a.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1)
-        df = sampler.get_daily_samples(samples_per_day=10)
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=10)
 
         assert len(df) == 2
 
-    def test_skips_files_without_day_column(self, tmp_path):
+    def test_skips_files_without_date_column(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(folder / "no_day.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1)
-        df = sampler.get_daily_samples(samples_per_day=5)
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=5)
 
         assert df.is_empty()
 
@@ -156,16 +163,16 @@ class TestDailySampler:
             "GlobalEventID": range(6), "Day": [20200101] * 6, "GoldsteinScale": [0.0] * 6,
         }).write_parquet(folder / "a.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1, columns={"GlobalEventID"})
-        df = sampler.get_daily_samples(samples_per_day=3)
+        sampler = CalendarSampler(str(folder), random_state=1, columns={"GlobalEventID"})
+        df = sampler.get_calendar_samples(samples_per_period=3)
 
         # Day rides along even though it wasn't requested, see
-        # test_day_is_kept_even_when_not_requested for why that's correct.
-        # GoldsteinScale, not requested and not needed for grouping, is
-        # the one that should actually be pruned.
+        # test_date_column_is_kept_even_when_not_requested for why that's
+        # correct. GoldsteinScale, not requested and not needed for
+        # grouping, is the one that should actually be pruned.
         assert set(df.columns) == {"GlobalEventID", "Day"}
 
-    def test_day_is_kept_even_when_not_requested(self, tmp_path):
+    def test_date_column_is_kept_even_when_not_requested(self, tmp_path):
         # Day drives the grouping itself; omitting it from --columns must
         # not silently make every file look like it has no Day column.
         folder = tmp_path / "data"
@@ -174,8 +181,8 @@ class TestDailySampler:
             "GlobalEventID": range(6), "Day": [20200101] * 6, "GoldsteinScale": [0.0] * 6,
         }).write_parquet(folder / "a.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1, columns={"GlobalEventID"})
-        df = sampler.get_daily_samples(samples_per_day=3)
+        sampler = CalendarSampler(str(folder), random_state=1, columns={"GlobalEventID"})
+        df = sampler.get_calendar_samples(samples_per_period=3)
 
         assert not df.is_empty()
         assert "Day" in df.columns
@@ -191,22 +198,114 @@ class TestDailySampler:
             "V21Date": [20200101] * 3 + [20200102] * 7,
         }).write_parquet(folder / "a.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1, date_column="V21Date")
-        df = sampler.get_daily_samples(samples_per_day=2)
+        sampler = CalendarSampler(str(folder), random_state=1, date_column="V21Date")
+        df = sampler.get_calendar_samples(samples_per_period=2)
 
         counts = _size_by_group(df, "V21Date")
         assert counts[20200101] == 2
         assert counts[20200102] == 2
 
     def test_default_date_column_is_still_day(self, tmp_path):
-        # Regression guard: the new date_column parameter must default to
+        # Regression guard: the date_column parameter must default to
         # "Day" so existing Events callers are unaffected.
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(folder / "a.parquet")
 
-        sampler = DailySampler(str(folder), random_state=1)
+        sampler = CalendarSampler(str(folder), random_state=1)
         assert sampler.date_column == "Day"
+
+    def test_default_period_is_day(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        assert sampler.period == "day"
+
+    def test_rejects_unknown_period(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(folder / "a.parquet")
+
+        with pytest.raises(ValueError):
+            CalendarSampler(str(folder), random_state=1, period="week")
+
+    def test_period_month_groups_across_days(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(10),
+            "Day": [20200101, 20200115] * 3 + [20200201] * 4,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1, period="month")
+        df = sampler.get_calendar_samples(samples_per_period=3)
+
+        assert len(df) == 6  # 3 rows for 202001, 3 (capped) for 202002
+        # All sampled rows' Day values genuinely fall in one of the two months.
+        assert set(df["Day"].to_list()) <= {20200101, 20200115, 20200201}
+
+    def test_period_year_groups_across_months(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(6),
+            "Day": [20200101, 20200601, 20201225, 20210101, 20210601, 20211225],
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1, period="year")
+        df = sampler.get_calendar_samples(samples_per_period=2)
+
+        assert len(df) == 4  # 2 for 2020, 2 for 2021: neither year exceeds its cap
+
+    def test_14_digit_timestamp_column_groups_by_date_prefix(self, tmp_path):
+        # GKG 2.1's V2.1DATE and Mentions' MentionTimeDate are 14-digit
+        # YYYYMMDDHHMMSS timestamps, not plain 8-digit dates; period="day"
+        # must still group by just the date portion, not treat every
+        # distinct timestamp as its own period of one.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GLOBALEVENTID": range(4),
+            "MentionTimeDate": [
+                20200101000000, 20200101120000, 20200101235959, 20200102000000,
+            ],
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(
+            str(folder), random_state=1, date_column="MentionTimeDate"
+        )
+        df = sampler.get_calendar_samples(samples_per_period=10)
+
+        counts = _size_by_group(df, "MentionTimeDate")
+        assert sum(counts.values()) == 4
+        # All three 20200101 timestamps land in the same period as each
+        # other (not split into three periods of one), confirmed by the
+        # full sample containing rows from both real days without
+        # exceeding either day's own row count.
+
+    def test_period_correct_when_a_period_spans_multiple_files(self, tmp_path):
+        # The actual bug this sampler fixes, versus the old DailySampler:
+        # a period's rows spread across more than one file must still be
+        # capped once for the whole period, not once per contributing
+        # file (which would multiply the true per-period total by however
+        # many files happen to cover it).
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(5), "Day": [20200101] * 5,
+        }).write_parquet(folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": range(5, 10), "Day": [20200101] * 5,
+        }).write_parquet(folder / "b.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=3)
+
+        # 10 total rows for 20200101, spread across two files: capped at
+        # 3 for the whole day, not 3 per file (which would give 6).
+        assert len(df) == 3
 
 
 class TestFilteredSamplerValidation:
@@ -446,7 +545,7 @@ class TestDedupLastWritePerSlot:
         # positions 0,1,2,3,4 draw slots 5,3,5,3,5: slot 5 should keep
         # position 4 (last), slot 3 should keep position 3 (last).
         rand_slots = np.array([5, 3, 5, 3, 5])
-        target_slots, source_pos = FilteredSampler._dedup_last_write_per_slot(
+        target_slots, source_pos = _dedup_last_write_per_slot(
             rand_slots, capacity=10
         )
         result = dict(zip(target_slots.tolist(), source_pos.tolist(), strict=True))
@@ -454,14 +553,14 @@ class TestDedupLastWritePerSlot:
 
     def test_rejects_slots_at_or_beyond_capacity(self):
         rand_slots = np.array([0, 5, 10, 11])
-        target_slots, _source_pos = FilteredSampler._dedup_last_write_per_slot(
+        target_slots, _source_pos = _dedup_last_write_per_slot(
             rand_slots, capacity=10
         )
         assert sorted(target_slots.tolist()) == [0, 5]
 
     def test_empty_when_nothing_accepted(self):
         rand_slots = np.array([10, 11, 12])
-        target_slots, source_pos = FilteredSampler._dedup_last_write_per_slot(
+        target_slots, source_pos = _dedup_last_write_per_slot(
             rand_slots, capacity=10
         )
         assert target_slots.size == 0
@@ -471,13 +570,13 @@ class TestDedupLastWritePerSlot:
 class TestAssignColumn:
     def test_plain_assignment_when_dtypes_already_compatible(self):
         arr = np.array([1, 2, 3], dtype=np.int64)
-        out = FilteredSampler._assign_column(arr, np.array([0, 2]), np.array([10, 30]))
+        out = _assign_column(arr, np.array([0, 2]), np.array([10, 30]))
         assert out.dtype == np.int64
         assert out.tolist() == [10, 2, 30]
 
     def test_upcasts_int_array_when_incoming_values_have_nan(self):
         arr = np.array([1, 2, 3], dtype=np.int64)
-        out = FilteredSampler._assign_column(
+        out = _assign_column(
             arr, np.array([0, 1]), np.array([5.0, np.nan])
         )
         assert out.dtype == np.float64
@@ -544,7 +643,7 @@ class TestApplyReservoirReplacements:
                 reservoir_rows[int(rand_slots[k])] = batch_rows[k]
         reservoir_ref = pl.DataFrame(reservoir_rows)
 
-        FilteredSampler._apply_reservoir_replacements(
+        _apply_reservoir_replacements(
             reservoir_cols, batch, rand_slots, n_reservoir
         )
 
@@ -573,7 +672,7 @@ class TestApplyReservoirReplacements:
         })
         rand_slots = np.array([0, 1])
 
-        FilteredSampler._apply_reservoir_replacements(reservoir_cols, batch, rand_slots, 3)
+        _apply_reservoir_replacements(reservoir_cols, batch, rand_slots, 3)
 
         assert reservoir_cols["NumArticles"].dtype == np.float64
         assert reservoir_cols["NumArticles"][0] == 5.0
@@ -586,7 +685,7 @@ class TestApplyReservoirReplacements:
         batch = self._make_df(5, seed=2)
         rand_slots = np.array([100, 101, 102, 103, 104])  # all >= capacity
 
-        FilteredSampler._apply_reservoir_replacements(reservoir_cols, batch, rand_slots, 10)
+        _apply_reservoir_replacements(reservoir_cols, batch, rand_slots, 10)
 
         for c in reservoir_cols:
             assert np.array_equal(reservoir_cols[c], original[c])
@@ -723,7 +822,7 @@ class TestIndexedSamplerDateFiltering:
         assert sorted(df["GlobalEventID"]) == [1, 2]
 
 
-class TestDailySamplerDateFiltering:
+class TestCalendarSamplerDateFiltering:
     def test_only_in_range_files_contribute(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -731,11 +830,11 @@ class TestDailySamplerDateFiltering:
         _write_daily_file(folder, "20150102", [3, 4])
         _write_daily_file(folder, "20150103", [5, 6])
 
-        sampler = DailySampler(
+        sampler = CalendarSampler(
             str(folder), random_state=1,
             start_date=date(2015, 1, 2), end_date=date(2015, 1, 2),
         )
-        df = sampler.get_daily_samples(samples_per_day=10)
+        df = sampler.get_calendar_samples(samples_per_period=10)
 
         assert sorted(df["GlobalEventID"]) == [3, 4]
 
@@ -747,11 +846,11 @@ class TestDailySamplerDateFiltering:
             folder / "misc.parquet"
         )
 
-        sampler = DailySampler(
+        sampler = CalendarSampler(
             str(folder), random_state=1,
             start_date=date(2015, 6, 1), end_date=date(2015, 6, 30),
         )
-        df = sampler.get_daily_samples(samples_per_day=10)
+        df = sampler.get_calendar_samples(samples_per_period=10)
 
         assert df["GlobalEventID"].to_list() == [99]
 
@@ -760,12 +859,12 @@ class TestDailySamplerDateFiltering:
         folder.mkdir()
         _write_daily_file(folder, "20150101", [1, 2])
 
-        sampler = DailySampler(
+        sampler = CalendarSampler(
             str(folder), random_state=1,
             start_date=date(2016, 1, 1), end_date=date(2016, 1, 31),
         )
         with pytest.raises(FileNotFoundError):
-            sampler.get_daily_samples(samples_per_day=10)
+            sampler.get_calendar_samples(samples_per_period=10)
 
 
 class TestFilteredSamplerDateFiltering:
