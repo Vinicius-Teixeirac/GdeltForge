@@ -55,6 +55,72 @@ class TestRequiredJoinColumns:
             OPTIONAL_MENTIONS_PAYLOAD_COLUMNS
         )
 
+    def test_gdelt_event_reduced_has_no_entry(self):
+        # gdelt_event_reduced is deliberately absent: GDELT.MASTERREDUCEDV2
+        # .1979-2013.zip carries no GlobalEventID, SOURCEURL, or DATEADDED
+        # at all (it's a pre-aggregated DATE+ACTOR1+ACTOR2+EVENTCODE roll-
+        # up), so no crossref path can ever join against it. See
+        # TestEventsReducedCannotJoinThroughCrossref below for the actual
+        # failure this produces.
+        assert "gdelt_event_reduced" not in REQUIRED_JOIN_COLUMNS
+
+
+class TestEventsReducedCannotJoinThroughCrossref:
+    """gdelt_event_reduced's real 17 columns (Date, Source, Target,
+    CAMEOCode, NumEvents, NumArts, QuadClass, Goldstein, and the
+    Source/Target/Action geo fields) include no GlobalEventID, SOURCEURL,
+    or DATEADDED: it's a pre-aggregated historical dump, not per-event
+    data, so no bridge to Mentions/GKG exists for it to join through.
+    Confirms this fails clearly at crossref time (the same
+    _require_column check every other missing-join-key case already
+    goes through, see TestCrossrefEventsGkgV1.
+    test_missing_global_event_id_column_raises), rather than silently
+    returning zero rows or a confusing failure further downstream."""
+
+    @staticmethod
+    def _events_reduced_df():
+        return pl.DataFrame({
+            "Date": [19790101, 19790615],
+            "Source": ["USA", "USA"],
+            "Target": ["GBR", "GBR"],
+            "CAMEOCode": ["010", "020"],
+            "NumEvents": [5, 2],
+            "NumArts": [3, 1],
+            "QuadClass": [1, 2],
+            "Goldstein": [1.5, -1.5],
+            "SourceGeoType": [1, 1],
+            "SourceGeoLat": [10.0, 10.0],
+            "SourceGeoLong": [-20.0, -20.0],
+            "TargetGeoType": [1, 1],
+            "TargetGeoLat": [11.0, 11.0],
+            "TargetGeoLong": [-21.0, -21.0],
+            "ActionGeoType": [1, 1],
+            "ActionGeoLat": [12.0, 12.0],
+            "ActionGeoLong": [-22.0, -22.0],
+        })
+
+    def test_crossref_events_gkg_v1_rejects_it(self):
+        with pytest.raises(ValueError, match="GlobalEventID"):
+            crossref_events_gkg_v1(
+                self._events_reduced_df(), "unused_gkg_folder", GKG_V1_COLUMNS
+            )
+
+    def test_crossref_events_gkg_v2_rejects_it(self):
+        with pytest.raises(ValueError, match="GlobalEventID"):
+            crossref_events_gkg_v2(
+                self._events_reduced_df(), "unused_mentions_folder",
+                "unused_gkg_folder", GKG_V2_COLUMNS,
+            )
+
+    def test_crossref_events_gkg_auto_rejects_it(self):
+        with pytest.raises(ValueError, match="GlobalEventID"):
+            crossref_events_gkg_auto(
+                self._events_reduced_df(),
+                "unused_gkg_v1_folder", GKG_V1_COLUMNS,
+                "unused_mentions_folder",
+                "unused_gkg_v2_folder", GKG_V2_COLUMNS,
+            )
+
 
 class TestWarnIfOutputColumnsDropsJoinKey:
     """Core logic shared by run_converter and run_filter; each module's
