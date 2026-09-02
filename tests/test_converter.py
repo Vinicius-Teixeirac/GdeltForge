@@ -224,6 +224,88 @@ class TestIntegerDtypePreservation:
         assert df["Year"].to_list() == [1979, 1979]
 
 
+class TestBlankStringFieldsBecomeNull:
+    """Regression coverage for a real bug found by a full content-equality
+    diff against pandas' own output on a 10M-row convert fixture: without
+    null_values=[""], pl.read_csv treats a QUOTED empty field ("") as a
+    genuine empty-string value rather than null, diverging from pandas'
+    read_csv default of nulling it. A bare, unquoted empty field (nothing
+    between two tabs) is already null by polars' own default, confirmed
+    directly; only the quoted form needs null_values=[""] to match pandas.
+
+    The benchmark fixture that surfaced this builds its synthetic CSV via
+    a polars DataFrame's own write_csv, which writes a real (non-null)
+    empty-string value as a quoted "" specifically to distinguish it from
+    a null on round-trip, confirmed directly by inspecting write_csv's
+    raw output bytes. Real GDELT archives are plain, unquoted tab-
+    separated text (confirmed against GDELT's own documentation: files
+    carry a .csv extension but are tab-delimited with no field quoting),
+    so a genuinely blank field there is the already-correctly-nulled bare
+    form, not this quoted one. The fix is still the right, more robust
+    contract either way, matching pandas' behavior for both forms rather
+    than depending on which shape a given source happens to use.
+
+    This silently broke columns_to_check's documented contract
+    (configuration.md: "rows with a NaN/null value in any of these
+    columns are dropped") for any string column fed a quoted-empty
+    source, since filter.py's own null-check (pl.col(c).is_null()) never
+    saw a "" value as missing."""
+
+    def test_a_quoted_empty_field_becomes_null_not_empty_string(self, tmp_path):
+        cfg = {
+            "paths": {
+                "downloaded_data_directory": str(tmp_path / "raw"),
+                "unzipped_data_directory": str(tmp_path / "csv"),
+                "parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+            "columns": {"gdelt_event": ["GlobalEventID", "Day", "Actor1EthnicCode"]},
+            "columns_numeric": {"gdelt_event": ["GlobalEventID", "Day"]},
+        }
+        zip_path = _write_flat_zip(
+            tmp_path / "raw",
+            rows=(
+                "1\t20200101\tKUR\n"
+                # A literal quoted empty string, the exact shape polars'
+                # own write_csv produces for a real (non-null)
+                # empty-string DataFrame value.
+                '2\t20200101\t""\n'
+            ),
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+        df = pl.read_parquet(outputs[0])
+
+        assert df["Actor1EthnicCode"].to_list() == ["KUR", None]
+        assert df["Actor1EthnicCode"].null_count() == 1
+        assert (df["Actor1EthnicCode"] == "").sum() == 0
+
+    def test_a_bare_empty_field_was_already_null_before_the_fix(self, tmp_path):
+        # Confirms the narrower, already-correct case stays correct: this
+        # is what real GDELT's own unquoted blank fields look like, and
+        # it must not regress now that null_values=[""] is also set.
+        cfg = {
+            "paths": {
+                "downloaded_data_directory": str(tmp_path / "raw"),
+                "unzipped_data_directory": str(tmp_path / "csv"),
+                "parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+            "columns": {"gdelt_event": ["GlobalEventID", "Day", "Actor1EthnicCode"]},
+            "columns_numeric": {"gdelt_event": ["GlobalEventID", "Day"]},
+        }
+        zip_path = _write_flat_zip(
+            tmp_path / "raw",
+            rows="1\t20200101\tKUR\n2\t20200101\t\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+        df = pl.read_parquet(outputs[0])
+
+        assert df["Actor1EthnicCode"].to_list() == ["KUR", None]
+        assert df["Actor1EthnicCode"].null_count() == 1
+
+
 class TestMaxWorkersConfig:
     def test_defaults_to_none_so_executor_uses_cpu_count(self, tmp_path):
         converter = GDELTConverter(_make_config(tmp_path))
