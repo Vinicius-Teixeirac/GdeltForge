@@ -36,11 +36,27 @@ _BUNDLED_DEFAULT_RESOURCE = files("gdeltforge").joinpath("config/default_setting
 _DATASET_PATH_PREFIXES = {
     "gdelt_event": "",
     "gdelt_event_15min": "event_15min_",
+    "gdelt_event_reduced": "event_reduced_",
     "gdelt_gkg_v1": "gkg_v1_",
     "gdelt_gkg_v1_counts": "gkg_v1_counts_",
     "gdelt_gkg_v2": "gkg_v2_",
     "gdelt_mentions": "mentions_",
 }
+
+# Datasets whose converted output is always Hive-partitioned, never flat:
+# unlike Events' pre-2013 yearly/monthly archives (opt-in via
+# converter.partitioning.enabled, alongside its own flat daily files),
+# gdelt_event_reduced has no per-day source files at all, it's one static
+# file, and Year (derived from its own Date column, not present in the
+# raw file) is its only meaningful partition key. filter/sample must
+# resolve this dataset's historical directory unconditionally, independent
+# of the global converter.partitioning.enabled toggle, which only controls
+# Events' own opt-in split.
+_ALWAYS_HISTORICAL_DATASETS = frozenset({"gdelt_event_reduced"})
+
+
+def dataset_is_always_historical(dataset: str) -> bool:
+    return dataset in _ALWAYS_HISTORICAL_DATASETS
 
 
 def dataset_path_key(dataset: str, base_key: str) -> str:

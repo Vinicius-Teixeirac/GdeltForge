@@ -72,10 +72,14 @@ class _VersionAction(argparse.Action):
 # the current, actively-produced "v2") are different schemas with
 # different files, so they're exposed as distinct choices rather than
 # one ambiguous "gkg".
-_DATASET_CHOICES = ["events", "events-15min", "gkg-v1", "gkg-v1-counts", "gkg-v2", "mentions"]
+_DATASET_CHOICES = [
+    "events", "events-15min", "events-reduced",
+    "gkg-v1", "gkg-v1-counts", "gkg-v2", "mentions",
+]
 _DATASET_CLI_TO_CONFIG = {
     "events": "gdelt_event",
     "events-15min": "gdelt_event_15min",
+    "events-reduced": "gdelt_event_reduced",
     "gkg-v1": "gdelt_gkg_v1",
     "gkg-v1-counts": "gdelt_gkg_v1_counts",
     "gkg-v2": "gdelt_gkg_v2",
