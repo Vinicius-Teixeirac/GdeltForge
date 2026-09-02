@@ -17,7 +17,7 @@ from gdeltforge.filtering.filter import run_filter
 # Samplers
 from gdeltforge.sampling import cameo_codes
 from gdeltforge.sampling.samplers import (
-    DailySampler,
+    CalendarSampler,
     FilteredSampler,
     IndexedSampler,
 )
@@ -80,6 +80,20 @@ _DATASET_CLI_TO_CONFIG = {
     "gkg-v1-counts": "gdelt_gkg_v1_counts",
     "gkg-v2": "gdelt_gkg_v2",
     "mentions": "gdelt_mentions",
+}
+
+# Each dataset's own real date column for `sample --mode calendar`'s
+# default --date-column: Day for Events (both cadences share the same
+# 8-digit YYYYMMDD column), Date for GKG 1.0 (same shape, different
+# name), and the two 14-digit YYYYMMDDHHMMSS timestamp columns GKG
+# 2.1/Mentions actually carry.
+_CALENDAR_DATE_SPECS = {
+    "events": "Day",
+    "events-15min": "Day",
+    "gkg-v1": "Date",
+    "gkg-v1-counts": "Date",
+    "gkg-v2": "V2.1DATE",
+    "mentions": "MentionTimeDate",
 }
 
 # crossref's own choices: a GKG generation to join against, not a dataset
@@ -278,21 +292,45 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         return
 
     # -----------------------------
-    # Daily Sampling
+    # Calendar Sampling
     # -----------------------------
-    if args.mode == "daily":
-        sampler = DailySampler(
+    if args.mode in ("calendar", "daily"):
+        if args.mode == "daily":
+            if args.period is not None:
+                raise ValueError(
+                    "--period isn't accepted with the deprecated --mode daily "
+                    "(ambiguous about which was meant); use --mode calendar instead"
+                )
+            logger.warning(
+                "--mode daily is deprecated; use --mode calendar (period=day is "
+                "the default, so --mode calendar alone behaves the same way)"
+            )
+            period = "day"
+        else:
+            period = args.period or "day"
+
+        if args.per_day is not None:
+            logger.warning("--per-day is deprecated; use --per-period instead")
+            samples_per_period = args.per_day
+        else:
+            samples_per_period = args.per_period
+
+        date_column = args.date_column or _CALENDAR_DATE_SPECS[args.dataset]
+
+        sampler = CalendarSampler(
             folder_path=str(source_folder),
             historical_folder=hist_folder,
             random_state=args.seed,
             columns=columns,
+            date_column=date_column,
+            period=period,
             start_date=start_date,
             end_date=end_date,
             date_parser=date_parser,
         )
-        df = sampler.get_daily_samples(samples_per_day=args.per_day)
+        df = sampler.get_calendar_samples(samples_per_period=samples_per_period)
         _write_sample_output(df, out, args.export_format)
-        logger.info(f"Saved daily sample ({len(df)} rows) -> {out}")
+        logger.info(f"Saved calendar sample ({len(df)} rows, period={period}) -> {out}")
         return
 
     # -----------------------------
@@ -675,7 +713,7 @@ def build_parser() -> argparse.ArgumentParser:
     # sample
     # ----------------------------------------------------
     sample = subparsers.add_parser(
-        "sample", help="Sampling utilities (indexed, filtered, daily)"
+        "sample", help="Sampling utilities (indexed, filtered, calendar)"
     )
 
     sample.add_argument(
@@ -687,8 +725,9 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--mode",
         required=True,
-        choices=["indexed", "filtered", "daily"],
-        help="Sampling strategy"
+        choices=["indexed", "filtered", "calendar", "daily"],
+        help="Sampling strategy. 'daily' is a deprecated alias for "
+             "'calendar' (period=day)"
     )
     sample.add_argument(
         "--source",
@@ -707,8 +746,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="RNG seed"
     )
     sample.add_argument(
-        "--per-day", type=int, default=10,
-        help="Rows per day (daily mode only)"
+        "--per-period", type=int, default=10,
+        help="Rows per calendar period (calendar mode only, default 10)"
+    )
+    sample.add_argument(
+        "--per-day", type=int, default=None,
+        help="Deprecated alias for --per-period"
+    )
+    sample.add_argument(
+        "--period",
+        choices=["day", "month", "year"],
+        default=None,
+        help="Calendar period to group by (calendar mode only, default 'day'). "
+             "Not accepted alongside the deprecated --mode daily"
+    )
+    sample.add_argument(
+        "--date-column",
+        default=None,
+        help="Date column to group by in calendar mode (default depends on "
+             "--dataset: Day for events/events-15min, Date for gkg-v1/"
+             "gkg-v1-counts, V2.1DATE for gkg-v2, MentionTimeDate for mentions)"
     )
     sample.add_argument(
         "--filter",
