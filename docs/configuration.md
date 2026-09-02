@@ -317,7 +317,7 @@ Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, 
 
 ### pandas vs polars: real measured throughput
 
-The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with `scripts/benchmark_pandas_vs_polars.py` (committed, reusable) via the real `gdeltforge convert`/`gdeltforge filter`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
+The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with a dedicated benchmark script via the real `gdeltforge convert`/`gdeltforge filter`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
 
 **`convert`**, a single Events-shaped file at each row count:
 
