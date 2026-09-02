@@ -32,13 +32,13 @@ gdeltforge sample \
   --out samples/reproducible_500k.parquet
 ```
 
-## Daily samples
+## Calendar samples
 
-A fixed number of rows per day, across the whole period your downloaded data covers:
+A fixed number of rows per period, across the whole period your downloaded data covers:
 
 ```bash
 for d in 2 3 4 5; do
-    gdeltforge sample --dataset events --mode daily --per-day "$d" --out "samples/daily_${d}.parquet"
+    gdeltforge sample --dataset events --mode calendar --per-period "$d" --out "samples/daily_${d}.parquet"
 done
 ```
 
