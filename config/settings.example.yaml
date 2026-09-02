@@ -66,6 +66,37 @@ columns:
     - DATEADDED
     - SOURCEURL
 
+  # GDELT 1.0's frozen "MASTERREDUCEDV2" historical bulk dump (--dataset
+  # events-reduced), served at the same URL as the daily archive above but
+  # deliberately never picked up by that scrape (see
+  # scraping.scraper._is_gdelt_dataset_file's own docstring). A single
+  # static file, 1979 through Feb 2014, never updated since. Rows are
+  # pre-aggregated daily rollups collapsed on DATE+ACTOR1+ACTOR2+EVENTCODE,
+  # not individual events: NumEvents/NumArts are literal counts of
+  # collapsed rows, not identifiers. Confirmed by downloading and reading
+  # the real file's header directly, not the codebook (this file predates
+  # GDELT's own published codebooks): no GlobalEventID, SOURCEURL, or
+  # DATEADDED anywhere, so `crossref` cannot join this dataset to GKG or
+  # Mentions under any configuration.
+  gdelt_event_reduced:
+    - Date
+    - Source
+    - Target
+    - CAMEOCode
+    - NumEvents
+    - NumArts
+    - QuadClass
+    - Goldstein
+    - SourceGeoType
+    - SourceGeoLat
+    - SourceGeoLong
+    - TargetGeoType
+    - TargetGeoLat
+    - TargetGeoLong
+    - ActionGeoType
+    - ActionGeoLat
+    - ActionGeoLong
+
   # Events at native GDELT 2.0 granularity: the same gdeltv2 15-minute
   # master file list gkg-v2/mentions use, not the daily archive above.
   # Genuinely a different schema, not just finer granularity: 61 columns
@@ -271,6 +302,26 @@ columns_numeric:
     - ActionGeo_Long
     - DATEADDED
 
+  # Source/Target/CAMEOCode are omitted here: leading zeros in CAMEOCode
+  # (e.g. "043") are meaningful, same reasoning already applied to
+  # EventCode/EventBaseCode/EventRootCode elsewhere, so all three stay
+  # strings.
+  gdelt_event_reduced:
+    - Date
+    - NumEvents
+    - NumArts
+    - QuadClass
+    - Goldstein
+    - SourceGeoType
+    - SourceGeoLat
+    - SourceGeoLong
+    - TargetGeoType
+    - TargetGeoLat
+    - TargetGeoLong
+    - ActionGeoType
+    - ActionGeoLat
+    - ActionGeoLong
+
   # Same numeric set as gdelt_event above: the 3 new ADM2Code fields
   # are alphanumeric FIPS-style codes like ADM1Code, not numeric, so they
   # stay strings, same treatment ADM1Code already gets.
@@ -390,6 +441,19 @@ paths:
   event_15min_unzipped_data_directory: "./path_example/events_15min/csv"
   event_15min_parquet_data_directory: "./path_example/events_15min/parquet"
   event_15min_filtered_data_directory: "./path_example/events_15min/filtered"
+
+  # events-reduced is the one dataset whose historical directory is
+  # populated unconditionally, regardless of converter.partitioning.enabled
+  # (see utils.config.dataset_is_always_historical): a single static file
+  # with no flat/daily mode to fall back to, so its converted output lives
+  # entirely under the historical pair below. The flat parquet/filtered
+  # directories still get created but stay empty for this dataset.
+  event_reduced_downloaded_data_directory: "./path_example/events_reduced/raw"
+  event_reduced_unzipped_data_directory: "./path_example/events_reduced/csv"
+  event_reduced_parquet_data_directory: "./path_example/events_reduced/parquet"
+  event_reduced_filtered_data_directory: "./path_example/events_reduced/filtered"
+  event_reduced_parquet_historical_directory: "./path_example/events_reduced/historical"
+  event_reduced_filtered_historical_directory: "./path_example/events_reduced/filtered_historical"
 
   # GKG 1.0 (legacy) and its separate Counts file: same four stages, own
   # directories. Unlike GKG 2.1/Mentions, GKG 1.0 publishes daily, the same
@@ -541,6 +605,10 @@ filter:
       - ActionGeo_Lat
       - ActionGeo_Long
       - Day
+    gdelt_event_reduced: # example
+      - Date
+      - Source
+      - Target
     gdelt_gkg_v2: # example
       - GKGRECORDID
       - V2.1DATE
