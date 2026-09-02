@@ -4,7 +4,7 @@ samplers.py
 Sampling utilities for GDELT parquet datasets.
 Provides:
     - IndexedSampler
-    - DailySampler
+    - CalendarSampler
     - FilteredSampler
 """
 
@@ -29,6 +29,144 @@ from .indexer import FileIndex
 from .rng import ReproducibleRNG
 
 logger = get_logger(__name__)
+
+
+# ----------------------------------------------------------
+# Shared dataset discovery/scan helpers
+# ----------------------------------------------------------
+# Used by both CalendarSampler and FilteredSampler (via its own _dataset
+# wrapper below), so a period-grouped calendar sample and a filtered/
+# stratified sample scan the flat + historical file union the same way,
+# rather than risking two subtly different implementations of the same
+# file-discovery and schema-union logic.
+def _discover_dataset_files(
+    folder: Path,
+    historical_folder: Path | None,
+    start_date: date | None,
+    end_date: date | None,
+    date_parser: Callable[[str], tuple[date | None, date | None]],
+) -> list[Path]:
+    flat_files = list(folder.glob("*.parquet"))
+    hist_files = (
+        list(historical_folder.rglob("*.parquet"))
+        if historical_folder and historical_folder.exists()
+        else []
+    )
+    all_files = flat_files + hist_files
+    all_files = filter_paths_by_date(all_files, start_date, end_date, date_parser=date_parser)
+
+    if not all_files:
+        raise FileNotFoundError(
+            f"No parquet files found in {folder}"
+            + (f" or {historical_folder}" if historical_folder else "")
+            + (f" within [{start_date} - {end_date}]" if start_date or end_date else "")
+        )
+    return all_files
+
+
+def _scan_dataset(files: list[Path]) -> pl.LazyFrame:
+    # polars' scan_parquet infers its schema from a single file rather
+    # than the union of every file's schema the way pyarrow.dataset.
+    # dataset() does, confirmed directly: a column present in some files
+    # and absent from others (e.g. a historical partition file converted
+    # under an older, narrower output_columns) raises "extra column ...
+    # outside of expected schema" for whichever file doesn't match the
+    # schema scan_parquet happened to infer, regardless of file order.
+    # Reading every file's own footer schema first (cheap, metadata-only,
+    # the same order of cost pyarrow.dataset's own schema unification
+    # already paid) and passing the union explicitly as schema=
+    # reproduces that unification regardless of which file scan_parquet
+    # would otherwise have picked. Predicate pushdown on Year / MonthYear
+    # still works via row-group statistics: each historical partition
+    # file has constant values for those columns, so non-matching files
+    # are skipped without reading any row data.
+    schema: dict[str, pl.DataType] = {}
+    for f in files:
+        for name, dtype in pl.read_parquet_schema(f).items():
+            schema.setdefault(name, dtype)
+    return pl.scan_parquet(files, schema=schema, missing_columns="insert")
+
+
+# ----------------------------------------------------------
+# Shared reservoir-sampling mechanics
+# ----------------------------------------------------------
+# Module-level rather than methods on any one sampler class: CalendarSampler
+# and FilteredSampler (get_random_sample/get_stratified_sample) both need
+# exactly this machinery, grouped by different kinds of keys, so they share
+# one implementation of Vitter's Algorithm R instead of risking a second,
+# subtly different one.
+def _dedup_last_write_per_slot(
+    rand_slots: np.ndarray, capacity: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Resolve one batch's Algorithm R draws to the writes that should
+    actually land: (target_slots, source_positions), accepted-only and
+    deduplicated.
+
+    rand_slots[k] < capacity means row k of the batch is accepted into
+    slot rand_slots[k]. Two rows in the same batch can draw the same
+    slot; true sequential Algorithm R applies draws in position order,
+    so only the last (highest-position) writer for a given slot should
+    survive: np.unique on the reversed array picks exactly that, since
+    target_slots is already in ascending position order.
+    """
+    accept_mask = rand_slots < capacity
+    target_slots = rand_slots[accept_mask]
+    source_pos = np.where(accept_mask)[0]
+
+    if target_slots.size > 1:
+        _, last_occurrence_rev = np.unique(target_slots[::-1], return_index=True)
+        keep = target_slots.size - 1 - last_occurrence_rev
+        target_slots = target_slots[keep]
+        source_pos = source_pos[keep]
+
+    return target_slots, source_pos
+
+
+def _assign_column(arr: np.ndarray, idx: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """
+    Write values into arr at idx, positionally, returning the (possibly
+    new) array to write back into the caller's dict.
+
+    A batch row can carry a NaN in a column that's been int64 so far
+    (nullable numeric GDELT fields; polars' own nullable Int64 upcasts to
+    float64+NaN the same way through .to_numpy()). Checked this against
+    plain numpy assignment directly: numpy does NOT raise here --
+    `int_arr[idx] = nan_values` silently casts NaN to INT64_MIN with only
+    a RuntimeWarning, so a try/except around the assignment can't catch
+    it. Compute the correct common dtype up front instead (via
+    np.result_type, e.g. int64+float64 -> float64) and upcast before ever
+    writing, rather than reacting to a write that already corrupted data.
+    """
+    target_dtype = np.result_type(arr.dtype, values.dtype)
+    if target_dtype != arr.dtype:
+        arr = arr.astype(target_dtype)
+    arr[idx] = values
+    return arr
+
+
+def _apply_reservoir_replacements(
+    reservoir_cols: dict[str, np.ndarray],
+    batch: pl.DataFrame,
+    rand_slots: np.ndarray,
+    capacity: int,
+) -> None:
+    """
+    Write accepted rows into their drawn reservoir slots, in place, column
+    by column as plain numpy arrays rather than through a DataFrame-level
+    positional setter (roughly 15x cheaper per write on GDELT's ~58-column
+    width than going through a DataFrame's own positional setter, which is
+    what dominates a full-archive scan's wall-clock time). The reservoir
+    is only turned back into a DataFrame once, at the very end of the scan.
+    """
+    target_slots, source_pos = _dedup_last_write_per_slot(rand_slots, capacity)
+    if target_slots.size == 0:
+        return
+
+    accepted = batch.gather(source_pos)
+    for col, arr in reservoir_cols.items():
+        reservoir_cols[col] = _assign_column(arr, target_slots, accepted[col].to_numpy())
+
 
 # ----------------------------------------------------------
 # Filter operation types
@@ -115,15 +253,38 @@ class IndexedSampler:
 
 
 # ----------------------------------------------------------
-# Daily Sampler
+# Calendar Sampler
 # ----------------------------------------------------------
-class DailySampler:
+class CalendarSampler:
     """
-    For each day, sample a fixed number of rows per parquet file.
+    Groups rows by a calendar period (day, month, or year) derived from a
+    real date column, then reservoir-samples a fixed number of rows per
+    period across the flat + historical file union in a single streamed
+    scan.
+
+    Replaces the old DailySampler, which capped samples_per_day per
+    (file, day) independently, then concatenated across files -- correct
+    only when a period maps to exactly one file (true for Events'/GKG
+    1.0's flat daily archives), wrong the moment a period spans more than
+    one file: a historical Year=YYYY file, or GKG 2.1/Mentions' own
+    roughly-96-files-per-day cadence, would each independently contribute
+    up to the cap, multiplying the true per-period total by however many
+    files happen to cover it. Reservoir sampling over the true per-period
+    group, scanned across every contributing file together, makes the cap
+    correct regardless of how many files a period's rows are spread
+    across.
 
     When historical_folder is provided the sampler includes Hive-partitioned
     historical files alongside the flat daily files.
     """
+
+    _PERIOD_KEY = "__calendar_period_key__"
+    # Length of the YYYYMMDD.../YYYYMMDDHHMMSS... date-column prefix that
+    # identifies each period: works for both GDELT's 8-digit plain-date
+    # columns (Day, GKG 1.0's Date) and 14-digit timestamp columns (GKG
+    # 2.1's V2.1DATE, Mentions' MentionTimeDate) uniformly, since both
+    # start with the same YYYY[MM[DD]] prefix.
+    _PERIOD_PREFIX_LENGTH = {"day": 8, "month": 6, "year": 4}
 
     def __init__(
         self,
@@ -132,73 +293,113 @@ class DailySampler:
         random_state: int | None = 42,
         columns: set[str] | None = None,
         date_column: str = "Day",
+        period: str = "day",
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
+        if period not in self._PERIOD_PREFIX_LENGTH:
+            raise ValueError(
+                f"period must be one of {sorted(self._PERIOD_PREFIX_LENGTH)}, got {period!r}"
+            )
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
             Path(historical_folder) if historical_folder else None
         )
         self.columns = columns
         self.date_column = date_column
+        self.period = period
         self.start_date = start_date
         self.end_date = end_date
         self.date_parser = date_parser
         self.rng = ReproducibleRNG(random_state)
 
-    def get_daily_samples(self, samples_per_day: int = 10) -> pl.DataFrame:
-        flat_files = list(self.folder.glob("*.parquet"))
-        hist_files = (
-            list(self.historical_folder.rglob("*.parquet"))
-            if self.historical_folder and self.historical_folder.exists()
-            else []
-        )
-        parquet_files = flat_files + hist_files
-
-        parquet_files = filter_paths_by_date(
-            parquet_files, self.start_date, self.end_date, date_parser=self.date_parser
-        )
-
-        if not parquet_files:
-            raise FileNotFoundError(
-                f"No parquet files found in {self.folder}"
-                + (f" or {self.historical_folder}" if self.historical_folder else "")
-                + (
-                    f" within [{self.start_date} - {self.end_date}]"
-                    if self.start_date or self.end_date else ""
-                )
+    def _batches(self, needed_columns: list[str] | None):
+        with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
+            files = _discover_dataset_files(
+                self.folder, self.historical_folder,
+                self.start_date, self.end_date, self.date_parser,
             )
+            lf = _scan_dataset(files)
+            if needed_columns is not None:
+                lf = lf.select(needed_columns)
+            yield from lf.collect_batches(chunk_size=64_000)
+
+    def get_calendar_samples(self, samples_per_period: int = 10) -> pl.DataFrame:
+        if samples_per_period <= 0:
+            return pl.DataFrame()
 
         # date_column drives the grouping below, so it has to be read even
         # if the caller didn't ask for it in --columns, otherwise every
         # file would silently look like it has no date column and get skipped.
-        read_columns = list(self.columns | {self.date_column}) if self.columns else None
+        needed = list(self.columns | {self.date_column}) if self.columns else None
+        prefix_len = self._PERIOD_PREFIX_LENGTH[self.period]
 
-        daily: dict[Any, list[pl.DataFrame]] = {}
+        fill_chunks:    dict[Any, list[pl.DataFrame]]    = {}
+        filled:         dict[Any, int]                   = {}
+        reservoir_cols: dict[Any, dict[str, np.ndarray]] = {}
+        total_seen:     dict[Any, int]                   = {}
 
-        for file_path in tqdm(parquet_files, desc="Daily sampling"):
-            df = pl.read_parquet(file_path, columns=read_columns)
-            if self.date_column not in df.columns:
+        for df_batch in tqdm(self._batches(needed), desc="Sampling (calendar)"):
+            if df_batch.is_empty() or self.date_column not in df_batch.columns:
                 continue
 
-            # polars' own group_by always yields a tuple key, even for a
-            # single-column group_by (confirmed directly; pandas' groupby
-            # instead returns a bare scalar in that case).
-            for (day,), group in df.group_by(self.date_column, maintain_order=False):
-                size = min(samples_per_day, len(group))
-                if size == 0:
-                    continue
+            keyed_batch = df_batch.with_columns(
+                pl.col(self.date_column).cast(pl.Utf8).str.slice(0, prefix_len)
+                .alias(self._PERIOD_KEY)
+            )
+            for (period_key,), group_df in keyed_batch.group_by(
+                self._PERIOD_KEY, maintain_order=False
+            ):
+                group_df   = group_df.drop([self._PERIOD_KEY])
+                group_size = len(group_df)
 
-                idx = self.rng.choice(len(group), size=size, replace=False)
-                sample = group.gather(idx)
-                daily.setdefault(day, []).append(sample)
+                if period_key not in total_seen:
+                    total_seen[period_key]  = 0
+                    fill_chunks[period_key] = []
+                    filled[period_key]      = 0
 
-        if not daily:
+                # Fill phase: see FilteredSampler.get_random_sample's fill
+                # phase, same pattern, once per calendar period.
+                if filled[period_key] < samples_per_period:
+                    take = min(samples_per_period - filled[period_key], group_size)
+                    fill_chunks[period_key].append(group_df.head(take))
+                    filled[period_key]     += take
+                    total_seen[period_key] += take
+
+                    if filled[period_key] == samples_per_period:
+                        filled_df = pl.concat(fill_chunks[period_key])
+                        reservoir_cols[period_key] = {
+                            c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
+                        }
+                        fill_chunks[period_key] = []
+
+                    if take == group_size:
+                        continue
+
+                    group_df   = group_df.slice(take)
+                    group_size = len(group_df)
+
+                # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
+                positions  = np.arange(total_seen[period_key], total_seen[period_key] + group_size)
+                rand_slots = self.rng.rng.integers(0, positions + 1)
+                _apply_reservoir_replacements(
+                    reservoir_cols[period_key], group_df, rand_slots, samples_per_period
+                )
+
+                total_seen[period_key] += group_size
+
+        reservoirs: dict[Any, pl.DataFrame] = {
+            g: pl.DataFrame(cols) for g, cols in reservoir_cols.items()
+        }
+        for g, chunks in fill_chunks.items():
+            if chunks and g not in reservoirs:
+                reservoirs[g] = pl.concat(chunks)
+
+        if not reservoirs:
             return pl.DataFrame()
 
-        all_samples = [pl.concat(chunks) for chunks in daily.values()]
-        return pl.concat(all_samples)
+        return pl.concat(list(reservoirs.values()))
 
 
 # ----------------------------------------------------------
@@ -384,46 +585,11 @@ class FilteredSampler:
 
     # ---------- dataset: union of flat daily + historical partition files ----------
     def _dataset(self) -> pl.LazyFrame:
-        all_files: list[Path] = list(self.folder.glob("*.parquet"))
-
-        if self.historical_folder and self.historical_folder.exists():
-            all_files += list(self.historical_folder.rglob("*.parquet"))
-
-        all_files = filter_paths_by_date(
-            all_files, self.start_date, self.end_date, date_parser=self.date_parser
+        files = _discover_dataset_files(
+            self.folder, self.historical_folder,
+            self.start_date, self.end_date, self.date_parser,
         )
-
-        if not all_files:
-            raise FileNotFoundError(
-                f"No parquet files found in {self.folder}"
-                + (f" or {self.historical_folder}" if self.historical_folder else "")
-                + (
-                    f" within [{self.start_date} - {self.end_date}]"
-                    if self.start_date or self.end_date else ""
-                )
-            )
-
-        # polars' scan_parquet infers its schema from a single file rather
-        # than the union of every file's schema the way pyarrow.dataset.
-        # dataset() does, confirmed directly: a column present in some
-        # files and absent from others (e.g. a historical partition file
-        # converted under an older, narrower output_columns) raises
-        # "extra column ... outside of expected schema" for whichever
-        # file doesn't match the schema scan_parquet happened to infer,
-        # regardless of file order. Reading every file's own footer
-        # schema first (cheap, metadata-only, the same order of cost
-        # pyarrow.dataset's own schema unification already paid) and
-        # passing the union explicitly as schema= reproduces that
-        # unification regardless of which file scan_parquet would
-        # otherwise have picked. Predicate pushdown on Year / MonthYear
-        # still works via row-group statistics: each historical partition
-        # file has constant values for those columns, so non-matching
-        # files are skipped without reading any row data.
-        schema: dict[str, pl.DataType] = {}
-        for f in all_files:
-            for name, dtype in pl.read_parquet_schema(f).items():
-                schema.setdefault(name, dtype)
-        return pl.scan_parquet(all_files, schema=schema, missing_columns="insert")
+        return _scan_dataset(files)
 
     def _batches(self, needed_columns: list[str]):
         """
@@ -446,89 +612,6 @@ class FilteredSampler:
     def _needed_columns(self) -> list[str]:
         """Union of requested columns and any column referenced in the filter expression."""
         return list(self.columns | self._filter_columns(self.filter_dict))
-
-    # ---------- shared replacement-phase writer for both reservoir methods ----------
-    @staticmethod
-    def _dedup_last_write_per_slot(
-        rand_slots: np.ndarray, capacity: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Resolve one batch's Algorithm R draws to the writes that should
-        actually land: (target_slots, source_positions), accepted-only and
-        deduplicated.
-
-        rand_slots[k] < capacity means row k of the batch is accepted into
-        slot rand_slots[k]. Two rows in the same batch can draw the same
-        slot; true sequential Algorithm R applies draws in position order,
-        so only the last (highest-position) writer for a given slot should
-        survive: np.unique on the reversed array picks exactly that,
-        since target_slots is already in ascending position order.
-        """
-        accept_mask = rand_slots < capacity
-        target_slots = rand_slots[accept_mask]
-        source_pos = np.where(accept_mask)[0]
-
-        if target_slots.size > 1:
-            _, last_occurrence_rev = np.unique(target_slots[::-1], return_index=True)
-            keep = target_slots.size - 1 - last_occurrence_rev
-            target_slots = target_slots[keep]
-            source_pos = source_pos[keep]
-
-        return target_slots, source_pos
-
-    @staticmethod
-    def _assign_column(arr: np.ndarray, idx: np.ndarray, values: np.ndarray) -> np.ndarray:
-        """
-        Write values into arr at idx, positionally, returning the (possibly
-        new) array to write back into the caller's dict.
-
-        A batch row can carry a NaN in a column that's been int64 so far
-        (nullable numeric GDELT fields; polars' own nullable Int64 upcasts
-        to float64+NaN the same way through .to_numpy(), confirmed
-        directly, so this hazard survived the pandas-to-polars port
-        unchanged). Checked this against plain numpy assignment directly:
-        unlike pandas, numpy does NOT raise here -- `int_arr[idx] =
-        nan_values` silently casts NaN to INT64_MIN with only a
-        RuntimeWarning, so a try/except around the assignment can't catch
-        it. Compute the correct common dtype up front instead (via
-        np.result_type, e.g. int64+float64 -> float64) and upcast before
-        ever writing, rather than reacting to a write that already
-        corrupted data.
-        """
-        target_dtype = np.result_type(arr.dtype, values.dtype)
-        if target_dtype != arr.dtype:
-            arr = arr.astype(target_dtype)
-        arr[idx] = values
-        return arr
-
-    @classmethod
-    def _apply_reservoir_replacements(
-        cls,
-        reservoir_cols: dict[str, np.ndarray],
-        batch: pl.DataFrame,
-        rand_slots: np.ndarray,
-        capacity: int,
-    ) -> None:
-        """
-        Write accepted rows into their drawn reservoir slots, in place,
-        column by column as plain numpy arrays rather than through a
-        DataFrame-level positional setter. On a wide reservoir (GDELT has
-        ~58 columns), that route costs roughly 15x more per write than
-        direct numpy array assignment under the previous pandas
-        implementation (iloc's positional-index setter goes through
-        pandas' block manager instead of touching each column's array
-        directly); that gap is what dominates a full-archive scan's
-        wall-clock time, not the number of individual per-column calls.
-        The reservoir is only turned back into a DataFrame once, at the
-        very end of the scan (see get_random_sample / get_stratified_sample).
-        """
-        target_slots, source_pos = cls._dedup_last_write_per_slot(rand_slots, capacity)
-        if target_slots.size == 0:
-            return
-
-        accepted = batch.gather(source_pos)
-        for col, arr in reservoir_cols.items():
-            reservoir_cols[col] = cls._assign_column(arr, target_slots, accepted[col].to_numpy())
 
     # ---------- API ----------
     def filter_dataset(self) -> pl.DataFrame:
@@ -598,7 +681,7 @@ class FilteredSampler:
             assert reservoir_cols is not None
             positions  = np.arange(total_seen, total_seen + batch_size)
             rand_slots = self.rng.rng.integers(0, positions + 1)
-            self._apply_reservoir_replacements(reservoir_cols, df_batch, rand_slots, n)
+            _apply_reservoir_replacements(reservoir_cols, df_batch, rand_slots, n)
 
             total_seen += batch_size
 
@@ -685,7 +768,7 @@ class FilteredSampler:
                 # Replacement phase: vectorized slot selection via Vitter's Algorithm R
                 positions  = np.arange(total_seen[g], total_seen[g] + group_size)
                 rand_slots = self.rng.rng.integers(0, positions + 1)
-                self._apply_reservoir_replacements(
+                _apply_reservoir_replacements(
                     reservoir_cols[g], group_df, rand_slots, n_per_group
                 )
 

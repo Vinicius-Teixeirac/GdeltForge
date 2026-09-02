@@ -715,25 +715,27 @@ class TestRunSamplingCmdSource:
 
         assert captured["columns"] == {"GlobalEventID", "QuadClass"}
 
-    def test_columns_arg_reaches_daily_sampler(self, tmp_path, monkeypatch):
+    def test_columns_arg_reaches_calendar_sampler(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
         captured = {}
 
-        class FakeDailySampler:
+        class FakeCalendarSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
+                date_column="Day", period="day",
                 start_date=None, end_date=None, date_parser=None,
             ):
                 captured["columns"] = columns
 
-            def get_daily_samples(self, samples_per_day):
+            def get_calendar_samples(self, samples_per_period):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
-        monkeypatch.setattr(cli, "DailySampler", FakeDailySampler)
+        monkeypatch.setattr(cli, "CalendarSampler", FakeCalendarSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="daily", source="filtered", per_day=10, seed=42,
+            dataset="events", mode="calendar", source="filtered",
+            per_day=None, per_period=10, period=None, date_column=None, seed=42,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
             export_format="parquet", start_date=None, end_date=None,
         )
