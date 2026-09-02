@@ -398,7 +398,7 @@ Drops rows with missing values in the columns defined in settings.yaml. Also acc
 ### Sampling
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/sampling-modes.svg" alt="The four sampling modes: indexed, daily, filtered and stratified" width="900">
+  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/sampling-modes.svg" alt="The four sampling modes: indexed, calendar, filtered and stratified" width="900">
 </p>
 
 All sampling modes read from the filtered directory by default. Pass `--source converted` to sample from raw converted Parquet instead, skipping the `filter` stage entirely.
@@ -413,10 +413,10 @@ gdeltforge sample --dataset events --mode indexed -n 10000 --seed 123 --out samp
 
 This samples 10000 instances considering the entire data.
 
-#### Daily Sampling (N Rows Per Day)
+#### Calendar Sampling (N Rows Per Period)
 
 ```bash
-gdeltforge sample --dataset events --mode daily --per-day 20 --out daily.parquet
+gdeltforge sample --dataset events --mode calendar --per-period 20 --out daily.parquet
 ```
 
 This samples 20 instances per day from the entire period (1979-present).
@@ -543,7 +543,7 @@ gdeltforge sample \
 gdeltforge scrape --dataset events
 gdeltforge convert --dataset events
 gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode daily --per-day 30
+gdeltforge sample --dataset events --mode calendar --per-period 30
 ```
 
 **Bash one-liner**

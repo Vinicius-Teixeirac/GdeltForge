@@ -169,18 +169,21 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 ## `gdeltforge sample`
 
-![The four sampling modes: indexed, daily, filtered and stratified](assets/sampling-modes.svg)
+![The four sampling modes: indexed, calendar, filtered and stratified](assets/sampling-modes.svg)
 
 All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping.
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--dataset {events,events-15min,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
-| `--mode {indexed,daily,filtered}` | all | Sampling strategy (required) |
+| `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
 | `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
 | `--seed N` | all | RNG seed (default 42) |
-| `--per-day N` | daily | Rows per day (default 10) |
+| `--per-period N` | calendar | Rows per calendar period (default 10) |
+| `--per-day N` | calendar | Deprecated alias for `--per-period` |
+| `--period {day,month,year}` | calendar | Calendar period to group by (default `day`); rejected alongside the deprecated `--mode daily` |
+| `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
 | `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
 | `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` |
@@ -202,13 +205,19 @@ gdeltforge sample --dataset events --mode indexed -n 10000 --seed 123 --out samp
 
 Samples 10,000 rows uniformly across the entire dataset.
 
-### Daily sampling (N rows per day)
+### Calendar sampling (N rows per period)
 
 ```bash
-gdeltforge sample --dataset events --mode daily --per-day 20 --out daily.parquet
+gdeltforge sample --dataset events --mode calendar --per-period 20 --out daily.parquet
 ```
 
-Samples 20 rows per day across the entire period covered by your downloaded data.
+Samples 20 rows per day across the entire period covered by your downloaded data. The cap holds per calendar period regardless of how many files that period's rows are spread across (a historical yearly file, or GKG 2.1/Mentions' many-files-per-day cadence), unlike the deprecated `daily` mode's own per-file cap.
+
+Group by month or year instead of day, and by a different dataset's own date column:
+
+```bash
+gdeltforge sample --dataset gkg-v2 --mode calendar --period month --per-period 50 --out monthly.parquet
+```
 
 ### Filtered sampling (JSON filters)
 
@@ -399,7 +408,7 @@ Every one of these runs the four stages in order; only the last line differs.
     gdeltforge scrape --dataset events
     gdeltforge convert --dataset events
     gdeltforge filter --dataset events
-    gdeltforge sample --dataset events --mode daily --per-day 30
+    gdeltforge sample --dataset events --mode calendar --per-period 30
     ```
 
 ??? example "Date-restricted pipeline"
