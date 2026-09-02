@@ -24,6 +24,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 - README.md and `getting-started.md` disagreed on when the GDELT archive starts (1971 vs. the correct 1979, matching the real earliest yearly archive file, `1979.zip`); README.md's two `ActionGeo_CountryCode` filter examples (and eleven more across `docs/filtered-sampling.md`) used the 3-letter CAMEO scheme (`USA`) on a column that actually uses 2-letter FIPS 10-4 codes (`US`), the exact mix-up `cli-reference.md`'s own warning about the two schemes describes, which would have silently matched zero rows if run as written. `docs/index.md`'s "Four datasets" landing-page card undercounted the real six `--dataset` choices. `architecture.md`'s and README's project-structure trees were missing `utils/branding.py`, the bundled `default_settings.yaml`/`cameo_codes.json`, and `docs/assets/brand/`, and still referenced a `config/settings.yaml` that doesn't exist in a fresh checkout
 
+### Fixed
+- The README and docs site described sampling as having four parallel modes, indexed, daily, filtered, and stratified. `stratified` isn't a `--mode` value at all: `--stratify`/`--n-per-group` only apply within `--mode filtered`, and the CLI's own help text already said so. Reworded every mention to say so explicitly instead of listing it as a peer of the three real modes
+
 ## [0.8.0] - 2026-08-25
 
 ### Added
