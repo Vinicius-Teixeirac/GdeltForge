@@ -26,6 +26,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - The README and docs site described sampling as having four parallel modes, indexed, daily, filtered, and stratified. `stratified` isn't a `--mode` value at all: `--stratify`/`--n-per-group` only apply within `--mode filtered`, and the CLI's own help text already said so. Reworded every mention to say so explicitly instead of listing it as a peer of the three real modes
+- `events`'s file listing also serves `GDELT.MASTERREDUCEDV2.1979-2013.zip`, a historical bulk dump already correctly excluded by a passing test, but with no comment anywhere explaining why. Documented directly on `_is_gdelt_dataset_file` and in `docs/configuration.md` that the exclusion is deliberate: it's a genuinely different product (pre-aggregated daily rollups), not a redundant narrower copy of what `events` already covers
 
 ## [0.8.0] - 2026-08-25
 
