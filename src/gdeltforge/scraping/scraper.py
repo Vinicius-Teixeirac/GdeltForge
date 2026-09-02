@@ -123,6 +123,18 @@ class DownloadResult(TypedDict):
 # STEP 1: Collect GDELT links
 # ------------------------------------------------------------
 def _is_gdelt_dataset_file(filename: str) -> bool:
+    """
+    True for a real daily/monthly/yearly Events archive file, false for
+    anything else in the same directory listing: md5sums, filesizes, and
+    notably GDELT.MASTERREDUCEDV2.1979-2013.zip, a single-file historical
+    bulk dump GDELT also serves at this URL. That file is deliberately
+    never matched here, not because it's redundant, opening it directly
+    showed it's a genuinely different product (pre-aggregated daily
+    rollups, no GlobalEventID), not a narrower copy of the same events
+    this scrape already covers, so conflating the two under one dataset
+    key would be wrong. Confirmed no other aggregate file of this shape
+    lives here as of this check.
+    """
     if not filename.endswith(".zip"):
         return False
     is_daily = filename.endswith(".export.CSV.zip")
