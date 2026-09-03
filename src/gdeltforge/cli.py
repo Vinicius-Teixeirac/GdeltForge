@@ -234,7 +234,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
     outputs, failed = run_converter(
         config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force, dry_run=args.dry_run,
+        force=args.force, dry_run=args.dry_run, recover_unzipped=args.recover_unzipped,
     )
     logger.info(f"Created {len(outputs)} parquet files.")
 
@@ -638,6 +638,15 @@ def build_parser() -> argparse.ArgumentParser:
              "Off by default. Only the zip; the intermediate extracted CSV is already "
              "removed unless converter.keep_unzipped is set. Combined with output_columns, "
              "the dropped columns can't be recovered without re-scraping"
+    )
+    convert.add_argument(
+        "--recover-unzipped",
+        action="store_true",
+        help="Convert leftover .csv files sitting in unzipped_data_directory instead of the "
+             "zips in downloaded_data_directory. For a CSV whose own conversion failed, or "
+             "one kept by converter.keep_unzipped, once its source zip is no longer around "
+             "to retry from normally (e.g. --delete-source already removed it). Off by "
+             "default; not supported for --dataset events-reduced"
     )
     convert_verbosity = convert.add_mutually_exclusive_group()
     convert_verbosity.add_argument(
