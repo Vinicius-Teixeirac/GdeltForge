@@ -44,11 +44,46 @@ class TestFullBanner:
         assert "global event data pipeline" in text
         assert "GdeltForge" in text
 
-    def test_is_four_lines(self, monkeypatch):
+    def test_is_six_lines(self, monkeypatch):
+        # The big block G/F monogram (see _MONOGRAM_ROWS) is 6 rows tall
+        # on its own; this replaced the old 4-line thin single-line G/F,
+        # which read as illegible punctuation rather than either letter.
         monkeypatch.delenv("NO_COLOR", raising=False)
         with mock.patch("sys.stdout.isatty", return_value=False):
             text = branding.full_banner("1.2.3", "tagline")
-        assert len(text.splitlines()) == 4
+        assert len(text.splitlines()) == 6
+
+    def test_every_line_is_the_same_visual_width(self, monkeypatch):
+        # Regression guard for the monogram itself: every row of
+        # _MONOGRAM_ROWS was verified character-by-character to be
+        # exactly 18 columns wide before the wordmark/tagline text (which
+        # only ever appends past column 18, never inserts before it) was
+        # added, so the G/F split at column 9 lands on the same boundary
+        # regardless of which row's glyph strokes are there. Checked with
+        # color off, since colorize() with no color support returns the
+        # plain text unchanged, so line length here is real column width,
+        # not ANSI escape byte length.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with mock.patch("sys.stdout.isatty", return_value=False):
+            text = branding.full_banner("1.2.3", "tagline")
+        lines = text.splitlines()
+        widths = [len(line) for line in lines[:2]] + [len(lines[4]), len(lines[5])]
+        assert len(set(widths)) == 1  # the 4 rows with no appended text
+
+    def test_monogram_reads_as_g_and_f_blocks(self, monkeypatch):
+        # Not a pixel-perfect render check (that's what the width test
+        # above and eyeballing the real output are for), just confirming
+        # the actual glyph strokes survive unchanged: this is the one
+        # part of the banner that isn't generated from a template, and a
+        # future edit nearby could silently corrupt it without any other
+        # test noticing.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with mock.patch("sys.stdout.isatty", return_value=False):
+            text = branding.full_banner("1.2.3", "tagline")
+        lines = text.splitlines()
+        assert "_____" in lines[0]
+        assert "______" in lines[0]
+        assert lines[5].startswith("  \\_____|")
 
     def test_never_contains_a_typographic_dash(self, monkeypatch):
         # Regression guard: the brand system's own mockup slipped in a real
