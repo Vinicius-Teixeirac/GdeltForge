@@ -64,3 +64,37 @@ jobs:
           uv pip install dist/*.whl
           gdeltforge --help
           gdeltforge codes ActionGeo_CountryCode
+
+  test-min-deps:
+    # Every job above resolves dependencies to whatever uv.lock pins,
+    # normally each one's latest compatible release, so a real floor
+    # violation (an API used here that only exists in a newer release
+    # than the >= this project itself declares) went uncaught until
+    # exercised by hand: found for real this way against polars==1.34.0,
+    # the declared floor, two call sites raised outright (DataFrame.
+    # gather() and explode()'s empty_as_null kwarg, both added in a
+    # polars release newer than 1.34). --resolution lowest-direct
+    # resolves every direct dependency in pyproject.toml's own
+    # `dependencies` to its lowest satisfying version instead, so this
+    # job actually tests the floor the package claims to support, not
+    # just whatever's newest today.
+    #
+    # Single Python version, not the full matrix above: pyarrow==14.0.0
+    # (numpy>=1.26/pyarrow>=14.0's floor) has no published wheel for
+    # 3.13, confirmed directly against its real PyPI file listing, since
+    # it predates that interpreter's release. 3.10 is this project's own
+    # overall minimum supported Python, so it's the natural pairing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # full history so hatch-vcs can see tags
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies at their declared floor
+        run: uv sync --group dev --resolution lowest-direct --python 3.10
+
+      - name: Run tests
+        run: uv run --no-sync pytest -v
