@@ -12,6 +12,7 @@ from gdeltforge.sampling.samplers import (
     _apply_reservoir_replacements,
     _assign_column,
     _dedup_last_write_per_slot,
+    _reservoir_to_dataframe,
 )
 from gdeltforge.scraping.scraper import parse_gdelt_gkg_v1_file_date
 
@@ -737,6 +738,63 @@ class TestApplyReservoirReplacements:
 
         for c in reservoir_cols:
             assert np.array_equal(reservoir_cols[c], original[c])
+
+
+class TestReservoirToDataFrame:
+    """
+    Regression coverage for a real, non-deterministic failure found
+    against live scraped data: CalendarSampler/get_random_sample/
+    get_stratified_sample all rebuild a DataFrame from a reservoir's
+    plain numpy arrays (see _apply_reservoir_replacements's own
+    docstring for why the reservoir is numpy, not a DataFrame, mid-scan)
+    via pl.DataFrame(reservoir_cols). Without an explicit schema, a
+    string column's reservoir whose sampled slots all happened to be
+    null gets inferred as pl.Object instead of pl.Utf8 from its numpy
+    content alone, since polars can't tell "meant to be a string column"
+    from an all-None object array; concatenating it against another
+    period/group's reservoir where the column correctly inferred as
+    Utf8 then fails ("... incompatible with expected type String").
+
+    Passing schema= directly to pl.DataFrame looked like the fix, but
+    confirmed directly against the exact array shapes real data
+    produced to still fail non-deterministically a different way
+    ("cannot cast 'Object' type"): schema= there only kicks in a cast
+    after polars' own content-based inference already ran, and Object
+    can't be cast to String at all, so a reservoir polars' own guess
+    landed on Object for (not only the all-null case; a normal mixed
+    None/string array triggered it too) failed outright instead of
+    succeeding alone and only failing later at concat.
+    """
+
+    def test_all_null_string_column_reservoir_concats_cleanly(self):
+        schema: dict[str, pl.DataType] = {"ActionGeo_CountryCode": pl.Utf8()}
+        all_null = _reservoir_to_dataframe(
+            {"ActionGeo_CountryCode": np.array([None, None, None], dtype=object)}, schema
+        )
+        mixed = _reservoir_to_dataframe(
+            {"ActionGeo_CountryCode": np.array(["US", None, "FR"], dtype=object)}, schema
+        )
+
+        assert all_null.schema["ActionGeo_CountryCode"] == pl.Utf8
+        result = pl.concat([all_null, mixed])
+        assert result["ActionGeo_CountryCode"].to_list() == [None, None, None, "US", None, "FR"]
+
+    def test_mixed_string_column_from_a_real_to_numpy_array_reconstructs_cleanly(self):
+        # The "cannot cast 'Object' type" failure needed a numpy array
+        # that actually went through polars' own to_numpy(), not a hand-
+        # built np.array literal: confirmed directly, only the former
+        # reproduced it against real data. Rebuilt here the same way
+        # the real reservoir does (fill phase, then a passthrough
+        # replacement round), rather than asserting against a literal
+        # that might not carry the same internal array flags.
+        schema: dict[str, pl.DataType] = {"c": pl.Utf8()}
+        source = pl.DataFrame({"c": [None, "PS", "CA", "CA", "US"] * 4}, schema=schema)
+        arr = source["c"].to_numpy(writable=True)
+
+        result = _reservoir_to_dataframe({"c": arr}, schema)
+
+        assert result.schema["c"] == pl.Utf8
+        assert result["c"].to_list() == source["c"].to_list()
 
 
 class TestStratifiedSampling:
