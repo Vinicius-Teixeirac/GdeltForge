@@ -537,7 +537,7 @@ def run_codes_cmd(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="GdeltForge: a data pipeline for the GDELT 2.0 Events Database"
+        description="GdeltForge: a data pipeline for the GDELT Events Database"
     )
     parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(
