@@ -475,13 +475,26 @@ def crossref_events_gkg_v1(
                 continue
 
             original_columns = df_batch.columns
+            # explode()'s empty_as_null keyword doesn't exist until a
+            # polars release newer than this project's own declared
+            # minimum (polars>=1.34): confirmed directly, installing
+            # exactly 1.34.0 raises "unexpected keyword argument". Its
+            # only effect here would be whether a genuinely empty EventIds
+            # list (a blank/null source field, split into []) explodes to
+            # a null or an empty-string row; either way the is_in() filter
+            # below drops it, so filtering an empty list out before
+            # exploding at all reaches the same result without needing
+            # the keyword. A non-empty list with a blank entry (e.g. a
+            # trailing comma splitting "5," into ["5", ""]) isn't affected
+            # by this filter at all and explodes normally either way.
             exploded = (
                 df_batch
                 .with_columns(
                     pl.col("EventIds").fill_null("").str.split(",")
                     .alias("_matched_event_id")
                 )
-                .explode("_matched_event_id", empty_as_null=False)
+                .filter(pl.col("_matched_event_id").list.len() > 0)
+                .explode("_matched_event_id")
                 .with_columns(pl.col("_matched_event_id").str.strip_chars())
                 .filter(pl.col("_matched_event_id").is_in(event_id_set))
             )
