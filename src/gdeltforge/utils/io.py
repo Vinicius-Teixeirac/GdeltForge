@@ -309,6 +309,61 @@ def warn_if_delete_source_drops_recoverable_data(
     )
 
 
+def narrow_to_available_columns(
+    logger, label: str, requested: set[str], required: set[str], available: set[str]
+) -> list[str]:
+    """
+    Shared by samplers.py's FilteredSampler and crossref.py's v1/v2 join
+    paths, both of which build a column projection that defaults to a
+    dataset's full declared schema (columns.<dataset> in config) when
+    the caller doesn't pass --columns/--columns v2_columns explicitly.
+    That declared schema is not the same thing as what a real file
+    actually has on disk: convert.output_columns or filter.output_columns
+    can legitimately prune a dataset down to a handful of columns for
+    disk/CPU reasons, and neither sampling nor crossref knew to check
+    for that before this existed, so the default (or an explicit
+    --columns naming a column config still declares but a pruned file no
+    longer has) crashed with a raw, unhelpful polars error at the
+    eventual .select() ("unable to find column ...") instead of a clear
+    one, once convert/filter had already run to completion under that
+    pruning.
+
+    required is checked against `available` first and raises a clear
+    error if actually missing: this is for a column the caller has no
+    usable path forward without (a join key, a --stratify/--date-column
+    grouping key, a --filter condition's own column), so silently
+    narrowing it away would only trade one confusing failure for a
+    quieter, more misleading one (e.g. a join that runs to completion
+    but never matches anything). Everything else in `requested` is
+    optional, output-only: whichever of it is actually available is
+    kept, and whichever isn't is dropped with a warning naming exactly
+    what and why, rather than crashing or silently returning less than
+    requested with no explanation at all.
+
+    logger is passed in rather than used from this module, matching
+    warn_if_delete_source_drops_recoverable_data's own reasoning just
+    above, so the warning is attributed to whichever stage actually
+    emitted it.
+    """
+    missing_required = required - available
+    if missing_required:
+        raise ValueError(
+            f"{label}: required column(s) {sorted(missing_required)} not found in the "
+            f"scanned data. This dataset's configured output_columns may have pruned "
+            f"them away at an earlier stage (convert/filter)."
+        )
+
+    missing_output = requested - available - required
+    if missing_output:
+        logger.warning(
+            f"{label}: {sorted(missing_output)} not found in the scanned data, likely "
+            f"pruned by an earlier stage's output_columns, and will be excluded from "
+            f"the output rather than failing the run."
+        )
+
+    return sorted((requested & available) | required)
+
+
 def unzip_file(zip_filepath: str | Path, extract_to_dir: str | Path | None = None) -> list[Path]:
     """
     Unzips a zip file and returns a list of extracted file paths.
