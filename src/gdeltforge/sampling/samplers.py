@@ -173,6 +173,52 @@ def _apply_reservoir_replacements(
         reservoir_cols[col] = _assign_column(arr, target_slots, accepted[col].to_numpy())
 
 
+def _reservoir_to_dataframe(
+    reservoir_cols: dict[str, np.ndarray], schema: dict[str, pl.DataType]
+) -> pl.DataFrame:
+    """
+    Rebuilds a DataFrame from a reservoir's plain numpy arrays (see
+    _apply_reservoir_replacements above for why the reservoir is kept as
+    numpy arrays rather than a DataFrame during the scan itself), passing
+    back the real dtype every column had before conversion instead of
+    letting polars re-infer one from the numpy array's own content.
+
+    Needed because a numpy object array (what .to_numpy() gives back for
+    any polars string column) that happens to be entirely None at
+    reconstruction time, e.g. a small per-period/per-group reservoir
+    where every sampled row's value for that column was genuinely null,
+    can't be confidently inferred as Utf8 from its content alone; polars
+    falls back to pl.Object for it instead. Confirmed directly: this is
+    invisible for a single reservoir considered on its own, but
+    concatenating it against another reservoir/chunk where the same
+    column correctly inferred as Utf8 then fails with a SchemaError
+    ("... incompatible with expected type String") during the vstack
+    concat performs internally, non-deterministically depending on
+    which period/group happened to draw an all-null slice for that
+    column.
+
+    pl.DataFrame(reservoir_cols, schema=schema) looks like the obvious
+    fix, and resolves that case, but confirmed directly against real
+    scraped data to still fail non-deterministically with a different,
+    equally opaque error ("cannot cast 'Object' type"): passing schema=
+    alongside a numpy object array doesn't construct the Series as that
+    dtype directly, it lets polars infer a dtype from the array's own
+    content first (String, most of the time) and only casts to the
+    requested dtype when that guess disagrees, and a cast from Object to
+    String isn't implemented at all, so the run fails outright on
+    whichever reservoir polars' own inference happens to land on Object
+    for, instead of just failing to vstack later. Converting each numpy
+    array to a plain Python list first, confirmed directly on the exact
+    array shapes real data produced this failure with, sidesteps this
+    entirely: a list of Python str/None objects is unambiguous, so
+    pl.Series never needs to guess or cast at all, regardless of how
+    many (or how few) nulls happen to land in this particular reservoir.
+    """
+    return pl.DataFrame(
+        {c: pl.Series(c, arr.tolist(), dtype=schema[c]) for c, arr in reservoir_cols.items()}
+    )
+
+
 # ----------------------------------------------------------
 # Filter operation types
 # ----------------------------------------------------------
@@ -369,10 +415,11 @@ class CalendarSampler:
                   "dataset's real schema."
             )
 
-        fill_chunks:    dict[Any, list[pl.DataFrame]]    = {}
-        filled:         dict[Any, int]                   = {}
-        reservoir_cols: dict[Any, dict[str, np.ndarray]] = {}
-        total_seen:     dict[Any, int]                   = {}
+        fill_chunks:      dict[Any, list[pl.DataFrame]]      = {}
+        filled:           dict[Any, int]                     = {}
+        reservoir_cols:   dict[Any, dict[str, np.ndarray]]   = {}
+        reservoir_schema: dict[Any, dict[str, pl.DataType]]  = {}
+        total_seen:       dict[Any, int]                     = {}
         n_unparseable = 0
 
         for df_batch in tqdm(self._batches(needed), desc="Sampling (calendar)"):
@@ -416,6 +463,7 @@ class CalendarSampler:
 
                     if filled[period_key] == samples_per_period:
                         filled_df = pl.concat(fill_chunks[period_key])
+                        reservoir_schema[period_key] = dict(filled_df.schema)
                         reservoir_cols[period_key] = {
                             c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
                         }
@@ -443,7 +491,8 @@ class CalendarSampler:
             )
 
         reservoirs: dict[Any, pl.DataFrame] = {
-            g: pl.DataFrame(cols) for g, cols in reservoir_cols.items()
+            g: _reservoir_to_dataframe(cols, reservoir_schema[g])
+            for g, cols in reservoir_cols.items()
         }
         for g, chunks in fill_chunks.items():
             if chunks and g not in reservoirs:
@@ -691,6 +740,7 @@ class FilteredSampler:
         fill_chunks: list[pl.DataFrame] = []
         filled    = 0
         reservoir_cols: dict[str, np.ndarray] | None = None
+        reservoir_schema: dict[str, pl.DataType] | None = None
         total_seen = 0
 
         for df_batch in tqdm(self._batches(needed), desc="Sampling (random)"):
@@ -715,6 +765,7 @@ class FilteredSampler:
                     # (confirmed directly; assigning into it without this
                     # raises "assignment destination is read-only"), unlike
                     # pandas' to_numpy(copy=True) equivalent this replaces.
+                    reservoir_schema = dict(filled_df.schema)
                     reservoir_cols = {
                         c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
                     }
@@ -739,7 +790,8 @@ class FilteredSampler:
             total_seen += batch_size
 
         reservoir = (
-            pl.DataFrame(reservoir_cols) if reservoir_cols is not None
+            _reservoir_to_dataframe(reservoir_cols, reservoir_schema)
+            if reservoir_cols is not None and reservoir_schema is not None
             else pl.concat(fill_chunks) if fill_chunks
             else None
         )
@@ -765,10 +817,11 @@ class FilteredSampler:
 
         needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
 
-        fill_chunks:    dict[Any, list[pl.DataFrame]]   = {}
-        filled:         dict[Any, int]                  = {}
-        reservoir_cols: dict[Any, dict[str, np.ndarray]] = {}
-        total_seen:     dict[Any, int]                  = {}
+        fill_chunks:      dict[Any, list[pl.DataFrame]]     = {}
+        filled:           dict[Any, int]                    = {}
+        reservoir_cols:   dict[Any, dict[str, np.ndarray]]  = {}
+        reservoir_schema: dict[Any, dict[str, pl.DataType]] = {}
+        total_seen:       dict[Any, int]                    = {}
 
         for df_batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
             if df_batch.is_empty() or stratify_col not in df_batch.columns:
@@ -807,6 +860,7 @@ class FilteredSampler:
                         filled_df = pl.concat(fill_chunks[g])
                         # writable=True: see get_random_sample's identical
                         # fill-phase comment for why this can't be omitted.
+                        reservoir_schema[g] = dict(filled_df.schema)
                         reservoir_cols[g] = {
                             c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
                         }
@@ -828,7 +882,8 @@ class FilteredSampler:
                 total_seen[g] += group_size
 
         reservoirs: dict[Any, pl.DataFrame] = {
-            g: pl.DataFrame(cols) for g, cols in reservoir_cols.items()
+            g: _reservoir_to_dataframe(cols, reservoir_schema[g])
+            for g, cols in reservoir_cols.items()
         }
         for g, chunks in fill_chunks.items():
             if chunks and g not in reservoirs:
