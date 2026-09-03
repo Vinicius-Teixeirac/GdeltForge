@@ -629,17 +629,25 @@ class TestVerboseLogging:
 
 class TestQuietLogging:
     """--quiet raises this module's own logger to WARNING, suppressing
-    the setup/summary lines run_converter otherwise always logs at INFO.
-    Mutually exclusive with --verbose at the CLI; this module doesn't
-    enforce that itself, so it isn't re-tested here."""
+    the setup/summary lines run_converter otherwise always logs at INFO,
+    and utils.io's own logger the same way: unzip_file's "Unzipping: ..."/
+    "Extracted N files from ..." lines (one pair per zip, unconditional)
+    log through that separate logger instance, not this module's, so
+    setting only this module's level left them printing for every zip
+    regardless of --quiet, found via a real run where they were the only
+    thing --quiet failed to silence. Mutually exclusive with --verbose at
+    the CLI; this module doesn't enforce that itself, so it isn't
+    re-tested here."""
 
     def test_quiet_raises_the_logger_to_warning(self, tmp_path):
         _write_flat_zip(tmp_path / "raw")
         try:
             run_converter(_make_config(tmp_path), quiet=True)
             assert converter_module.logger.level == logging.WARNING
+            assert converter_module._io_logger.level == logging.WARNING
         finally:
             converter_module.logger.setLevel(logging.INFO)
+            converter_module._io_logger.setLevel(logging.INFO)
 
     def test_quiet_suppresses_the_summary_line(self, tmp_path, capfd):
         # Same cross-process reasoning as TestVerboseLogging's own
@@ -652,6 +660,22 @@ class TestQuietLogging:
             assert "Conversion complete" not in capfd.readouterr().err
         finally:
             converter_module.logger.setLevel(logging.INFO)
+            converter_module._io_logger.setLevel(logging.INFO)
+
+    def test_quiet_suppresses_the_unzip_and_extract_lines(self, tmp_path, capfd):
+        # The actual regression: unzip_file logs through utils.io's own
+        # logger, a separate instance from this module's (see the class
+        # docstring), so these two lines kept printing under --quiet
+        # until _apply_verbosity started raising both loggers together.
+        _write_flat_zip(tmp_path / "raw")
+        try:
+            run_converter(_make_config(tmp_path), quiet=True)
+            err = capfd.readouterr().err
+            assert "Unzipping" not in err
+            assert "Extracted" not in err
+        finally:
+            converter_module.logger.setLevel(logging.INFO)
+            converter_module._io_logger.setLevel(logging.INFO)
 
 
 class TestDatasetParameter:
