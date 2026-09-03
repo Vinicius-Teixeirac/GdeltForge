@@ -907,10 +907,46 @@ class GDELTConverter:
             # TestBlankStringFieldsBecomeNull for the full story on why
             # only the quoted form was ever actually broken.
             "null_values": [""],
+            # GDELT's own export never applies CSV-style quote-escaping to
+            # any field, tab-separated or otherwise: confirmed directly
+            # against a real, freshly-scraped GKG 2.1 file where a raw,
+            # unescaped '"' character sits inside V2EXTRASXML's embedded
+            # <PAGE_TITLE> text whenever a headline itself quotes someone
+            # (e.g. <PAGE_TITLE>"President Donald J Trump is absolutely
+            # correct!": ...). With polars' default quote_char='"', an odd
+            # count of these literal, incidental quote characters in one
+            # file desyncs the multi-threaded reader's notion of "inside a
+            # quoted field" from the file's real row boundaries for
+            # everything after the last unmatched one, surfacing as
+            # "CSV malformed: expected N rows, actual M rows, in chunk
+            # starting at byte offset ..." for the rest of the file.
+            # quote_char=None disables quote handling entirely, treating
+            # a '"' byte as the plain literal character it always was
+            # here; verified against 14 real files pulled live from
+            # data.gdeltproject.org (11 that failed this way, 3 that
+            # didn't) that every one now parses with a row count matching
+            # its own raw newline count exactly.
+            "quote_char": None,
         }
         try:
             df = pl.read_csv(csv_path, encoding="utf8", **read_kwargs)
-        except pl.exceptions.ComputeError:
+        except pl.exceptions.ComputeError as e:
+            # Polars raises this same exception class for essentially any
+            # CSV-parsing failure, not only a genuine decode problem, so
+            # inspecting the message is what actually distinguishes them;
+            # confirmed directly, a real invalid byte always raises with
+            # exactly this text regardless of where in the file it sits,
+            # while an unrelated structural failure (the quote-desync case
+            # quote_char=None above now prevents, or any other malformed-
+            # CSV shape) never does. Retrying with a plain encoding fix
+            # can't do anything for a non-encoding failure, so treating
+            # every ComputeError here as "must be invalid UTF-8" the way
+            # this used to (a leftover from porting pandas' own precise
+            # except UnicodeDecodeError to polars, whose ComputeError has
+            # no such narrow equivalent) wasted a doomed retry and blamed
+            # the wrong cause in the log for anything else.
+            if "invalid utf-8 sequence" not in str(e).lower():
+                raise
             # GKG 2.1's free-text fields (quotations, all-names) routinely
             # carry a handful of non-UTF-8 bytes from non-English source
             # articles GDELT scraped; confirmed against a real 373K-file
