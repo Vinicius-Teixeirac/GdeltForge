@@ -300,6 +300,7 @@ class TestRunConvertCmd:
         defaults = dict(
             dataset="events", start_date=None, end_date=None, order="asc",
             delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -308,7 +309,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 ["a.parquet"], ["bad.zip"]
             ),
         )
@@ -321,7 +323,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 ["a.parquet", "b.parquet"], []
             ),
         )
@@ -335,6 +338,7 @@ class TestRunConvertCmd:
         def fake_run_converter(
             config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -364,7 +368,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 captured.update(delete_source=delete_source) or ([], [])
             ),
         )
@@ -379,7 +384,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 captured.update(verbose=verbose) or ([], [])
             ),
         )
@@ -394,7 +400,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 captured.update(quiet=quiet) or ([], [])
             ),
         )
@@ -409,7 +416,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 captured.update(force=force) or ([], [])
             ),
         )
@@ -424,7 +432,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 captured.update(order=order) or ([], [])
             ),
         )
@@ -439,7 +448,8 @@ class TestRunConvertCmd:
         monkeypatch.setattr(
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
                 captured.update(dry_run=dry_run) or ([], [])
             ),
         )
@@ -448,6 +458,22 @@ class TestRunConvertCmd:
         cli.run_convert_cmd({}, args)
 
         assert captured == {"dry_run": True}
+
+    def test_recover_unzipped_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_converter",
+            lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
+                captured.update(recover_unzipped=recover_unzipped) or ([], [])
+            ),
+        )
+        args = self._args(recover_unzipped=True)
+
+        cli.run_convert_cmd({}, args)
+
+        assert captured == {"recover_unzipped": True}
 
 
 class TestRunFilterCmd:
