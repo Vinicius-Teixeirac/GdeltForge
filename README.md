@@ -3,7 +3,7 @@
 </p>
 
 <h3 align="center">Global event data, forged.</h3>
-<p align="center">Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet.</p>
+<p align="center">Forges the raw GDELT archive into clean, reproducibly-sampled, cross-referenced Parquet.</p>
 
 <p align="center">
   <a href="https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml"><img src="https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -89,7 +89,7 @@ While BigQuery provides full access, it suffers from practical issues:
 
 ### Raw Bulk Downloads Are Available, But Hard to Use
 
-The [raw GDELT 2.0 archives](https://data.gdeltproject.org/events/) contain **thousands of files**. Processing them requires:
+The [raw GDELT archives](https://data.gdeltproject.org/events/) contain **thousands of files**. Processing them requires:
 
 - automated downloading
 - streaming or chunked processing

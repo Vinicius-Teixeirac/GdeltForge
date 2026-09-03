@@ -1,5 +1,5 @@
 site_name: GdeltForge
-site_description: Forges the raw GDELT 2.0 archive into clean, reproducibly-sampled, cross-referenced Parquet
+site_description: Forges the raw GDELT archive into clean, reproducibly-sampled, cross-referenced Parquet
 site_url: https://vinicius-teixeirac.github.io/GdeltForge/
 repo_url: https://github.com/Vinicius-Teixeirac/GdeltForge
 repo_name: GdeltForge
