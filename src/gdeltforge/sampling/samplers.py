@@ -21,7 +21,7 @@ import polars as pl
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
-from gdeltforge.utils.io import clearer_dataset_errors
+from gdeltforge.utils.io import clearer_dataset_errors, narrow_to_available_columns
 from gdeltforge.utils.logging import get_logger
 
 from . import cameo_codes
@@ -403,10 +403,6 @@ class CalendarSampler:
         if samples_per_period <= 0:
             return pl.DataFrame()
 
-        # date_column drives the grouping below, so it has to be read even
-        # if the caller didn't ask for it in --columns, otherwise every
-        # file would silently look like it has no date column and get skipped.
-        needed = list(self.columns | {self.date_column}) if self.columns else None
         prefix_len = self._PERIOD_PREFIX_LENGTH[self.period]
 
         # A dataset scan built over files with differing schemas fills a
@@ -426,14 +422,32 @@ class CalendarSampler:
                 self.folder, self.historical_folder,
                 self.start_date, self.end_date, self.date_parser,
             )
-            schema_names = _scan_dataset(files).collect_schema().names()
-        if self.date_column not in schema_names:
+            available = set(_scan_dataset(files).collect_schema().names())
+        if self.date_column not in available:
             raise ValueError(
                 f"{self.date_column!r} is not a column in any file under {self.folder}"
                 + (f" or {self.historical_folder}" if self.historical_folder else "")
                 + ". Check --date-column (or the per-dataset default) against this "
                   "dataset's real schema."
             )
+
+        # date_column drives the grouping below, so it has to be read even
+        # if the caller didn't ask for it in --columns, otherwise every
+        # file would silently look like it has no date column and get
+        # skipped; narrow_to_available_columns treats it the same strict
+        # way as a genuine required column for that reason (already
+        # confirmed present just above, so this can never raise on it).
+        # self.columns being unset (no explicit --columns) needs no
+        # narrowing at all: _batches leaves the projection off entirely
+        # and just reads whatever a file actually has, the same as it
+        # always did before this existed.
+        needed = (
+            narrow_to_available_columns(
+                logger, f"calendar sample dataset in {self.folder}",
+                self.columns, {self.date_column}, available,
+            )
+            if self.columns else None
+        )
 
         fill_chunks:      dict[Any, list[pl.DataFrame]]      = {}
         filled:           dict[Any, int]                     = {}
@@ -731,9 +745,32 @@ class FilteredSampler:
             lf = lf.select(needed_columns)
             yield from lf.collect_batches(chunk_size=64_000)
 
-    def _needed_columns(self) -> list[str]:
-        """Union of requested columns and any column referenced in the filter expression."""
-        return list(self.columns | self._filter_columns(self.filter_dict))
+    def _needed_columns(self, extra_required: set[str] | None = None) -> list[str]:
+        """
+        self.columns (the output projection, defaulting to this dataset's
+        full declared schema when --columns isn't passed) and any column
+        the filter expression itself references, narrowed down to what
+        this dataset's real, already-scanned files actually have. See
+        narrow_to_available_columns for why that narrowing exists at
+        all: a declared schema column isn't guaranteed to survive an
+        earlier convert/filter run's own output_columns pruning.
+
+        extra_required names a column beyond the filter's own (e.g.
+        get_stratified_sample's stratify_col) that this call can't
+        function without at all, so it's checked for real availability
+        the same strict way the filter's own columns are, rather than
+        being treated as a droppable, output-only request.
+        """
+        # Wrapped the same as _batches below: _dataset() itself can raise
+        # (every file's footer schema is read there), and this runs
+        # before _batches ever does, so a corrupt/non-parquet file needs
+        # the same clear error here too, not a bare arrow one.
+        with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
+            available = set(self._dataset().collect_schema().names())
+        required = (extra_required or set()) | self._filter_columns(self.filter_dict)
+        return narrow_to_available_columns(
+            logger, f"filtered sample dataset in {self.folder}", self.columns, required, available
+        )
 
     # ---------- API ----------
     def filter_dataset(self) -> pl.DataFrame:
@@ -835,7 +872,7 @@ class FilteredSampler:
         if n_per_group <= 0:
             return pl.DataFrame()
 
-        needed = list(self.columns | {stratify_col} | self._filter_columns(self.filter_dict))
+        needed = self._needed_columns(extra_required={stratify_col})
 
         fill_chunks:      dict[Any, list[pl.DataFrame]]     = {}
         filled:           dict[Any, int]                    = {}
