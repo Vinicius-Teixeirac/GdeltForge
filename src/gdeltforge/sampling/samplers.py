@@ -163,7 +163,12 @@ def _apply_reservoir_replacements(
     if target_slots.size == 0:
         return
 
-    accepted = batch.gather(source_pos)
+    # DataFrame.gather() doesn't exist until a polars release newer than
+    # this project's own declared minimum (polars>=1.34): confirmed
+    # directly, installing exactly 1.34.0 raises AttributeError here.
+    # Bracket indexing with an integer array selects the same rows and
+    # has been stable across every polars 1.x release.
+    accepted = batch[source_pos]
     for col, arr in reservoir_cols.items():
         reservoir_cols[col] = _assign_column(arr, target_slots, accepted[col].to_numpy())
 
@@ -247,7 +252,10 @@ class IndexedSampler:
         sampled = []
         for file_path, relative_rows in tqdm(indices_by_file.items(), desc="Loading samples"):
             df = pl.read_parquet(file_path, columns=read_columns)
-            sampled.append(df.gather(relative_rows))
+            # See _apply_reservoir_replacements above: DataFrame.gather()
+            # isn't available on this project's declared minimum polars
+            # version, bracket indexing is.
+            sampled.append(df[relative_rows])
 
         return pl.concat(sampled)
 
