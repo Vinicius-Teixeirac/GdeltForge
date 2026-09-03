@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-03
+
 ### Fixed
 - `convert`'s polars port could keep a quoted empty string (`""`) in a source CSV as an actual empty-string value instead of null, diverging from pandas' `read_csv` default of nulling it (a bare, unquoted blank field was already null by polars' own default and is unaffected). Found by a full content-equality diff against pandas' output on a 10,000,000-row fixture; the specific manifestation came from that fixture's own generator writing synthetic blanks via a polars DataFrame's `write_csv`, which quotes a real empty-string value to distinguish it from null on round-trip, a shape real GDELT archives (plain, unquoted tab-delimited text) don't produce, but a source that does hit this can silently defeat `filter`'s documented `columns_to_check` contract ("rows with a NaN/null value in any of these columns are dropped") for any string column listed there. `pl.read_csv` now passes `null_values=[""]`, matching pandas' behavior for both forms
 
