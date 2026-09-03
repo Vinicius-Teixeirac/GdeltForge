@@ -389,6 +389,122 @@ class TestFilteredSamplerValidation:
             sampler.filter_dataset()
 
 
+def _make_pruned_dataset(folder):
+    """The same rows _make_dataset writes, but as convert/filter's own
+    output_columns pruning would leave them: fewer columns than
+    GDELT_COLUMNS declares, not all of them. Exercises the real gap this
+    covers, not output_columns itself: --columns/self.columns still
+    defaults to the FULL declared schema, so a file actually missing
+    some of it is what used to crash rather than narrow."""
+    pl.DataFrame({
+        "GlobalEventID": [1, 2, 3, 4, 5, 6],
+        "Day": [20200101] * 6,
+        "ActionGeo_CountryCode": ["US", "BR", "US", "CH", "RU", "BR"],
+    }).write_parquet(folder / "data.parquet")
+
+
+class TestGracefulColumnNarrowing:
+    """
+    Regression coverage for a real gap found via a live comprehensive
+    QA pass: sample --mode filtered/stratified and crossref (see
+    crossref.py's own tests) default their column projection to a
+    dataset's full declared schema (columns.<dataset> in config) unless
+    --columns is passed explicitly, which isn't the same thing as what a
+    real, possibly output_columns-pruned file on disk actually has.
+    That mismatch used to crash with a raw, unhelpful polars error at
+    the eventual .select() ("unable to find column ...") instead of
+    either working around it or explaining what happened.
+
+    A column the caller has no usable path forward without at all (a
+    --filter condition's own column, --stratify's grouping column)
+    still raises a clear error if genuinely missing, rather than being
+    silently narrowed away into a query that would just quietly find
+    nothing. See utils/io.py's own TestNarrowToAvailableColumns for the
+    narrowing/warning logic itself; these only need to confirm each
+    sampler wires it in correctly, not re-verify the logic.
+    """
+
+    def test_default_full_schema_projection_narrows_with_a_warning(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_pruned_dataset(folder)
+
+        sampler = FilteredSampler(str(folder), GDELT_COLUMNS)
+        with caplog.at_level(logging.WARNING):
+            df = sampler.filter_dataset()
+
+        assert set(df.columns) == {"GlobalEventID", "Day", "ActionGeo_CountryCode"}
+        assert len(df) == 6
+        assert any("output_columns" in r.message for r in caplog.records)
+
+    def test_get_random_sample_narrows_with_a_warning(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_pruned_dataset(folder)
+
+        sampler = FilteredSampler(str(folder), GDELT_COLUMNS, random_state=1)
+        with caplog.at_level(logging.WARNING):
+            df = sampler.get_random_sample(3)
+
+        assert set(df.columns) == {"GlobalEventID", "Day", "ActionGeo_CountryCode"}
+        assert any("output_columns" in r.message for r in caplog.records)
+
+    def test_a_filter_column_genuinely_missing_raises_clearly(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_pruned_dataset(folder)
+
+        # NumArticles is in GDELT_COLUMNS (so this passes __init__'s own
+        # validation against the declared schema) but isn't in the
+        # pruned file: the filter can't be evaluated at all without it,
+        # so this must raise rather than silently narrow it away.
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS, filter_dict={"NumArticles": 5},
+        )
+        with pytest.raises(ValueError, match="required column.*NumArticles"):
+            sampler.filter_dataset()
+
+    def test_stratify_column_genuinely_missing_raises_clearly(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_pruned_dataset(folder)
+
+        sampler = FilteredSampler(str(folder), GDELT_COLUMNS, random_state=1)
+        with pytest.raises(ValueError, match="required column.*QuadClass"):
+            sampler.get_stratified_sample("QuadClass", n_per_group=2)
+
+    def test_calendar_sampler_narrows_an_explicit_columns_request(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_pruned_dataset(folder)
+
+        sampler = CalendarSampler(
+            str(folder), columns={"ActionGeo_CountryCode", "GoldsteinScale"},
+            date_column="Day", period="day", random_state=1,
+        )
+        with caplog.at_level(logging.WARNING):
+            df = sampler.get_calendar_samples(samples_per_period=10)
+
+        assert set(df.columns) == {"ActionGeo_CountryCode", "Day"}
+        assert any("GoldsteinScale" in r.message for r in caplog.records)
+
+    def test_calendar_sampler_with_no_explicit_columns_is_unaffected(self, tmp_path, caplog):
+        # self.columns is None here (no --columns passed at all): this
+        # already read whatever a file actually has, with nothing
+        # declared-but-missing to warn about, both before and after
+        # this fix existed.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_pruned_dataset(folder)
+
+        sampler = CalendarSampler(str(folder), date_column="Day", period="day", random_state=1)
+        with caplog.at_level(logging.WARNING):
+            df = sampler.get_calendar_samples(samples_per_period=10)
+
+        assert set(df.columns) == {"GlobalEventID", "Day", "ActionGeo_CountryCode"}
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
 class TestCountryCodeWarnings:
     """
     Regression coverage for the original real-world bug this session found:
