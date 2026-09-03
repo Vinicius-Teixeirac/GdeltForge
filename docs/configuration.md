@@ -130,6 +130,8 @@ Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is indepen
 
 A bare `.csv` input (not inside a ZIP) is accepted alongside the archives real GDELT scrapes distribute, matched the same way, via `file_pattern`. It's read as-is with no extraction step; `--delete-source`/`keep_unzipped` still apply the same way (deleting or keeping the source once its parquet output is confirmed written), except `keep_unzipped` has nothing to keep, since nothing was ever extracted. Its filename plays no part in file-type detection (that requires a literal `.zip` suffix), so it always flat-writes to `parquet_data_directory`, regardless of `converter.partitioning.enabled`.
 
+If a CSV extracted from a ZIP fails its own parquet write, or `keep_unzipped` kept it around after a config change invalidated its `.done` marker, it's left sitting in `unzipped_data_directory`. As long as the source ZIP is still in `downloaded_data_directory`, a plain rerun of `convert` picks it up again from scratch. If the ZIP is gone by then, see `--recover-unzipped` in the [CLI reference](cli-reference.md#gdeltforge-convert).
+
 ### Hive partitioning for historical data
 
 The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `1979.zip`, `200601.zip`) rather than daily files. Keeping those as flat Parquet files means every query scans thousands of files. Enabling partitioning routes them into a structured directory tree instead, so filters on `Year` or `MonthYear` skip irrelevant files entirely.
