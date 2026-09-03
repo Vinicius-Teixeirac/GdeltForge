@@ -953,10 +953,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     parser = build_parser()
-    args = parser.parse_args()
 
-    if sys.stdout.isatty():
+    # Printed before parse_args, not after: argparse's own -h/--help
+    # handling (and a parse error, e.g. a missing required --dataset)
+    # exits from inside parse_args itself, before anything past it ever
+    # runs. That left --help, almost always the very first thing a
+    # freshly-installed user actually runs, showing zero branding at
+    # all. --version is skipped here since VersionAction below already
+    # prints the fuller full_banner; showing this one-liner first too
+    # would just be redundant right above it.
+    if sys.stdout.isatty() and "--version" not in sys.argv:
         safe_print(compact_emblem(__version__))
+
+    args = parser.parse_args()
 
     try:
         if args.command == "codes":

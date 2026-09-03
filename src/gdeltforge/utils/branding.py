@@ -73,25 +73,53 @@ def colorize(text: str, rgb: tuple[int, int, int]) -> str:
     return f"\x1b[38;2;{r};{g};{b}m{text}\x1b[0m"
 
 
+# Big block G/F monogram, 6 rows x 18 columns, each row split at column 9:
+# the left half draws G, the right half draws F. Verified character-by-
+# character to be exactly 18 columns wide on every row before the color
+# split was added, so the two halves always land on the same boundary
+# regardless of which row's glyph strokes happen to be there. Echoes the
+# real brand monogram (lockup-e-monogram.png: a bisected G/F with a
+# meridian line through the middle) at CLI scale, in place of the old
+# banner's thin single-line G/F, which read as illegible punctuation
+# rather than either letter.
+_MONOGRAM_ROWS = (
+    "   _____   ______ ",
+    "  / ____| |  ____|",
+    " | |  __  | |__   ",
+    "─| | |_ |─|  __|──",
+    " | |__| | | |     ",
+    "  \\_____| |_|     ",
+)
+_MONOGRAM_SPLIT = 9
+
+
 def full_banner(version: str, tagline: str) -> str:
-    """The 4-line ASCII banner: G and F, joined by the meridian rule.
+    """The big block G/F monogram (see _MONOGRAM_ROWS), G in near-white and
+    F in forge orange matching the real lockup's own two-tone treatment,
+    with the wordmark and tagline set beside it rather than below: the
+    glyphs alone are already 6 rows tall, and stacking more text under
+    them would push the whole banner past a comfortable single screenful.
     Plain ASCII/box-drawing only, no typographic dashes. Reserved for
     --version; routine interactive starts get compact_emblem instead.
     """
-    return (
-        f"  ___  {colorize('__', FORGE)}\n"
-        f" / __| {colorize('| _|', FORGE)}   "
-        f"{colorize('GdeltForge', NEARWHITE)} {colorize(version, SLATE)}\n"
-        f"{colorize('─', SLATE)}| (_ |{colorize('─', SLATE)}{colorize('| |', FORGE)}"
-        f"{colorize('─' * 22, SLATE)}\n"
-        f" \\___| {colorize('|_|', FORGE)}   {colorize(tagline.lower(), SLATE)}"
-    )
+    lines = [
+        colorize(row[:_MONOGRAM_SPLIT], NEARWHITE) + colorize(row[_MONOGRAM_SPLIT:], FORGE)
+        for row in _MONOGRAM_ROWS
+    ]
+    lines[2] += f"  {colorize('GdeltForge', NEARWHITE)}  {colorize(version, FORGE)}"
+    lines[3] += f"  {colorize(tagline.lower(), SLATE)}"
+    return "\n".join(lines)
 
 
 def compact_emblem(version: str) -> str:
-    """The one-line emblem for routine interactive starts."""
+    """The one-line emblem for routine interactive starts. G colored to
+    match full_banner's own G=near-white/F=forge-orange monogram split
+    (previously left at the terminal's default foreground, the one piece
+    of this line not actually on-brand); the rest stays as muted as
+    before, deliberately: this prints on every single command, not just
+    --version, so only the monogram itself should draw the eye."""
     return (
-        f"G{colorize('━', SLATE)}{colorize('F', FORGE)}  "
+        f"{colorize('G', NEARWHITE)}{colorize('━', SLATE)}{colorize('F', FORGE)}  "
         f"{colorize('gdeltforge', SLATE)} {colorize('·', SLATE)} "
         f"{colorize(version, FORGE)}"
     )
