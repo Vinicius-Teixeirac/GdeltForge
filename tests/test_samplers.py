@@ -12,6 +12,7 @@ from gdeltforge.sampling.samplers import (
     _apply_reservoir_replacements,
     _assign_column,
     _dedup_last_write_per_slot,
+    _reservoir_to_dataframe,
 )
 from gdeltforge.scraping.scraper import parse_gdelt_gkg_v1_file_date
 
@@ -737,6 +738,101 @@ class TestApplyReservoirReplacements:
 
         for c in reservoir_cols:
             assert np.array_equal(reservoir_cols[c], original[c])
+
+
+class TestReservoirToDataFrame:
+    """
+    Regression coverage for a real, non-deterministic failure found
+    against live scraped data: CalendarSampler/get_random_sample/
+    get_stratified_sample all rebuild a DataFrame from a reservoir's
+    plain numpy arrays (see _apply_reservoir_replacements's own
+    docstring for why the reservoir is numpy, not a DataFrame, mid-scan)
+    via pl.DataFrame(reservoir_cols). Without an explicit schema, a
+    string column's reservoir whose sampled slots all happened to be
+    null gets inferred as pl.Object instead of pl.Utf8 from its numpy
+    content alone, since polars can't tell "meant to be a string column"
+    from an all-None object array; concatenating it against another
+    period/group's reservoir where the column correctly inferred as
+    Utf8 then fails ("... incompatible with expected type String").
+
+    Passing schema= directly to pl.DataFrame for every column uniformly
+    looked like the fix, but confirmed directly against the exact array
+    shapes real data produced to still fail non-deterministically a
+    different way ("cannot cast 'Object' type"): schema= there only
+    kicks in a cast after polars' own content-based inference already
+    ran, and Object can't be cast to String at all, so a reservoir
+    polars' own guess landed on Object for (not only the all-null case;
+    a normal mixed None/string array triggered it too) failed outright
+    instead of succeeding alone and only failing later at concat.
+    Forcing that schema onto a NUMERIC column was also actively wrong,
+    not just unnecessary, once _apply_reservoir_replacements' own
+    mid-scan Int64 -> Float64 upcast (see _assign_column) makes the
+    schema captured once at fill time stale by reconstruction time.
+
+    _reservoir_to_dataframe only reaches for the captured schema on an
+    object-dtype array (the one genuinely ambiguous case); a numeric
+    array's own current dtype already uniquely determines the right
+    polars type, so that path stays exactly as fast, and as immune to
+    the stale-schema trap, as it was before this fix existed.
+    """
+
+    def test_all_null_string_column_reservoir_concats_cleanly(self):
+        schema: dict[str, pl.DataType] = {"ActionGeo_CountryCode": pl.Utf8()}
+        all_null = _reservoir_to_dataframe(
+            {"ActionGeo_CountryCode": np.array([None, None, None], dtype=object)}, schema
+        )
+        mixed = _reservoir_to_dataframe(
+            {"ActionGeo_CountryCode": np.array(["US", None, "FR"], dtype=object)}, schema
+        )
+
+        assert all_null.schema["ActionGeo_CountryCode"] == pl.Utf8
+        result = pl.concat([all_null, mixed])
+        assert result["ActionGeo_CountryCode"].to_list() == [None, None, None, "US", None, "FR"]
+
+    def test_mixed_string_column_from_a_real_to_numpy_array_reconstructs_cleanly(self):
+        # The "cannot cast 'Object' type" failure needed a numpy array
+        # that actually went through polars' own to_numpy(), not a hand-
+        # built np.array literal: confirmed directly, only the former
+        # reproduced it against real data. Rebuilt here the same way
+        # the real reservoir does (fill phase, then a passthrough
+        # replacement round), rather than asserting against a literal
+        # that might not carry the same internal array flags.
+        schema: dict[str, pl.DataType] = {"c": pl.Utf8()}
+        source = pl.DataFrame({"c": [None, "PS", "CA", "CA", "US"] * 4}, schema=schema)
+        arr = source["c"].to_numpy(writable=True)
+
+        result = _reservoir_to_dataframe({"c": arr}, schema)
+
+        assert result.schema["c"] == pl.Utf8
+        assert result["c"].to_list() == source["c"].to_list()
+
+    def test_a_numeric_column_ignores_a_stale_captured_dtype(self):
+        # _assign_column upcasts a reservoir column's real dtype mid-
+        # scan the moment a null needs writing into a column that was
+        # int64 at fill time (see its own docstring), so the schema
+        # captured once at fill time can already be wrong for a numeric
+        # column by the time this runs. Forcing it back on would raise
+        # (a real float64 NaN has no valid Int64 representation to cast
+        # to); reconstructing from the array's own current dtype instead
+        # sidesteps the staleness entirely, matching what a numeric
+        # column always did here even before this fix existed.
+        stale_schema: dict[str, pl.DataType] = {"n": pl.Int64()}
+        arr = np.array([1.0, np.nan, 3.0], dtype=np.float64)  # already upcast
+
+        result = _reservoir_to_dataframe({"n": arr}, stale_schema)
+
+        assert result.schema["n"] == pl.Float64
+        assert result["n"][0] == 1.0
+        assert result["n"][1] != result["n"][1]  # NaN, per numpy's own float semantics
+        assert result["n"][2] == 3.0
+
+    def test_a_normal_numeric_column_reconstructs_unchanged(self):
+        result = _reservoir_to_dataframe(
+            {"n": np.array([1, 2, 3], dtype=np.int64)}, {"n": pl.Int64()}
+        )
+
+        assert result.schema["n"] == pl.Int64
+        assert result["n"].to_list() == [1, 2, 3]
 
 
 class TestStratifiedSampling:
