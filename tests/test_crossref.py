@@ -522,6 +522,63 @@ class TestCrossrefEventsGkgV1:
             )
 
 
+class TestCrossrefEventsGkgV1ColumnNarrowing:
+    """
+    Regression coverage for a real gap found via a live comprehensive
+    QA pass: without --columns, the GKG-side read defaults to this
+    dataset's full declared schema (GKG_V1_COLUMNS here), which isn't
+    the same thing as what a real, possibly output_columns-pruned file
+    on disk actually has. That mismatch used to crash with a raw,
+    unhelpful polars error ("unable to find column ...") instead of
+    working around it. See utils/io.py's own TestNarrowToAvailableColumns
+    for the narrowing/warning logic itself; this only confirms
+    crossref_events_gkg_v1 wires it in correctly.
+    """
+
+    @staticmethod
+    def _events_df():
+        return pl.DataFrame({"GlobalEventID": [1001, 1002], "NumArticles": [5, 3]})
+
+    @staticmethod
+    def _write_pruned_gkg_v1(tmp_path):
+        # Themes and NumArticles are both in GKG_V1_COLUMNS but absent
+        # here, the shape filter.output_columns pruning a dataset down
+        # to just the join key (plus whatever else was kept) produces.
+        folder = tmp_path / "gkg_v1_pruned"
+        folder.mkdir()
+        pl.DataFrame({
+            "Date": [20130401, 20130401],
+            "EventIds": ["1001,1002", "9999"],
+        }).write_parquet(folder / "20130401.gkg.parquet")
+        return str(folder)
+
+    def test_default_full_schema_projection_narrows_with_a_warning(self, tmp_path, caplog):
+        folder = self._write_pruned_gkg_v1(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
+
+        assert sorted(result["GlobalEventID"]) == [1001, 1002]
+        assert "GKG_Date" in result.columns
+        assert "GKG_Themes" not in result.columns
+        assert "GKG_NumArticles" not in result.columns
+        assert any(
+            "Themes" in r.message and "NumArticles" in r.message for r in caplog.records
+        )
+
+    def test_join_key_genuinely_missing_raises_clearly(self, tmp_path):
+        # EventIds is declared in GKG_V1_COLUMNS (passes the earlier,
+        # declared-schema-only _require_column check) but this file
+        # doesn't actually have it: the join can't run at all without
+        # it, so this must raise rather than silently narrow it away.
+        folder = tmp_path / "gkg_v1_no_join_key"
+        folder.mkdir()
+        pl.DataFrame({"Date": [20130401]}).write_parquet(folder / "20130401.gkg.parquet")
+
+        with pytest.raises(ValueError, match="required column.*EventIds"):
+            crossref_events_gkg_v1(self._events_df(), folder, GKG_V1_COLUMNS)
+
+
 # ------------------------------------------------------------
 # crossref_events_gkg_v2: two-hop join through Mentions
 # ------------------------------------------------------------
@@ -891,6 +948,65 @@ class TestCrossrefEventsGkgV2:
                 self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
                 start_date=date(2020, 1, 2),
             )
+
+
+class TestCrossrefEventsGkgV2ColumnNarrowing:
+    """
+    Same real gap as TestCrossrefEventsGkgV1ColumnNarrowing, for the
+    GKG 2.1 side of the two-hop join: without --columns, the read
+    defaults to GKG_V2_COLUMNS in full, which a real output_columns-
+    pruned file on disk isn't guaranteed to still have.
+    """
+
+    @staticmethod
+    def _events_df():
+        return pl.DataFrame({"GlobalEventID": [2001]})
+
+    @staticmethod
+    def _write_mentions(tmp_path):
+        folder = tmp_path / "mentions"
+        folder.mkdir()
+        pl.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionIdentifier": ["http://a.com/article1"],
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
+        return str(folder)
+
+    @staticmethod
+    def _write_pruned_gkg_v2(tmp_path):
+        # V1THEMES is in GKG_V2_COLUMNS but absent here, the shape
+        # filter.output_columns pruning down to just the join key (plus
+        # whatever else was kept) produces.
+        folder = tmp_path / "gkg_v2_pruned"
+        folder.mkdir()
+        pl.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://a.com/article1"],
+            "GKGRECORDID": ["REC1"],
+        }).write_parquet(folder / "20200101000000.gkg.parquet")
+        return str(folder)
+
+    def test_default_full_schema_projection_narrows_with_a_warning(self, tmp_path, caplog):
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_pruned_gkg_v2(tmp_path)
+
+        with caplog.at_level("WARNING"):
+            result = crossref_events_gkg_v2(
+                self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS
+            )
+
+        assert sorted(result["GlobalEventID"]) == [2001]
+        assert "GKG_GKGRECORDID" in result.columns
+        assert "GKG_V1THEMES" not in result.columns
+        assert any("V1THEMES" in r.message for r in caplog.records)
+
+    def test_join_key_genuinely_missing_raises_clearly(self, tmp_path):
+        mentions_folder = self._write_mentions(tmp_path)
+        folder = tmp_path / "gkg_v2_no_join_key"
+        folder.mkdir()
+        pl.DataFrame({"GKGRECORDID": ["REC1"]}).write_parquet(folder / "20200101000000.gkg.parquet")
+
+        with pytest.raises(ValueError, match="required column.*V2DOCUMENTIDENTIFIER"):
+            crossref_events_gkg_v2(self._events_df(), mentions_folder, folder, GKG_V2_COLUMNS)
 
 
 class TestCrossrefEventsGkgV2DuplicateHandling:

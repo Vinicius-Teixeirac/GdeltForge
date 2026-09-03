@@ -10,6 +10,7 @@ from gdeltforge.utils.io import (
     delete_done_marker,
     is_marked_done,
     mark_done,
+    narrow_to_available_columns,
     read_parquet_path,
     warn_if_delete_source_drops_recoverable_data,
     write_dataframe_atomic,
@@ -482,3 +483,53 @@ class TestWarnIfDeleteSourceDropsRecoverableData:
         assert "columns_to_check" in message
         assert "output_columns" in message
         assert "float32_columns" in message
+
+
+class TestNarrowToAvailableColumns:
+    """
+    Shared by samplers.py's FilteredSampler and crossref.py's v1/v2 join
+    paths: both build a column projection that defaults to a dataset's
+    full declared schema when the caller doesn't pass --columns, which
+    isn't the same thing as what a real, possibly output_columns-pruned
+    file on disk actually has. required distinguishes a column a caller
+    has no usable path forward without (raise clearly) from everything
+    else, which is just an output-only request (drop with a warning)."""
+
+    def test_missing_required_column_raises_a_clear_error(self):
+        with pytest.raises(ValueError, match="required column.*EventIds"):
+            narrow_to_available_columns(
+                logging.getLogger("test"), "GKG 1.0 dataset in /data",
+                requested={"EventIds", "Date"}, required={"EventIds"},
+                available={"Date"},
+            )
+
+    def test_missing_optional_columns_warn_and_are_dropped(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = narrow_to_available_columns(
+                logging.getLogger("test"), "GKG 1.0 dataset in /data",
+                requested={"EventIds", "Tone", "Themes"}, required={"EventIds"},
+                available={"EventIds", "Date"},
+            )
+        assert result == ["EventIds"]
+        message = caplog.records[0].message
+        assert "Tone" in message and "Themes" in message
+        assert "EventIds" not in message.split(":")[1]  # not reported as dropped
+
+    def test_nothing_missing_warns_nothing_and_keeps_everything_requested(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = narrow_to_available_columns(
+                logging.getLogger("test"), "GKG 1.0 dataset in /data",
+                requested={"EventIds", "Date"}, required={"EventIds"},
+                available={"EventIds", "Date", "Tone"},
+            )
+        assert result == ["Date", "EventIds"]
+        assert caplog.records == []
+
+    def test_a_required_column_absent_from_requested_is_still_returned(self):
+        # A join key is always included in the read regardless of
+        # whether the caller's own --columns happened to name it.
+        result = narrow_to_available_columns(
+            logging.getLogger("test"), "GKG 1.0 dataset in /data",
+            requested={"Date"}, required={"EventIds"}, available={"EventIds", "Date"},
+        )
+        assert result == ["Date", "EventIds"]

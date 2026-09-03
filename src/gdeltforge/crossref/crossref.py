@@ -91,7 +91,7 @@ from gdeltforge.scraping.scraper import (
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
-from gdeltforge.utils.io import clearer_dataset_errors
+from gdeltforge.utils.io import clearer_dataset_errors, narrow_to_available_columns
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -452,7 +452,7 @@ def crossref_events_gkg_v1(
     )
 
     columns = _validate_columns(columns, gkg_columns)
-    read_columns = list((columns if columns is not None else set(gkg_columns)) | {"EventIds"})
+    requested_columns = columns if columns is not None else set(gkg_columns)
 
     event_id_col = events_df["GlobalEventID"].cast(pl.Int64).cast(pl.Utf8)
     event_id_set = set(event_id_col.to_list())
@@ -464,9 +464,20 @@ def crossref_events_gkg_v1(
     # union schema= scan_parquet needs), not only the later batch
     # collection.
     with clearer_dataset_errors(f"GKG 1.0 dataset in {gkg_folder}"):
-        lf = _dataset(
-            gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date
-        ).select(read_columns)
+        lf = _dataset(gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date)
+        # requested_columns defaults to this dataset's full declared
+        # schema when the caller doesn't pass --columns, which isn't the
+        # same thing as what this scan's real, already-opened files
+        # actually have: convert/filter's own output_columns can prune a
+        # dataset down to a handful of columns for disk/CPU reasons.
+        # Narrowing to what's real here, instead of leaving the .select()
+        # below to fail outright with a raw "unable to find column"
+        # error, is what makes that pruning and this join coexist.
+        read_columns = narrow_to_available_columns(
+            logger, f"GKG 1.0 dataset in {gkg_folder}",
+            requested_columns, {"EventIds"}, set(lf.collect_schema().names()),
+        )
+        lf = lf.select(read_columns)
 
         for df_batch in tqdm(
             lf.collect_batches(chunk_size=64_000), desc="Cross-referencing GKG 1.0"
@@ -595,9 +606,7 @@ def crossref_events_gkg_v2(
     )
 
     columns = _validate_columns(columns, gkg_v2_columns)
-    read_gkg_columns = list(
-        (columns if columns is not None else set(gkg_v2_columns)) | {"V2DOCUMENTIDENTIFIER"}
-    )
+    requested_gkg_columns = columns if columns is not None else set(gkg_v2_columns)
 
     event_id_col = events_df["GlobalEventID"].cast(pl.Int64)
     event_id_set = set(event_id_col.to_list())
@@ -679,8 +688,21 @@ def crossref_events_gkg_v2(
     # actually mentioning one of these events get read off disk.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
+        gkg_lf = _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+        # requested_gkg_columns defaults to this dataset's full declared
+        # schema when the caller doesn't pass --columns, which isn't the
+        # same thing as what this scan's real, already-opened files
+        # actually have: convert/filter's own output_columns can prune a
+        # dataset down to a handful of columns for disk/CPU reasons.
+        # Narrowing to what's real here, instead of leaving the .select()
+        # below to fail outright with a raw "unable to find column"
+        # error, is what makes that pruning and this join coexist.
+        read_gkg_columns = narrow_to_available_columns(
+            logger, f"GKG 2.1 dataset in {gkg_v2_folder}",
+            requested_gkg_columns, {"V2DOCUMENTIDENTIFIER"}, set(gkg_lf.collect_schema().names()),
+        )
         gkg_df = (
-            _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+            gkg_lf
             .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
             .select(read_gkg_columns)
             .collect()
