@@ -1641,3 +1641,60 @@ class TestVersionFlag:
         parser = cli.build_parser()
         args = parser.parse_args(["convert", "--dataset", "events"])
         assert args.command == "convert"
+
+
+class TestEmblemOnEveryRealInvocation:
+    """main() used to print the compact emblem only after parse_args
+    succeeded, but argparse's own -h/--help handling (and a parse error,
+    e.g. a missing required --dataset) exits from inside parse_args
+    itself, before that print was ever reached. --help, almost always
+    the very first thing run against a freshly-installed copy, showed no
+    branding at all as a result. Moved before parse_args so every real
+    terminal invocation shows it, --version excepted (it already prints
+    its own, fuller full_banner right below where this would go)."""
+
+    def test_help_shows_the_compact_emblem_on_a_real_terminal(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "--help"])
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        with pytest.raises(SystemExit):
+            cli.main()
+
+        out = capsys.readouterr().out
+        assert "gdeltforge" in out  # the compact emblem's own package-name text
+        assert "usage:" in out  # argparse's own help text still followed it
+
+    def test_help_shows_nothing_extra_when_not_a_tty(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "--help"])
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+
+        with pytest.raises(SystemExit):
+            cli.main()
+
+        out = capsys.readouterr().out
+        assert "usage:" in out
+        assert "─" not in out  # no monogram/emblem box-drawing leaked in
+
+    def test_version_does_not_also_print_the_compact_emblem(self, monkeypatch, capsys):
+        # Would otherwise show both the one-line emblem and the full
+        # banner back to back, redundant since the banner already covers
+        # everything the emblem does.
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "--version"])
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        with pytest.raises(SystemExit):
+            cli.main()
+
+        out = capsys.readouterr().out
+        assert out.count("gdeltforge") + out.count("GdeltForge") == 1
+
+    def test_a_parse_error_still_shows_the_compact_emblem(self, monkeypatch, capsys):
+        # --dataset is required on convert; argparse's own error handling
+        # exits from inside parse_args, same as --help.
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert"])
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+        with pytest.raises(SystemExit):
+            cli.main()
+
+        assert "gdeltforge" in capsys.readouterr().out
