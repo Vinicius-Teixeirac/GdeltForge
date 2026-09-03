@@ -1112,7 +1112,7 @@ class TestDeleteSource:
         assert len(outputs) == 1
         assert zip_path.exists()
         assert any(
-            "Could not delete source zip" in r.message and zip_path.name in r.message
+            "Could not delete source" in r.message and zip_path.name in r.message
             for r in caplog.records
         )
 
@@ -1192,6 +1192,148 @@ class TestBareCsvInput:
 
         assert len(outputs) == 1
         assert pl.read_parquet(outputs[0])["GlobalEventID"].to_list() == [1]
+
+
+class TestRecoverUnzippedFiles:
+    """recover_unzipped_files (CLI: --recover-unzipped) converts a leftover
+    .csv sitting directly in unzipped_data_directory, the dedicated path
+    back into the pipeline for a CSV whose own CSV-to-Parquet step failed
+    (process_single_file's csv_path.unlink() sits after the parquet write
+    in its try block, so a real failure leaves the CSV behind) once the
+    ZIP that produced it is also gone (--delete-source ran on a different,
+    successful file in the same batch, or keep_unzipped=true and the ZIP
+    was cleaned up by hand). Unlike process_all_files, it reads from
+    unzip_folder, not input_folder."""
+
+    @staticmethod
+    def _write_csv(unzip_dir, filename="20200101.export.csv", rows="1\t20200101\n"):
+        unzip_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = unzip_dir / filename
+        csv_path.write_text(rows)
+        return csv_path
+
+    def test_converts_a_leftover_csv_with_no_zip_present(self, tmp_path):
+        # The zip is never written at all here: this is exactly the state
+        # a --delete-source run leaves behind once the zip is gone.
+        csv_path = self._write_csv(
+            tmp_path / "csv", rows="1\t20200101\n2\t20200102\n"
+        )
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+
+        outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert pl.read_parquet(outputs[0])["Day"].to_list() == [20200101, 20200102]
+        assert csv_path.exists()  # keep_unzipped=True, no delete_source
+
+    def test_a_csv_already_marked_done_is_skipped_on_rerun(self, tmp_path):
+        self._write_csv(tmp_path / "csv")
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+        first_outputs, _ = converter.recover_unzipped_files()
+        assert len(first_outputs) == 1
+
+        second_outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert second_outputs == []
+
+    def test_a_changed_config_fingerprint_forces_a_retry(self, tmp_path):
+        # Matches process_all_files' own .done-marker contract: a marker
+        # written under different output_columns/compression must not
+        # gate a rerun under the new settings.
+        self._write_csv(tmp_path / "csv", rows="1\t20200101\n")
+        GDELTConverter(
+            _make_config(tmp_path, keep_unzipped=True)
+        ).recover_unzipped_files()
+
+        cfg = _make_config(
+            tmp_path, keep_unzipped=True,
+            output_columns={"gdelt_event": ["GlobalEventID"]},
+        )
+        outputs, failed = GDELTConverter(cfg).recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+
+    def test_force_reprocesses_a_csv_already_marked_done(self, tmp_path):
+        self._write_csv(tmp_path / "csv")
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+        converter.recover_unzipped_files()
+
+        forced = GDELTConverter(
+            _make_config(tmp_path, keep_unzipped=True), force=True
+        )
+        outputs, failed = forced.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+
+    def test_delete_source_removes_the_recovered_csv(self, tmp_path):
+        csv_path = self._write_csv(tmp_path / "csv")
+        converter = GDELTConverter(
+            _make_config(tmp_path, keep_unzipped=True), delete_source=True
+        )
+
+        outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert not csv_path.exists()
+        assert not csv_path.with_name("." + csv_path.name + ".done").exists()
+
+    def test_dry_run_reports_without_converting(self, tmp_path, caplog):
+        self._write_csv(tmp_path / "csv")
+        converter = GDELTConverter(
+            _make_config(tmp_path, keep_unzipped=True), dry_run=True
+        )
+
+        with caplog.at_level("INFO", logger="gdeltforge.conversion.converter"):
+            outputs, failed = converter.recover_unzipped_files()
+
+        assert outputs == []
+        assert failed == []
+        assert list((tmp_path / "parquet").glob("*.parquet")) == []
+        assert any(
+            "Would convert 1 csv file(s)" in r.message for r in caplog.records
+        )
+
+    def test_no_leftover_csvs_is_a_graceful_no_op(self, tmp_path, caplog):
+        (tmp_path / "csv").mkdir(parents=True, exist_ok=True)
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+
+        with caplog.at_level("INFO", logger="gdeltforge.conversion.converter"):
+            outputs, failed = converter.recover_unzipped_files()
+
+        assert outputs == []
+        assert failed == []
+        assert any("No leftover CSVs found" in r.message for r in caplog.records)
+
+    def test_rejected_for_gdelt_event_reduced(self, tmp_path):
+        cfg = {
+            "paths": {
+                "event_reduced_downloaded_data_directory": str(tmp_path / "raw"),
+                "event_reduced_unzipped_data_directory": str(tmp_path / "csv"),
+                "event_reduced_parquet_data_directory": str(tmp_path / "parquet"),
+                "event_reduced_parquet_historical_directory": str(tmp_path / "hist"),
+            },
+            "converter": {"keep_unzipped": True, "file_pattern": "*.zip"},
+            "columns": {"gdelt_event_reduced": ["Date"]},
+            "columns_numeric": {"gdelt_event_reduced": []},
+        }
+        converter = GDELTConverter(cfg, dataset="gdelt_event_reduced")
+
+        with pytest.raises(ValueError, match="gdelt_event_reduced"):
+            converter.recover_unzipped_files()
+
+    def test_run_converter_wrapper_dispatches_to_recovery(self, tmp_path):
+        self._write_csv(tmp_path / "csv")
+        cfg = _make_config(tmp_path, keep_unzipped=True)
+
+        outputs, failed = run_converter(cfg, recover_unzipped=True)
+
+        assert failed == []
+        assert len(outputs) == 1
 
 
 class TestForce:

@@ -392,29 +392,30 @@ class GDELTConverter:
     def _mark_done(self, zip_path: Path) -> None:
         mark_done(zip_path, self._config_fingerprint)
 
-    def _delete_source(self, zip_path: Path) -> None:
+    def _delete_source(self, source_path: Path) -> None:
         """
-        Delete the source zip once its parquet output is confirmed
-        written and marked done. Only called from the success branch of
-        process_all_files, never on a failed or in-progress conversion,
-        so a killed run can't lose a zip whose output doesn't actually
-        exist yet. A failure here (permissions, the file already gone) is
-        logged and swallowed rather than counted as a conversion failure:
-        the conversion itself already succeeded, this is best-effort
-        cleanup on top of it, not the operation that matters.
+        Delete the source file (a ZIP for process_all_files, a leftover
+        CSV for recover_unzipped_files) once its parquet output is
+        confirmed written and marked done. Only called from the success
+        branch of _process_files, never on a failed or in-progress
+        conversion, so a killed run can't lose a source whose output
+        doesn't actually exist yet. A failure here (permissions, the file
+        already gone) is logged and swallowed rather than counted as a
+        conversion failure: the conversion itself already succeeded, this
+        is best-effort cleanup on top of it, not the operation that matters.
 
-        Also removes the zip's own .done marker: once the zip is gone,
-        the marker gates nothing (a deleted zip can never be found by
-        this method's own glob on a later run), so leaving it behind
-        just accumulates one orphaned file per deleted zip in a
+        Also removes the source's own .done marker: once the source is
+        gone, the marker gates nothing (a deleted file can never be found
+        by that method's own glob on a later run), so leaving it behind
+        just accumulates one orphaned file per deleted source in a
         directory this flag's whole point was to shrink.
         """
         try:
-            zip_path.unlink()
-            delete_done_marker(zip_path)
-            logger.debug(f"Deleted source zip after successful conversion: {zip_path.name}")
+            source_path.unlink()
+            delete_done_marker(source_path)
+            logger.debug(f"Deleted source after successful conversion: {source_path.name}")
         except OSError as e:
-            logger.warning(f"Could not delete source zip {zip_path.name}: {e}")
+            logger.warning(f"Could not delete source {source_path.name}: {e}")
 
     # ------------------------------------------------------------
     # PROCESS ALL ZIP FILES
@@ -445,33 +446,6 @@ class GDELTConverter:
             zip_files, self.order, date_parser=date_parser_for(self.dataset)
         )
 
-        to_process = []
-        for zip_file in zip_files:
-            zip_path = Path(zip_file)
-
-            if not self.force and self._is_done(zip_path):
-                logger.debug(f"Skipping already converted: {zip_path.name}")
-                continue
-
-            to_process.append(zip_file)
-
-        if not to_process:
-            logger.info("Nothing to convert; all files already processed.")
-            return [], []
-
-        if self.dry_run:
-            logger.info(f"[dry run] Would convert {len(to_process)} zip file(s):")
-            for zip_file in to_process:
-                logger.debug(f"[dry run]   {Path(zip_file).name}")
-            return [], []
-
-        logger.info(
-            f"Converting {len(to_process)} zip file(s) using "
-            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
-        )
-        all_outputs: list[str] = []
-        failed: list[str] = []
-
         # gdelt_event_reduced's single file needs a genuinely different
         # reader (chunked, no flat write path at all, see
         # process_reduced_file); every other dataset's individual files
@@ -481,36 +455,141 @@ class GDELTConverter:
             if self.dataset == "gdelt_event_reduced"
             else self.process_single_file
         )
+        return self._process_files(zip_files, worker, unit="zip")
 
-        # Each zip is processed independently (its own extracted CSV names,
-        # own output parquet paths), so file-level parallelism across
-        # processes is safe: this is CPU-bound (CSV parsing + parquet
-        # writing), so ProcessPoolExecutor beats threads here.
+    # ------------------------------------------------------------
+    # RECOVER LEFTOVER CSVs (unzipped, never successfully converted)
+    # ------------------------------------------------------------
+    def recover_unzipped_files(self) -> tuple[list[str], list[str]]:
+        """
+        Convert every leftover .csv sitting directly in unzip_folder,
+        instead of the ZIPs in input_folder process_all_files reads.
+
+        A CSV only ever survives there when something went wrong: either
+        its own CSV-to-Parquet step genuinely failed (process_single_file's
+        csv_path.unlink() sits after the parquet write in its try block, so
+        an exception skips it, and the whole ZIP is correctly left
+        undeleted and unmarked for that case, see _delete_source), or
+        keep_unzipped is true and the ZIP that produced it is now gone
+        (--delete-source ran after a batch of *other* files succeeded, or
+        it was cleaned up by hand). Either way, once the ZIP itself is
+        gone, process_all_files' own ZIP-only discovery has no way back to
+        that data; this is the dedicated, explicit path for it. Never runs
+        automatically inside a plain convert: worker processes are
+        actively extracting fresh CSVs into this same folder during a
+        normal run, so an implicit scan here would race with them.
+
+        Each CSV gets its own .done marker (next to the CSV itself, same
+        mechanism process_all_files uses for ZIPs) under this run's own
+        config fingerprint, so a CSV already successfully converted under
+        the current output_columns/compression is skipped rather than
+        silently reprocessed on every recovery run, matching
+        keep_unzipped's own "kept after success" case; one converted under
+        different settings (or never converted at all) is retried.
+        --force/--dry-run/--delete-source apply exactly as they do for
+        process_all_files, since both go through the same _process_files.
+
+        gdelt_event_reduced is out of scope: its single ~6.58GB file uses
+        a different write model entirely (process_reduced_file, chunked,
+        no per-CSV is_bare_csv concept), and keep_unzipped=true for a file
+        that size isn't a realistic setup to begin with.
+        """
+        if self.dataset == "gdelt_event_reduced":
+            raise ValueError(
+                "recover_unzipped_files isn't supported for gdelt_event_reduced: "
+                "its own process_reduced_file already streams and partitions "
+                "the source file directly, with no per-CSV leftover to recover."
+            )
+
+        csv_files = glob.glob(str(self.unzip_folder / "*.csv"))
+
+        if not csv_files:
+            logger.info(f"No leftover CSVs found in {self.unzip_folder}")
+            return [], []
+
+        csv_files = filter_paths_by_date(
+            csv_files, self.start_date, self.end_date, date_parser=date_parser_for(self.dataset)
+        )
+        if not csv_files:
+            logger.info("Nothing to recover; no files in the given date range.")
+            return [], []
+
+        csv_files = sort_paths_by_date(
+            csv_files, self.order, date_parser=date_parser_for(self.dataset)
+        )
+
+        return self._process_files(csv_files, self.process_single_file, unit="csv")
+
+    # ------------------------------------------------------------
+    # SHARED WORKER-POOL DRIVER
+    # ------------------------------------------------------------
+    def _process_files(
+        self, files: list[str], worker, unit: str
+    ) -> tuple[list[str], list[str]]:
+        """
+        Filters already-done files, submits the rest to a worker pool, and
+        marks/deletes sources on success. Shared by process_all_files (ZIP
+        input) and recover_unzipped_files (leftover-CSV input); the only
+        difference between the two is what list of source paths and which
+        worker function they hand in here.
+        """
+        to_process = []
+        for source_file in files:
+            source_path = Path(source_file)
+
+            if not self.force and self._is_done(source_path):
+                logger.debug(f"Skipping already converted: {source_path.name}")
+                continue
+
+            to_process.append(source_file)
+
+        if not to_process:
+            logger.info("Nothing to convert; all files already processed.")
+            return [], []
+
+        if self.dry_run:
+            logger.info(f"[dry run] Would convert {len(to_process)} {unit} file(s):")
+            for source_file in to_process:
+                logger.debug(f"[dry run]   {Path(source_file).name}")
+            return [], []
+
+        logger.info(
+            f"Converting {len(to_process)} {unit} file(s) using "
+            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
+        )
+        all_outputs: list[str] = []
+        failed: list[str] = []
+
+        # Each source file is processed independently (its own extracted
+        # CSV names, own output parquet paths), so file-level parallelism
+        # across processes is safe: this is CPU-bound (CSV parsing +
+        # parquet writing), so ProcessPoolExecutor beats threads here.
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
-                executor.submit(worker, zip_file): zip_file
-                for zip_file in to_process
+                executor.submit(worker, source_file): source_file
+                for source_file in to_process
             }
 
             for future in tqdm(
-                as_completed(futures), total=len(futures), desc="Converting ZIP files", unit="zip"
+                as_completed(futures), total=len(futures),
+                desc=f"Converting {unit.upper()} files", unit=unit,
             ):
-                zip_path = Path(futures[future])
+                source_path = Path(futures[future])
                 try:
                     outputs = future.result()
                     all_outputs.extend(outputs)
-                    self._mark_done(zip_path)
+                    self._mark_done(source_path)
 
                     if self.delete_source:
-                        self._delete_source(zip_path)
+                        self._delete_source(source_path)
 
                 except Exception as e:
-                    logger.error(f"Failed to process {zip_path.name}: {e}")
-                    failed.append(zip_path.name)
+                    logger.error(f"Failed to process {source_path.name}: {e}")
+                    failed.append(source_path.name)
 
         logger.info(
             f"Conversion complete. Total Parquets created: {len(all_outputs)}, "
-            f"{len(failed)} zip file(s) failed."
+            f"{len(failed)} {unit} file(s) failed."
         )
         self._cleanup_unzipped_folder()
         return all_outputs, failed
@@ -991,6 +1070,7 @@ def run_converter(
     quiet: bool = False,
     force: bool = False,
     dry_run: bool = False,
+    recover_unzipped: bool = False,
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
@@ -1013,6 +1093,11 @@ def run_converter(
     dry_run reports what would be converted without processing anything;
     it sees force's effect on the skip list, since it runs after that
     check.
+
+    recover_unzipped (CLI: --recover-unzipped) converts leftover CSVs
+    sitting in unzipped_data_directory instead of the ZIPs in
+    downloaded_data_directory: see GDELTConverter.recover_unzipped_files
+    for when this is for.
     """
     output_columns = get_dict(config["converter"], "output_columns").get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
@@ -1032,6 +1117,8 @@ def run_converter(
         delete_source=delete_source, verbose=verbose, quiet=quiet,
         force=force, dry_run=dry_run,
     )
+    if recover_unzipped:
+        return converter.recover_unzipped_files()
     return converter.process_all_files()
 
 
