@@ -66,6 +66,40 @@ from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# unzip_file's own "Unzipping: ..."/"Extracted N files from ..." lines
+# (one pair per zip, unconditional) log through utils.io's own logger,
+# a separate instance from this module's: get_logger caches one logger
+# object per name, so this module's own --verbose/--quiet handling
+# below, which only ever calls logger.setLevel on *this* module's
+# logger, never reached it. --quiet configured on convert then still
+# printed both lines for every zip, exactly the shape of "not really
+# quiet" a real report was found from. Fetching it by name here (get_
+# logger returns the same cached instance utils.io already configured,
+# confirmed by its own `if not logger.handlers` guard, so this doesn't
+# re-add a handler or reset the level) lets _apply_verbosity below
+# raise both loggers together instead of just this module's.
+_io_logger = get_logger("gdeltforge.utils.io")
+
+
+def _apply_verbosity(verbose: bool, quiet: bool) -> None:
+    """
+    Raises/lowers this module's logger and utils.io's (unzip_file's own
+    per-zip "Unzipping"/"Extracted" lines) together, so --quiet/--verbose
+    on convert actually cover everything a conversion run logs, not just
+    this module's own lines. Called from __init__ (main process) and
+    again from process_single_file/process_reduced_file (each worker
+    process re-imports this module fresh, so a level set only in the
+    main process never reaches them); verbose wins if both are somehow
+    set, matching this module's own existing precedence.
+    """
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        _io_logger.setLevel(logging.DEBUG)
+    elif quiet:
+        logger.setLevel(logging.WARNING)
+        _io_logger.setLevel(logging.WARNING)
+
+
 # ------------------------------------------------------------------
 # Source file-type patterns
 # ------------------------------------------------------------------
@@ -209,10 +243,7 @@ class GDELTConverter:
         # mutually exclusive group already prevents that from the CLI).
         self.verbose = verbose
         self.quiet = quiet
-        if verbose:
-            logger.setLevel(logging.DEBUG)
-        elif quiet:
-            logger.setLevel(logging.WARNING)
+        _apply_verbosity(verbose, quiet)
         # Off by default: deletes the source zip once its parquet is
         # written and marked done, so a full historical pull doesn't need
         # to hold the raw archive and the converted output at once. Only
@@ -604,10 +635,7 @@ class GDELTConverter:
         # __init__'s own logger.setLevel call, made in the main process,
         # never reaches it. self.verbose/self.quiet survive the pickle
         # boundary fine; the logger's mutated level does not.
-        if self.verbose:
-            logger.setLevel(logging.DEBUG)
-        elif self.quiet:
-            logger.setLevel(logging.WARNING)
+        _apply_verbosity(self.verbose, self.quiet)
 
         zip_p = Path(zip_path)
         # DEBUG, not INFO: unconditional, once per file, which at GKG 2.1/
@@ -757,10 +785,7 @@ class GDELTConverter:
         marker set by process_all_files afterward is all-or-nothing for
         this dataset, since there is only ever one source file.
         """
-        if self.verbose:
-            logger.setLevel(logging.DEBUG)
-        elif self.quiet:
-            logger.setLevel(logging.WARNING)
+        _apply_verbosity(self.verbose, self.quiet)
 
         zip_p = Path(zip_path)
         logger.debug(f"Processing ZIP: {zip_p.name}")
