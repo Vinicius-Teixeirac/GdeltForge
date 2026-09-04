@@ -112,14 +112,24 @@ def full_banner(version: str, tagline: str) -> str:
 
 
 def compact_emblem(version: str) -> str:
-    """The one-line emblem for routine interactive starts. G colored to
-    match full_banner's own G=near-white/F=forge-orange monogram split
-    (previously left at the terminal's default foreground, the one piece
-    of this line not actually on-brand); the rest stays as muted as
-    before, deliberately: this prints on every single command, not just
-    --version, so only the monogram itself should draw the eye."""
+    """The one-line emblem for routine interactive starts: an orb bisected
+    by its meridian, "(│)", echoing what the real emblem actually is
+    (docs/assets/brand/: a dotted globe joined by great-circle arcs, with
+    a signature meridian line through it) rather than approximating
+    letters at a scale too small to read as either one. Two prior designs
+    tried to spell "G"/"F" in one line, first as thin ASCII that read as
+    illegible punctuation, then as "G━F" that read as a dash between two
+    stray capitals; both failed for the same reason, so this drops
+    letterforms from the one-liner entirely and reserves them for
+    full_banner, which has 6 rows of room to actually draw them. Built
+    from three plain, universally-rendered characters rather than any
+    single exotic Unicode glyph, so it degrades identically everywhere.
+    The orb is near-white, the meridian forge orange, matching the real
+    lockup's own two-tone split; the rest stays muted, deliberately: this
+    prints on every single command, not just --version, so only the orb
+    itself should draw the eye."""
     return (
-        f"{colorize('G', NEARWHITE)}{colorize('━', SLATE)}{colorize('F', FORGE)}  "
+        f"{colorize('(', NEARWHITE)}{colorize('│', FORGE)}{colorize(')', NEARWHITE)}  "
         f"{colorize('gdeltforge', SLATE)} {colorize('·', SLATE)} "
         f"{colorize(version, FORGE)}"
     )

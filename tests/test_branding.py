@@ -105,6 +105,22 @@ class TestCompactEmblem:
         assert "gdeltforge" in text
         assert len(text.splitlines()) == 1
 
+    def test_is_the_orb_and_meridian_mark_not_a_letterform(self, monkeypatch):
+        # Two earlier one-line designs tried to spell "G"/"F" at
+        # 1-character scale: first as thin ASCII that read as illegible
+        # punctuation, then as "G━F" that read as a dash between two
+        # stray capitals. Both failed for the same reason, so this one
+        # drops letterforms entirely for an orb bisected by its meridian,
+        # echoing what the real emblem actually is (a dotted globe joined
+        # by great-circle arcs, with a signature meridian line through
+        # it) rather than approximating a monogram with no room to read
+        # as either letter. Letterforms stay reserved for full_banner,
+        # which has 6 rows to actually draw them.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with mock.patch("sys.stdout.isatty", return_value=False):
+            text = branding.compact_emblem("1.2.3")
+        assert text.startswith("(│)  gdeltforge")
+
 
 class TestSafePrint:
     def test_prints_normally_when_encoding_succeeds(self, capsys):
