@@ -10,6 +10,10 @@
 
 Below is the complete specification. For runnable end-to-end examples built on it, see [Recipes](recipes.md); to check that a filter value is a valid code before running, see [`gdeltforge codes`](cli-reference.md#gdeltforge-codes).
 
+!!! note "Which columns you can filter on depends on your dataset"
+
+    `--dataset events` reads GDELT's daily archive, still exported in the older, 58-column, GDELT-1.0-compatible schema for backward compatibility. `--dataset events-15min` reads the same underlying events in GDELT 2.0's native 61-column format instead, adding `Actor1Geo_ADM2Code`/`Actor2Geo_ADM2Code`/`ActionGeo_ADM2Code`, finer administrative-region geocoding than the `ADM1Code` both schemas already carry. A filter or `--columns` entry naming one of those three fields works against `events-15min` but fails with a missing-column error against `events`. See [Configuration](configuration.md#datasets-and-dataset) for the full schema comparison.
+
 ## Basic filter types (single column)
 
 **Equality**
