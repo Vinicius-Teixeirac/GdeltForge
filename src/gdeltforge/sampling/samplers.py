@@ -231,10 +231,31 @@ def _reservoir_to_dataframe(
     directly against a 100,000-row object column: converting through
     tolist() first is faster than bridging through pyarrow instead
     (pa.array(arr, type=pa.string())), not slower.
+
+    Two more consequences of that same Int64 -> Float64 upcast, both
+    confirmed directly and both fixed at the two call sites that combine
+    more than one of this function's own outputs (CalendarSampler.
+    get_calendar_samples, FilteredSampler.get_stratified_sample), not
+    here:
+      - Two periods/groups can upcast independently of each other: one
+        whose reservoir never needed to write a null into that column
+        stays Int64, a sibling whose reservoir did becomes Float64, and
+        a plain pl.concat of the two raises ("type Int64 is incompatible
+        with expected type Float64") since vertical concat requires
+        identical schemas. Their own pl.concat calls pass
+        how="vertical_relaxed" to reconcile this instead of erroring.
+      - pl.Series(c, arr) alone does NOT turn the upcast's real NaN
+        placeholders back into actual polars nulls: nan_to_null=True
+        below is what does that. Skipping it silently changes what the
+        column means, not just its dtype, since a plain reservoir with
+        no cross-period concat involved would otherwise return
+        null_count() == 0 for a column whose source data genuinely had
+        a null in it, invisible until something downstream checks
+        is_null() and gets nothing back for a row is_nan() would.
     """
     return pl.DataFrame({
         c: pl.Series(c, arr.tolist(), dtype=schema[c]) if arr.dtype == object
-        else pl.Series(c, arr)
+        else pl.Series(c, arr, nan_to_null=True)
         for c, arr in reservoir_cols.items()
     })
 
@@ -535,7 +556,19 @@ class CalendarSampler:
         if not reservoirs:
             return pl.DataFrame()
 
-        return pl.concat(list(reservoirs.values()))
+        # vertical_relaxed, not the plain vertical default: each period's
+        # reservoir is typed independently by _reservoir_to_dataframe, and
+        # _apply_reservoir_replacements/_assign_column upcasts a numeric
+        # column from Int64 to Float64 the moment a null lands in THAT
+        # period's own reservoir. Two periods can legitimately disagree on
+        # the same column's dtype this way, one Int64 (no null ever drawn
+        # into it), the other Float64 (one was), with nothing wrong in
+        # either reservoir on its own; plain vertical concat then raises
+        # ("type Int64 is incompatible with expected type Float64")
+        # instead of reconciling them. Confirmed directly against
+        # events-reduced's SourceGeoType/TargetGeoType columns, which hit
+        # this deterministically at real scale.
+        return pl.concat(list(reservoirs.values()), how="vertical_relaxed")
 
 
 # ----------------------------------------------------------
@@ -949,6 +982,10 @@ class FilteredSampler:
         if not reservoirs:
             return pl.DataFrame()
 
-        sample    = pl.concat(list(reservoirs.values()))
+        # vertical_relaxed: see CalendarSampler.get_calendar_samples' own
+        # identical concat for why a plain vertical concat can raise here,
+        # one stratify group's reservoir Int64 for a column, a sibling
+        # group's Float64 for the same column, both correct on their own.
+        sample    = pl.concat(list(reservoirs.values()), how="vertical_relaxed")
         keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
         return sample.select(keep_cols)
