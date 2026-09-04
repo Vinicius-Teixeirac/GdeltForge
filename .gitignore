@@ -47,6 +47,7 @@ Thumbs.db
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+!getting-started.ipynb
 
 # Personal notes (not part of the public project)
 ROADMAP.md
