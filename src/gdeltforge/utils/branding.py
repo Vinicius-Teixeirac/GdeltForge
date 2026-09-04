@@ -19,6 +19,8 @@ SLATE = (0x6C, 0x7C, 0x9E)
 NEARWHITE = (0xE8, 0xEC, 0xF5)
 PASS = (0x7F, 0xCF, 0x9A)
 FAIL = (0xE8, 0x6A, 0x4A)
+VOID = (0x07, 0x0B, 0x16)  # the docs site's own dark background; used here as
+# badge text, dark-on-light/dark-on-orange, not as a background of its own
 
 CHECK = "✓"  # success
 CROSS = "✗"  # error
@@ -63,14 +65,22 @@ def supports_color() -> bool:
     return True
 
 
-def colorize(text: str, rgb: tuple[int, int, int]) -> str:
-    """Wrap text in a 24-bit ANSI foreground color, or return it unchanged
-    when color is unavailable, so callers never need their own branch.
+def colorize(
+    text: str, rgb: tuple[int, int, int], *, bg: tuple[int, int, int] | None = None
+) -> str:
+    """Wrap text in a 24-bit ANSI foreground color, optionally with a
+    background fill too (for a solid badge rather than colored text), or
+    return it unchanged when color is unavailable, so callers never need
+    their own branch. A single trailing reset clears both.
     """
     if not supports_color():
         return text
     r, g, b = rgb
-    return f"\x1b[38;2;{r};{g};{b}m{text}\x1b[0m"
+    codes = f"\x1b[38;2;{r};{g};{b}m"
+    if bg is not None:
+        br, bg_g, bb = bg
+        codes += f"\x1b[48;2;{br};{bg_g};{bb}m"
+    return f"{codes}{text}\x1b[0m"
 
 
 # Big block G/F monogram, 6 rows x 18 columns, each row split at column 9:
@@ -112,24 +122,25 @@ def full_banner(version: str, tagline: str) -> str:
 
 
 def compact_emblem(version: str) -> str:
-    """The one-line emblem for routine interactive starts: an orb bisected
-    by its meridian, "(│)", echoing what the real emblem actually is
-    (docs/assets/brand/: a dotted globe joined by great-circle arcs, with
-    a signature meridian line through it) rather than approximating
-    letters at a scale too small to read as either one. Two prior designs
-    tried to spell "G"/"F" in one line, first as thin ASCII that read as
-    illegible punctuation, then as "G━F" that read as a dash between two
-    stray capitals; both failed for the same reason, so this drops
-    letterforms from the one-liner entirely and reserves them for
-    full_banner, which has 6 rows of room to actually draw them. Built
-    from three plain, universally-rendered characters rather than any
-    single exotic Unicode glyph, so it degrades identically everywhere.
-    The orb is near-white, the meridian forge orange, matching the real
-    lockup's own two-tone split; the rest stays muted, deliberately: this
-    prints on every single command, not just --version, so only the orb
+    """The one-line emblem for routine interactive starts: a solid two-tone
+    pill, " G" on a near-white fill and "F " on a forge-orange fill, split
+    right at the G/F boundary, both letters set in Void (the docs site's
+    own dark background color, #070B16) for contrast against either fill.
+    A literal, filled-in miniature of the real lockup (a bisected G/F)
+    rather than line art trying to draw the same letters out of thin
+    strokes at a scale with no room for them, which is why two earlier
+    one-line designs failed: first as thin ASCII that read as illegible
+    punctuation, then as "G━F" that read as a dash between two stray
+    capitals, then as an abstract orb-and-meridian mark that dropped
+    letterforms entirely and, in turn, read as too little presence. Actual
+    background fill gives this one real visual weight without needing to
+    render letterforms out of strokes; full_banner still reserves the
+    large-scale line-art version for --version, where there's room for it
+    to read cleanly. The rest of the line stays muted, deliberately: this
+    prints on every single command, not just --version, so only the pill
     itself should draw the eye."""
     return (
-        f"{colorize('(', NEARWHITE)}{colorize('│', FORGE)}{colorize(')', NEARWHITE)}  "
+        f"{colorize(' G', VOID, bg=NEARWHITE)}{colorize('F ', VOID, bg=FORGE)} "
         f"{colorize('gdeltforge', SLATE)} {colorize('·', SLATE)} "
         f"{colorize(version, FORGE)}"
     )

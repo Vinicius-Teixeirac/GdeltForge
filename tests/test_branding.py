@@ -34,6 +34,21 @@ class TestColorize:
             result = branding.colorize("hello", (1, 2, 3))
             assert result == "\x1b[38;2;1;2;3mhello\x1b[0m"
 
+    def test_bg_adds_a_background_fill_ahead_of_the_foreground_reset(self, monkeypatch):
+        # compact_emblem's pill needs an actual filled badge, not just
+        # colored text, so bg stacks a second escape before the text
+        # rather than replacing the foreground one.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with mock.patch("sys.stdout.isatty", return_value=True), \
+             mock.patch("gdeltforge.utils.branding._enable_windows_vt_mode"):
+            result = branding.colorize("hello", (1, 2, 3), bg=(4, 5, 6))
+            assert result == "\x1b[38;2;1;2;3m\x1b[48;2;4;5;6mhello\x1b[0m"
+
+    def test_bg_is_omitted_without_color_support_same_as_the_foreground(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with mock.patch("sys.stdout.isatty", return_value=False):
+            assert branding.colorize("hello", (1, 2, 3), bg=(4, 5, 6)) == "hello"
+
 
 class TestFullBanner:
     def test_contains_the_version_and_lowercased_tagline(self, monkeypatch):
@@ -105,21 +120,36 @@ class TestCompactEmblem:
         assert "gdeltforge" in text
         assert len(text.splitlines()) == 1
 
-    def test_is_the_orb_and_meridian_mark_not_a_letterform(self, monkeypatch):
-        # Two earlier one-line designs tried to spell "G"/"F" at
-        # 1-character scale: first as thin ASCII that read as illegible
+    def test_is_a_solid_gf_pill_not_line_art(self, monkeypatch):
+        # Plain text (no color support) collapses the pill's fill down to
+        # just its letters and padding, " GF ", which is what this checks;
+        # the filled-badge rendering itself is covered by
+        # test_pill_is_a_real_two_tone_background_fill below. Two earlier
+        # one-line designs tried to draw "G"/"F" as line art instead of a
+        # filled badge: first as thin ASCII that read as illegible
         # punctuation, then as "G━F" that read as a dash between two
-        # stray capitals. Both failed for the same reason, so this one
-        # drops letterforms entirely for an orb bisected by its meridian,
-        # echoing what the real emblem actually is (a dotted globe joined
-        # by great-circle arcs, with a signature meridian line through
-        # it) rather than approximating a monogram with no room to read
-        # as either letter. Letterforms stay reserved for full_banner,
-        # which has 6 rows to actually draw them.
+        # stray capitals; a third, letterform-free orb-and-meridian
+        # design then read as too little presence. Letters stay legible
+        # here because they're rendered solid rather than stroked.
         monkeypatch.delenv("NO_COLOR", raising=False)
         with mock.patch("sys.stdout.isatty", return_value=False):
             text = branding.compact_emblem("1.2.3")
-        assert text.startswith("(│)  gdeltforge")
+        assert text.startswith(" GF  gdeltforge")
+
+    def test_pill_is_a_real_two_tone_background_fill(self, monkeypatch):
+        # Guards the actual badge rendering: a background fill split
+        # right at the G/F boundary (near-white under G, forge orange
+        # under F), both letters set in Void for contrast, not just
+        # colored foreground text over the terminal's own background.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        with mock.patch("sys.stdout.isatty", return_value=True), \
+             mock.patch("gdeltforge.utils.branding._enable_windows_vt_mode"):
+            text = branding.compact_emblem("1.2.3")
+        void = "38;2;7;11;22"
+        nearwhite_bg = "48;2;232;236;245"
+        forge_bg = "48;2;232;145;42"
+        assert f"\x1b[{void}m\x1b[{nearwhite_bg}m G\x1b[0m" in text
+        assert f"\x1b[{void}m\x1b[{forge_bg}mF \x1b[0m" in text
 
 
 class TestSafePrint:
