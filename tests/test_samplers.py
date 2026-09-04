@@ -356,6 +356,32 @@ class TestCalendarSampler:
         assert sorted(df["GlobalEventID"].to_list()) == [1, 3]
         assert "1 row(s) with an unparseable Day" in caplog.text
 
+    def test_reconciles_dtype_when_periods_disagree_on_nullability(self, tmp_path):
+        # Regression test for a real bug found in QA against events-reduced:
+        # _apply_reservoir_replacements/_assign_column upcasts a numeric
+        # column from Int64 to Float64 the moment a null lands in THAT
+        # period's own reservoir (numpy has no native nullable int, so
+        # to_numpy() forces float64+NaN). Two periods can legitimately
+        # disagree on the same column's dtype this way, with nothing
+        # wrong in either reservoir on its own; concatenating them with a
+        # plain vertical concat raised ("type Int64 is incompatible with
+        # expected type Float64") instead of reconciling them.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3, 4],
+            "Day": [20200101, 20200101, 20200102, 20200102],
+            "NumArticles": [1, 2, 3, None],
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=2)
+
+        assert len(df) == 4
+        assert df["NumArticles"].dtype == pl.Float64
+        assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1.0, 2.0, 3.0]
+        assert df["NumArticles"].null_count() == 1
+
 
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
@@ -939,7 +965,13 @@ class TestReservoirToDataFrame:
 
         assert result.schema["n"] == pl.Float64
         assert result["n"][0] == 1.0
-        assert result["n"][1] != result["n"][1]  # NaN, per numpy's own float semantics
+        # nan_to_null=True: the upcast's NaN is standing in for a real
+        # source null (GDELT's numeric fields have no domain concept of a
+        # computed NaN distinct from "missing"), so it must reconstruct
+        # as an actual polars null, not survive as a literal float NaN a
+        # plain is_null() check would miss entirely.
+        assert result["n"][1] is None
+        assert result["n"].null_count() == 1
         assert result["n"][2] == 3.0
 
     def test_a_normal_numeric_column_reconstructs_unchanged(self):
@@ -981,6 +1013,31 @@ class TestStratifiedSampling:
         counts = _size_by_group(df, "QuadClass")
         assert counts[1] == 2
         assert counts[2] == 5
+
+    def test_reconciles_dtype_when_groups_disagree_on_nullability(self, tmp_path):
+        # Same root cause as CalendarSampler's identical regression test
+        # (test_reconciles_dtype_when_periods_disagree_on_nullability):
+        # a numeric column upcasts to Float64 only within whichever
+        # group's own reservoir actually drew a null; a sibling group
+        # with no null stays Int64. Plain vertical concat raised on that
+        # disagreement instead of reconciling it.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3, 4],
+            "QuadClass": [1, 1, 2, 2],
+            "NumArticles": [1, 2, 3, None],
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass", "NumArticles"], random_state=1
+        )
+        df = sampler.get_stratified_sample("QuadClass", n_per_group=2)
+
+        assert len(df) == 4
+        assert df["NumArticles"].dtype == pl.Float64
+        assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1.0, 2.0, 3.0]
+        assert df["NumArticles"].null_count() == 1
 
 
 # ----------------------------------------------------------
