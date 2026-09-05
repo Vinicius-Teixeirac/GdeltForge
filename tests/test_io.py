@@ -116,6 +116,83 @@ class TestWriteDataframeAtomic:
 
         assert pl.read_csv(out).columns == ["GlobalEventID"]
 
+    def test_csv_warns_about_zero_padded_string_codes_with_the_read_back_fix(
+        self, tmp_path, caplog
+    ):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: EventCode/EventBaseCode/EventRootCode are zero-padded
+        # strings ("020", "07") in the parquet source, correctly typed
+        # String. A standard CSV read with default type inference,
+        # confirmed directly for polars' own read_csv (the tool this
+        # pipeline's own output is most likely to be re-read with), reads
+        # an unquoted-looking numeric field back as an integer and drops
+        # the leading zero, EVEN when the written field was quoted:
+        # quoting does not change a reader's own default inference. There
+        # is no write-side fix for that, so this checks the warning names
+        # the real limitation and a working read-back fix instead.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({
+            "GlobalEventID": [1, 2],
+            "EventCode": ["020", "173"],
+            "EventBaseCode": ["02", "17"],
+        })
+
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(df, out, export_format="csv")
+
+        assert any(
+            "EventCode" in r.message and "EventBaseCode" in r.message for r in caplog.records
+        )
+        assert any("schema_overrides" in r.message for r in caplog.records)
+
+        # The suggested fix from the warning must actually work.
+        result = pl.read_csv(out, schema_overrides={"EventCode": pl.Utf8, "EventBaseCode": pl.Utf8})
+        assert result["EventCode"].to_list() == ["020", "173"]
+        assert result["EventBaseCode"].to_list() == ["02", "17"]
+
+    def test_csv_no_warning_when_no_zero_padded_columns_are_present(self, tmp_path, caplog):
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(df, out, export_format="csv")
+
+        assert not any("schema_overrides" in r.message for r in caplog.records)
+
+    def test_csv_still_quotes_the_zero_padded_field_in_the_written_file(self, tmp_path):
+        # quote_style="non_numeric" is still applied: it protects a value
+        # containing a comma/newline/quote regardless, and costs nothing,
+        # even though it does not by itself fix the read-back inference
+        # issue the warning above describes.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"EventCode": ["020"]})
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        assert '"020"' in out.read_text()
+
+    def test_csv_genuine_numeric_columns_stay_unquoted(self, tmp_path):
+        # quote_style="non_numeric" must not force-quote a real numeric
+        # column just for being adjacent to string ones in the same file.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"GlobalEventID": [1, 2], "GoldsteinScale": [-5.0, 3.0]})
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        raw = out.read_text()
+        assert '"1"' not in raw
+        assert '"-5.0"' not in raw
+
+    def test_csv_caller_can_still_override_quote_style(self, tmp_path):
+        # kwargs.setdefault, not an unconditional override: an explicit
+        # caller preference still wins.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"EventCode": ["020"]})
+
+        write_dataframe_atomic(df, out, export_format="csv", quote_style="never")
+
+        assert out.read_text().strip() == "EventCode\n020"
+
     def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
         out = tmp_path / "sample.csv"
         tmp_path_leftover = tmp_path / "sample.csv.tmp"
