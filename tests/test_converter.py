@@ -117,6 +117,122 @@ class TestPartitionRuleRouting:
         assert (tmp_path / "parquet" / "20200101.export.parquet").exists()
 
 
+class TestHistoricalEventsMissingColumns:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: gdelt_event's monthly/yearly archive (pre-April-2013) is a
+    genuinely older, 57-column schema, missing SOURCEURL, which the
+    modern daily archive's 58-column columns.gdelt_event list doesn't
+    account for. Reading a real 57-column file against the full 58-name
+    list requested a column position (57, 0-indexed) that doesn't exist
+    in the file at all, raising a raw "projection index: 57 is out of
+    bounds" with no indication it's a schema-vintage mismatch. Reproduced
+    against real, live-downloaded 2005 (yearly) and 2008-01 (monthly)
+    archives."""
+
+    @staticmethod
+    def _config(tmp_path, **converter_overrides):
+        cfg = {
+            "paths": {
+                "downloaded_data_directory": str(tmp_path / "raw"),
+                "unzipped_data_directory": str(tmp_path / "csv"),
+                "parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+            "columns": {
+                "gdelt_event": ["GlobalEventID", "Day", "QuadClass", "SOURCEURL"],
+            },
+            "columns_numeric": {
+                "gdelt_event": ["GlobalEventID", "Day", "QuadClass"],
+            },
+        }
+        cfg["converter"].update(converter_overrides)
+        return cfg
+
+    def test_a_57_column_shaped_monthly_file_no_longer_raises_a_projection_error(
+        self, tmp_path
+    ):
+        # Real historical rows: 3 fields, ending on QuadClass, no
+        # SOURCEURL at all, the exact shape a real 2008-01 monthly file has.
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", filename="200801.zip", rows="1\t20080115\t2\n2\t20080116\t3\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["GlobalEventID"].to_list() == [1, 2]
+        assert df["QuadClass"].to_list() == [2, 3]
+        # The missing column is still present in the output schema, as
+        # null, so a caller sees the same columns whether the source row
+        # is modern or historical.
+        assert "SOURCEURL" in df.columns
+        assert df["SOURCEURL"].to_list() == [None, None]
+
+    def test_a_57_column_shaped_yearly_file_is_read_the_same_way(self, tmp_path):
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(tmp_path / "raw", filename="2005.zip", rows="1\t20050301\t1\n")
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["GlobalEventID"].to_list() == [1]
+        assert df["SOURCEURL"].to_list() == [None]
+
+    def test_a_modern_daily_file_is_unaffected_and_keeps_its_real_sourceurl(
+        self, tmp_path
+    ):
+        # The common case, unchanged: a daily file genuinely has all 4
+        # columns, SOURCEURL included, and is read exactly as before.
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", rows="1\t20200101\t2\thttps://example.com/a\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["SOURCEURL"].to_list() == ["https://example.com/a"]
+
+    def test_sourceurl_is_omitted_entirely_when_output_columns_dont_request_it(
+        self, tmp_path
+    ):
+        # output_columns pruning already means "the caller doesn't want
+        # this column"; a historical file's missing SOURCEURL shouldn't
+        # be added back as a null column nobody asked for.
+        cfg = self._config(
+            tmp_path, output_columns={"gdelt_event": ["GlobalEventID", "QuadClass"]},
+        )
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", filename="200801.zip", rows="1\t20080115\t2\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert set(df.columns) == {"GlobalEventID", "QuadClass"}
+
+    def test_historical_hive_partitioned_write_also_gets_the_narrower_schema(
+        self, tmp_path
+    ):
+        # The same fix must apply whether or not converter.partitioning
+        # is enabled: file_type is now detected unconditionally for
+        # schema purposes, independent of whether the user has also
+        # opted into Hive-partitioned historical output.
+        cfg = self._config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["QuadClass"]}]},
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(tmp_path / "raw", filename="2005.zip", rows="1\t20050301\t1\n")
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        df = pl.read_parquet(outputs[0])
+        assert df["SOURCEURL"].to_list() == [None]
+
+
 class TestIntegerDtypePreservation:
     """Regression coverage for the real bug this was found from: GDELT's
     own raw archive can carry a blank value for a genuinely integer field
