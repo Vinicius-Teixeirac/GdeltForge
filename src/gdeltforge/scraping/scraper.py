@@ -934,29 +934,54 @@ def download_gdelt_files(
                 ): file
                 for file in files
             }
-            for future in tqdm(
-                as_completed(futures), total=len(futures),
-                desc="Downloading GDELT files", unit="file",
-            ):
-                try:
-                    status, filename = future.result()
-                except Exception as e:
-                    # Defense in depth against the same class of issue
-                    # _download_one's own retry loop now guards against:
-                    # one file's unexpected failure must not take the
-                    # whole batch down, matching process_all_files'
-                    # equivalent per-future try/except in converter.py.
-                    filename = futures[future].url.split("/")[-1]
-                    logger.error(f"Unexpected error downloading {filename}: {e}")
-                    failed.append(filename)
-                    continue
+            try:
+                for future in tqdm(
+                    as_completed(futures), total=len(futures),
+                    desc="Downloading GDELT files", unit="file",
+                ):
+                    try:
+                        status, filename = future.result()
+                    except Exception as e:
+                        # Defense in depth against the same class of issue
+                        # _download_one's own retry loop now guards against:
+                        # one file's unexpected failure must not take the
+                        # whole batch down, matching process_all_files'
+                        # equivalent per-future try/except in converter.py.
+                        filename = futures[future].url.split("/")[-1]
+                        logger.error(f"Unexpected error downloading {filename}: {e}")
+                        failed.append(filename)
+                        continue
 
-                if status == "success":
-                    success += 1
-                elif status == "skipped":
-                    skipped += 1
-                else:
-                    failed.append(filename)
+                    if status == "success":
+                        success += 1
+                    elif status == "skipped":
+                        skipped += 1
+                    else:
+                        failed.append(filename)
+            except KeyboardInterrupt:
+                # Every future was submitted up front, so the executor's
+                # own default __exit__ (shutdown(wait=True)) would drain
+                # every one of them, including ones that haven't even
+                # started yet, before actually exiting: confirmed for
+                # real, SIGINT 1.5s into a 731-file scrape still let all
+                # 731 finish downloading over the next 93.5 seconds before
+                # "Interrupted." ever printed. cancel_futures=True (Python
+                # >=3.9, this project's own floor is 3.10) cancels every
+                # not-yet-started future immediately; wait=False doesn't
+                # additionally block here for the (at most max_workers)
+                # downloads already in flight, since there's no safe way
+                # to force-kill a running thread mid-request anyway, and
+                # the executor's own __exit__ will still wait for those
+                # specific ones as this exception continues propagating.
+                still_running = sum(1 for f in futures if f.running())
+                already_done = success + skipped + len(failed)
+                queued = len(futures) - still_running - already_done
+                logger.warning(
+                    f"Interrupted: waiting for {still_running} in-flight download(s) "
+                    f"to finish; {queued} queued download(s) will not be started."
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
     logger.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
 
