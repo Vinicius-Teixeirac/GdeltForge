@@ -1718,13 +1718,11 @@ class TestProcessReducedFile:
         outputs = converter.process_reduced_file(str(zip_path))
 
         assert sorted(Path(p).relative_to(tmp_path / "historical").as_posix() for p in outputs) == [
-            "Year=1979/GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
-            "Year=2013/GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
+            "Year=1979/part00000.parquet",
+            "Year=2013/part00000.parquet",
         ]
         year_1979_dir = tmp_path / "historical" / "Year=1979"
-        df_1979 = pl.read_parquet(
-            year_1979_dir / "GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet"
-        )
+        df_1979 = pl.read_parquet(year_1979_dir / "part00000.parquet")
         assert df_1979["Date"].to_list() == [19790101]
         # Year is directory-only: it must never leak into the written columns.
         assert "Year" not in df_1979.columns
@@ -1797,9 +1795,9 @@ class TestProcessReducedFile:
         # 3 rows at chunk_size=1 is 3 chunks; two land in Year=1979, each its
         # own part file since each chunk is written independently.
         assert sorted(Path(p).name for p in outputs) == [
-            "GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
-            "GDELT.MASTERREDUCEDV2.1979-2013.part00001.parquet",
-            "GDELT.MASTERREDUCEDV2.1979-2013.part00002.parquet",
+            "part00000.parquet",
+            "part00001.parquet",
+            "part00002.parquet",
         ]
         all_dates = sorted(
             date for p in outputs for date in pl.read_parquet(p)["Date"].to_list()
