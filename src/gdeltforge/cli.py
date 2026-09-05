@@ -359,13 +359,22 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # -----------------------------
     if args.mode == "filtered":
         if args.filter is None:
-            raise ValueError(
-                "--filter is required when mode == 'filtered' "
-                "(must be JSON string)"
-            )
+            if not args.stratify:
+                raise ValueError(
+                    "--filter is required when mode == 'filtered' "
+                    "(must be JSON string)"
+                )
+            # --stratify targets rows by group membership on its own; it
+            # doesn't need a separate row-level --filter condition the way
+            # get_random_sample does, so an omitted --filter defaults to no
+            # filtering here instead of forcing every stratified call to
+            # pass an explicit '{}'.
+            filter_arg = "{}"
+        else:
+            filter_arg = args.filter
 
         try:
-            filter_dict = json.loads(args.filter)
+            filter_dict = json.loads(filter_arg)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON passed to --filter: {e}") from e
 
@@ -811,7 +820,9 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--stratify",
         metavar="COLUMN",
-        help="Column to stratify by (filtered mode only); requires --n-per-group"
+        help="Column to stratify by (filtered mode only); requires --n-per-group. "
+             "--filter is not required alongside it; omitting --filter samples "
+             "across the whole dataset"
     )
     sample.add_argument(
         "--n-per-group",
