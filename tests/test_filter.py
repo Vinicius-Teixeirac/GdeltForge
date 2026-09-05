@@ -204,6 +204,54 @@ class TestFilterAllFiles:
         assert (tmp_path / "hist_out" / "Year=1979" / "1979_filtered.parquet").exists()
 
 
+class TestFilterAllFilesInterruptHandling:
+    """filter_all_files' own version of convert's identical regression
+    coverage (test_converter.py's TestProcessAllFilesInterruptHandling):
+    every future is submitted up front, so the executor's own default
+    __exit__ (shutdown(wait=True)) would drain every one of them,
+    including ones that hadn't even started, before actually exiting.
+    Simulated at the as_completed() iteration point, the same place a
+    real Ctrl+C signal actually lands, rather than trying to raise it
+    from inside a worker process."""
+
+    def test_interrupt_cancels_queued_futures_and_still_propagates(
+        self, monkeypatch, tmp_path
+    ):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        for i in range(3):
+            _write_parquet(input_dir / f"{i}.parquet", {"GlobalEventID": [1, 2]})
+
+        real_as_completed = filter_module.as_completed
+
+        def interrupting_as_completed(fs, *a, **kw):
+            for i, f in enumerate(real_as_completed(fs, *a, **kw)):
+                if i == 1:
+                    raise KeyboardInterrupt()
+                yield f
+
+        monkeypatch.setattr(filter_module, "as_completed", interrupting_as_completed)
+
+        shutdown_calls = []
+        original_shutdown = filter_module.ProcessPoolExecutor.shutdown
+
+        def spying_shutdown(self, *a, **kw):
+            shutdown_calls.append(kw)
+            return original_shutdown(self, *a, **kw)
+
+        monkeypatch.setattr(filter_module.ProcessPoolExecutor, "shutdown", spying_shutdown)
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+
+        with pytest.raises(KeyboardInterrupt):
+            filt.filter_all_files()
+
+        assert any(
+            c.get("wait") is False and c.get("cancel_futures") is True
+            for c in shutdown_calls
+        )
+
+
 class TestFilterResumability:
     """Same .done marker mechanism as GDELTConverter (see test_converter.py's
     TestConversionResumability), plus the config-fingerprint check that

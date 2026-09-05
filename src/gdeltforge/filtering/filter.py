@@ -319,33 +319,52 @@ class GDELTFilter:
                 for parquet_path, is_historical in to_process
             }
 
-            for future in tqdm(
-                as_completed(futures), total=len(futures), desc="Filtering parquet files"
-            ):
-                parquet_path = futures[future]
-                try:
-                    rows_before, rows_after = future.result()
-                    mark_done(parquet_path, self._config_fingerprint)
+            try:
+                for future in tqdm(
+                    as_completed(futures), total=len(futures), desc="Filtering parquet files"
+                ):
+                    parquet_path = futures[future]
+                    try:
+                        rows_before, rows_after = future.result()
+                        mark_done(parquet_path, self._config_fingerprint)
 
-                    if self.delete_source:
-                        self._delete_source(parquet_path)
+                        if self.delete_source:
+                            self._delete_source(parquet_path)
 
-                    total_rows_before += rows_before
-                    total_rows_after  += rows_after
-                    files_processed   += 1
+                        total_rows_before += rows_before
+                        total_rows_after  += rows_after
+                        files_processed   += 1
 
-                    rate = (rows_after / rows_before * 100) if rows_before else 0
-                    # DEBUG, not INFO: unconditional, once per file, same
-                    # rationale as convert's equivalent per-file lines --
-                    # see run_filter's verbose docstring.
-                    logger.debug(
-                        f"{parquet_path.name}: "
-                        f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
-                    )
+                        rate = (rows_after / rows_before * 100) if rows_before else 0
+                        # DEBUG, not INFO: unconditional, once per file, same
+                        # rationale as convert's equivalent per-file lines --
+                        # see run_filter's verbose docstring.
+                        logger.debug(
+                            f"{parquet_path.name}: "
+                            f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
+                        )
 
-                except Exception as e:
-                    files_failed += 1
-                    logger.error(f"Failed to filter {parquet_path.name}: {e}")
+                    except Exception as e:
+                        files_failed += 1
+                        logger.error(f"Failed to filter {parquet_path.name}: {e}")
+            except KeyboardInterrupt:
+                # Same real gap as convert's identical loop (see
+                # converter.py's process_all_files for the full
+                # measurement): every future was submitted up front, so
+                # the executor's own default __exit__ would otherwise
+                # drain every one of them, including ones that haven't
+                # even started, before actually exiting. cancel_futures
+                # cancels every not-yet-started future immediately;
+                # wait=False doesn't additionally block here for files
+                # already in flight, since the executor's own __exit__
+                # still waits for those specific ones as this exception
+                # continues propagating.
+                still_running = sum(1 for f in futures if f.running())
+                logger.warning(
+                    f"Interrupted: waiting for {still_running} in-flight file(s) to finish."
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         logger.info("===============================================")
         logger.info("FILTERING SUMMARY")

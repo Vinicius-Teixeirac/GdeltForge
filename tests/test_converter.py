@@ -830,6 +830,51 @@ def _write_flat_zip(raw_dir, filename="20200101.export.CSV.zip", rows="1\t202001
     return zip_path
 
 
+class TestProcessAllFilesInterruptHandling:
+    """process_all_files' own version of scrape's identical regression
+    coverage (test_scraper.py's TestDownloadGdeltFilesInterruptHandling):
+    every future is submitted up front, so the executor's own default
+    __exit__ (shutdown(wait=True)) would drain every one of them,
+    including ones that hadn't even started, before actually exiting.
+    Simulated at the as_completed() iteration point, the same place a
+    real Ctrl+C signal actually lands, rather than trying to raise it
+    from inside a worker process."""
+
+    def test_interrupt_cancels_queued_futures_and_still_propagates(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = _make_config(tmp_path)
+        for i in range(3):
+            _write_flat_zip(tmp_path / "raw", filename=f"2020010{i + 1}.export.CSV.zip")
+
+        real_as_completed = converter_module.as_completed
+
+        def interrupting_as_completed(fs, *a, **kw):
+            for i, f in enumerate(real_as_completed(fs, *a, **kw)):
+                if i == 1:
+                    raise KeyboardInterrupt()
+                yield f
+
+        monkeypatch.setattr(converter_module, "as_completed", interrupting_as_completed)
+
+        shutdown_calls = []
+        original_shutdown = converter_module.ProcessPoolExecutor.shutdown
+
+        def spying_shutdown(self, *a, **kw):
+            shutdown_calls.append(kw)
+            return original_shutdown(self, *a, **kw)
+
+        monkeypatch.setattr(converter_module.ProcessPoolExecutor, "shutdown", spying_shutdown)
+
+        with pytest.raises(KeyboardInterrupt):
+            GDELTConverter(cfg).process_all_files()
+
+        assert any(
+            c.get("wait") is False and c.get("cancel_futures") is True
+            for c in shutdown_calls
+        )
+
+
 class TestConversionResumability:
     """Regression coverage for the .done marker mechanism: found for real
     against a live 30,137-file Mentions batch that flat/daily conversions
