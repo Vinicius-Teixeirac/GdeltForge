@@ -54,6 +54,25 @@ class TestParseFileDate:
     def test_yearly_converted_parquet(self):
         assert parse_file_date("2020.parquet") == (date(2020, 1, 1), date(2020, 12, 31))
 
+    def test_daily_filtered_parquet(self):
+        # filter's own <stem>_filtered.parquet naming (filter.py's
+        # _output_path_for), the shape a real live comprehensive QA pass
+        # found fell through every branch of the old suffix-anchored
+        # version as unparseable, silently defeating --start-date/
+        # --end-date narrowing for sample's default source.
+        assert parse_file_date("20200315.export_filtered.parquet") == (
+            date(2020, 3, 15), date(2020, 3, 15),
+        )
+
+    def test_monthly_filtered_parquet(self):
+        assert parse_file_date("202003_filtered.parquet") == (date(2020, 3, 1), date(2020, 3, 31))
+
+    def test_yearly_filtered_parquet(self):
+        assert parse_file_date("2020_filtered.parquet") == (date(2020, 1, 1), date(2020, 12, 31))
+
+    def test_filtered_form_with_invalid_calendar_date_is_rejected(self):
+        assert parse_file_date("20201332.export_filtered.parquet") == (None, None)
+
 
 # ------------------------------------------------------------
 # parse_gdeltv2_file_date
@@ -298,6 +317,26 @@ class TestFilterPathsByDate:
             date(2020, 1, 1), date(2020, 12, 31), parse_file_date,
         )
         assert kept == ["/data/2020.parquet"]
+
+    def test_filtered_stage_filenames_are_genuinely_narrowed_not_just_kept(self):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: sample's default --source filtered reads filter's own
+        # <stem>_filtered.parquet output, a shape the old suffix-anchored
+        # parse_file_date couldn't match at all. Every such file fell
+        # through as unparseable and was kept regardless of the requested
+        # range, so a two-file, two-different-dates fixture like this one
+        # is essential here: a single-file fixture can't tell "correctly
+        # narrowed" apart from "coincidentally correct because there was
+        # nothing else to wrongly include", which is exactly how that bug
+        # passed the existing suite unnoticed.
+        kept = scraper.filter_paths_by_date(
+            [
+                "/data/20240101.export_filtered.parquet",
+                "/data/20240615.export_filtered.parquet",
+            ],
+            date(2024, 1, 1), date(2024, 1, 1), parse_file_date,
+        )
+        assert kept == ["/data/20240101.export_filtered.parquet"]
 
     def test_open_ended_start(self):
         kept = scraper.filter_paths_by_date(
