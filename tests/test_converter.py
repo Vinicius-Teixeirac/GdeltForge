@@ -1331,6 +1331,99 @@ class TestBareCsvInput:
         assert pl.read_parquet(outputs[0])["GlobalEventID"].to_list() == [1]
 
 
+class TestConcurrentConversionIsolation:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: two concurrent gdeltforge invocations converting overlapping
+    files (a cron double-fire, an accidental double-launch, two people
+    sharing a data directory) both extracted the same zip's same member
+    name into the same shared unzip_folder, racing on it: one process's
+    os.replace() found its own .tmp already renamed away by the other,
+    and one process deleted a CSV mid-read by the other. Extraction now
+    goes into a private, per-process subdirectory (named by os.getpid())
+    instead, moved back to the shared, flat unzip_folder only once this
+    process's own work on it is fully over, success or failure alike, so
+    two processes never share one extracted file during the read/convert
+    window itself. Simulated here by mocking os.getpid() to distinct
+    values across sequential calls, rather than real concurrent processes,
+    to prove the isolation mechanism deterministically."""
+
+    def test_extraction_uses_a_pid_named_private_subdirectory(self, tmp_path, monkeypatch):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 4242)
+
+        converter = GDELTConverter(_make_config(tmp_path))
+        outputs = converter.process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        # The private subdirectory is gone once processing finishes
+        # (success, and not keep_unzipped): nothing left over for a
+        # second process to ever collide with.
+        assert not (tmp_path / "csv" / ".pid4242_20200101.export.CSV").exists()
+
+    def test_two_simulated_processes_never_share_an_extraction_directory(
+        self, tmp_path, monkeypatch
+    ):
+        # Same source zip "downloaded" twice (the real double-launch
+        # shape), converted under two different simulated PIDs. Neither
+        # call's extraction directory exists while the other one's own
+        # extraction is what a real race would have collided on.
+        seen_dirs = []
+        real_unzip_file = converter_module.unzip_file
+
+        def spying_unzip_file(zip_path, extract_to_dir):
+            seen_dirs.append(Path(extract_to_dir))
+            assert not any(d.exists() for d in seen_dirs[:-1]), (
+                "a prior call's private extraction directory was still "
+                "around during a later call: not actually isolated"
+            )
+            return real_unzip_file(zip_path, extract_to_dir)
+
+        monkeypatch.setattr(converter_module, "unzip_file", spying_unzip_file)
+
+        zip_a = _write_flat_zip(tmp_path / "raw_a", filename="20200101.export.CSV.zip")
+        zip_b = _write_flat_zip(tmp_path / "raw_b", filename="20200101.export.CSV.zip")
+        cfg = _make_config(tmp_path)
+
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 1001)
+        GDELTConverter(cfg).process_single_file(str(zip_a))
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 1002)
+        GDELTConverter(cfg).process_single_file(str(zip_b))
+
+        assert seen_dirs[0] != seen_dirs[1]
+
+    def test_keep_unzipped_still_lands_flat_after_success(self, tmp_path):
+        # recover_unzipped_files' own flat glob (unzip_folder / "*.csv")
+        # must still find a kept CSV: this is the "moved back once
+        # conversion succeeded" half of the fix.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        cfg = _make_config(tmp_path, keep_unzipped=True)
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        assert (tmp_path / "csv" / "20200101.export.CSV").exists()
+
+    def test_a_genuine_failure_still_lands_the_csv_flat_for_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        # The other documented contract process_single_file already had:
+        # a real CSV-to-Parquet failure leaves the CSV where
+        # recover_unzipped_files' own flat glob can find it, unchanged by
+        # this fix's private-subdirectory extraction.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+
+        def boom(self, csv_path, file_type="flat"):
+            raise RuntimeError("simulated read failure")
+
+        monkeypatch.setattr(GDELTConverter, "_read_csv", boom)
+
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=False))
+        with pytest.raises(RuntimeError, match="could not be processed"):
+            converter.process_single_file(str(zip_path))
+
+        assert (tmp_path / "csv" / "20200101.export.CSV").exists()
+
+
 class TestRecoverUnzippedFiles:
     """recover_unzipped_files (CLI: --recover-unzipped) converts a leftover
     .csv sitting directly in unzipped_data_directory, the dedicated path

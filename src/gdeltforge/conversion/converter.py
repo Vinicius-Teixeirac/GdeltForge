@@ -688,12 +688,30 @@ class GDELTConverter:
         # call, which raised a confusing BadZipFile for this input before
         # this branch existed.
         is_bare_csv = zip_p.suffix.lower() == ".csv"
+        private_extract_dir = None
         if is_bare_csv:
             extracted_files = [zip_p]
         else:
-            extracted_files = unzip_file(zip_path, self.unzip_folder)
+            # Extracted into a private, per-process subdirectory rather
+            # than directly into the shared unzip_folder: found via a live
+            # comprehensive QA pass that two concurrent gdeltforge
+            # invocations converting overlapping files raced on that
+            # shared path, both extracting the same zip's same member
+            # name into it, one process's os.replace() finding its own
+            # .tmp already renamed away by the other, and one process
+            # deleting a CSV while the other was still mid-read against
+            # it. Naming this uniquely per OS process (a real, separate
+            # gdeltforge invocation's own worker gets a distinct PID)
+            # means two concurrent processes never share a single
+            # extracted file at any point during the read/convert window.
+            private_extract_dir = self.unzip_folder / f".pid{os.getpid()}_{zip_p.stem}"
+            extracted_files = unzip_file(zip_path, private_extract_dir)
             if not extracted_files:
                 logger.warning(f"No extracted files from {zip_p.name}")
+                try:
+                    private_extract_dir.rmdir()
+                except OSError:
+                    pass  # not empty: a non-file member extracted alongside
                 return created_parquets
 
         failed_csvs = []
@@ -716,18 +734,43 @@ class GDELTConverter:
                         created_parquets.append(str(parquet_path))
 
                 # is_bare_csv's csv_path IS zip_p, the source file itself,
-                # not a scratch copy unzip_file extracted into
-                # self.unzip_folder: only --delete-source (via
-                # process_all_files' own _delete_source, gated on that
-                # flag) is allowed to remove it. Deleting it here
-                # regardless of keep_unzipped would silently destroy the
-                # only copy of a source that was never actually unzipped.
-                if not is_bare_csv and not self.keep_unzipped:
-                    csv_path.unlink()
+                # not a scratch copy unzip_file extracted into a private
+                # directory: only --delete-source (via process_all_files'
+                # own _delete_source, gated on that flag) is allowed to
+                # remove it. Deleting it here regardless of keep_unzipped
+                # would silently destroy the only copy of a source that
+                # was never actually unzipped.
+                if not is_bare_csv:
+                    if self.keep_unzipped:
+                        # Moved into the shared, flat unzip_folder only now
+                        # that conversion has already succeeded: this is
+                        # what keeps it discoverable by name for
+                        # recover_unzipped_files' own flat glob, the same
+                        # contract it had before this fix, without ever
+                        # exposing a partially-written or actively-being-
+                        # read file at that shared path.
+                        os.replace(csv_path, self.unzip_folder / csv_path.name)
+                    else:
+                        csv_path.unlink()
 
             except Exception as e:
                 logger.error(f"Error processing CSV {csv_path.name}: {e}")
                 failed_csvs.append(csv_path.name)
+                if not is_bare_csv:
+                    # Moved back to the shared, flat unzip_folder so
+                    # recover_unzipped_files' own existing "found a
+                    # leftover CSV whose ZIP is now gone" recovery path
+                    # still finds it there, matching this method's
+                    # documented behavior before this fix: a genuinely
+                    # failed CSV survives, findable, once its own
+                    # process's work on it is over either way.
+                    os.replace(csv_path, self.unzip_folder / csv_path.name)
+
+        if private_extract_dir is not None:
+            try:
+                private_extract_dir.rmdir()
+            except OSError:
+                pass  # not empty: a non-CSV member extracted alongside, left as before
 
         if failed_csvs:
             # Raising (rather than swallowing and returning whatever

@@ -78,7 +78,16 @@ def write_parquet_atomic(df: pl.DataFrame, out: str | Path, **write_parquet_kwar
     than polars' own default (zstd, already matching this project's own).
     """
     out = Path(out)
-    tmp_path = out.with_name(out.name + ".tmp")
+    # The PID, not just a fixed ".tmp" suffix: found via a live
+    # comprehensive QA pass that two concurrent gdeltforge processes
+    # writing the same destination path raced on this exact temp name,
+    # one process's os.replace() below failing with "No such file or
+    # directory" because the other process had already renamed the
+    # shared .tmp file away out from under it. A real, separate OS
+    # process (this project's own worker pools included) always has a
+    # distinct PID, so this can never collide between two genuinely
+    # concurrent writers the same fixed name did.
+    tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
 
     if tmp_path.exists():
         logger.warning(
@@ -119,7 +128,10 @@ def write_dataframe_atomic(
         )
 
     out = Path(out)
-    tmp_path = out.with_name(out.name + ".tmp")
+    # PID-suffixed, same reasoning as write_parquet_atomic's identical
+    # fix: two concurrent gdeltforge invocations exporting to the same
+    # --out path must never share one fixed temp name.
+    tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
 
     if tmp_path.exists():
         logger.warning(
