@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import logging
 import subprocess
@@ -1362,6 +1363,34 @@ class TestRecoverUnzippedFiles:
         assert failed == []
         assert len(outputs) == 1
         assert pl.read_parquet(outputs[0])["Day"].to_list() == [20200101, 20200102]
+        assert csv_path.exists()  # keep_unzipped=True, no delete_source
+
+    def test_finds_an_upper_case_csv_extension(self, tmp_path):
+        # events, events-15min, and mentions all extract their real zip
+        # members as upper-case .CSV (confirmed against live downloads);
+        # only gkg-v2 uses lower-case .csv. A prior case-sensitive glob
+        # found nothing to recover for any of the former three on a
+        # case-sensitive filesystem, a silent no-op rather than a crash.
+        # Windows itself can't reproduce that here: its filesystem matches
+        # glob.glob("*.csv") case-insensitively regardless of pattern
+        # case, which is exactly why the bug went unnoticed until tested
+        # against real Linux downloads. fnmatch.fnmatchcase is what
+        # glob.glob's own matching reduces to on a case-sensitive
+        # filesystem (POSIX's os.path.normcase is a no-op), so asserting
+        # against it directly anchors this test to the actual mechanism
+        # regardless of which platform runs the suite.
+        assert not fnmatch.fnmatchcase("20200101.export.CSV", "*.csv")
+
+        csv_path = self._write_csv(
+            tmp_path / "csv", filename="20200101.export.CSV", rows="1\t20200101\n"
+        )
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+
+        outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert pl.read_parquet(outputs[0])["Day"].to_list() == [20200101]
         assert csv_path.exists()  # keep_unzipped=True, no delete_source
 
     def test_a_csv_already_marked_done_is_skipped_on_rerun(self, tmp_path):
