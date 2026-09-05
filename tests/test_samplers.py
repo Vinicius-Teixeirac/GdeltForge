@@ -169,6 +169,35 @@ class TestCalendarSampler:
 
         assert len(df) == 2
 
+    def test_zero_samples_per_period_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame(
+            {"GlobalEventID": [1, 2], "Day": [20200101, 20200101]}
+        ).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=0)
+
+        assert len(df) == 0
+
+    def test_negative_samples_per_period_raises_instead_of_a_nonsensical_success(
+        self, tmp_path
+    ):
+        # A negative value used to reach the reservoir machinery
+        # unchecked, same as 0, logging "Saved calendar sample (0 rows,
+        # period=day)" as though -5 were a valid, deliberately chosen
+        # configuration rather than a mistake.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame(
+            {"GlobalEventID": [1, 2], "Day": [20200101, 20200101]}
+        ).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_calendar_samples(samples_per_period=-5)
+
     def test_date_column_missing_from_every_file_raises_clearly(self, tmp_path):
         # Replaces the old DailySampler's own flaw of silently skipping a
         # file missing its date column and returning an empty result: a
@@ -679,6 +708,32 @@ class TestFilteredSamplerReservoirSampling:
         assert len(df) == 10
         assert df["GlobalEventID"].n_unique() == len(df)
 
+    def test_n_zero_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(15), "QuadClass": [1] * 15,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_random_sample(0)
+
+        assert len(df) == 0
+
+    def test_negative_n_raises_instead_of_a_nonsensical_success(self, tmp_path):
+        # A negative n used to reach the reservoir machinery unchecked,
+        # same as 0, producing a nonsensical but "successful" empty
+        # result rather than an error naming the actual mistake.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(15), "QuadClass": [1] * 15,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_random_sample(-5)
+
     def test_takes_everything_when_n_equals_total(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -1013,6 +1068,35 @@ class TestStratifiedSampling:
         counts = _size_by_group(df, "QuadClass")
         assert counts[1] == 2
         assert counts[2] == 5
+
+    def test_zero_n_per_group_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(4),
+            "QuadClass": [1] * 2 + [2] * 2,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_stratified_sample("QuadClass", n_per_group=0)
+
+        assert len(df) == 0
+
+    def test_negative_n_per_group_raises_instead_of_a_nonsensical_success(self, tmp_path):
+        # A negative value used to reach the reservoir machinery
+        # unchecked, same as 0, logging "Saved stratified sample (0 rows)
+        # stratified by 'QuadClass' (-3 per group)" as though -3 were a
+        # valid, chosen configuration.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(4),
+            "QuadClass": [1] * 2 + [2] * 2,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_stratified_sample("QuadClass", n_per_group=-3)
 
     def test_reconciles_dtype_when_groups_disagree_on_nullability(self, tmp_path):
         # Same root cause as CalendarSampler's identical regression test
