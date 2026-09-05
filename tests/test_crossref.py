@@ -522,6 +522,78 @@ class TestCrossrefEventsGkgV1:
             )
 
 
+class TestIterRowSlicesBoundedByExplosion:
+    """_iter_row_slices_bounded_by_explosion caps how many rows a single
+    explode step downstream can produce, found necessary via a live
+    comprehensive QA pass: a real GKG 1.0 Counts file had one row with
+    13,051 comma-separated EventIds against a same-file mean of ~37,
+    which let that single row dominate an entire batch's peak memory
+    once exploded, surfacing as a Rust-level allocation failure under
+    real memory pressure."""
+
+    @staticmethod
+    def _slice_lengths(df, list_col, max_exploded):
+        return [
+            s.height
+            for s in crossref_module._iter_row_slices_bounded_by_explosion(
+                df, list_col, max_exploded
+            )
+        ]
+
+    def test_ordinary_rows_stay_in_one_slice_when_under_the_cap(self):
+        df = pl.DataFrame({"ids": [["a", "b"], ["c"], ["d", "e", "f"]]})
+        assert self._slice_lengths(df, "ids", max_exploded=100) == [3]
+
+    def test_a_slice_boundary_is_drawn_once_the_running_total_would_exceed_the_cap(self):
+        df = pl.DataFrame({"ids": [["a"], ["b"], ["c"], ["d"]]})
+        # Running totals: 1, 2, 3, 4. Capped at 2, a slice never accumulates
+        # past it, so the boundary falls after every second row.
+        assert self._slice_lengths(df, "ids", max_exploded=2) == [2, 2]
+
+    def test_a_single_pathological_row_gets_its_own_slice_rather_than_looping_forever(self):
+        df = pl.DataFrame({"ids": [["a"], [str(i) for i in range(50)], ["b"]]})
+        # The middle row's own length (50) already exceeds the cap (10); it
+        # must still be yielded, alone, not silently dropped or split.
+        assert self._slice_lengths(df, "ids", max_exploded=10) == [1, 1, 1]
+
+    def test_every_row_is_covered_exactly_once(self):
+        df = pl.DataFrame({"ids": [["a", "b"], ["c"], ["d", "e"], ["f"], ["g", "h", "i"]]})
+        total = sum(self._slice_lengths(df, "ids", max_exploded=3))
+        assert total == df.height
+
+    def test_join_result_is_identical_whether_or_not_bounding_forces_multiple_steps(
+        self, tmp_path, monkeypatch
+    ):
+        # A real end-to-end join, forced through several internal bounded
+        # steps by lowering the cap far below what a real run would ever
+        # use, must produce exactly the same rows as the unbounded case:
+        # the cap only changes how much memory one step touches at a time,
+        # never which matches are found.
+        folder = tmp_path / "gkg_v1"
+        folder.mkdir()
+        pl.DataFrame({
+            "Date": [20130401] * 3,
+            "EventIds": [
+                ",".join(str(1000 + i) for i in range(20)),  # one large row
+                "1001,1002",
+                "9999",
+            ],
+            "NumArticles": [1, 2, 3],
+        }).write_parquet(folder / "20130401.gkg.parquet")
+        events_df = pl.DataFrame({"GlobalEventID": list(range(1000, 1020))})
+        gkg_columns = ["Date", "EventIds", "NumArticles"]
+
+        unbounded = crossref_events_gkg_v1(events_df, str(folder), gkg_columns)
+
+        monkeypatch.setattr(crossref_module, "_MAX_EXPLODED_ROWS_PER_STEP", 3)
+        bounded = crossref_events_gkg_v1(events_df, str(folder), gkg_columns)
+
+        pl_testing.assert_frame_equal(
+            unbounded.sort("GlobalEventID", "GKG_EventIds"),
+            bounded.sort("GlobalEventID", "GKG_EventIds"),
+        )
+
+
 class TestCrossrefEventsGkgV1ColumnNarrowing:
     """
     Regression coverage for a real gap found via a live comprehensive
