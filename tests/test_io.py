@@ -186,6 +186,16 @@ class TestReadParquetPath:
 
         assert result["GlobalEventID"].to_list() == [1, 2]
 
+    def test_nonexistent_path_raises_a_crafted_error_not_a_raw_os_one(self, tmp_path):
+        # A path naming neither a file nor a directory used to reach
+        # pl.read_parquet unchecked, surfacing its own raw "No such file
+        # or directory (os error 2): ..." straight from polars' Rust
+        # reader, unlike every other missing-path case in this project.
+        missing = tmp_path / "nonexistent.parquet"
+
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            read_parquet_path(missing)
+
     def test_empty_directory_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="No parquet files"):
             read_parquet_path(tmp_path)
