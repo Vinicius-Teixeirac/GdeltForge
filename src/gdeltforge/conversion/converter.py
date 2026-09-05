@@ -862,7 +862,16 @@ class GDELTConverter:
                 for (year,), group in chunk.group_by("_Year", maintain_order=False):
                     out_dir = self.historical_folder / f"Year={int(year)}"
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = out_dir / f"{zip_p.stem}.part{chunk_idx:05d}.parquet"
+                    # Just the chunk index, not zip_p.stem: there is only ever
+                    # one source file for this dataset, so repeating its full
+                    # name ("GDELT.MASTERREDUCEDV2.1979-2013", 32 characters)
+                    # in every single part file added nothing but length, and
+                    # a real run from a moderately nested project directory
+                    # pushed the resulting path past Windows' 260-character
+                    # MAX_PATH, confirmed directly: the identical conversion
+                    # succeeded from a short path and failed only from a
+                    # deep one, with no other difference.
+                    out_path = out_dir / f"part{chunk_idx:05d}.parquet"
                     self._write_partition_file(group.drop("_Year"), out_path)
                     created.add(out_path)
         finally:
