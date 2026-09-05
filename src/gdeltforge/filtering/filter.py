@@ -428,10 +428,21 @@ class GDELTFilter:
         # number of output rows is unknown"), confirmed directly. That's
         # a different case from columns_to_check being non-empty but
         # matching nothing in this file's schema, which genuinely can't
-        # be checked and bails out below without writing.
+        # be checked at all. This used to log an ERROR and return as
+        # though the file had been filtered successfully, so the run's
+        # own summary reported it under "Files processed successfully"
+        # at 100% retention and exited 0, silently turning the requested
+        # null-check into a no-op. Raising here instead routes it through
+        # filter_all_files' existing per-file exception handling, so the
+        # file is counted under "Files failed" and the run exits non-zero,
+        # matching the documented contract that filter fails the run if
+        # any individual file failed.
         if self.columns_to_check and not existing_columns:
-            logger.error(f"{file_path.name}: None of the filter columns exist.")
-            return rows_before, rows_before
+            raise ValueError(
+                f"{file_path.name}: none of the configured columns_to_check "
+                f"{self.columns_to_check} exist in this file's schema. There is "
+                f"nothing to filter on."
+            )
 
         if output_path is None:
             output_path = self.output_folder / f"{file_path.stem}_filtered.parquet"
@@ -457,6 +468,25 @@ class GDELTFilter:
         # configured output column that isn't in this file's schema is
         # dropped rather than treated as fatal, since schemas can drift
         # release to release the same way they already can for row-filters.
+        # This used to drop such a name with no trace at any log level,
+        # including --verbose, indistinguishable from a deliberate,
+        # working projection: a typo in output_columns silently and
+        # permanently discarded that column from every future run. Warned
+        # here now, naming exactly what was dropped and why, matching
+        # narrow_to_available_columns' own treatment of the same mistake
+        # in sample/crossref.
+        missing_output_columns = (
+            [c for c in self.output_columns if c not in schema_cols]
+            if self.output_columns is not None
+            else []
+        )
+        if missing_output_columns:
+            logger.warning(
+                f"{file_path.name}: output_columns names {len(missing_output_columns)} "
+                f"column(s) not present in this file's schema: {missing_output_columns}. "
+                f"They will be excluded from the output."
+            )
+
         keep_columns = (
             [c for c in self.output_columns if c in schema_cols]
             if self.output_columns is not None
