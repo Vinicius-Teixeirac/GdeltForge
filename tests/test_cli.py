@@ -1037,6 +1037,93 @@ class TestRunSamplingCmdDateFiltering:
         assert not any("both set" in r.message for r in caplog.records)
 
 
+class TestRunSamplingCmdStratifyWithoutFilter:
+    """--stratify targets rows by group membership on its own; it doesn't
+    need a separate row-level --filter condition the way get_random_sample
+    does. --filter is only ever required for a plain --mode filtered call
+    with no --stratify."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            out="o.parquet", columns=None, export_format="parquet",
+            filter=None, stratify=None, n_per_group=None,
+            start_date=None, end_date=None,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_stratify_without_filter_defaults_to_no_filtering(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        cli.run_sampling_cmd(
+            self._config(),
+            self._args(
+                stratify="QuadClass", n_per_group=50, filter=None,
+                out=str(tmp_path / "o.parquet"),
+            ),
+        )
+
+        assert captured["filter_dict"] == {}
+
+    def test_plain_filtered_mode_without_stratify_still_requires_filter(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+
+        with pytest.raises(ValueError, match="--filter is required"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(stratify=None, filter=None, out=str(tmp_path / "o.parquet")),
+            )
+
+    def test_explicit_filter_alongside_stratify_is_still_honored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        cli.run_sampling_cmd(
+            self._config(),
+            self._args(
+                stratify="QuadClass", n_per_group=50, filter='{"QuadClass": [1, 2]}',
+                out=str(tmp_path / "o.parquet"),
+            ),
+        )
+
+        assert captured["filter_dict"] == {"QuadClass": [1, 2]}
+
+
 class TestRunCrossrefCmd:
     """The join logic itself (crossref_events_gkg_v1/v2) has its own
     dedicated tests in test_crossref.py; these only check that the CLI
