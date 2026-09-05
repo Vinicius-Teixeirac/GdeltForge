@@ -416,6 +416,43 @@ def warn_if_directory_is_large(
     )
 
 
+# Caps how many rows a single explode step inside crossref_events_gkg_v1 is
+# allowed to produce. Found directly against a real GKG 1.0 Counts file: one
+# row's EventIds field held 13,051 comma-separated ids against a same-file
+# mean of ~37, so exploding an entire 64,000-row batch in one step let that
+# one row dominate the whole batch's peak memory, surfacing as a Rust-level
+# allocation failure under real memory pressure. 200,000 is comfortably
+# above any fanout seen in practice for an ordinary row while still bounding
+# how much a single pathological one can cost.
+_MAX_EXPLODED_ROWS_PER_STEP = 200_000
+
+
+def _iter_row_slices_bounded_by_explosion(
+    df: pl.DataFrame, list_col: str, max_exploded: int
+):
+    """
+    Yield row-slices of df whose list_col lengths sum to at most
+    max_exploded per slice, so exploding one slice at a time never
+    materializes more than roughly that many rows regardless of how the
+    real fanout is distributed across the input. A single row whose own
+    list is already at or past max_exploded is yielded alone rather than
+    held back waiting for a slice that can never fit it.
+    """
+    lengths = df[list_col].list.len().to_list()
+    n = df.height
+    start = 0
+    running = 0
+    for i in range(n):
+        length = lengths[i] or 0
+        if running > 0 and running + length > max_exploded:
+            yield df.slice(start, i - start)
+            start = i
+            running = 0
+        running += length
+    if start < n:
+        yield df.slice(start, n - start)
+
+
 def crossref_events_gkg_v1(
     events_df: pl.DataFrame,
     gkg_folder: str,
@@ -486,40 +523,48 @@ def crossref_events_gkg_v1(
                 continue
 
             original_columns = df_batch.columns
-            # explode()'s empty_as_null keyword doesn't exist until a
-            # polars release newer than this project's own declared
-            # minimum (polars>=1.34): confirmed directly, installing
-            # exactly 1.34.0 raises "unexpected keyword argument". Its
-            # only effect here would be whether a genuinely empty EventIds
-            # list (a blank/null source field, split into []) explodes to
-            # a null or an empty-string row; either way the is_in() filter
-            # below drops it, so filtering an empty list out before
-            # exploding at all reaches the same result without needing
-            # the keyword. A non-empty list with a blank entry (e.g. a
-            # trailing comma splitting "5," into ["5", ""]) isn't affected
-            # by this filter at all and explodes normally either way.
-            exploded = (
-                df_batch
-                .with_columns(
-                    pl.col("EventIds").fill_null("").str.split(",")
-                    .alias("_matched_event_id")
-                )
-                .filter(pl.col("_matched_event_id").list.len() > 0)
-                .explode("_matched_event_id")
-                .with_columns(pl.col("_matched_event_id").str.strip_chars())
-                .filter(pl.col("_matched_event_id").is_in(event_id_set))
+            df_batch = df_batch.with_columns(
+                pl.col("EventIds").fill_null("").str.split(",").alias("_matched_event_id")
             )
 
-            if exploded.is_empty():
-                continue
-
-            gkg_side = exploded.rename({c: f"GKG_{c}" for c in original_columns})
-            matches.append(
-                events_side.join(
-                    gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
-                    how="inner", coalesce=False,
+            # Bounded by output size, not input row count: see
+            # _iter_row_slices_bounded_by_explosion and
+            # _MAX_EXPLODED_ROWS_PER_STEP above for why a single batch can't
+            # always be exploded in one step.
+            for sub_batch in _iter_row_slices_bounded_by_explosion(
+                df_batch, "_matched_event_id", _MAX_EXPLODED_ROWS_PER_STEP
+            ):
+                # explode()'s empty_as_null keyword doesn't exist until a
+                # polars release newer than this project's own declared
+                # minimum (polars>=1.34): confirmed directly, installing
+                # exactly 1.34.0 raises "unexpected keyword argument". Its
+                # only effect here would be whether a genuinely empty
+                # EventIds list (a blank/null source field, split into [])
+                # explodes to a null or an empty-string row; either way the
+                # is_in() filter below drops it, so filtering an empty list
+                # out before exploding at all reaches the same result
+                # without needing the keyword. A non-empty list with a blank
+                # entry (e.g. a trailing comma splitting "5," into
+                # ["5", ""]) isn't affected by this filter at all and
+                # explodes normally either way.
+                exploded = (
+                    sub_batch
+                    .filter(pl.col("_matched_event_id").list.len() > 0)
+                    .explode("_matched_event_id")
+                    .with_columns(pl.col("_matched_event_id").str.strip_chars())
+                    .filter(pl.col("_matched_event_id").is_in(event_id_set))
                 )
-            )
+
+                if exploded.is_empty():
+                    continue
+
+                gkg_side = exploded.rename({c: f"GKG_{c}" for c in original_columns})
+                matches.append(
+                    events_side.join(
+                        gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
+                        how="inner", coalesce=False,
+                    )
+                )
 
     if not matches:
         return pl.DataFrame()
