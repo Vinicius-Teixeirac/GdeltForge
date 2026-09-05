@@ -115,6 +115,53 @@ def _normalize_top_level_sections(config: dict) -> dict:
     return {key: ({} if value is None else value) for key, value in config.items()}
 
 
+def _bundled_default_dict() -> dict:
+    """
+    Parse GdeltForge's own bundled default config (see
+    _BUNDLED_DEFAULT_RESOURCE above), normalized the same way a real config
+    file is, with none of _load_bundled_default's file-write/warning side
+    effects. Used both as the tier-4 fallback itself and as the fallback
+    layer merged under a real, user-supplied config (see
+    _deep_merge_defaults), so both paths read the exact same source.
+    """
+    text = _BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8")
+    return _normalize_top_level_sections(yaml.safe_load(text))
+
+
+def _deep_merge_defaults(config: dict, defaults: dict) -> dict:
+    """
+    Fill in any key missing from `config` with the equivalent value from
+    `defaults`, recursing into nested dicts so a hand-written settings.yaml
+    only needs to specify what it actually wants to change.
+
+    A real user config that omits a whole section entirely (columns,
+    columns_numeric) or a nested one (filter.columns_to_check,
+    converter.output_columns, a specific dataset under paths) used to crash
+    deep inside converter.py/filter.py/cli.py with a bare KeyError naming
+    just the missing key: every one of those reads its section with a
+    direct config["..."][...] access, not .get(), on the assumption the
+    section is always present the way the bundled default always has it.
+    _normalize_top_level_sections already covers a section being present
+    but null; this covers it being absent, arguably the more natural
+    mistake for someone writing a small, targeted config instead of
+    starting from the full settings.example.yaml.
+
+    A key already present in `config` is never touched, regardless of its
+    type: the user's own value always wins over the default. Only a dict
+    value recurses; a list or scalar default is used as-is when the key is
+    missing, never merged element-by-element (so a user's own, possibly
+    empty, columns_to_check list for one dataset is never padded with the
+    default's entries for that same dataset).
+    """
+    merged = dict(config)
+    for key, default_value in defaults.items():
+        if key not in merged:
+            merged[key] = default_value
+        elif isinstance(merged[key], dict) and isinstance(default_value, dict):
+            merged[key] = _deep_merge_defaults(merged[key], default_value)
+    return merged
+
+
 def _load_bundled_default(path: Path) -> dict:
     """
     Read GdeltForge's own built-in fallback config (bundled inside the
@@ -126,12 +173,15 @@ def _load_bundled_default(path: Path) -> dict:
     config rather than failing outright, just without the "now edit
     config/settings.yaml" convenience.
     """
-    text = _BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8")
-    config = _normalize_top_level_sections(yaml.safe_load(text))
+    config = _bundled_default_dict()
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        # The raw resource text, not a re-serialization of `config`: writing
+        # the parsed-and-rebuilt dict would drop every comment in the
+        # bundled file, and dict ordering isn't guaranteed to round-trip
+        # through YAML the same way.
+        path.write_text(_BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
         logger.warning(
             f"No config found (no --config, no {CONFIG_ENV_VAR}, nothing at {path}); "
             f"using GdeltForge's built-in default and writing it to {path}, so it's a "
@@ -187,7 +237,8 @@ def load_config(config_path: str | None = None) -> dict:
                 f"Config file is empty: {path}. Copy config/settings.example.yaml as a "
                 f"starting point, or see docs/configuration.md."
             )
-        return _normalize_top_level_sections(config)
+        config = _normalize_top_level_sections(config)
+        return _deep_merge_defaults(config, _bundled_default_dict())
 
     if not explicit:
         return _load_bundled_default(path)
