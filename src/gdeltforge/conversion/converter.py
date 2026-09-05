@@ -532,7 +532,18 @@ class GDELTConverter:
                 "the source file directly, with no per-CSV leftover to recover."
             )
 
-        csv_files = glob.glob(str(self.unzip_folder / "*.csv"))
+        # Matched by suffix, not glob.glob(str(self.unzip_folder / "*.csv")):
+        # glob is case-sensitive on Linux/macOS, and a real GDELT zip's
+        # internal member casing is dataset-dependent. events, events-15min,
+        # and mentions all extract as upper-case .CSV; a plain "*.csv" glob
+        # silently found nothing to recover for any of them on those
+        # platforms, while gkg-v2's lower-case .csv members happened to
+        # still match. Windows was unaffected, its filesystem already
+        # matches glob.glob case-insensitively regardless of pattern case.
+        csv_files = [
+            str(p) for p in self.unzip_folder.glob("*")
+            if p.is_file() and p.suffix.lower() == ".csv"
+        ]
 
         if not csv_files:
             logger.info(f"No leftover CSVs found in {self.unzip_folder}")
