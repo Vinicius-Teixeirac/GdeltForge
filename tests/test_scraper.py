@@ -1046,6 +1046,65 @@ class TestDownloadGdeltFiles:
         assert result["success"] == 1
 
 
+class TestDownloadGdeltFilesInterruptHandling:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: SIGINT 1.5s into a real 731-file scrape still let all 731
+    finish downloading over the next 93.5 seconds before 'Interrupted.'
+    ever printed. Every future is submitted up front, so the executor's
+    own default __exit__ (shutdown(wait=True)) drained every one of
+    them, including ones that hadn't even started, before actually
+    exiting. Simulated at the as_completed() iteration point, the same
+    place a real Ctrl+C signal actually lands (delivered to the main
+    thread, which spends this loop's whole duration inside that call),
+    rather than trying to raise it from inside a worker thread."""
+
+    def test_interrupt_cancels_queued_futures_and_still_propagates(
+        self, monkeypatch, tmp_path
+    ):
+        files = [GdeltFile(url=f"http://x/{i}.export.CSV.zip") for i in range(5)]
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            return "success", file.url.split("/")[-1]
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        real_as_completed = scraper.as_completed
+
+        def interrupting_as_completed(fs, *a, **kw):
+            for i, f in enumerate(real_as_completed(fs, *a, **kw)):
+                if i == 1:
+                    raise KeyboardInterrupt()
+                yield f
+
+        monkeypatch.setattr(scraper, "as_completed", interrupting_as_completed)
+
+        shutdown_calls = []
+        original_shutdown = scraper.ThreadPoolExecutor.shutdown
+
+        def spying_shutdown(self, *a, **kw):
+            shutdown_calls.append(kw)
+            return original_shutdown(self, *a, **kw)
+
+        monkeypatch.setattr(scraper.ThreadPoolExecutor, "shutdown", spying_shutdown)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+
+        with pytest.raises(KeyboardInterrupt):
+            download_gdelt_files(files, config)
+
+        # Our own explicit cleanup call, not the executor's own automatic
+        # one from __exit__ (which still runs afterward with its default
+        # wait=True and is harmless here since every submitted task is a
+        # fast, already-fake-completed function).
+        assert any(
+            c.get("wait") is False and c.get("cancel_futures") is True
+            for c in shutdown_calls
+        )
+
+
 class TestRunScrapingPipelineVerboseLogging:
     """--verbose raises this module's own logger to DEBUG, revealing the
     already-existing per-attempt "Downloading {filename} (attempt N/M)"
