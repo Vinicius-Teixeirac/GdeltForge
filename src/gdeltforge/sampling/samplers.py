@@ -295,7 +295,6 @@ class IndexedSampler:
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
         self.folder = Path(folder_path)
-        self.columns = columns
         parquet_files = sorted(self.folder.glob("*.parquet"))
 
         if historical_folder:
@@ -318,6 +317,25 @@ class IndexedSampler:
 
         self.rng   = ReproducibleRNG(random_state)
         self.index = FileIndex(parquet_files)
+
+        # A genuinely nonexistent --columns name used to reach
+        # pl.read_parquet(file_path, columns=read_columns) unchecked in
+        # get_random_sample below, a projection pushed straight into
+        # polars' own scan; the resulting failure was a raw, unhandled
+        # internal error, including a full query-plan dump, the single
+        # ugliest leak found across a full QA pass. Narrowed here instead
+        # against the real, already-built file index's own schema,
+        # against CalendarSampler's own identical treatment of the same
+        # mistake for its own --columns.
+        self.columns = (
+            set(
+                narrow_to_available_columns(
+                    logger, f"indexed sample dataset in {self.folder}",
+                    columns, set(), set(self.index.schema_names),
+                )
+            )
+            if columns else None
+        )
 
         logger.info(
             f"IndexedSampler: {len(self.index.files)} files, "
