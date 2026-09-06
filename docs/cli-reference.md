@@ -321,8 +321,8 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
 | `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless. Not supported with `--gkg-version auto` |
-| `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto` |
-| `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto` |
+| `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
+| `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--start-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period starts on or after this date. Narrows the configured directories being read, not `--events` |
 | `--end-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period ends on or before this date. Narrows the configured directories being read, not `--events` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
