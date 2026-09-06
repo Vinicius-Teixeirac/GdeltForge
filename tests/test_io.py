@@ -469,6 +469,72 @@ class TestReadParquetPath:
         with pytest.raises(FileNotFoundError, match="does not exist"):
             read_parquet_path(missing)
 
+    def test_reads_files_in_a_hive_partitioned_subdirectory_too(self, tmp_path):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: crossref --events <a real, valid, non-empty Hive-
+        # partitioned historical directory> reported "No parquet files
+        # found", since the directory branch only ever globbed its own
+        # top level, never Year=YYYY/MonthYear=YYYYMM/*.parquet -- the
+        # exact shape converter.partitioning writes for events/events-
+        # reduced, and IndexedSampler's own FileIndex already walks.
+        hist_dir = tmp_path / "Year=2008" / "MonthYear=200801"
+        hist_dir.mkdir(parents=True)
+        pl.DataFrame({"GlobalEventID": [1, 2, 3]}).write_parquet(
+            hist_dir / "200801_filtered.parquet"
+        )
+
+        result = read_parquet_path(tmp_path)
+
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3]
+
+    def test_reads_a_mix_of_flat_and_hive_partitioned_files_together(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        hist_dir = tmp_path / "Year=2008" / "MonthYear=200801"
+        hist_dir.mkdir(parents=True)
+        pl.DataFrame({"GlobalEventID": [3, 4, 5]}).write_parquet(hist_dir / "hist.parquet")
+
+        result = read_parquet_path(tmp_path)
+
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3, 4, 5]
+
+    def test_reconciles_a_narrower_historical_file_with_wider_flat_files(self, tmp_path):
+        # Same root cause as IndexedSampler's own identical fix: a real
+        # accumulated directory can genuinely mix files whose own
+        # physical schema differs (a Hive-partitioned file converted
+        # before a schema fix landed, an output_columns setting narrowed
+        # at one point and widened again later). A plain per-file
+        # pl.read_parquet + pl.concat has no way to tolerate that; this
+        # is the same class of "unable to append to a DataFrame of width
+        # X with a DataFrame of width Y" crash #13 found for --mode
+        # indexed, reachable here too the moment --events points crossref
+        # at a directory mixing both shapes.
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        hist_dir = tmp_path / "Year=2008"
+        hist_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(hist_dir / "hist.parquet")
+
+        result = read_parquet_path(tmp_path)
+
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in result.to_dicts()}
+        assert by_id[1] == 1 and by_id[2] == 2
+        assert by_id[3] is None and by_id[4] is None
+
+    def test_ignores_done_resumability_markers_in_a_nested_historical_directory(
+        self, tmp_path
+    ):
+        hist_dir = tmp_path / "Year=2008"
+        hist_dir.mkdir()
+        f = hist_dir / "hist.parquet"
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(f)
+        mark_done(f, "some-fingerprint")
+        assert (hist_dir / ".hist.parquet.done").exists()
+
+        result = read_parquet_path(tmp_path)
+
+        assert result["GlobalEventID"].to_list() == [1, 2]
+
     def test_empty_directory_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="No parquet files"):
             read_parquet_path(tmp_path)
