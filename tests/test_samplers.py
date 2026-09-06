@@ -116,6 +116,71 @@ class TestIndexedSampler:
         assert len(df) == 5
         assert df["Date"].n_unique() == len(df)
 
+    def test_a_narrower_historical_file_mixed_with_wider_flat_files_no_longer_crashes(
+        self, tmp_path
+    ):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: a genuinely accumulated data directory can hold files
+        # whose own physical schema differs (a Hive-partitioned historical
+        # file converted before a schema fix landed, an output_columns
+        # setting narrowed at one point and widened again later), and
+        # get_random_sample's own per-file pl.read_parquet(columns=...)
+        # read every file at its own physical width with no reconciliation
+        # across files at all, unlike CalendarSampler/FilteredSampler's
+        # single shared scan. Concatenating a full-width flat file's rows
+        # with a much narrower historical file's rows raised a raw
+        # "unable to append to a DataFrame of width X with a DataFrame of
+        # width Y" the moment both were drawn into the same sample.
+        flat_folder = tmp_path / "flat"
+        flat_folder.mkdir()
+        historical_folder = tmp_path / "historical"
+        hist_partition = historical_folder / "Year=2008" / "MonthYear=200801"
+        hist_partition.mkdir(parents=True)
+
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3], "SOURCEURL": ["a", "b", "c"],
+        }).write_parquet(flat_folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [4, 5, 6], "QuadClass": [4, 1, 2], "SOURCEURL": ["d", "e", "f"],
+        }).write_parquet(flat_folder / "b.parquet")
+        # Narrower on purpose: only GlobalEventID, no QuadClass/SOURCEURL,
+        # the same shape a stale historical conversion predating a schema
+        # fix (or an earlier, narrower output_columns run) would leave.
+        pl.DataFrame({"GlobalEventID": [7, 8, 9]}).write_parquet(
+            hist_partition / "200801.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(historical_folder), random_state=1,
+        )
+        df = sampler.get_random_sample(9)
+
+        assert len(df) == 9
+        assert set(df.columns) == {"GlobalEventID", "QuadClass", "SOURCEURL"}
+        assert sorted(df["GlobalEventID"].to_list()) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    def test_missing_columns_in_a_narrower_file_come_back_null_not_dropped(self, tmp_path):
+        flat_folder = tmp_path / "flat"
+        flat_folder.mkdir()
+        historical_folder = tmp_path / "historical" / "Year=2008"
+        historical_folder.mkdir(parents=True)
+
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            flat_folder / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(
+            historical_folder / "hist.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(tmp_path / "historical"), random_state=1,
+        )
+        df = sampler.get_random_sample(4)
+
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in df.to_dicts()}
+        assert by_id[1] == 1 and by_id[2] == 2
+        assert by_id[3] is None and by_id[4] is None
+
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -127,6 +192,37 @@ class TestIndexedSampler:
         df = sampler.get_random_sample(5)
 
         assert list(df.columns) == ["GlobalEventID"]
+
+    def test_columns_restriction_still_works_against_a_file_missing_that_column(
+        self, tmp_path
+    ):
+        # The fix for the width-mismatch crash above changed the read path
+        # from pl.read_parquet(file_path, columns=read_columns) to a
+        # schema-reconciled scan_parquet + select; --columns naming a
+        # column one particular file physically lacks must still resolve
+        # to null for that file's rows rather than raising, the same way
+        # an implicit full read already does.
+        flat_folder = tmp_path / "flat"
+        flat_folder.mkdir()
+        historical_folder = tmp_path / "historical" / "Year=2008"
+        historical_folder.mkdir(parents=True)
+
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            flat_folder / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(
+            historical_folder / "hist.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(tmp_path / "historical"),
+            random_state=1, columns={"GlobalEventID", "QuadClass"},
+        )
+        df = sampler.get_random_sample(4)
+
+        assert set(df.columns) == {"GlobalEventID", "QuadClass"}
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in df.to_dicts()}
+        assert by_id[3] is None and by_id[4] is None
 
     def test_no_columns_arg_returns_everything(self, tmp_path):
         folder = tmp_path / "data"
