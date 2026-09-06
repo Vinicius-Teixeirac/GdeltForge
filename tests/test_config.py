@@ -169,6 +169,18 @@ class TestLoadConfig:
         with pytest.raises(FileNotFoundError, match="not-a-real-file.yaml"):
             load_config(str(self.tmp_path / "not-a-real-file.yaml"))
 
+    def test_explicit_config_path_pointing_at_a_directory_raises_clearly(self):
+        # path.exists() is true for a directory too, so this used to
+        # reach open(path) unchecked, raising a raw, unformatted
+        # "[Errno 21] Is a directory: '...'" straight from the
+        # filesystem, unlike a missing file, an empty file, or invalid
+        # YAML at that same path, all of which get a crafted message.
+        fake_dir = self.tmp_path / "fakedir.yaml"
+        fake_dir.mkdir()
+
+        with pytest.raises(IsADirectoryError, match="fakedir.yaml"):
+            load_config(str(fake_dir))
+
     def test_env_var_is_used_when_config_path_argument_is_none(self, monkeypatch):
         custom = self.tmp_path / "from_env.yaml"
         custom.write_text("columns: {gdelt_event: [GlobalEventID]}\n")

@@ -326,6 +326,18 @@ class IndexedSampler:
 
     def get_random_sample(self, n: int) -> pl.DataFrame:
         """Sample n rows uniformly across all parquet files."""
+        # n==0 and n<0 used to reach self.rng.choice below unchecked: 0
+        # produced an empty per-file split, so no chunk was ever appended
+        # to sampled and pl.concat raised a raw "cannot concat empty
+        # list"; a negative value reached numpy's own random.choice and
+        # raised its raw "negative dimensions are not allowed". Handled
+        # explicitly here instead: 0 is a valid request (FilteredSampler's
+        # own get_random_sample already treats it as a clean, empty
+        # success the same way), a negative one is a real usage error.
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if n == 0:
+            return pl.DataFrame()
         if n > self.index.total_rows:
             raise ValueError("Requested sample size > total available rows")
 
