@@ -25,6 +25,28 @@ class TestMaxWorkersConfig:
         )
         assert filt.max_workers == 2
 
+    def test_zero_raises_immediately_instead_of_a_contradictory_log_sequence(
+        self, tmp_path
+    ):
+        # max_workers: 0 used to reach ProcessPoolExecutor unchecked: 0
+        # is falsy, so the pre-flight "Filtering N flat file(s) ... using
+        # X worker process(es)..." log line's own `self.max_workers or
+        # os.cpu_count()` fallback silently reported the real CPU count
+        # instead, one line before ProcessPoolExecutor's own constructor
+        # raised "max_workers must be greater than 0" against the
+        # original, still-0 value. Checked eagerly here now, before
+        # either ever sees it.
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTFilter(
+                str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=0
+            )
+
+    def test_negative_value_raises_the_same_way_as_zero(self, tmp_path):
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTFilter(
+                str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=-1
+            )
+
 
 class TestFilterSingleFile:
     def test_drops_rows_with_nan_in_checked_columns(self, tmp_path):
