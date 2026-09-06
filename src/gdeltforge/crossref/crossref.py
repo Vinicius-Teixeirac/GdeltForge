@@ -249,23 +249,52 @@ def _dataset(
     return pl.scan_parquet(files, schema=schema, missing_columns="insert")
 
 
-def _validate_columns(columns: set[str] | None, available: list[str]) -> set[str] | None:
+def _validate_columns(
+    columns: set[str] | None, available: list[str], prefix: str
+) -> set[str] | None:
     """
     --columns only ever restricts GKG-side output (see crossref_events_
-    gkg_v1/_v2's own docstrings); GlobalEventID, the events-side join
-    key, is always included in the result regardless, so it's never one
-    of the names --columns itself can restrict to, whether or not this
-    particular run happens to match anything. Named explicitly in the
-    error for that one case: a live comprehensive QA pass repeatedly
-    misread "Invalid columns: {'GlobalEventID'}" as evidence this check
-    was validating against a broken/incomplete schema (a zero-match
-    run's result used to have one, see _empty_crossref_result), when the
-    real reason is simpler and applies on a real, non-empty run just the
-    same, confirmed directly both ways.
+    gkg_v1/_v2's own docstrings). A caller can name a column either way:
+    the raw GKG dataset's own unprefixed name (Date, Tone), the same
+    name config["columns"]["gdelt_gkg_v1"/"gdelt_gkg_v2"] itself uses,
+    or the name that column actually has in crossref's own real output
+    (GKG_Date, GKG_Tone). Both resolve to the same column; only the raw
+    form is passed on to the actual disk scan, since that is what the
+    physical GKG parquet files are called on disk.
+
+    A live comprehensive QA pass built its repro by copying real column
+    names straight out of a completed run's own output file, naturally
+    getting the prefixed form back, since that is what the output
+    itself calls them, and had every single one rejected: this check
+    used to validate only against the raw, unprefixed source schema, a
+    name space that never appears anywhere in crossref's own output, so
+    no name a user could see in their own result file was ever one this
+    check would accept, on any run, matched or not. That pass also
+    established this was never limited to the zero-match case its
+    original report happened to test through, so both forms are
+    resolved here unconditionally, not only when nothing matched.
+
+    GlobalEventID is named explicitly in its own error below because it
+    is the one name that looks like it should qualify (a real column of
+    crossref's own output) but never does: it comes from events_df, not
+    from the GKG-side raw or prefixed name space this check covers, and
+    stays in the result regardless of what --columns requests.
+
+    Returns the resolved set in raw (unprefixed) form, the form the
+    actual scan needs, not necessarily the form the caller passed in.
     """
     if columns is None:
         return None
-    invalid = columns - set(available)
+    available_set = set(available)
+    resolved: set[str] = set()
+    invalid: set[str] = set()
+    for name in columns:
+        if name in available_set:
+            resolved.add(name)
+        elif name.startswith(prefix) and name[len(prefix):] in available_set:
+            resolved.add(name[len(prefix):])
+        else:
+            invalid.add(name)
     if invalid:
         if "GlobalEventID" in invalid:
             raise ValueError(
@@ -275,7 +304,7 @@ def _validate_columns(columns: set[str] | None, available: list[str]) -> set[str
                 f"a valid name to pass to --columns, on any run."
             )
         raise ValueError(f"Invalid columns: {invalid}")
-    return columns
+    return resolved
 
 
 def _require_column(df_columns, name: str, df_desc: str) -> None:
@@ -502,6 +531,15 @@ def crossref_events_gkg_v1(
     GKG-side output columns are prefixed "GKG_" to avoid colliding with
     an identically-named Events column (NumArticles exists on both sides).
 
+    columns (CLI: --columns) restricts GKG-side output. Either naming
+    convention is accepted: config["columns"]["gdelt_gkg_v1"]'s own raw
+    names (Date, Tone), or the prefixed name that column actually has in
+    this function's own output (GKG_Date, GKG_Tone); both resolve to the
+    same column. GlobalEventID is never a valid name here even though it
+    is a real column of the output: it comes from events_df, always
+    stays in the result regardless of columns, and is never part of the
+    GKG-side name space this restricts.
+
     start_date/end_date (CLI: --start-date/--end-date) narrow which files
     in gkg_folder get listed and opened at all, independent of
     events_df; see the module docstring for what this does and doesn't
@@ -519,7 +557,7 @@ def crossref_events_gkg_v1(
         gkg_folder, "GKG 1.0", parse_gdelt_gkg_v1_file_date, start_date, end_date
     )
 
-    columns = _validate_columns(columns, gkg_columns)
+    columns = _validate_columns(columns, gkg_columns, "GKG_")
     requested_columns = columns if columns is not None else set(gkg_columns)
 
     event_id_col = events_df["GlobalEventID"].cast(pl.Int64).cast(pl.Utf8)
@@ -624,6 +662,17 @@ def crossref_events_gkg_v2(
     collapsed row. See docs/crossref-join-semantics.md for real-data
     numbers on how often each of these actually happens.
 
+    columns (CLI: --columns) restricts GKG-side output only; it doesn't
+    reach the Mention_-prefixed bridge fields, which are always carried
+    through in full. Either naming convention is accepted:
+    config["columns"]["gdelt_gkg_v2"]'s own raw names (V2.1DATE,
+    V1.5TONE), or the prefixed name that column actually has in this
+    function's own output (GKG_V2.1DATE, GKG_V1.5TONE); both resolve to
+    the same column. GlobalEventID is never a valid name here even
+    though it is a real column of the output: it comes from events_df,
+    always stays in the result regardless of columns, and is never part
+    of the GKG-side name space this restricts.
+
     on_duplicate_document controls what happens when GKG 2.1 carries more
     than one record for the same V2DOCUMENTIDENTIFIER (a URL crawled more
     than once, e.g. a tag/listing page whose content changed between
@@ -674,7 +723,7 @@ def crossref_events_gkg_v2(
         gkg_v2_folder, "GKG 2.1", parse_gdeltv2_file_date, start_date, end_date
     )
 
-    columns = _validate_columns(columns, gkg_v2_columns)
+    columns = _validate_columns(columns, gkg_v2_columns, "GKG_")
     requested_gkg_columns = columns if columns is not None else set(gkg_v2_columns)
 
     event_id_col = events_df["GlobalEventID"].cast(pl.Int64)
