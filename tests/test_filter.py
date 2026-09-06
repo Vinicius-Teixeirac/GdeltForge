@@ -85,12 +85,19 @@ class TestFilterSingleFile:
         result = pl.read_parquet(out_path)
         assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3]
 
-    def test_configured_columns_all_missing_still_skips_writing(self, tmp_path, caplog):
+    def test_configured_columns_all_missing_raises_instead_of_a_silent_success(
+        self, tmp_path
+    ):
         # Distinct from the empty-columns_to_check case above: here the
         # caller actually configured filter columns, and none of them
         # exist in this file's schema, a real signal something's
-        # misconfigured (e.g. a typo), not a no-op. Must still bail out
-        # without writing, same as before this fix.
+        # misconfigured (e.g. a typo), not a no-op. This used to log an
+        # ERROR and return as though the file had been filtered
+        # successfully, at 100% retention, with no output written; a
+        # caller working only from the returned counts (as filter_all_
+        # files does) had no way to tell that apart from a genuine,
+        # correctly-checked file. It now raises, so filter_all_files
+        # counts this file as failed rather than processed.
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -98,12 +105,11 @@ class TestFilterSingleFile:
 
         filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
         out_path = tmp_path / "out" / "data_filtered.parquet"
-        with caplog.at_level("ERROR"):
-            rows_before, rows_after = filt.filter_single_file(src, out_path)
 
-        assert (rows_before, rows_after) == (2, 2)
+        with pytest.raises(ValueError, match="none of the configured columns_to_check"):
+            filt.filter_single_file(src, out_path)
+
         assert not out_path.exists()
-        assert any("None of the filter columns exist" in r.message for r in caplog.records)
 
     def test_empty_file_returns_zero_zero(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -163,6 +169,22 @@ class TestFilterAllFiles:
 
         assert processed == 0
         assert failed == 1
+
+    def test_counts_an_all_invalid_columns_to_check_file_as_failed(self, tmp_path):
+        # Batch-level version of TestFilterSingleFile's equivalent test:
+        # this used to be indistinguishable, at the filter_all_files
+        # level, from a file that was genuinely and correctly filtered,
+        # counted under "processed" at 100% retention with a 0 exit code
+        # despite the ERROR logged for it.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "data.parquet", {"GlobalEventID": [1, 2]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
+        processed, failed = filt.filter_all_files()
+
+        assert (processed, failed) == (0, 1)
+        assert not (tmp_path / "out" / "data_filtered.parquet").exists()
 
     def test_one_corrupt_file_does_not_abort_the_others(self, tmp_path):
         # Now that files run across a worker pool (see TestMaxWorkersConfig),
@@ -648,9 +670,15 @@ class TestOutputColumns:
         result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID", "QuadClass"]
 
-    def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(self, tmp_path):
+    def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(
+        self, tmp_path, caplog
+    ):
         # Mirrors columns_to_check's existing/missing split: schema drift
         # (a column absent from one file) shouldn't crash the whole run.
+        # This used to drop DoesNotExist with no trace at any log level;
+        # a warning naming it now fires, matching narrow_to_available_
+        # columns' own treatment of the same mistake in sample/crossref,
+        # so a real typo here is no longer silently, permanently invisible.
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -661,10 +689,31 @@ class TestOutputColumns:
             output_columns=["GlobalEventID", "DoesNotExist"],
         )
         out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        with caplog.at_level("WARNING"):
+            filt.filter_single_file(src, out_path)
 
         result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID"]
+        assert any(
+            "output_columns" in r.message and "DoesNotExist" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_when_every_output_column_exists(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            output_columns=["GlobalEventID", "QuadClass"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        with caplog.at_level("WARNING"):
+            filt.filter_single_file(src, out_path)
+
+        assert not any("output_columns" in r.message for r in caplog.records)
 
     def test_row_filtering_is_unaffected_by_column_projection(self, tmp_path):
         # Row-drop decisions must still be based on columns_to_check even
