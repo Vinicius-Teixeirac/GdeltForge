@@ -240,6 +240,30 @@ class TestCalendarSampler:
         assert not df.is_empty()
         assert "Day" in df.columns
 
+    def test_a_genuinely_nonexistent_column_is_dropped_with_a_warning_not_a_crash(
+        self, tmp_path, caplog
+    ):
+        # CalendarSampler's own _batches goes through the identical
+        # narrow_to_available_columns call IndexedSampler's equivalent
+        # test in TestIndexedSampler now exercises; this pins that
+        # calendar mode gets the same warn-and-drop treatment, not a
+        # separate, untested path that happens to share the same helper
+        # today.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(6), "Day": [20200101] * 6,
+        }).write_parquet(folder / "a.parquet")
+
+        with caplog.at_level(logging.WARNING):
+            sampler = CalendarSampler(
+                str(folder), random_state=1, columns={"GlobalEventID", "ThisColumnIsFake"}
+            )
+            df = sampler.get_calendar_samples(samples_per_period=3)
+
+        assert set(df.columns) == {"GlobalEventID", "Day"}
+        assert any("ThisColumnIsFake" in r.message for r in caplog.records)
+
     def test_date_column_can_be_overridden_for_non_events_schemas(self, tmp_path):
         # Events uses "Day"; other GDELT datasets (GKG, Mentions) use a
         # differently-named date field, so the grouping column must be
