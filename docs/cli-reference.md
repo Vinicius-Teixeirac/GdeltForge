@@ -320,7 +320,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/filter output directly); `.done` resumability markers in it are ignored |
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
-| `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless. Not supported with `--gkg-version auto` |
+| `--columns COL [COL ...]` | Restrict GKG-side output to these columns, named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
 | `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--start-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period starts on or after this date. Narrows the configured directories being read, not `--events` |
@@ -342,6 +342,14 @@ Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure ra
 gdeltforge sample --dataset events --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
 gdeltforge crossref --events us_events.parquet --gkg-version v2 --out us_events_enriched.parquet
 ```
+
+Restricting GKG-side output with `--columns` accepts either the raw source name or the prefixed name the column actually ends up with:
+
+```bash
+gdeltforge crossref --events us_events.parquet --gkg-version v2 --columns V1THEMES GKG_V1.5TONE --out us_events_themes_tone.parquet
+```
+
+`V1THEMES` and `GKG_V1.5TONE` above resolve to the same underlying columns as the raw `config["columns"]["gdelt_gkg_v2"]` and the prefixed `GKG_V1.5TONE` output name would, respectively; mixing the two conventions in one `--columns` call is fine.
 
 For a sample spanning the 2013-2015 window specifically (see [Recipes](recipes.md) for the full worked example):
 
