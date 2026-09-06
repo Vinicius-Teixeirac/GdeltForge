@@ -10,6 +10,16 @@ from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Columns genuinely typed String whose real values look like plain
+# integers, leading zeros meaningful ("020", "07"), found via a live
+# comprehensive QA pass: a CSV export of these silently loses the leading
+# zero on a standard read-back, since a reader's default type inference
+# goes by the field's content, not by whether the writer quoted it (see
+# write_dataframe_atomic's own comment for why quoting alone doesn't fix
+# this). Scoped to what's actually been found broken; extend this if
+# another zero-padded string column is confirmed to have the same risk.
+_KNOWN_ZERO_PADDED_STRING_COLUMNS = frozenset({"EventCode", "EventBaseCode", "EventRootCode"})
+
 
 def ensure_exists(path: str | Path, description: str) -> Path:
     """Ensure the given folder exists; raise helpful error if not."""
@@ -125,6 +135,39 @@ def write_dataframe_atomic(
         logger.warning(
             f"Found a leftover incomplete file from a previous interrupted "
             f"run: {tmp_path}. It will be overwritten."
+        )
+
+    # quote_style="non_numeric" (a caller-passed kwarg still overrides it):
+    # protects a string column value containing a comma, newline, or quote
+    # character regardless, and costs nothing for the ordinary case. It
+    # does NOT, on its own, fix the actual bug found via a live
+    # comprehensive QA pass: EventCode/EventBaseCode/EventRootCode are
+    # zero-padded strings ("020", "07") in the parquet source, and a
+    # standard CSV read with default type inference silently reads an
+    # unquoted-looking numeric field as an integer, dropping the leading
+    # zero. Quoting the field in the written file does not change that:
+    # confirmed directly, polars' own read_csv (the tool this pipeline's
+    # own output is most likely to be re-read with) still infers Int64
+    # from a quoted "020" and drops the zero exactly the same way,
+    # because its default schema inference decides by the field's
+    # content, not by whether the source quoted it. There is no write-side
+    # CSV setting that fixes a reader's own default inference, so the
+    # warning below names the real limitation and the concrete read-back
+    # fix instead of claiming one that does not actually hold.
+    kwargs.setdefault("quote_style", "non_numeric")
+
+    zero_padded_present = _KNOWN_ZERO_PADDED_STRING_COLUMNS & set(df.columns)
+    if zero_padded_present:
+        cols = sorted(zero_padded_present)
+        overrides = ", ".join(f'"{c}": pl.Utf8' for c in cols)
+        logger.warning(
+            f"{out} includes zero-padded numeric-looking string column(s) "
+            f"{', '.join(cols)}. A standard CSV read with default type "
+            f"inference, including polars' own read_csv, reads these back "
+            f"as an integer and drops the leading zero; quoting the "
+            f"written field does not prevent this. Read back with "
+            f"pl.read_csv(path, schema_overrides={{{overrides}}}) to "
+            f"preserve the original string values."
         )
 
     try:
