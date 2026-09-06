@@ -202,6 +202,26 @@ _EVENT_REDUCED_CHUNK_SIZE = 500_000
 # real file per dataset, not assumed from the codebook/parser source alone.
 _DATASETS_WITH_HEADER_ROW = frozenset({"gdelt_gkg_v1", "gdelt_gkg_v1_counts"})
 
+# gdelt_event's monthly/yearly archive (pre-April-2013, before the daily
+# cadence starts) is a genuinely older, narrower schema, not the same 58
+# columns as the modern daily files: SOURCEURL was added to GDELT's export
+# later and is simply absent from these files' own trailing field, real
+# monthly/yearly files confirmed to have exactly 57 tab-separated columns,
+# ending on what would be DATEADDED. Reading them with columns.gdelt_event's
+# full 58-name list unmodified means the last requested column position
+# (57, 0-indexed) doesn't exist in the file at all, raising a raw
+# "projection index: 57 is out of bounds for csv schema with length: 57"
+# with no indication it's a schema-vintage mismatch. Found via a live
+# comprehensive QA pass against real 2005 (yearly) and 2008-01 (monthly)
+# archives, both downloaded and confirmed live.
+#
+# Keyed by dataset, since this is specific to gdelt_event's own schema
+# history, not a general "historical files are narrower" rule; nothing
+# else in this pipeline has been found to vary by vintage this way.
+_HISTORICAL_MISSING_COLUMNS: dict[str, tuple[str, ...]] = {
+    "gdelt_event": ("SOURCEURL",),
+}
+
 
 class GDELTConverter:
     """
@@ -670,11 +690,14 @@ class GDELTConverter:
         # name: the real yearly/monthly historical shape this partitioning
         # exists for is a scrape artifact (1979.zip, 200601.zip), not
         # something a bare .csv input is expected to represent.
-        file_type = (
-            self._detect_file_type(zip_p.name)
-            if self._partitioning_enabled
-            else "flat"
-        )
+        # Detected unconditionally, independent of _partitioning_enabled
+        # below: a monthly/yearly gdelt_event file's real schema (see
+        # _HISTORICAL_MISSING_COLUMNS) doesn't depend on whether the user
+        # has opted into Hive-partitioned output for it, only on the
+        # file's own actual vintage.
+        detected_type = self._detect_file_type(zip_p.name)
+
+        file_type = detected_type if self._partitioning_enabled else "flat"
         partition_rule = (
             self._partition_rule_for(file_type) if self._partitioning_enabled else None
         )
@@ -703,7 +726,7 @@ class GDELTConverter:
                 continue
 
             try:
-                df = self._read_csv(csv_path)
+                df = self._read_csv(csv_path, file_type=detected_type)
                 if df.is_empty():
                     continue
 
@@ -883,7 +906,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # READ CSV
     # ------------------------------------------------------------
-    def _read_csv(self, csv_path: str | Path) -> pl.DataFrame:
+    def _read_csv(self, csv_path: str | Path, file_type: str = "flat") -> pl.DataFrame:
         # has_header=True + new_columns=... together mean "the first line
         # is a real header, skip it, then use our own names instead of
         # its literal text" (confirmed directly: new_columns renames past
@@ -891,15 +914,28 @@ class GDELTConverter:
         # all" (that's has_header=False).
         has_header = self.dataset in _DATASETS_WITH_HEADER_ROW
 
-        # usecols must reference names from the full COLUMN_NAMES list
-        # (position -> name is COLUMN_NAMES' own order, header or not),
-        # and drops any configured name that isn't actually one of this
-        # dataset's columns rather than erroring, matching how
-        # columns_to_check/output_columns are handled elsewhere in the
-        # pipeline. Passed to read_csv as integer positions (not the
-        # names themselves): confirmed directly that selecting by
-        # position at parse time, rather than reading every column and
-        # projecting down afterward, is what makes polars skip
+        # A monthly/yearly gdelt_event file genuinely lacks the columns in
+        # _HISTORICAL_MISSING_COLUMNS (SOURCEURL); reading it against the
+        # full column list would request a position past the real file's
+        # last one. missing_columns is only ever non-empty for that one
+        # dataset/file_type combination, everything else reads its full
+        # declared schema exactly as before.
+        missing_columns = (
+            _HISTORICAL_MISSING_COLUMNS.get(self.dataset, ())
+            if file_type in ("monthly", "yearly")
+            else ()
+        )
+        readable_columns = [c for c in self.COLUMN_NAMES if c not in missing_columns]
+
+        # usecols must reference names from readable_columns (position ->
+        # name is its own order, header or not, matching what's actually
+        # in the file for this vintage), and drops any configured name
+        # that isn't actually one of this dataset's columns rather than
+        # erroring, matching how columns_to_check/output_columns are
+        # handled elsewhere in the pipeline. Passed to read_csv as integer
+        # positions (not the names themselves): confirmed directly that
+        # selecting by position at parse time, rather than reading every
+        # column and projecting down afterward, is what makes polars skip
         # allocating/decoding the dropped columns at all, the same
         # optimization pandas' own usecols gave GKG 2.1's expensive
         # free-text fields under output_columns. It also happens to be
@@ -911,11 +947,11 @@ class GDELTConverter:
         # case, kept below for that real, verified hazard in this
         # project's own downloaded data).
         usecols = (
-            [c for c in self.output_columns if c in self.COLUMN_NAMES]
+            [c for c in self.output_columns if c in readable_columns]
             if self.output_columns is not None
-            else self.COLUMN_NAMES
+            else readable_columns
         )
-        positions = [self.COLUMN_NAMES.index(c) for c in usecols]
+        positions = [readable_columns.index(c) for c in usecols]
 
         read_kwargs = {
             "separator": "\t",
@@ -1012,6 +1048,21 @@ class GDELTConverter:
         ]
         if cast_exprs:
             df = df.with_columns(cast_exprs)
+
+        # A column skipped above because this vintage's real file doesn't
+        # have it (missing_columns) still gets added back as an all-null
+        # column when it was actually requested (output_columns unset, or
+        # explicitly naming it): a caller comparing a modern and a
+        # historical gdelt_event file's schema sees the same columns
+        # either way, with the historical row's genuine absence of data
+        # represented as null rather than the column not existing at all.
+        columns_to_add_back = [
+            c for c in missing_columns
+            if (self.output_columns is None or c in self.output_columns) and c not in df.columns
+        ]
+        if columns_to_add_back:
+            null_exprs = [pl.lit(None, dtype=pl.Utf8).alias(c) for c in columns_to_add_back]
+            df = df.with_columns(null_exprs)
 
         return df
 
