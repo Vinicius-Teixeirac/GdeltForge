@@ -438,6 +438,39 @@ class TestCrossrefEventsGkgV1:
         result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
         assert result.is_empty()
 
+    def test_no_matches_still_carries_the_real_target_schema(self, tmp_path):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: a zero-match run used to return a bare pl.DataFrame(),
+        # (0, 0), not the join's own real target schema at zero rows. A
+        # scripted pipeline processing one day at a time (a genuinely
+        # quiet news day, a narrow --filter, a real coverage gap) writes
+        # that (0, 0) result out with no columns at all, a much worse
+        # citizen for any downstream tool than a 0-row file with the
+        # right columns.
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+
+        result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
+
+        assert result.columns == [
+            "GlobalEventID", "NumArticles",
+            "GKG_Date", "GKG_EventIds", "GKG_NumArticles", "GKG_Themes",
+        ]
+        assert result.schema["GKG_Date"] == pl.Int64
+        assert result.schema["GKG_Themes"] == pl.String
+
+    def test_no_matches_schema_respects_an_explicit_columns_restriction(self, tmp_path):
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+
+        result = crossref_events_gkg_v1(
+            events_df, folder, GKG_V1_COLUMNS, columns={"Themes"}
+        )
+
+        # EventIds is always kept regardless (the join key), Themes is
+        # the one requested optional column; Date/NumArticles are not.
+        assert set(result.columns) == {"GlobalEventID", "NumArticles", "GKG_EventIds", "GKG_Themes"}
+
     def test_warns_when_some_events_predate_gkg_v1_coverage(self, tmp_path, caplog):
         # Event 1001 (real match, DATEADDED within coverage) must still
         # join normally alongside event 1002 (pre-coverage, gets warned
@@ -924,6 +957,59 @@ class TestCrossrefEventsGkgV2:
         events_df = pl.DataFrame({"GlobalEventID": [424242]})
         result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
         assert result.is_empty()
+
+    def test_no_matching_mentions_still_carries_the_real_target_schema(self, tmp_path):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: a zero-match run used to return a bare pl.DataFrame(),
+        # (0, 0), not the join's own real target schema (events columns +
+        # Mention_/GKG_-prefixed columns) at zero rows. This hop (no event
+        # in the Mentions bridge at all) is the earliest of four separate
+        # "nothing matched" points in this function, all of which used to
+        # hit the same bare-empty-frame bug.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "Actor1Name": ["Nobody"]})
+
+        result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
+
+        assert set(result.columns) == {
+            "GlobalEventID", "Actor1Name",
+            "Mention_MentionTimeDate", "Mention_Confidence",
+            "GKG_V2DOCUMENTIDENTIFIER", "GKG_GKGRECORDID", "GKG_V1THEMES",
+        }
+        assert result.schema["GKG_GKGRECORDID"] == pl.String
+
+    def test_no_matching_gkg_side_still_carries_the_real_target_schema(self, tmp_path):
+        # A later hop than the one above: this event genuinely appears in
+        # Mentions (so hop 1 succeeds), but the article it's mentioned in
+        # was never actually crawled into GKG 2.1 at all, so hop 2 finds
+        # nothing. A separate, later "nothing matched" point from the one
+        # above, and the fix has to cover both.
+        folder = tmp_path / "mentions"
+        folder.mkdir()
+        pl.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionIdentifier": ["http://never-crawled.example/article"],
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS)
+
+        assert result.is_empty()
+        assert "GKG_GKGRECORDID" in result.columns
+        assert "GKG_V1THEMES" in result.columns
+
+    def test_no_matches_schema_includes_mention_count_when_deduping(self, tmp_path):
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242]})
+
+        result = crossref_events_gkg_v2(
+            events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS, dedupe_mentions=True
+        )
+
+        assert result.is_empty()
+        assert result.schema["Mention_Count"] == pl.UInt32
 
     def test_warns_when_some_events_predate_gdelt_2_coverage(self, tmp_path, caplog):
         # Event 2001 (real match, DATEADDED within coverage) must still
@@ -1479,6 +1565,51 @@ class TestCrossrefEventsGkgAuto:
         assert any(
             "1 of 1" in r.message and "20130401" in r.message for r in caplog.records
         )
+
+    def test_no_eligible_events_at_all_still_carries_the_full_combined_schema(
+        self, tmp_path
+    ):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: every sampled event predating GKG_V1_COVERAGE_START, so
+        # eligible_events itself is entirely empty, used to fall through
+        # to a bare pl.DataFrame(), (0, 0), rather than the union of both
+        # paths' own real target schemas at zero rows, the same class of
+        # bug fixed for crossref_events_gkg_v1/_v2 directly.
+        paths = self._paths(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [999], "DATEADDED": [20100101]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert set(result.columns) == {
+            "GlobalEventID", "DATEADDED", "CrossrefSource",
+            "GKG_Date", "GKG_EventIds", "GKG_Themes",
+            "GKG_V2DOCUMENTIDENTIFIER", "GKG_V1THEMES",
+        }
+
+    def test_a_path_that_matches_nothing_still_contributes_its_own_columns(
+        self, tmp_path
+    ):
+        # An event eligible for both generations but that only actually
+        # matches through GKG 1.0: the v2 path used to be skipped from
+        # the concat entirely once it came back as a bare, columnless
+        # pl.DataFrame(), silently dropping v2's own GKG_/Mention_ column
+        # names from the final result's schema even though the v1 row
+        # itself is real and correct.
+        paths = self._paths(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert len(result) == 1
+        assert result["CrossrefSource"][0] == "v1"
+        assert "GKG_V2DOCUMENTIDENTIFIER" in result.columns
+        assert "GKG_V1THEMES" in result.columns
 
     def test_partial_pre_coverage_still_routes_the_valid_events(self, tmp_path, caplog):
         paths = self._paths(tmp_path)
