@@ -6,6 +6,12 @@ from pathlib import Path
 import polars as pl
 import pyarrow as pa
 
+# polars genuinely exports this type alias at runtime, under a
+# private-looking module name; matches converter.py's own identical
+# ParquetCompression import, covered by this project's own
+# reportPrivateImportUsage = false.
+from polars._typing import PolarsDataType
+
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -137,7 +143,7 @@ def write_dataframe_atomic(
 
 def read_parquet_path(path: str | Path) -> pl.DataFrame:
     """
-    Read a single Parquet file, or every Parquet file directly in a
+    Read a single Parquet file, or every Parquet file anywhere under a
     directory, concatenated into one DataFrame. A directory is globbed to
     *.parquet explicitly rather than handed to polars as-is: convert and
     filter's own resumability markers (mark_done above writes them as a
@@ -152,16 +158,45 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     produced but still a failure. The explicit *.parquet glob here avoids
     the question either way, by construction rather than by relying on
     whichever behavior the current engine happens to have.
+
+    Globbed recursively (rglob), not just the directory's own top level:
+    found via a live comprehensive QA pass, crossref --events <dir>
+    reported "No parquet files found" against a real, valid, non-empty
+    Hive-partitioned historical directory (Year=YYYY/MonthYear=YYYYMM/
+    *.parquet), the exact directory shape converter.partitioning writes
+    for events/events-reduced and IndexedSampler's own FileIndex already
+    walks. A flat, non-nested directory's own files are still found the
+    same way as before, one level down being the trivial case of
+    "anywhere under."
+
+    Files are read through a per-file union schema with missing_columns=
+    "insert", the same reconciliation IndexedSampler's own get_random_
+    sample and CalendarSampler/FilteredSampler's shared _scan_dataset
+    already apply: a real accumulated directory mixing flat and
+    historical files can genuinely disagree on physical schema (a
+    Hive-partitioned file converted before a schema fix landed, an
+    output_columns setting narrowed at one point and widened again
+    later), and a plain per-file pl.read_parquet followed by pl.concat
+    has no way to tolerate that, raising a raw "unable to append to a
+    DataFrame of width X with a DataFrame of width Y" the moment two
+    such files are both pulled into --events.
     """
     p = Path(path)
     if not p.is_dir():
         return pl.read_parquet(p)
 
-    files = sorted(p.glob("*.parquet"))
+    files = sorted(p.rglob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
-        return pl.concat([pl.read_parquet(f) for f in files])
+        schema: dict[str, PolarsDataType] = {}
+        for f in files:
+            for name, dtype in pl.read_parquet_schema(f).items():
+                schema.setdefault(name, dtype)
+        return pl.concat(
+            pl.scan_parquet(f, schema=schema, missing_columns="insert").collect()
+            for f in files
+        )
 
 
 def _fingerprint_value(value: object) -> str:
