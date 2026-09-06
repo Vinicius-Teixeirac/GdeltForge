@@ -559,6 +559,89 @@ class TestFilteredSamplerValidation:
             sampler.filter_dataset()
 
 
+class TestFilterValueTypeMismatch:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: none of the filtered-sampling DSL's operators checked that
+    a --filter value's type actually matched its target column's real
+    dtype before pushing the comparison into the scan. equals/gt/lt/
+    between all raised polars' own ComputeError ("cannot compare string
+    with numeric type"), which the surrounding clearer_dataset_errors
+    wrapper (correctly, for a genuinely corrupt or non-parquet file)
+    rewrote into "the file might be corrupt, try removing or
+    re-fetching it", actively blaming an innocent, correctly-written
+    data file for a mistake in the --filter argument itself. in_list
+    raised a different exception that wrapper doesn't catch at all, so
+    it reached the user as a completely raw, unformatted internal trace
+    including a full query-plan dump. All four are now checked up front,
+    against the real scanned schema, before any of that ever runs."""
+
+    def test_between_with_string_bounds_on_a_numeric_column(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"GoldsteinScale": {"op": "between", "min": "a", "max": "z"}},
+        )
+        with pytest.raises(ValueError, match="'GoldsteinScale' is numeric"):
+            sampler.get_random_sample(2)
+
+    def test_equals_with_a_string_value_on_a_numeric_column(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"NumArticles": {"op": "equals", "value": "notanumber"}},
+        )
+        with pytest.raises(ValueError, match="'NumArticles' is numeric"):
+            sampler.filter_dataset()
+
+    def test_gt_with_a_numeric_value_on_a_string_column(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"Actor1CountryCode": {"op": "gt", "value": 5}},
+        )
+        with pytest.raises(ValueError, match="'Actor1CountryCode' is a string column"):
+            sampler.filter_dataset()
+
+    def test_in_list_with_string_values_on_a_numeric_column(self, tmp_path):
+        # The worst of the four before this fix: in_list's own
+        # InvalidOperationError wasn't caught by clearer_dataset_errors
+        # at all, so it reached the user as a raw, unformatted internal
+        # trace rather than even the (wrongly attributed) corrupt-file
+        # message the other three operators got.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"NumArticles": {"op": "in_list", "values": ["x", "y"]}},
+        )
+        with pytest.raises(ValueError, match="'NumArticles' is numeric"):
+            sampler.filter_dataset()
+
+    def test_a_correctly_typed_filter_is_unaffected(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"GoldsteinScale": {"op": "between", "min": -10.0, "max": 10.0}},
+        )
+        df = sampler.filter_dataset()
+
+        assert len(df) == 6
+
+
 def _make_pruned_dataset(folder):
     """The same rows _make_dataset writes, but as convert/filter's own
     output_columns pruning would leave them: fewer columns than

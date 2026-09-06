@@ -772,6 +772,97 @@ class FilteredSampler:
 
         raise ValueError(f"Invalid condition for {column}: {cond}")
 
+    @staticmethod
+    def _condition_operands(cond: Any) -> list[Any]:
+        """
+        Every literal value a condition would actually compare against
+        the column, mirroring _expr_for_condition's own operand
+        extraction exactly, so _validate_filter_value_types below checks
+        precisely what polars would otherwise be asked to evaluate.
+        """
+        if isinstance(cond, (str, int, float, bool)):
+            return [cond]
+        if isinstance(cond, list):
+            return list(cond)
+        if isinstance(cond, tuple) and len(cond) == 2:
+            return list(cond)
+        if isinstance(cond, dict):
+            op = cond.get("op")
+            if op == FilterType.EQUALS.value:
+                return [cond.get("value")]
+            if op == FilterType.IN_LIST.value:
+                return list(cond.get("values", []))
+            if op in (FilterType.GREATER_THAN.value, FilterType.LESS_THAN.value):
+                return [cond.get("value")]
+            if op in (FilterType.RANGE.value, FilterType.BETWEEN.value):
+                return [cond.get("min"), cond.get("max")]
+        return []
+
+    def _validate_filter_value_types(self, schema: dict[str, pl.DataType]) -> None:
+        """
+        Reject a --filter value whose type plainly can't match the real
+        column it's compared against (a string bound on a numeric
+        column, a numeric value against a string column) before the
+        expression this builds ever reaches the scan below.
+
+        Found via a live QA pass: every operator eventually raised
+        *something*, but never anything that named the actual problem.
+        equals/gt/lt/between all raised polars' own ComputeError
+        ("cannot compare string with numeric type"), which _batches'
+        clearer_dataset_errors wrapper (correctly, for a real corrupt or
+        non-parquet file) rewrites into "the file might be
+        corrupt, try removing or re-fetching it", actively blaming an
+        innocent, correctly-written data file for a mistake in the
+        --filter argument itself. in_list raised a different exception
+        (InvalidOperationError) that wrapper doesn't catch at all, so it
+        reached the user as a completely raw, unformatted internal trace
+        (a full query-plan dump) instead. Checked here, once, up front,
+        against the real scanned schema (already read by _needed_columns'
+        own caller, see there for why this is a real necessity, not
+        every declared column is guaranteed to survive an earlier
+        convert/filter's own output_columns pruning), all four operators
+        get one identical, correctly-attributed error instead of three
+        different, all-unsatisfying ones.
+
+        A column missing from the real schema entirely is intentionally
+        skipped here; narrow_to_available_columns' own required-column
+        check (called right after this, in _needed_columns) already
+        raises its own clear error for that separately.
+        """
+        def walk(block: dict[str, Any]) -> None:
+            for key, val in block.items():
+                if key in ("AND", "OR"):
+                    if isinstance(val, dict):
+                        walk(val)
+                    continue
+
+                dtype = schema.get(key)
+                if dtype is None:
+                    continue
+
+                operands = self._condition_operands(val)
+                if dtype.is_numeric():
+                    bad = [v for v in operands if isinstance(v, str)]
+                    if bad:
+                        raise ValueError(
+                            f"--filter: column {key!r} is numeric ({dtype}), but "
+                            f"the filter value(s) {bad} are string(s). Check the "
+                            f"--filter argument."
+                        )
+                elif dtype == pl.Utf8:
+                    bad = [
+                        v for v in operands
+                        if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    ]
+                    if bad:
+                        raise ValueError(
+                            f"--filter: column {key!r} is a string column "
+                            f"({dtype}), but the filter value(s) {bad} are "
+                            f"numeric. Check the --filter argument."
+                        )
+
+        walk(self.filter_dict)
+
     # ---------- recursive builder: filter_dict -> polars expression ----------
     def _build_expression(
         self, block: dict[str, Any], _join_with: str = "AND"
@@ -856,7 +947,15 @@ class FilteredSampler:
         # before _batches ever does, so a corrupt/non-parquet file needs
         # the same clear error here too, not a bare arrow one.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            available = set(self._dataset().collect_schema().names())
+            schema = self._dataset().collect_schema()
+
+        # Checked against the real schema, before _batches ever runs: see
+        # _validate_filter_value_types' own docstring for why a --filter
+        # type mismatch must be caught here rather than left to surface
+        # from inside the scan below.
+        self._validate_filter_value_types(schema)
+
+        available = set(schema.names())
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
         return narrow_to_available_columns(
             logger, f"filtered sample dataset in {self.folder}", self.columns, required, available
