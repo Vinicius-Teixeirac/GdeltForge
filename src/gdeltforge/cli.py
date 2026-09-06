@@ -879,8 +879,10 @@ def build_parser() -> argparse.ArgumentParser:
     crossref.add_argument(
         "--columns",
         nargs="*",
-        help="Restrict GKG-side output to these columns; cuts I/O and memory. The join key "
-             "column is always included regardless. Not supported with --gkg-version auto"
+        help="Restrict GKG-side output to these columns; cuts I/O and memory. Takes either "
+             "the raw GKG column name (Date, Tone) or the prefixed name it has in this "
+             "command's own output (GKG_Date, GKG_Tone), never GlobalEventID, the join key "
+             "column, always included regardless. Not supported with --gkg-version auto"
     )
     crossref.add_argument(
         "--on-duplicate-document",
