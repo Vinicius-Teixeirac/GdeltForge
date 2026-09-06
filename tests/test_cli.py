@@ -103,6 +103,20 @@ class TestExportFormatFlag:
                  "--export-format", "feather"]
             )
 
+    def test_help_names_read_csv_export_for_both_commands(self):
+        # A live comprehensive QA pass tested the CSV round-trip fix only
+        # through a bare pl.read_csv call, missing that gdeltforge's own
+        # read_csv_export is the actual fix; --help is the one place a
+        # user is most likely to see this without reading the full docs.
+        parser = cli.build_parser()
+        subparsers_action = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        )
+
+        for command in ("sample", "crossref"):
+            help_text = subparsers_action.choices[command].format_help()
+            assert "read_csv_export" in help_text
+
 
 class TestOutPathForExportFormat:
     def test_parquet_is_a_no_op_on_a_parquet_path(self):
