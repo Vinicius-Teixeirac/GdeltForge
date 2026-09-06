@@ -78,12 +78,18 @@ Provides:
     - crossref_events_gkg_auto
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import Path
 from typing import Literal
 
 import polars as pl
+
+# polars genuinely exports this type alias at runtime, under a
+# private-looking module name; matches converter.py's own identical
+# ParquetCompression import, covered by this project's own
+# reportPrivateImportUsage = false.
+from polars._typing import PolarsDataType
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import (
@@ -255,6 +261,48 @@ def _validate_columns(columns: set[str] | None, available: list[str]) -> set[str
 def _require_column(df_columns, name: str, df_desc: str) -> None:
     if name not in df_columns:
         raise ValueError(f"{df_desc} must include a {name!r} column")
+
+
+def _empty_crossref_result(
+    events_df: pl.DataFrame,
+    *prefixed_groups: tuple[pl.Schema, list[str], str],
+    extra: Mapping[str, PolarsDataType] | None = None,
+) -> pl.DataFrame:
+    """
+    An empty (0-row) result carrying the exact schema a real match would
+    have produced, for every one of crossref_events_gkg_v1/_v2/_auto's
+    own "nothing matched at this hop" early returns.
+
+    Found via a live comprehensive QA pass: those returned a bare
+    pl.DataFrame(), (0, 0), the moment any join hop found nothing,
+    whether because the sample genuinely has no matches (a narrow
+    --filter, a real coverage gap) or the whole run got no data at all
+    (a --start-date/--end-date narrowing GKG/Mentions to nothing).
+    Reasonable on its own only as long as nothing downstream ever
+    inspects the result's own schema: writing it out and reading it back
+    (a scripted pipeline processing one day at a time, hitting a
+    genuinely quiet news day) gets a Parquet file with zero columns
+    instead of the join's real target schema at zero rows, a much worse
+    citizen for any tool expecting a stable schema regardless of match
+    count.
+
+    prefixed_groups names each GKG-side (or Mentions-bridge-side) group
+    of columns that would have been prefixed into the real result: a
+    (schema, columns, prefix) tuple per hop, e.g. (gkg_schema,
+    read_columns, "GKG_"). Each already-computed schema (a cheap,
+    metadata-only pl.LazyFrame.collect_schema(), not a real data read)
+    is looked up for its own real dtype per column, so the empty result
+    is schema-identical to a real match, not just column-name-identical.
+    extra covers a real column a hop can add without a prefixed source
+    of its own, namely v2's Mention_Count when dedupe_mentions is set.
+    """
+    schema: dict[str, PolarsDataType] = dict(events_df.schema)
+    for source_schema, cols, prefix in prefixed_groups:
+        for c in cols:
+            schema[f"{prefix}{c}"] = source_schema[c]
+    if extra:
+        schema.update(extra)
+    return pl.DataFrame(schema=schema)
 
 
 def warn_if_output_columns_drops_join_key(
@@ -465,6 +513,7 @@ def crossref_events_gkg_v1(
     # collection.
     with clearer_dataset_errors(f"GKG 1.0 dataset in {gkg_folder}"):
         lf = _dataset(gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date)
+        gkg_schema = lf.collect_schema()
         # requested_columns defaults to this dataset's full declared
         # schema when the caller doesn't pass --columns, which isn't the
         # same thing as what this scan's real, already-opened files
@@ -475,7 +524,7 @@ def crossref_events_gkg_v1(
         # error, is what makes that pruning and this join coexist.
         read_columns = narrow_to_available_columns(
             logger, f"GKG 1.0 dataset in {gkg_folder}",
-            requested_columns, {"EventIds"}, set(lf.collect_schema().names()),
+            requested_columns, {"EventIds"}, set(gkg_schema.names()),
         )
         lf = lf.select(read_columns)
 
@@ -522,7 +571,7 @@ def crossref_events_gkg_v1(
             )
 
     if not matches:
-        return pl.DataFrame()
+        return _empty_crossref_result(events_df, (gkg_schema, read_columns, "GKG_"))
 
     result = pl.concat(matches)
     return result.drop(["_GlobalEventID_str", "_matched_event_id"])
@@ -611,32 +660,63 @@ def crossref_events_gkg_v2(
     event_id_col = events_df["GlobalEventID"].cast(pl.Int64)
     event_id_set = set(event_id_col.to_list())
 
-    # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
-    # column unlike GKG 1.0's comma-packed EventIds, so this narrows
-    # the scan at the row-group level instead of reading everything.
-    # Wrapped from dataset construction onward: _dataset() itself can
-    # raise (every file's footer schema is read there), and so can the
-    # collect_schema() access just below it, not only the final
-    # .collect() read further down.
+    # Both datasets' own schemas are read up front, before either hop's
+    # actual row-level filtering, purely so a "nothing matched" return at
+    # any of the four points below (this hop, the next one, or either
+    # dedup/join step in between) still has a real target schema to build
+    # an empty result from, rather than a bare, columnless pl.DataFrame().
+    # Each collect_schema() call is cheap and metadata-only, the same
+    # footer read _dataset() itself already pays to build its own union
+    # schema; nothing here is a real data read.
     with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
         mentions_lf = _dataset(
             mentions_folder, parse_gdeltv2_file_date, start_date, end_date
         )
-        mentions_schema_names = mentions_lf.collect_schema().names()
+        mentions_schema = mentions_lf.collect_schema()
         for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
-            _require_column(mentions_schema_names, required, "mentions_folder")
+            _require_column(mentions_schema.names(), required, "mentions_folder")
 
         # Same existing/missing split as columns_to_check and output_columns
         # elsewhere in the pipeline: read whichever optional payload columns
         # this Mentions dataset actually has, and simply carry through fewer
         # Mention_* fields for the ones it doesn't, rather than failing.
         mentions_payload_columns = [
-            c for c in OPTIONAL_MENTIONS_PAYLOAD_COLUMNS if c in mentions_schema_names
+            c for c in OPTIONAL_MENTIONS_PAYLOAD_COLUMNS if c in mentions_schema.names()
         ]
         mentions_read_columns = (
             list(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]) + mentions_payload_columns
         )
 
+    with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
+        gkg_lf = _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+        gkg_schema = gkg_lf.collect_schema()
+        # requested_gkg_columns defaults to this dataset's full declared
+        # schema when the caller doesn't pass --columns, which isn't the
+        # same thing as what this scan's real, already-opened files
+        # actually have: convert/filter's own output_columns can prune a
+        # dataset down to a handful of columns for disk/CPU reasons.
+        # Narrowing to what's real here, instead of leaving the .select()
+        # below to fail outright with a raw "unable to find column"
+        # error, is what makes that pruning and this join coexist.
+        read_gkg_columns = narrow_to_available_columns(
+            logger, f"GKG 2.1 dataset in {gkg_v2_folder}",
+            requested_gkg_columns, {"V2DOCUMENTIDENTIFIER"}, set(gkg_schema.names()),
+        )
+
+    empty_extra = {"Mention_Count": pl.UInt32} if dedupe_mentions else None
+
+    def empty_result() -> pl.DataFrame:
+        return _empty_crossref_result(
+            events_df,
+            (mentions_schema, mentions_payload_columns, "Mention_"),
+            (gkg_schema, read_gkg_columns, "GKG_"),
+            extra=empty_extra,
+        )
+
+    # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
+    # column unlike GKG 1.0's comma-packed EventIds, so this narrows
+    # the scan at the row-group level instead of reading everything.
+    with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
         logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
         bridge_df = (
             mentions_lf
@@ -646,7 +726,7 @@ def crossref_events_gkg_v2(
         )
 
     if bridge_df.is_empty():
-        return pl.DataFrame()
+        return empty_result()
 
     if dedupe_mentions:
         # Mentions records one row per sentence that references an
@@ -681,26 +761,16 @@ def crossref_events_gkg_v2(
 
     urls = set(bridge_df["MentionIdentifier"].drop_nulls().unique().to_list())
     if not urls:
-        return pl.DataFrame()
+        return empty_result()
 
     # Hop 2: GKG 2.1, filter-pushdown on the document URL: again a real
     # predicate pushed down into the scan, so only rows for articles
     # actually mentioning one of these events get read off disk.
+    # gkg_lf/read_gkg_columns were already resolved above, alongside
+    # mentions' own schema, so this reuses them rather than re-opening
+    # the dataset and re-narrowing the same column list a second time.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
-        gkg_lf = _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
-        # requested_gkg_columns defaults to this dataset's full declared
-        # schema when the caller doesn't pass --columns, which isn't the
-        # same thing as what this scan's real, already-opened files
-        # actually have: convert/filter's own output_columns can prune a
-        # dataset down to a handful of columns for disk/CPU reasons.
-        # Narrowing to what's real here, instead of leaving the .select()
-        # below to fail outright with a raw "unable to find column"
-        # error, is what makes that pruning and this join coexist.
-        read_gkg_columns = narrow_to_available_columns(
-            logger, f"GKG 2.1 dataset in {gkg_v2_folder}",
-            requested_gkg_columns, {"V2DOCUMENTIDENTIFIER"}, set(gkg_lf.collect_schema().names()),
-        )
         gkg_df = (
             gkg_lf
             .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
@@ -709,7 +779,7 @@ def crossref_events_gkg_v2(
         )
 
     if gkg_df.is_empty():
-        return pl.DataFrame()
+        return empty_result()
 
     if on_duplicate_document == "latest":
         gkg_df = gkg_df.unique(subset=["V2DOCUMENTIDENTIFIER"], keep="last", maintain_order=True)
@@ -725,7 +795,7 @@ def crossref_events_gkg_v2(
         how="inner", coalesce=False,
     )
     if joined.is_empty():
-        return pl.DataFrame()
+        return empty_result()
 
     events_side = events_df.with_columns(event_id_col.alias("_GlobalEventID_int64"))
     result = events_side.join(
@@ -830,8 +900,6 @@ def crossref_events_gkg_auto(
     eligible_mask = date_added >= GKG_V1_COVERAGE_START
     eligible_events = events_df.filter(eligible_mask)
 
-    results: list[pl.DataFrame] = []
-
     if not eligible_events.is_empty():
         logger.info(
             f"crossref_events_gkg_auto: attempting {len(eligible_events)} event(s) "
@@ -839,23 +907,30 @@ def crossref_events_gkg_auto(
             f"{GKG_V2_COVERAGE_START} does not rule out a real GKG 2.1 match, so "
             f"neither path is skipped based on it alone."
         )
-        v1_result = crossref_events_gkg_v1(
-            eligible_events, gkg_v1_folder, gkg_v1_columns, columns=v1_columns,
-            start_date=start_date, end_date=end_date,
-        )
-        if not v1_result.is_empty():
-            results.append(v1_result.with_columns(pl.lit("v1").alias("CrossrefSource")))
 
-        v2_result = crossref_events_gkg_v2(
-            eligible_events, mentions_folder, gkg_v2_folder, gkg_v2_columns,
-            columns=v2_columns,
-            on_duplicate_document=on_duplicate_document,
-            dedupe_mentions=dedupe_mentions,
-            start_date=start_date, end_date=end_date,
-        )
-        if not v2_result.is_empty():
-            results.append(v2_result.with_columns(pl.lit("v2").alias("CrossrefSource")))
+    # Both paths are always attempted, even when eligible_events is
+    # entirely empty (every sampled event predates GKG_V1_COVERAGE_START):
+    # crossref_events_gkg_v1/_v2 both return a correctly-schema'd, 0-row
+    # result rather than a bare pl.DataFrame() the moment they find
+    # nothing, at any hop, so appending either one unconditionally is
+    # always safe now, and is exactly what makes this function's own
+    # final schema complete: a path that matches nothing in this
+    # particular run still contributes its own real column names (all
+    # null) to the union below, rather than that path's own GKG_/Mention_
+    # columns being silently absent from the output whenever it happens
+    # to find zero matches, the same class of bug this whole fix closes
+    # for v1/v2 directly.
+    v1_result = crossref_events_gkg_v1(
+        eligible_events, gkg_v1_folder, gkg_v1_columns, columns=v1_columns,
+        start_date=start_date, end_date=end_date,
+    ).with_columns(pl.lit("v1").alias("CrossrefSource"))
 
-    if not results:
-        return pl.DataFrame()
-    return pl.concat(results, how="diagonal")
+    v2_result = crossref_events_gkg_v2(
+        eligible_events, mentions_folder, gkg_v2_folder, gkg_v2_columns,
+        columns=v2_columns,
+        on_duplicate_document=on_duplicate_document,
+        dedupe_mentions=dedupe_mentions,
+        start_date=start_date, end_date=end_date,
+    ).with_columns(pl.lit("v2").alias("CrossrefSource"))
+
+    return pl.concat([v1_result, v2_result], how="diagonal")
