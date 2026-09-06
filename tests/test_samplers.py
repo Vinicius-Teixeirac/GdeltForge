@@ -78,6 +78,31 @@ class TestIndexedSampler:
         with pytest.raises(ValueError):
             sampler.get_random_sample(10)
 
+    def test_n_zero_is_a_clean_empty_success(self, tmp_path):
+        # n==0 used to reach pl.concat([]) with nothing ever appended to
+        # sampled, raising a raw, unhandled "cannot concat empty list"
+        # instead of the clean 0-row success FilteredSampler's own
+        # get_random_sample already gives n<=0.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(0)
+
+        assert len(df) == 0
+
+    def test_negative_n_raises_a_clear_error_not_a_raw_numpy_one(self, tmp_path):
+        # A negative n used to reach numpy's own random.choice unchecked,
+        # raising its raw "negative dimensions are not allowed".
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_random_sample(-5)
+
     def test_reproducible_with_same_seed(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()

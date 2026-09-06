@@ -208,7 +208,13 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     the question either way, by construction rather than by relying on
     whichever behavior the current engine happens to have.
     """
-    p = Path(path)
+    # A path that names neither a file nor a directory used to reach
+    # pl.read_parquet below unchecked, surfacing polars' own raw,
+    # unformatted "No such file or directory (os error 2): <path>"
+    # straight from its underlying Rust reader, unlike every other
+    # missing-path case in this project, which gets ensure_exists' own
+    # crafted "... does not exist: <path>".
+    p = ensure_exists(path, "parquet path")
     if not p.is_dir():
         return pl.read_parquet(p)
 

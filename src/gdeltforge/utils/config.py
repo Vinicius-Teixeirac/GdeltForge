@@ -229,6 +229,16 @@ def load_config(config_path: str | None = None) -> dict:
         config_path = os.environ.get(CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH)
 
     path = Path(config_path)
+    # Checked ahead of path.exists() below, which is true for a directory
+    # too: open(path) on one raises a raw, unformatted OSError straight
+    # from the filesystem ("[Errno 21] Is a directory: '...'"), unlike
+    # every other malformed-config case here (missing file, empty file,
+    # invalid YAML), which all get a clear, crafted message.
+    if path.is_dir():
+        raise IsADirectoryError(
+            f"Config path is a directory, not a file: {path}. Point --config "
+            f"or {CONFIG_ENV_VAR} at the settings.yaml file itself."
+        )
     if path.exists():
         with open(path) as f:
             config = yaml.safe_load(f)
