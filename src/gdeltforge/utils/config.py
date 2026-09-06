@@ -76,6 +76,34 @@ def dataset_path_key(dataset: str, base_key: str) -> str:
     return f"{prefix}{base_key}"
 
 
+def validate_max_workers(value: int | None, label: str) -> int | None:
+    """
+    Check a resolved converter.max_workers/filter.max_workers value
+    before it's ever logged or handed to ProcessPoolExecutor.
+
+    None means "let ProcessPoolExecutor pick os.cpu_count() on its own",
+    a real, valid, and by far the most common configuration (the default,
+    unset value); it's returned unchanged. Anything else must be a
+    positive int. This used to be checked only implicitly, by
+    ProcessPoolExecutor's own constructor, well after a pre-flight log
+    line had already announced a *different*, already-resolved worker
+    count for the same run: max_workers: 0 is falsy in Python, so a
+    "config_value or cpu_count()"-style fallback silently took the same
+    branch a genuinely unset value would, logging the real CPU count
+    convert/filter would use, e.g. 32, one line before ProcessPoolExecutor
+    raised its own "max_workers must be greater than 0" against the
+    original, still-0 value. Checking explicitly here, before either the
+    log line or the executor ever see the value, makes 0 (and any other
+    non-positive value) fail immediately with one clear error instead of
+    two contradictory statements about the same run.
+    """
+    if value is None:
+        return None
+    if value <= 0:
+        raise ValueError(f"{label} must be greater than 0, got {value}")
+    return value
+
+
 def get_dict(section: dict, key: str) -> dict:
     """
     section.get(key, {}), except an explicit `key: null` in the YAML is
