@@ -165,6 +165,31 @@ class TestIndexedSampler:
 
         assert set(df.columns) == {"GlobalEventID", "QuadClass"}
 
+    def test_a_genuinely_nonexistent_column_is_dropped_with_a_warning_not_a_crash(
+        self, tmp_path, caplog
+    ):
+        # A --columns name absent from every real file used to reach
+        # pl.read_parquet(file_path, columns=read_columns) unchecked, a
+        # projection pushed straight into polars' own scan: the failure
+        # was a raw, unhandled internal error, including a full
+        # query-plan dump, not a clean, actionable message. Narrowed
+        # against the real schema up front instead now, matching
+        # CalendarSampler's own identical treatment of the same mistake.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(10), "QuadClass": [1] * 10,
+        }).write_parquet(folder / "a.parquet")
+
+        with caplog.at_level(logging.WARNING):
+            sampler = IndexedSampler(
+                str(folder), random_state=1, columns={"GlobalEventID", "ThisColumnIsFake"}
+            )
+            df = sampler.get_random_sample(5)
+
+        assert list(df.columns) == ["GlobalEventID"]
+        assert any("ThisColumnIsFake" in r.message for r in caplog.records)
+
 
 class TestCalendarSampler:
     def test_caps_at_samples_per_period(self, tmp_path):

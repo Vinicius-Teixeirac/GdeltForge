@@ -61,6 +61,11 @@ class FileIndex:
         # the list the bad file happens to land, so both are wrapped.
         with clearer_dataset_errors(f"{len(self.files)} parquet file(s)"):
             dataset = ds.dataset(self.files, format="parquet")
+            # Exposed for IndexedSampler's own --columns validation: the
+            # dataset object itself is otherwise dropped once this method
+            # returns, so its schema would need re-reading from disk again
+            # to check a caller-requested column list against it.
+            self.schema_names: list[str] = dataset.schema.names
             fragments = list(dataset.get_fragments())
             cumulative = 0
             for fragment in fragments:
