@@ -421,6 +421,21 @@ class TestCrossrefEventsGkgV1:
                 self._events_df(), folder, GKG_V1_COLUMNS, columns={"NotARealColumn"}
             )
 
+    def test_columns_naming_the_join_key_gets_a_specific_explanation(self, tmp_path):
+        # A live comprehensive QA pass repeatedly misread this exact
+        # rejection as evidence the check was validating against a
+        # broken/incomplete schema (confused further by testing it
+        # specifically against a zero-match run, whose own schema bug is
+        # what _empty_crossref_result fixes separately). It's neither:
+        # GlobalEventID is always included in the output regardless of
+        # --columns, on any run, matching or not, so it was never a
+        # valid name to restrict to in the first place.
+        folder = self._write_gkg_v1(tmp_path)
+        with pytest.raises(ValueError, match="always included in crossref's output"):
+            crossref_events_gkg_v1(
+                self._events_df(), folder, GKG_V1_COLUMNS, columns={"GlobalEventID"}
+            )
+
     def test_missing_global_event_id_column_raises(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
         bad_events = self._events_df().drop(["GlobalEventID"])
@@ -900,6 +915,18 @@ class TestCrossrefEventsGkgV2:
             crossref_events_gkg_v2(
                 self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
                 columns={"NotARealColumn"},
+            )
+
+    def test_columns_naming_the_join_key_gets_a_specific_explanation(self, tmp_path):
+        # Same rejection, same real reason, as crossref_events_gkg_v1's
+        # own identical test: GlobalEventID is always included regardless
+        # of --columns, on any run, so it's never a valid name to pass.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        with pytest.raises(ValueError, match="always included in crossref's output"):
+            crossref_events_gkg_v2(
+                self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+                columns={"GlobalEventID"},
             )
 
     def test_missing_global_event_id_column_raises(self, tmp_path):
