@@ -36,6 +36,14 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 
 : Path to `settings.yaml`. Defaults to the `GDELTFORGE_CONFIG` environment variable, then `./config/settings.yaml` relative to the current working directory. Use this (or the env var) to run `gdeltforge` from outside the repo checkout, pointing at a config file anywhere on disk.
 
+    `--config` goes **before** the subcommand, not after it, unlike every other flag documented below:
+
+    ```bash
+    gdeltforge --config /path/to/settings.yaml scrape --dataset events
+    ```
+
+    Placing it after the subcommand (`gdeltforge scrape --config ...`) fails with argparse's own generic `unrecognized arguments: --config ...`, since `--config` is a top-level option, not defined on any individual subcommand's own parser.
+
 ## `gdeltforge scrape`
 
 Download the entire archive:
@@ -201,6 +209,16 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 `--export-format csv` is meant for handing a finished sample to a tool that doesn't read Parquet (Excel, a quick spreadsheet look), not as a second internal storage format: CSV has no typed schema, so nullable `Int64` columns and dates round-trip as plain digits with empty-string `NaN`s, not restored automatically the way Parquet's schema is on the next read.
 
+!!! note "`--columns` isn't always a strict projection"
+
+    Each sampling mode has its own idea of which columns it can't function without, and always keeps them in the output regardless of what `--columns` requests:
+
+    - `indexed`: a true strict projection. Output is exactly the columns named in `--columns`, or the dataset's full declared schema if `--columns` is omitted.
+    - `calendar`: the grouping column (`--date-column`, or the per-dataset default) is always kept, even if `--columns` doesn't name it.
+    - `filtered`/`stratified`: every column your `--filter` condition or `--stratify` reads is always kept, even if `--columns` doesn't name it. `crossref`'s own `--columns` behaves the same way for its join key.
+
+    This is deliberate, not a bug: a mode can't group or filter by a column it silently dropped from the scan. A column `--columns` drops for real is anything not covered by one of those cases above.
+
 ### Indexed sampling (uniform random)
 
 ```bash
@@ -222,6 +240,10 @@ Group by month or year instead of day, and by a different dataset's own date col
 ```bash
 gdeltforge sample --dataset gkg-v2 --mode calendar --period month --per-period 50 --out monthly.parquet
 ```
+
+!!! warning "The period count can badly exceed intuition"
+
+    `--period day` groups strictly by the grouping column's own `YYYYMMDD` value, not by which file a row came from. GDELT's own event-date misdating means a single day's file can legitimately carry `Day` values spanning a decade (a wire report referencing a much older date, a source article with a malformed or placeholder date), so the number of distinct periods a run actually produces can be far larger than "one per file downloaded" suggests. This is a real property of the underlying data, not a bug in the grouping itself.
 
 ### Filtered sampling (JSON filters)
 
