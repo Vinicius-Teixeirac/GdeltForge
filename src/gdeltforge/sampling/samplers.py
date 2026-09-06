@@ -451,7 +451,18 @@ class CalendarSampler:
             yield from lf.collect_batches(chunk_size=64_000)
 
     def get_calendar_samples(self, samples_per_period: int = 10) -> pl.DataFrame:
-        if samples_per_period <= 0:
+        # A negative value used to reach the reservoir machinery below
+        # unchecked, same as 0, producing a nonsensical but "successful"
+        # 0-row result: "Saved calendar sample (0 rows, period=day)" logged
+        # as though -5 were a valid, deliberately chosen configuration
+        # rather than a mistake. 0 itself is a real, valid request (an
+        # explicit "sample nothing"), so only a genuinely negative value
+        # is rejected here.
+        if samples_per_period < 0:
+            raise ValueError(
+                f"samples_per_period must be non-negative, got {samples_per_period}"
+            )
+        if samples_per_period == 0:
             return pl.DataFrame()
 
         prefix_len = self._PERIOD_PREFIX_LENGTH[self.period]
@@ -869,7 +880,14 @@ class FilteredSampler:
 
     # ---------- reservoir sampling for random sample ----------
     def get_random_sample(self, n: int) -> pl.DataFrame:
-        if n <= 0:
+        # Same reasoning as IndexedSampler.get_random_sample's identical
+        # check: a negative n used to reach the reservoir machinery below
+        # unchecked, same as 0, producing a nonsensical but "successful"
+        # 0-row result rather than an error naming the actual mistake. 0
+        # remains a valid, explicit "sample nothing" request.
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if n == 0:
             return pl.DataFrame()
 
         needed = self._needed_columns()
@@ -948,7 +966,15 @@ class FilteredSampler:
     _STRATIFY_GROUP_KEY = "__stratify_group_key__"
 
     def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pl.DataFrame:
-        if n_per_group <= 0:
+        # Same reasoning as CalendarSampler.get_calendar_samples' identical
+        # check: a negative value used to reach the reservoir machinery
+        # below unchecked, same as 0, producing "Saved stratified sample
+        # (0 rows) stratified by 'QuadClass' (-3 per group)" as though -3
+        # were a valid, chosen configuration. 0 remains a valid, explicit
+        # "sample nothing" request.
+        if n_per_group < 0:
+            raise ValueError(f"n_per_group must be non-negative, got {n_per_group}")
+        if n_per_group == 0:
             return pl.DataFrame()
 
         needed = self._needed_columns(extra_required={stratify_col})
