@@ -80,7 +80,12 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
-from gdeltforge.utils.config import dataset_is_always_historical, dataset_path_key, get_dict
+from gdeltforge.utils.config import (
+    dataset_is_always_historical,
+    dataset_path_key,
+    get_dict,
+    validate_max_workers,
+)
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -189,8 +194,14 @@ class GDELTFilter:
             Path(historical_output_folder) if historical_output_folder else None
         )
         # None is a valid value here: ProcessPoolExecutor treats
-        # max_workers=None as "use os.cpu_count()" on its own.
-        self.max_workers = max_workers
+        # max_workers=None as "use os.cpu_count()" on its own. Anything
+        # else must be a positive int, checked eagerly here rather than
+        # left to ProcessPoolExecutor's own constructor: that used to
+        # raise well after a pre-flight log line had already announced a
+        # different, already-resolved worker count for the same run (see
+        # validate_max_workers' own docstring for the exact contradiction
+        # a falsy-but-invalid max_workers: 0 produced).
+        self.max_workers = validate_max_workers(max_workers, "filter.max_workers")
         # GDELTFilter stays dataset-agnostic (it never sees a dataset name,
         # only already-resolved paths/columns, see run_filter below), so
         # the caller resolves which filename convention date_parser needs
