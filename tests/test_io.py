@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import polars as pl
@@ -29,9 +30,18 @@ class TestWriteParquetAtomic:
         assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
         assert not (tmp_path / "sample.parquet.tmp").exists()
 
-    def test_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+    def test_warns_and_overwrites_leftover_tmp_from_interrupted_run(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # The tmp name is PID-suffixed (see the concurrent-write fix this
+        # guards against below), so a "leftover" this run can actually
+        # recognize is scoped to its own PID: pinning os.getpid() is what
+        # makes this deterministic to set up, the same class of leftover
+        # a hard-killed process's own next run under OS PID reuse would
+        # otherwise reproduce.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         out = tmp_path / "sample.parquet"
-        tmp_path_leftover = tmp_path / "sample.parquet.tmp"
+        tmp_path_leftover = tmp_path / "sample.parquet.12345.tmp"
         tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
 
         df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
@@ -193,9 +203,14 @@ class TestWriteDataframeAtomic:
 
         assert out.read_text().strip() == "EventCode\n020"
 
-    def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+    def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # Same PID-pinning reasoning as write_parquet_atomic's identical
+        # test above.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         out = tmp_path / "sample.csv"
-        tmp_path_leftover = tmp_path / "sample.csv.tmp"
+        tmp_path_leftover = tmp_path / "sample.csv.12345.tmp"
         tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
 
         df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
