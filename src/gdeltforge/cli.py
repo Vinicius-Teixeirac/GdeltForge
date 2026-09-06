@@ -477,6 +477,25 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
         )
     else:
+        # --on-duplicate-document/--collapse-duplicate-mentions are both
+        # v2/auto-only concepts (GKG 1.0 carries EventIds directly, no
+        # document-level or per-sentence Mentions dedup to speak of), so
+        # crossref_events_gkg_v1 doesn't accept either. Both flags'
+        # --help text already says "only affects v2/auto", but passing
+        # one alongside --gkg-version v1/v1-counts was otherwise silently
+        # accepted with zero warning that it did nothing at all.
+        if args.on_duplicate_document != "all" or args.collapse_duplicate_mentions:
+            ignored = [
+                name for name, is_set in (
+                    ("--on-duplicate-document", args.on_duplicate_document != "all"),
+                    ("--collapse-duplicate-mentions", args.collapse_duplicate_mentions),
+                )
+                if is_set
+            ]
+            logger.warning(
+                f"{', '.join(ignored)} only affect(s) --gkg-version v2/auto; "
+                f"ignored for --gkg-version {args.gkg_version}."
+            )
         dataset = _CROSSREF_GKG_TO_CONFIG[args.gkg_version]
         gkg_folder = ensure_exists(
             config["paths"][dataset_path_key(dataset, source_key)],
