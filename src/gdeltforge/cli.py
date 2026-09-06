@@ -843,7 +843,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["parquet", "csv"],
         default="parquet",
         help="Output file format. csv rewrites --out's extension to .csv. "
-             "Off (parquet) by default"
+             "Off (parquet) by default. csv writes a <name>.csv.schema.json "
+             "sidecar alongside it; read the file back with gdeltforge's own "
+             "read_csv_export(path), not a bare pl.read_csv/pd.read_csv, or "
+             "zero-padded string codes like EventCode lose their leading zero"
     )
 
     # ----------------------------------------------------
@@ -923,7 +926,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["parquet", "csv"],
         default="parquet",
         help="Output file format. csv rewrites --out's extension to .csv. "
-             "Off (parquet) by default"
+             "Off (parquet) by default. csv writes a <name>.csv.schema.json "
+             "sidecar alongside it; read the file back with gdeltforge's own "
+             "read_csv_export(path), not a bare pl.read_csv/pd.read_csv, or "
+             "zero-padded string codes like EventCode lose their leading zero"
     )
 
     # ----------------------------------------------------
