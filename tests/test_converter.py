@@ -1393,6 +1393,24 @@ class TestRecoverUnzippedFiles:
         assert pl.read_parquet(outputs[0])["Day"].to_list() == [20200101]
         assert csv_path.exists()  # keep_unzipped=True, no delete_source
 
+    def test_recovers_mixed_case_extensions_in_the_same_folder(self, tmp_path):
+        # A single glob("*") pass classified by suffix.lower(), not two
+        # separate case-specific globs concatenated together: each real
+        # file is listed exactly once regardless of its own extension's
+        # case, so a lower-case and an upper-case CSV sitting side by
+        # side are both recovered, neither shadowing nor double-counting
+        # the other.
+        self._write_csv(tmp_path / "csv", filename="20200101.export.csv")
+        self._write_csv(
+            tmp_path / "csv", filename="20240101.export.CSV", rows="2\t20240101\n"
+        )
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+
+        outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 2
+
     def test_a_csv_already_marked_done_is_skipped_on_rerun(self, tmp_path):
         self._write_csv(tmp_path / "csv")
         converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
