@@ -1165,6 +1165,41 @@ class TestRunCrossrefCmd:
         assert not any("--on-duplicate-document" in r.message for r in caplog.records)
         assert not any("--collapse-duplicate-mentions" in r.message for r in caplog.records)
 
+    def test_v1_warns_through_real_argparse_not_just_a_hand_built_namespace(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # The tests above all call run_crossref_cmd directly with a
+        # hand-built argparse.Namespace, never exercising build_parser's
+        # own --gkg-version/--on-duplicate-document/--collapse-duplicate-
+        # mentions argument definitions at all. A regression in sample's
+        # own --stratify/--filter carve-out slipped past an identically-
+        # shaped set of hand-built-Namespace-only tests once already
+        # (see TestStratifyWithoutFilterThroughRealArgparse), so this
+        # runs the actual argv a user would type through
+        # cli.build_parser() itself before dispatching.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "crossref", "--events", self._events_path(tmp_path),
+            "--gkg-version", "v1", "--on-duplicate-document", "latest",
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(self._config(), args)
+
+        assert any(
+            "--on-duplicate-document" in r.message and "v1" in r.message
+            for r in caplog.records
+        )
+
     def test_v2_reads_both_mentions_and_gkg_v2_filtered_folders(self, tmp_path, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
