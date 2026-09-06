@@ -5,7 +5,13 @@ import pytest
 import yaml
 
 import gdeltforge.utils.config as config_module
-from gdeltforge.utils.config import CONFIG_ENV_VAR, dataset_path_key, get_dict, load_config
+from gdeltforge.utils.config import (
+    CONFIG_ENV_VAR,
+    dataset_path_key,
+    get_dict,
+    load_config,
+    validate_max_workers,
+)
 
 
 class TestDatasetPathKey:
@@ -54,6 +60,32 @@ class TestGetDict:
     def test_chaining_a_second_get_onto_the_result_no_longer_crashes(self):
         # The exact shape every real call site uses.
         assert get_dict({"compression": None}, "compression").get("gdelt_event", "zstd") == "zstd"
+
+
+class TestValidateMaxWorkers:
+    """converter.max_workers/filter.max_workers: 0 used to reach
+    ProcessPoolExecutor unchecked, since 0 is falsy in Python. A
+    pre-flight log line's own `config_value or cpu_count()`-style
+    fallback silently took the same branch a genuinely unset (None)
+    value would, reporting the real CPU count, one line before
+    ProcessPoolExecutor's own constructor raised "max_workers must be
+    greater than 0" against the original, still-0 value: two
+    contradictory statements about the same run. Checked explicitly here
+    instead, before either the log line or the executor ever see it."""
+
+    def test_none_is_returned_unchanged(self):
+        assert validate_max_workers(None, "converter.max_workers") is None
+
+    def test_a_positive_value_is_returned_unchanged(self):
+        assert validate_max_workers(4, "converter.max_workers") == 4
+
+    def test_zero_raises_naming_the_given_label(self):
+        with pytest.raises(ValueError, match="converter.max_workers must be greater than 0"):
+            validate_max_workers(0, "converter.max_workers")
+
+    def test_negative_raises_the_same_way_as_zero(self):
+        with pytest.raises(ValueError, match="filter.max_workers must be greater than 0"):
+            validate_max_workers(-1, "filter.max_workers")
 
 
 class TestModuleLoggerIsProperlyConfigured:
