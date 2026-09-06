@@ -52,7 +52,12 @@ from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
-from gdeltforge.utils.config import dataset_is_always_historical, dataset_path_key, get_dict
+from gdeltforge.utils.config import (
+    dataset_is_always_historical,
+    dataset_path_key,
+    get_dict,
+    validate_max_workers,
+)
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -298,9 +303,12 @@ class GDELTConverter:
         # depends on peak per-worker memory, which output_columns above
         # changes a lot for wide datasets like GKG 2.1), so a value safe
         # for one dataset isn't necessarily safe for another.
-        self.max_workers: int | None = get_dict(
-            config["converter"], "max_workers_by_dataset"
-        ).get(dataset, config["converter"].get("max_workers"))
+        self.max_workers: int | None = validate_max_workers(
+            get_dict(config["converter"], "max_workers_by_dataset").get(
+                dataset, config["converter"].get("max_workers")
+            ),
+            "converter.max_workers",
+        )
 
         self.COLUMN_NAMES    = config["columns"][dataset]
         self.NUMERIC_COLUMNS = config["columns_numeric"][dataset]
