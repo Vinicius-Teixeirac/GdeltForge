@@ -250,10 +250,30 @@ def _dataset(
 
 
 def _validate_columns(columns: set[str] | None, available: list[str]) -> set[str] | None:
+    """
+    --columns only ever restricts GKG-side output (see crossref_events_
+    gkg_v1/_v2's own docstrings); GlobalEventID, the events-side join
+    key, is always included in the result regardless, so it's never one
+    of the names --columns itself can restrict to, whether or not this
+    particular run happens to match anything. Named explicitly in the
+    error for that one case: a live comprehensive QA pass repeatedly
+    misread "Invalid columns: {'GlobalEventID'}" as evidence this check
+    was validating against a broken/incomplete schema (a zero-match
+    run's result used to have one, see _empty_crossref_result), when the
+    real reason is simpler and applies on a real, non-empty run just the
+    same, confirmed directly both ways.
+    """
     if columns is None:
         return None
     invalid = columns - set(available)
     if invalid:
+        if "GlobalEventID" in invalid:
+            raise ValueError(
+                f"Invalid columns: {invalid}. GlobalEventID is the events-side "
+                f"join key, always included in crossref's output regardless of "
+                f"--columns, which only restricts GKG-side output; it was never "
+                f"a valid name to pass to --columns, on any run."
+            )
         raise ValueError(f"Invalid columns: {invalid}")
     return columns
 
