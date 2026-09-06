@@ -1124,6 +1124,99 @@ class TestRunSamplingCmdStratifyWithoutFilter:
         assert captured["filter_dict"] == {"QuadClass": [1, 2]}
 
 
+class TestStratifyWithoutFilterThroughRealArgparse:
+    """The three tests above call run_sampling_cmd directly with a
+    hand-built argparse.Namespace, which never exercises build_parser's
+    own --stratify/--filter/--n-per-group argument definitions at all.
+    That gap is exactly how this exact behavior (an omitted --filter
+    defaulting to no filtering when --stratify is set) regressed once
+    already, silently, in a rebuild that carried this module's own code
+    and unit tests forward correctly but was cut from a base that never
+    had this fix applied at all: every test here still passed, because
+    none of them ever went through the real parser to notice the flag
+    combination it was supposed to protect was gone. These three run the
+    real, unmodified argv a user would type through cli.build_parser()
+    itself before dispatching, so a future change to any of these flags'
+    own argparse definitions (a renamed dest, a changed default, a
+    removed argument) fails here too, not only in the hand-built-
+    Namespace tests above."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    def test_stratify_without_filter_defaults_to_no_filtering(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "sample", "--dataset", "events", "--mode", "filtered",
+            "--stratify", "QuadClass", "--n-per-group", "50",
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["filter_dict"] == {}
+
+    def test_plain_filtered_mode_without_stratify_still_requires_filter(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "sample", "--dataset", "events", "--mode", "filtered",
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        with pytest.raises(ValueError, match="--filter is required"):
+            cli.run_sampling_cmd(self._config(), args)
+
+    def test_explicit_filter_alongside_stratify_is_still_honored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "sample", "--dataset", "events", "--mode", "filtered",
+            "--stratify", "QuadClass", "--n-per-group", "50",
+            "--filter", '{"QuadClass": [1, 2]}',
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["filter_dict"] == {"QuadClass": [1, 2]}
+
+
 class TestRunCrossrefCmd:
     """The join logic itself (crossref_events_gkg_v1/v2) has its own
     dedicated tests in test_crossref.py; these only check that the CLI
