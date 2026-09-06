@@ -414,6 +414,33 @@ class TestCrossrefEventsGkgV1:
         # EventIds is always read (it's the join key) even when not requested.
         assert "GKG_EventIds" in result.columns
 
+    def test_columns_accepts_the_prefixed_output_name_too(self, tmp_path):
+        # A live comprehensive QA pass built its --columns repro from a
+        # completed run's own real output column names, which are
+        # prefixed (GKG_Date, not Date), and had every one rejected on
+        # an ordinary, fully matching run, not only a zero-match one.
+        # Same run as test_columns_restricts_gkg_side_output just above,
+        # restricted by the prefixed name instead of the raw one.
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, columns={"GKG_Date"}
+        )
+
+        assert "GKG_Date" in result.columns
+        assert "GKG_Themes" not in result.columns
+
+    def test_columns_accepts_a_mix_of_raw_and_prefixed_names(self, tmp_path):
+        # A caller isn't required to pick one convention consistently;
+        # each name in the set resolves independently.
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, columns={"Date", "GKG_Themes"}
+        )
+
+        assert "GKG_Date" in result.columns
+        assert "GKG_Themes" in result.columns
+        assert "GKG_NumArticles" not in result.columns
+
     def test_invalid_columns_raises(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
         with pytest.raises(ValueError, match="Invalid columns"):
@@ -484,6 +511,19 @@ class TestCrossrefEventsGkgV1:
 
         # EventIds is always kept regardless (the join key), Themes is
         # the one requested optional column; Date/NumArticles are not.
+        assert set(result.columns) == {"GlobalEventID", "NumArticles", "GKG_EventIds", "GKG_Themes"}
+
+    def test_no_matches_schema_respects_a_prefixed_columns_restriction(self, tmp_path):
+        # Same restriction as the test just above, named the way it
+        # actually appears in the output (GKG_Themes) instead of the raw
+        # source name (Themes).
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+
+        result = crossref_events_gkg_v1(
+            events_df, folder, GKG_V1_COLUMNS, columns={"GKG_Themes"}
+        )
+
         assert set(result.columns) == {"GlobalEventID", "NumArticles", "GKG_EventIds", "GKG_Themes"}
 
     def test_warns_when_some_events_predate_gkg_v1_coverage(self, tmp_path, caplog):
@@ -907,6 +947,20 @@ class TestCrossrefEventsGkgV2:
         assert "GKG_V1THEMES" not in result.columns
         # V2DOCUMENTIDENTIFIER is always read (it's the join key).
         assert "GKG_V2DOCUMENTIDENTIFIER" in result.columns
+
+    def test_columns_accepts_the_prefixed_output_name_too(self, tmp_path):
+        # Same real-output-name repro as crossref_events_gkg_v1's own
+        # test_columns_accepts_the_prefixed_output_name_too, against an
+        # ordinary, fully matching v2 run.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            columns={"GKG_GKGRECORDID"},
+        )
+        assert "GKG_GKGRECORDID" in result.columns
+        assert "GKG_V1THEMES" not in result.columns
 
     def test_invalid_columns_raises(self, tmp_path):
         mentions_folder = self._write_mentions(tmp_path)
