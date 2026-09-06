@@ -366,9 +366,32 @@ class IndexedSampler:
         logger.info("Mapped the indices to the correspondent files")
 
         read_columns = list(self.columns) if self.columns else None
+
+        # Union schema across just the files this call actually touches,
+        # the same reconciliation _scan_dataset already applies for
+        # CalendarSampler/FilteredSampler: a real accumulated data
+        # directory can hold files whose own physical schema genuinely
+        # differs (a Hive-partitioned historical file converted before a
+        # schema fix landed, an output_columns setting narrowed at one
+        # point in time and widened again later), and this sampler's own
+        # per-file pl.read_parquet(file_path, columns=read_columns) never
+        # accounted for that, unlike the other two sampling modes' single
+        # shared scan. Found via a live comprehensive QA pass: a directory
+        # mixing full-width flat files with one much narrower historical
+        # file raised a raw "unable to append to a DataFrame of width X
+        # with a DataFrame of width Y" the moment two such files were
+        # both drawn into the same sample.
+        schema: dict[str, pl.DataType] = {}
+        for file_path in indices_by_file:
+            for name, dtype in pl.read_parquet_schema(file_path).items():
+                schema.setdefault(name, dtype)
+
         sampled = []
         for file_path, relative_rows in tqdm(indices_by_file.items(), desc="Loading samples"):
-            df = pl.read_parquet(file_path, columns=read_columns)
+            lf = pl.scan_parquet(file_path, schema=schema, missing_columns="insert")
+            if read_columns is not None:
+                lf = lf.select(read_columns)
+            df = lf.collect()
             # See _apply_reservoir_replacements above: DataFrame.gather()
             # isn't available on this project's declared minimum polars
             # version, bracket indexing is.
