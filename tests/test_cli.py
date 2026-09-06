@@ -1195,6 +1195,63 @@ class TestRunCrossrefCmd:
 
         assert captured["folder"] == "/gkg_v1_counts_filtered"
 
+    def test_v1_warns_when_on_duplicate_document_is_set(self, tmp_path, monkeypatch, caplog):
+        # Both flags' own --help text already says "only affects
+        # v2/auto"; passing one alongside v1/v1-counts used to be
+        # silently accepted with zero warning that it did nothing.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(
+                self._config(),
+                self._args(tmp_path, gkg_version="v1", on_duplicate_document="latest"),
+            )
+
+        assert any(
+            "--on-duplicate-document" in r.message and "v1" in r.message
+            for r in caplog.records
+        )
+
+    def test_v1_warns_when_collapse_duplicate_mentions_is_set(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(
+                self._config(),
+                self._args(
+                    tmp_path, gkg_version="v1-counts", collapse_duplicate_mentions=True
+                ),
+            )
+
+        assert any("--collapse-duplicate-mentions" in r.message for r in caplog.records)
+
+    def test_v1_no_warning_at_defaults(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1"))
+
+        assert not any("--on-duplicate-document" in r.message for r in caplog.records)
+        assert not any("--collapse-duplicate-mentions" in r.message for r in caplog.records)
+
     def test_v2_reads_both_mentions_and_gkg_v2_filtered_folders(self, tmp_path, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
