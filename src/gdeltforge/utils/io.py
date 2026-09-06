@@ -1,10 +1,18 @@
+import json
 import os
 import zipfile
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
 import pyarrow as pa
+
+# polars genuinely exports this type alias at runtime, under a
+# private-looking module name; matches converter.py's own identical
+# ParquetCompression import, covered by this project's own
+# reportPrivateImportUsage = false.
+from polars._typing import PolarsDataType
 
 from gdeltforge.utils.logging import get_logger
 
@@ -19,6 +27,40 @@ logger = get_logger(__name__)
 # this). Scoped to what's actually been found broken; extend this if
 # another zero-padded string column is confirmed to have the same risk.
 _KNOWN_ZERO_PADDED_STRING_COLUMNS = frozenset({"EventCode", "EventBaseCode", "EventRootCode"})
+
+
+def _schema_to_json(schema: Mapping[str, PolarsDataType]) -> dict[str, str]:
+    """
+    Every dtype this project's own data ever produces (Int64/Float64/
+    String, the only three real column shapes GDELT's own schema uses,
+    per columns_numeric's own integer/float split; String for everything
+    else) round-trips through str(dtype) <-> getattr(pl, name) exactly,
+    confirmed directly. Written as plain {name: dtype_name} JSON rather
+    than anything polars-specific, so the sidecar stays readable by a
+    caller who never imports polars at all, and by a human debugging it.
+    """
+    return {name: str(dtype) for name, dtype in schema.items()}
+
+
+def _schema_from_json(data: dict[str, str]) -> dict[str, PolarsDataType]:
+    """
+    Inverse of _schema_to_json. A dtype name this polars version doesn't
+    recognize (an export written by a newer/older gdeltforge, or a hand-
+    edited sidecar) is skipped rather than raising: that one column falls
+    back to read_csv's own default inference, the same degradation a
+    missing sidecar already produces for every column, rather than
+    failing the whole read over one unresolvable entry.
+    """
+    schema: dict[str, PolarsDataType] = {}
+    for name, dtype_name in data.items():
+        dtype = getattr(pl, dtype_name, None)
+        if isinstance(dtype, type) and issubclass(dtype, pl.DataType):
+            schema[name] = dtype
+    return schema
+
+
+def _schema_sidecar_path(csv_path: str | Path) -> Path:
+    return Path(csv_path).with_name(Path(csv_path).name + ".schema.json")
 
 
 def ensure_exists(path: str | Path, description: str) -> Path:
@@ -163,9 +205,13 @@ def write_dataframe_atomic(
     # from a quoted "020" and drops the zero exactly the same way,
     # because its default schema inference decides by the field's
     # content, not by whether the source quoted it. There is no write-side
-    # CSV setting that fixes a reader's own default inference, so the
-    # warning below names the real limitation and the concrete read-back
-    # fix instead of claiming one that does not actually hold.
+    # CSV setting that fixes a reader's own default inference: the CSV
+    # format itself carries no type information at all, so any reader
+    # with no side channel to consult has no way to tell a zero-padded
+    # code apart from a real integer. The schema sidecar written below is
+    # exactly that side channel, for a caller willing to read it back
+    # through read_csv_export instead of a bare pl.read_csv/pd.read_csv;
+    # the warning still names the manual fix for anyone who isn't.
     kwargs.setdefault("quote_style", "non_numeric")
 
     zero_padded_present = _KNOWN_ZERO_PADDED_STRING_COLUMNS & set(df.columns)
@@ -177,9 +223,11 @@ def write_dataframe_atomic(
             f"{', '.join(cols)}. A standard CSV read with default type "
             f"inference, including polars' own read_csv, reads these back "
             f"as an integer and drops the leading zero; quoting the "
-            f"written field does not prevent this. Read back with "
-            f"pl.read_csv(path, schema_overrides={{{overrides}}}) to "
-            f"preserve the original string values."
+            f"written field does not prevent this. gdeltforge's own "
+            f"read_csv_export(path) restores every column's real dtype "
+            f"automatically; otherwise read back with "
+            f"pl.read_csv(path, schema_overrides={{{overrides}}}) "
+            f"yourself to preserve the original string values."
         )
 
     try:
@@ -188,6 +236,77 @@ def write_dataframe_atomic(
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+
+    # Written only once the CSV itself is confirmed in place: a full
+    # column-name -> dtype-name map, not just the known zero-padded ones
+    # above, so read_csv_export below gets a genuinely lossless round
+    # trip for every column this project's data ever has (Int64/Float64/
+    # String), not only the handful of names this module happens to know
+    # about today. Plain, human-readable JSON, not a polars-specific
+    # format, so it stays inspectable without importing polars at all.
+    # Best-effort: a failure writing the sidecar (a read-only directory,
+    # a full disk) degrades to read_csv_export's own no-sidecar fallback
+    # rather than losing the CSV export that already succeeded above.
+    schema_path = _schema_sidecar_path(out)
+    schema_tmp_path = schema_path.with_name(schema_path.name + ".tmp")
+    try:
+        schema_tmp_path.write_text(json.dumps(_schema_to_json(df.schema), indent=2))
+        os.replace(schema_tmp_path, schema_path)
+    except OSError as e:
+        logger.warning(f"Could not write schema sidecar {schema_path}: {e}")
+        schema_tmp_path.unlink(missing_ok=True)
+
+
+def read_csv_export(path: str | Path, **kwargs) -> pl.DataFrame:
+    """
+    Read a CSV file written by write_dataframe_atomic(..., export_format=
+    "csv"), restoring every column's real dtype from the schema sidecar
+    written alongside it, rather than leaving pl.read_csv to infer types
+    from content the way a bare pl.read_csv/pd.read_csv call would.
+
+    This is the actual fix for the CSV round-trip gap named in
+    write_dataframe_atomic's own warning: EventCode/EventBaseCode/
+    EventRootCode (zero-padded numeric-looking strings) and any other
+    column's real dtype both come back exactly as written, confirmed
+    directly against a real write/read cycle including null vs genuine-
+    empty-string values, which is not a fix a write-side CSV setting can
+    ever provide on its own (see write_dataframe_atomic's own comment):
+    CSV itself carries no type information, so any reader with nothing
+    but the file's own content to go on, including one written by this
+    same function's caller running a bare pl.read_csv instead, has no
+    way to recover it.
+
+    Falls back to a plain pl.read_csv (default inference, same
+    zero-padded-column warning as write time if the file's header names
+    any of them) when no sidecar is found: an export written before this
+    existed, one whose sidecar was lost or never written (a read-only
+    destination at write time), or a CSV that never came from gdeltforge
+    at all. kwargs are passed straight through to pl.read_csv either way,
+    the same as write_dataframe_atomic's own passthrough to write_csv;
+    an explicit schema_overrides here takes precedence over the sidecar's
+    own, since a caller who bothered to pass one clearly wants it to win.
+    """
+    path = Path(path)
+    schema_path = _schema_sidecar_path(path)
+
+    if not schema_path.exists():
+        zero_padded_present = _KNOWN_ZERO_PADDED_STRING_COLUMNS & set(
+            pl.scan_csv(path).collect_schema().names()
+        )
+        if zero_padded_present:
+            cols = sorted(zero_padded_present)
+            overrides = ", ".join(f'"{c}": pl.Utf8' for c in cols)
+            logger.warning(
+                f"No schema sidecar found for {path} (missing, or this file "
+                f"wasn't written by gdeltforge); reading with default type "
+                f"inference. Column(s) {', '.join(cols)} will lose a "
+                f"leading zero unless schema_overrides={{{overrides}}} is passed."
+            )
+        return pl.read_csv(path, **kwargs)
+
+    schema = _schema_from_json(json.loads(schema_path.read_text()))
+    schema.update(kwargs.pop("schema_overrides", None) or {})
+    return pl.read_csv(path, schema_overrides=schema, **kwargs)
 
 
 def read_parquet_path(path: str | Path) -> pl.DataFrame:
