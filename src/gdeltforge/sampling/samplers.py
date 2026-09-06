@@ -497,8 +497,24 @@ class CalendarSampler:
             # group, so this has to be explicit rather than assumed.
             keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
 
+            # maintain_order=True, not False: the reservoir draws below pull
+            # sequentially from one shared RNG, once per (period, batch)
+            # combination, in whatever order this loop visits groups. A
+            # fixed --seed only fixes the sequence of numbers drawn, not
+            # which group's positions a given draw lands on; with
+            # maintain_order=False that assignment depended on polars' own
+            # unspecified group iteration order, so two runs with the same
+            # seed over the same data could still pick different rows
+            # (confirmed for real: ~25-30% GlobalEventID overlap between
+            # repeated runs). maintain_order=True visits groups in their
+            # first-appearance order within this batch, which is itself
+            # deterministic (the same file list, in the same sorted order,
+            # read in the same row order every run), making group
+            # visitation order, and therefore which draw lands where,
+            # reproducible under a fixed seed the way --seed documents.
+            # Found via a live comprehensive QA pass.
             for (period_key,), group_df in keyed_batch.group_by(
-                self._PERIOD_KEY, maintain_order=False
+                self._PERIOD_KEY, maintain_order=True
             ):
                 group_df   = group_df.drop([self._PERIOD_KEY])
                 group_size = len(group_df)
@@ -927,8 +943,12 @@ class FilteredSampler:
             keyed_batch = df_batch.with_columns(
                 pl.col(stratify_col).fill_null("__NA__").alias(self._STRATIFY_GROUP_KEY)
             )
+            # maintain_order=True: see get_calendar_samples' identical fix
+            # for why. The same shared-RNG-in-visitation-order reservoir
+            # draw applies here, so the same fixed-seed reproducibility gap
+            # applies too.
             for (g,), group_df in keyed_batch.group_by(
-                self._STRATIFY_GROUP_KEY, maintain_order=False
+                self._STRATIFY_GROUP_KEY, maintain_order=True
             ):
                 group_df   = group_df.drop([self._STRATIFY_GROUP_KEY])
                 group_size = len(group_df)

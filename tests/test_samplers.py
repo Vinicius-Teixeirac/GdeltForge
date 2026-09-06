@@ -383,6 +383,71 @@ class TestCalendarSampler:
         assert df["NumArticles"].null_count() == 1
 
 
+class TestCalendarSamplerSeedReproducibility:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: two runs with the same --seed over the same data picked
+    different rows (confirmed for real: ~25-30% GlobalEventID overlap
+    between repeated runs), contradicting --seed's own documented
+    contract. The reservoir draw pulls sequentially from one shared RNG,
+    once per (period, batch) combination, in whatever order group_by
+    visits groups; maintain_order=False let that order vary run to run,
+    so the same fixed sequence of random draws landed on different
+    groups' positions each time. A single-file, single-period fixture
+    can't manifest this at all (there's only one group, so there's
+    nothing for visitation order to reorder); this needs several files
+    (several batches) and several periods."""
+
+    @staticmethod
+    def _write_multi_file_multi_period(folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        # Three files, each contributing rows to several of the same four
+        # periods, the shape that actually exercises "the same period's
+        # reservoir accumulates draws across more than one batch."
+        pl.DataFrame({
+            "GlobalEventID": list(range(0, 12)),
+            "Day": [20200101] * 4 + [20200102] * 4 + [20200103] * 2 + [20200104] * 2,
+        }).write_parquet(folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(12, 24)),
+            "Day": [20200101] * 2 + [20200102] * 2 + [20200103] * 4 + [20200104] * 4,
+        }).write_parquet(folder / "b.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(24, 36)),
+            "Day": [20200104] * 3 + [20200103] * 3 + [20200102] * 3 + [20200101] * 3,
+        }).write_parquet(folder / "c.parquet")
+
+    def test_repeated_runs_with_the_same_seed_pick_the_same_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        self._write_multi_file_multi_period(folder)
+
+        results = [
+            CalendarSampler(str(folder), random_state=7).get_calendar_samples(
+                samples_per_period=3
+            )
+            for _ in range(3)
+        ]
+
+        first = sorted(results[0]["GlobalEventID"].to_list())
+        for other in results[1:]:
+            assert sorted(other["GlobalEventID"].to_list()) == first
+
+    def test_different_seeds_can_pick_different_rows(self, tmp_path):
+        # Sanity check that the fix didn't accidentally make the sampler
+        # ignore the seed entirely: a different seed is still allowed
+        # (though not guaranteed) to land on a different selection.
+        folder = tmp_path / "data"
+        self._write_multi_file_multi_period(folder)
+
+        a = CalendarSampler(str(folder), random_state=1).get_calendar_samples(
+            samples_per_period=3
+        )
+        b = CalendarSampler(str(folder), random_state=2).get_calendar_samples(
+            samples_per_period=3
+        )
+
+        assert sorted(a["GlobalEventID"].to_list()) != sorted(b["GlobalEventID"].to_list())
+
+
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
         folder = tmp_path / "data"
@@ -1038,6 +1103,45 @@ class TestStratifiedSampling:
         assert df["NumArticles"].dtype == pl.Float64
         assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1.0, 2.0, 3.0]
         assert df["NumArticles"].null_count() == 1
+
+
+class TestStratifiedSamplingSeedReproducibility:
+    """--stratify's own version of TestCalendarSamplerSeedReproducibility
+    above: get_stratified_sample shares the identical shared-RNG,
+    group_by-visitation-order reservoir draw as get_calendar_samples, so
+    it shares the identical fixed-seed reproducibility gap. Needs several
+    files (several batches) and several groups, same reasoning as above."""
+
+    @staticmethod
+    def _write_multi_file_multi_group(folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({
+            "GlobalEventID": list(range(0, 12)),
+            "QuadClass": [1] * 4 + [2] * 4 + [3] * 2 + [4] * 2,
+        }).write_parquet(folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(12, 24)),
+            "QuadClass": [1] * 2 + [2] * 2 + [3] * 4 + [4] * 4,
+        }).write_parquet(folder / "b.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(24, 36)),
+            "QuadClass": [4] * 3 + [3] * 3 + [2] * 3 + [1] * 3,
+        }).write_parquet(folder / "c.parquet")
+
+    def test_repeated_runs_with_the_same_seed_pick_the_same_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        self._write_multi_file_multi_group(folder)
+
+        results = [
+            FilteredSampler(
+                str(folder), ["GlobalEventID", "QuadClass"], random_state=7
+            ).get_stratified_sample("QuadClass", n_per_group=3)
+            for _ in range(3)
+        ]
+
+        first = sorted(results[0]["GlobalEventID"].to_list())
+        for other in results[1:]:
+            assert sorted(other["GlobalEventID"].to_list()) == first
 
 
 # ----------------------------------------------------------
