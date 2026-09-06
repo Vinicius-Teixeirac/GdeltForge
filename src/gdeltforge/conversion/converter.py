@@ -621,22 +621,44 @@ class GDELTConverter:
                 for source_file in to_process
             }
 
-            for future in tqdm(
-                as_completed(futures), total=len(futures),
-                desc=f"Converting {unit.upper()} files", unit=unit,
-            ):
-                source_path = Path(futures[future])
-                try:
-                    outputs = future.result()
-                    all_outputs.extend(outputs)
-                    self._mark_done(source_path)
+            try:
+                for future in tqdm(
+                    as_completed(futures), total=len(futures),
+                    desc=f"Converting {unit.upper()} files", unit=unit,
+                ):
+                    source_path = Path(futures[future])
+                    try:
+                        outputs = future.result()
+                        all_outputs.extend(outputs)
+                        self._mark_done(source_path)
 
-                    if self.delete_source:
-                        self._delete_source(source_path)
+                        if self.delete_source:
+                            self._delete_source(source_path)
 
-                except Exception as e:
-                    logger.error(f"Failed to process {source_path.name}: {e}")
-                    failed.append(source_path.name)
+                    except Exception as e:
+                        logger.error(f"Failed to process {source_path.name}: {e}")
+                        failed.append(source_path.name)
+            except KeyboardInterrupt:
+                # Every future was submitted up front, so the executor's
+                # own default __exit__ (shutdown(wait=True)) would drain
+                # every one of them, including ones that haven't even
+                # started yet, before actually exiting, the same real
+                # timing gap found in scrape's identical loop (see
+                # download_gdelt_files for the full measurement).
+                # cancel_futures=True (Python >=3.9, this project's own
+                # floor is 3.10) cancels every not-yet-started future
+                # immediately; wait=False doesn't additionally block here
+                # for the (at most max_workers) files already in flight,
+                # since a running worker process can't be safely
+                # force-killed mid-write anyway, and the executor's own
+                # __exit__ will still wait for those specific ones as this
+                # exception continues propagating.
+                still_running = sum(1 for f in futures if f.running())
+                logger.warning(
+                    f"Interrupted: waiting for {still_running} in-flight {unit}(s) to finish."
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         logger.info(
             f"Conversion complete. Total Parquets created: {len(all_outputs)}, "
