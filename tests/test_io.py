@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -5,12 +6,15 @@ import polars as pl
 import pytest
 
 from gdeltforge.utils.io import (
+    _schema_from_json,
+    _schema_to_json,
     clearer_dataset_errors,
     config_fingerprint,
     delete_done_marker,
     is_marked_done,
     mark_done,
     narrow_to_available_columns,
+    read_csv_export,
     read_parquet_path,
     warn_if_delete_source_drops_recoverable_data,
     write_dataframe_atomic,
@@ -144,8 +148,11 @@ class TestWriteDataframeAtomic:
             "EventCode" in r.message and "EventBaseCode" in r.message for r in caplog.records
         )
         assert any("schema_overrides" in r.message for r in caplog.records)
+        assert any("read_csv_export" in r.message for r in caplog.records)
 
-        # The suggested fix from the warning must actually work.
+        # The suggested manual fix from the warning must actually work,
+        # for a caller who reads the file back some other way than
+        # read_csv_export (its own dedicated tests below cover that path).
         result = pl.read_csv(out, schema_overrides={"EventCode": pl.Utf8, "EventBaseCode": pl.Utf8})
         assert result["EventCode"].to_list() == ["020", "173"]
         assert result["EventBaseCode"].to_list() == ["02", "17"]
@@ -227,6 +234,180 @@ class TestWriteDataframeAtomic:
             write_dataframe_atomic(pl.DataFrame({"a": [1]}), out, export_format="json")
 
         assert not out.exists()
+
+    def test_csv_export_writes_a_schema_sidecar(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({
+            "GlobalEventID": [1, 2], "GoldsteinScale": [-5.0, 3.0], "EventCode": ["020", "173"],
+        })
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        sidecar = tmp_path / "sample.csv.schema.json"
+        assert sidecar.exists()
+        assert not sidecar.with_name(sidecar.name + ".tmp").exists()
+        assert json.loads(sidecar.read_text()) == {
+            "GlobalEventID": "Int64", "GoldsteinScale": "Float64", "EventCode": "String",
+        }
+
+    def test_parquet_export_writes_no_sidecar(self, tmp_path):
+        # The sidecar exists to work around CSV's own lack of a type
+        # system; Parquet already carries its schema natively, so there's
+        # nothing for a sidecar to add here.
+        out = tmp_path / "sample.parquet"
+        write_dataframe_atomic(pl.DataFrame({"EventCode": ["020"]}), out, export_format="parquet")
+
+        assert not (tmp_path / "sample.parquet.schema.json").exists()
+
+    def test_a_sidecar_write_failure_degrades_without_losing_the_csv(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # Best-effort: the CSV export the caller actually asked for must
+        # survive even if the schema sidecar can't be written (a
+        # read-only destination, a full disk), degrading to
+        # read_csv_export's own no-sidecar fallback rather than losing
+        # output that already succeeded.
+        out = tmp_path / "sample.csv"
+
+        real_write_text = Path.write_text
+
+        def boom(self, *args, **kwargs):
+            if self.name.endswith(".schema.json.tmp"):
+                raise OSError("disk full")
+            return real_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", boom)
+
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(
+                pl.DataFrame({"GlobalEventID": [1, 2]}), out, export_format="csv"
+            )
+
+        assert out.exists()
+        assert not (tmp_path / "sample.csv.schema.json").exists()
+        assert not (tmp_path / "sample.csv.schema.json.tmp").exists()
+        assert any("schema sidecar" in r.message for r in caplog.records)
+
+
+class TestReadCsvExport:
+    """read_csv_export is the actual fix for the CSV round-trip gap named
+    in write_dataframe_atomic's own warning (EventCode/EventBaseCode/
+    EventRootCode losing their leading zero on a standard re-read, and
+    any other column silently losing its real dtype the same way): it
+    restores every column's real dtype from the schema sidecar written
+    alongside a gdeltforge CSV export, rather than leaving pl.read_csv to
+    infer types from content the way a bare pl.read_csv/pd.read_csv call
+    would. No write-side CSV setting can close this gap on its own (CSV
+    itself carries no type information at all), so this is a read-side
+    fix: a caller who reads back through this function instead of a bare
+    pl.read_csv gets a genuinely lossless round trip; one who doesn't
+    still gets the documented warning and manual workaround."""
+
+    def test_full_round_trip_is_byte_for_byte_lossless(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({
+            "GlobalEventID": [1, 2, None],
+            "GoldsteinScale": [-5.0, None, 3.0],
+            "EventCode": ["020", None, "057"],
+            "EventBaseCode": ["02", "01", ""],
+            "Actor1Name": ["A", None, "C"],
+        })
+
+        write_dataframe_atomic(df, out, export_format="csv")
+        result = read_csv_export(out)
+
+        assert result.schema == df.schema
+        assert result.equals(df)
+
+    def test_zero_padded_codes_keep_their_leading_zero(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        write_dataframe_atomic(
+            pl.DataFrame({"EventCode": ["020", "173"]}), out, export_format="csv"
+        )
+
+        result = read_csv_export(out)
+
+        assert result["EventCode"].to_list() == ["020", "173"]
+
+    def test_no_sidecar_falls_back_to_default_inference_with_a_warning(
+        self, tmp_path, caplog
+    ):
+        # A CSV that never came from gdeltforge (or a pre-existing export
+        # from before this existed): no sidecar to consult, so this can
+        # only degrade to the same documented limitation write time
+        # already warns about, not silently claim a fix that isn't there.
+        out = tmp_path / "foreign.csv"
+        pl.DataFrame({"EventCode": ["020", "173"]}).write_csv(out, quote_style="non_numeric")
+
+        with caplog.at_level(logging.WARNING):
+            result = read_csv_export(out)
+
+        assert result["EventCode"].to_list() == [20, 173]
+        assert any("schema sidecar" in r.message for r in caplog.records)
+        assert any("schema_overrides" in r.message for r in caplog.records)
+
+    def test_no_sidecar_no_warning_when_no_zero_padded_columns_present(
+        self, tmp_path, caplog
+    ):
+        out = tmp_path / "foreign.csv"
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_csv(out)
+
+        with caplog.at_level(logging.WARNING):
+            read_csv_export(out)
+
+        assert not caplog.records
+
+    def test_explicit_schema_overrides_win_over_the_sidecar(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        write_dataframe_atomic(
+            pl.DataFrame({"GlobalEventID": [1, 2], "EventCode": ["020", "173"]}),
+            out, export_format="csv",
+        )
+
+        result = read_csv_export(out, schema_overrides={"GlobalEventID": pl.Float64})
+
+        assert result.schema["GlobalEventID"] == pl.Float64
+        assert result["GlobalEventID"].to_list() == [1.0, 2.0]
+        # The column the caller didn't override still comes from the
+        # sidecar, not default inference.
+        assert result["EventCode"].to_list() == ["020", "173"]
+
+    def test_other_read_csv_kwargs_still_pass_through(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        write_dataframe_atomic(
+            pl.DataFrame({"GlobalEventID": [1, 2, 3]}), out, export_format="csv"
+        )
+
+        result = read_csv_export(out, n_rows=2)
+
+        assert len(result) == 2
+
+
+class TestSchemaJson:
+    """_schema_to_json/_schema_from_json: the plain-JSON representation
+    the schema sidecar is written as, kept polars-independent on purpose
+    (a human, or a caller who never imports polars, can still read it)."""
+
+    def test_round_trips_every_dtype_this_project_s_data_actually_uses(self):
+        schema = {"GlobalEventID": pl.Int64, "GoldsteinScale": pl.Float64, "EventCode": pl.String}
+
+        assert _schema_from_json(_schema_to_json(schema)) == schema
+
+    def test_an_unrecognized_dtype_name_is_skipped_not_raised(self):
+        # A sidecar from a newer/older gdeltforge naming a dtype this
+        # polars version doesn't have, or a hand-edited one with a typo,
+        # degrades to default inference for just that column rather than
+        # failing the whole read.
+        result = _schema_from_json({"A": "Int64", "B": "NotARealDtype"})
+
+        assert result == {"A": pl.Int64}
+
+    def test_a_non_dtype_polars_attribute_name_is_also_skipped(self):
+        # "concat" is a real name on the polars module, just not a dtype;
+        # getattr(pl, "concat") must not be mistaken for one.
+        result = _schema_from_json({"A": "concat"})
+
+        assert result == {}
 
 
 class TestReadParquetPath:
