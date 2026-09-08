@@ -660,6 +660,155 @@ def narrow_to_available_columns(
     return sorted((requested & available) | required)
 
 
+def _file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
+    return {f: dict(pl.read_parquet_schema(f).items()) for f in files}
+
+
+def _widen_conflicting_dtypes(dtypes: set[pl.DataType], column: str) -> pl.DataType:
+    if all(dtype.is_integer() for dtype in dtypes):
+        return pl.Int64()
+    if all(dtype.is_numeric() for dtype in dtypes):
+        return pl.Float64()
+    raise pl.exceptions.SchemaError(
+        f"column {column!r} has incompatible types across files: "
+        f"{sorted(str(d) for d in dtypes)}. gdeltforge can only reconcile "
+        f"numeric width differences (e.g. Int64/Float64) automatically; "
+        f"this looks like a genuine data problem across the source files "
+        f"and needs manual investigation."
+    )
+
+
+def reconcile_parquet_schema(files: list[Path]) -> dict[str, pl.DataType]:
+    """
+    Union schema across every file's own real per-column dtype, widening a
+    column to a common dtype wherever files genuinely disagree on it,
+    rather than silently keeping whichever file happened to be read first
+    the way a plain schema.setdefault(name, dtype) scan would.
+
+    A real accumulated GDELT archive can hit this at a specific dtype
+    boundary: events' own Actor2Geo_Type is declared Float64 in every
+    yearly/monthly archive through 2007-10, then Int64 in every file from
+    2007-11 onward, both genuinely correct for their own file, neither
+    wrong on its own. A read spanning that boundary needs both files' own
+    data preserved, not one silently coerced to null (missing_columns=
+    "insert" only reconciles a column ABSENT from a file, not one present
+    under a different dtype) or the whole read rejected outright the
+    moment scan_parquet hits a file whose real dtype disagrees with
+    whichever file's it happened to infer its schema from.
+
+    Only reconciles combinations pl.concat(..., how="vertical_relaxed")
+    would itself accept: numeric widening (Int64 -> Float64, mixed
+    integer widths -> Int64). A genuine non-numeric conflict (a column
+    typed Utf8 in one file, Int64 in another) raises a clear error naming
+    the column and every dtype seen for it, rather than guessing, since
+    silently casting between those would risk corrupting real data
+    instead of merely widening its numeric range.
+    """
+    return reconcile_file_schemas(_file_schemas(files))
+
+
+def reconcile_file_schemas(
+    file_schemas: dict[Path, dict[str, pl.DataType]],
+) -> dict[str, pl.DataType]:
+    """Same reconciliation as reconcile_parquet_schema, for a caller that
+    already has each file's own real schema read (scan_dataset_reconciled
+    below), so the footer isn't read a second time."""
+    seen: dict[str, set[pl.DataType]] = {}
+    for schema in file_schemas.values():
+        for name, dtype in schema.items():
+            seen.setdefault(name, set()).add(dtype)
+
+    resolved: dict[str, pl.DataType] = {}
+    for name, dtypes in seen.items():
+        resolved[name] = (
+            next(iter(dtypes)) if len(dtypes) == 1 else _widen_conflicting_dtypes(dtypes, name)
+        )
+    return resolved
+
+
+def scan_file_against_schema(
+    file: Path,
+    target_schema: dict[str, pl.DataType],
+    real_schema: dict[str, pl.DataType] | None = None,
+) -> pl.LazyFrame:
+    """
+    Scan a single file toward a schema reconciled across a wider set of
+    files (reconcile_parquet_schema), casting this file's own columns to
+    the target dtype wherever its real per-file dtype disagrees, rather
+    than handing scan_parquet a dtype it will reject the file for
+    declaring "wrong". scan_parquet's own schema= parameter is an
+    assertion, not a request: passing target_schema straight through
+    only works when this file's real dtypes already match it, and raises
+    ("data type mismatch ... incoming: X != target: Y") for exactly the
+    files reconcile_parquet_schema exists to reconcile. This scans
+    against this file's own real dtype for anything that disagrees, then
+    applies the cast to target_schema immediately after.
+
+    real_schema lets a caller that already read this file's own schema
+    (scan_dataset_reconciled) pass it straight through instead of paying
+    for a second footer read.
+    """
+    if real_schema is None:
+        real_schema = dict(pl.read_parquet_schema(file).items())
+
+    per_file_schema = dict(target_schema)
+    casts = []
+    for name, target_dtype in target_schema.items():
+        real_dtype = real_schema.get(name)
+        if real_dtype is not None and real_dtype != target_dtype:
+            per_file_schema[name] = real_dtype
+            casts.append(pl.col(name).cast(target_dtype))
+
+    lf = pl.scan_parquet(file, schema=per_file_schema, missing_columns="insert")
+    return lf.with_columns(casts) if casts else lf
+
+
+def scan_dataset_reconciled(files: list[Path]) -> pl.LazyFrame:
+    """
+    Lazily scan every file in `files` as one dataset, reconciling both a
+    column missing entirely from some files (pre-existing: comes back
+    null for those files' own rows) and a column present everywhere but
+    typed differently in some files (reconcile_parquet_schema; comes back
+    widened to whichever dtype all of them can be cast to). Shared by
+    samplers.py's CalendarSampler/FilteredSampler and crossref.py's GKG/
+    Mentions reads, both of which scan an entire multi-file dataset at
+    once rather than gathering specific rows per file the way
+    IndexedSampler.get_random_sample does (that one calls
+    scan_file_against_schema directly instead, once per file it actually
+    draws from).
+
+    When every file already agrees on every column's dtype (the common
+    case), this is a single combined pl.scan_parquet(files, ...) call, so
+    polars' own multi-file parallelism and predicate pushdown (row-group
+    skipping on a historical partition's constant Year/MonthYear, for
+    instance) stay intact exactly as before this existed. Only when at
+    least one column's real dtype genuinely disagrees across files does
+    this fall back to one LazyFrame per file, each scanned against its
+    own real dtype for whatever disagrees and cast to the reconciled
+    target immediately after, then unioned with how="vertical_relaxed"
+    (the same reconciliation this project's own reservoir-concat fix
+    already relies on elsewhere for the identical Int64/Float64 shape).
+    That fallback only costs the files actually affected, in practice a
+    small minority sitting right at a real historical dtype boundary.
+    """
+    file_schemas = _file_schemas(files)
+    target_schema = reconcile_file_schemas(file_schemas)
+
+    conflicting = {
+        name
+        for name in target_schema
+        if len({schema[name] for schema in file_schemas.values() if name in schema}) > 1
+    }
+
+    if not conflicting:
+        return pl.scan_parquet(files, schema=target_schema, missing_columns="insert")
+
+    lazy_frames = [
+        scan_file_against_schema(f, target_schema, real_schema=file_schemas[f]) for f in files
+    ]
+    return pl.concat(lazy_frames, how="vertical_relaxed")
+
+
 def unzip_file(zip_filepath: str | Path, extract_to_dir: str | Path | None = None) -> list[Path]:
     """
     Unzips a zip file and returns a list of extracted file paths.

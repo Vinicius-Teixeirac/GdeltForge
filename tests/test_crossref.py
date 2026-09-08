@@ -1,10 +1,12 @@
 import logging
+import sys
 from datetime import date
 from pathlib import Path
 
 import polars as pl
 import polars.testing as pl_testing
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.crossref.crossref as crossref_module
 from gdeltforge.crossref.crossref import (
@@ -482,6 +484,36 @@ class TestCrossrefEventsGkgV1:
         ).row(0, named=True)
         assert row["NumArticles"] == 5       # Events' own NumArticles
         assert row["GKG_NumArticles"] == 10  # GKG's NumArticles, untouched
+
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real V2.1DATE split found independently against the
+        # real GKG 2.1 archive (Float64 in 441 files scattered across six
+        # years, Int64 everywhere else), reached here through GKG 1.0's
+        # own _dataset scan instead. scan_parquet's own schema=
+        # parameter is an assertion, so a plain union scan crashed ("data
+        # type mismatch ... incoming: Int64 != target: Float64") the
+        # moment it reached the file whose real dtype disagreed with
+        # whichever file the schema happened to be inferred from.
+        folder = tmp_path / "gkg_v1"
+        folder.mkdir()
+        pl.DataFrame({
+            "Date": [20130401], "EventIds": ["1001"],
+            "NumArticles": [10], "Themes": ["TAX_FNCACT"], "Confidence": [1.0],
+        }).write_parquet(folder / "20130401.gkg.parquet")
+        pl.DataFrame({
+            "Date": [20130402], "EventIds": ["1002"],
+            "NumArticles": [4], "Themes": ["ECON_STOCKMARKET"], "Confidence": [2],
+        }).write_parquet(folder / "20130402.gkg.parquet")
+
+        result = crossref_events_gkg_v1(
+            self._events_df(), str(folder), [*GKG_V1_COLUMNS, "Confidence"]
+        )
+
+        assert result["GKG_Confidence"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["GKG_Confidence"] for row in result.to_dicts()}
+        assert by_id[1001] == 1.0 and by_id[1002] == 2.0
 
     def test_columns_restricts_gkg_side_output(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
@@ -1889,3 +1921,67 @@ class TestCrossrefEventsGkgAuto:
 
         large_join_warnings = [r for r in caplog.records if "gdeltforge sample" in r.message]
         assert len(large_join_warnings) == 2
+
+
+class TestTqdmInterruptDoesNotLeakATraceback:
+    """
+    crossref_events_gkg_v1's own tqdm-wrapped batch loop shares the
+    identical bare-"for x in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full: see that class's own docstring for the real
+    mechanism (a live comprehensive QA pass found it via
+    IndexedSampler's "Loading samples" loop specifically, but it lives
+    entirely in tqdm's own generic __iter__/close(), independent of
+    what any particular wrapped loop body does). This test applies the
+    identical technique here.
+    """
+
+    def test_v1_cross_referencing_loop(self, tmp_path, monkeypatch):
+        folder = TestCrossrefEventsGkgV1._write_gkg_v1(tmp_path)
+        events_df = TestCrossrefEventsGkgV1._events_df()
+
+        # Scoped to instances created while this patch is active, not
+        # global: see samplers.py's own TestTqdmInterruptDoesNotLeakA
+        # Traceback._patch_tqdm_close_to_raise_once for why an unscoped
+        # patch (a bare closed_once flag shared by every tqdm instance
+        # process-wide) is a real test-isolation hazard, confirmed
+        # against the full suite, not just this bug's own mechanism.
+        real_init = tqdm.__init__
+        tracked_ids: set[int] = set()
+
+        def tracking_init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            tracked_ids.add(id(self))
+
+        closed_once_ids: set[int] = set()
+
+        def close_raises_once(self):
+            if id(self) not in tracked_ids or id(self) in closed_once_ids:
+                return
+            closed_once_ids.add(id(self))
+            raise KeyboardInterrupt("second interrupt, during close")
+
+        monkeypatch.setattr(tqdm, "__init__", tracking_init)
+        monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+        # The interrupt must originate from inside the loop BODY (where
+        # tqdm's own generator is suspended at its yield, the same place
+        # a real signal actually lands), not from collect_batches itself
+        # (still running its own frame, which propagates normally either
+        # way and would prove nothing about tqdm). is_empty() is this
+        # body's own first call on each batch.
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        events = []
+        original_hook = sys.unraisablehook
+        sys.unraisablehook = events.append
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
+        finally:
+            sys.unraisablehook = original_hook
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"

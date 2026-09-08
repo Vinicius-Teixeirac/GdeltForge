@@ -1,9 +1,12 @@
 import logging
+import sys
+from contextlib import contextmanager
 from datetime import date
 
 import numpy as np
 import polars as pl
 import pytest
+from tqdm import tqdm
 
 from gdeltforge.sampling.samplers import (
     CalendarSampler,
@@ -206,6 +209,32 @@ class TestIndexedSampler:
         assert by_id[1] == 1 and by_id[2] == 2
         assert by_id[3] is None and by_id[4] is None
 
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real Actor2Geo_Type split: events' own yearly/
+        # monthly archives declare it Float64 through 2007-10 and Int64
+        # from 2007-11 onward, both genuinely correct for their own file.
+        # get_random_sample's per-file scan used to pass every file the
+        # SAME schema (whichever file was read first won the dtype), and
+        # scan_parquet raised "data type mismatch ... incoming: Int64 !=
+        # target: Float64" the moment a draw touched both files.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(folder / "200710.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(folder / "200711.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(4)
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
+
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -358,6 +387,32 @@ class TestCalendarSampler:
         sampler = CalendarSampler(str(folder), random_state=1)
         with pytest.raises(ValueError, match="'Day' is not a column"):
             sampler.get_calendar_samples(samples_per_period=5)
+
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # single shared scan CalendarSampler and FilteredSampler both go
+        # through: scan_parquet's own schema= parameter is an assertion,
+        # so a plain union scan crashed ("data type mismatch ...
+        # incoming: Int64 != target: Float64") the moment it reached the
+        # file whose real dtype disagreed with whichever file the schema
+        # happened to be inferred from.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Day": [20071001, 20071002], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(folder / "200710.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Day": [20071101, 20071102], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(folder / "200711.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=10)
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
 
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
@@ -653,6 +708,29 @@ class TestFilteredSamplerValidation:
         )
         with pytest.raises(RuntimeError, match="filtered sample dataset"):
             sampler.filter_dataset()
+
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # same shared scan CalendarSampler's own identical test above
+        # covers; see that test's comment for the exact failure this
+        # replaces.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(folder / "200710.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(folder / "200711.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "Actor2Geo_Type"])
+        df = sampler.filter_dataset()
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
 
 
 class TestFilterValueTypeMismatch:
@@ -1657,3 +1735,228 @@ class TestFilteredSamplerDateFiltering:
         )
         with pytest.raises(FileNotFoundError):
             sampler.filter_dataset()
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """
+    sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so
+    replacing it here is what lets a test observe the exact leak this
+    class guards against, rather than only being able to see it as
+    incidental stderr noise a real terminal user would notice by eye.
+    """
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """
+    Simulates a second interrupt landing while tqdm's own close() (an
+    otherwise fast, do-nothing-visible call) happens to be running: this
+    is deterministic and platform-independent, unlike waiting for a real
+    signal's own timing to land there by chance. Raises exactly once per
+    instance, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op) -- an
+    unconditional always-raise would fail this same way for tqdm's own
+    __del__ falling back to a redundant close() later, which isn't the
+    bug under test.
+
+    Scoped to instances created while this patch is active, not global:
+    monkeypatching tqdm.close replaces it for every tqdm object in the
+    process, including one left over from an unrelated, already-finished
+    test whose own __del__ happens to fire during this test's own
+    window. Running the full suite (not this class in isolation) hits
+    that for real: a foreign instance's deferred __del__ call raced
+    ahead of the pbar actually under test, consuming this test's one
+    allowed raise and leaving the real pbar's own close to reach
+    sys.unraisablehook uncaught, a false failure with nothing wrong in
+    the code under test. Tracking which instances were actually
+    constructed here and no-op'ing close() for anything else closes that
+    gap regardless of unrelated objects' own GC timing.
+    """
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestTqdmInterruptDoesNotLeakATraceback:
+    """
+    Every tqdm-wrapped loop in this module used to iterate the bare
+    "for x in tqdm(iterable):" form. Found via a live comprehensive QA
+    pass, specifically for IndexedSampler's "Loading samples" loop: a
+    real SIGINT partway through it printed a stray "Exception ignored
+    in: <generator object tqdm.__iter__ ...>" / KeyboardInterrupt
+    traceback fragment to stderr before the documented, clean
+    "Interrupted." message, since that generator's own implicit close()
+    runs via garbage collection when the for-loop's frame unwinds on
+    interrupt, a context with no legitimate way to propagate a second
+    exception raised during it (confirmed directly: forcing close() to
+    raise while the generator is discarded mid-suspension reaches
+    sys.unraisablehook for the bare-iteration form). Every other tqdm
+    loop in this module shares the identical mechanism (it lives
+    entirely in tqdm's own generic __iter__/close(), independent of
+    what the wrapped loop body does), so each is covered here too, not
+    only the one the report happened to test.
+
+    Each site now drives its own tqdm object manually inside an explicit
+    "with tqdm(...) as pbar:" block, iterating the real underlying
+    iterable directly and calling pbar.update() by hand, rather than
+    ever creating tqdm's own __iter__ generator at all: with tqdm(...)
+    as pbar: still isn't sufficient on its own, since for x in pbar:
+    creates that same generator internally regardless.
+
+    Each test forces a first KeyboardInterrupt partway through the real
+    per-site loop (simulating where a real signal would land) and a
+    second one during tqdm's own close() (see
+    _patch_tqdm_close_to_raise_once), then asserts nothing reaches
+    sys.unraisablehook, only a normally-propagating KeyboardInterrupt.
+    """
+
+    def test_indexed_sampler_loading_samples(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        for i in range(3):
+            pl.DataFrame({"GlobalEventID": [i]}).write_parquet(folder / f"{i}.parquet")
+        sampler = IndexedSampler(str(folder), random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        call_count = [0]
+        real_collect = pl.LazyFrame.collect
+
+        def collect_and_interrupt_once(self, *args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise KeyboardInterrupt("first interrupt, mid-loop")
+            return real_collect(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", collect_and_interrupt_once)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_random_sample(3)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_calendar_sampler_sampling_loop(self, tmp_path, monkeypatch):
+        # The interrupt must originate from inside the loop BODY (where
+        # tqdm's own generator is suspended at its yield, the same place
+        # a real signal actually lands), not from the underlying
+        # _batches generator itself (still running its own frame, which
+        # propagates normally either way and would prove nothing).
+        # is_empty() is this body's own first call on each batch.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(folder / "a.parquet")
+        sampler = CalendarSampler(str(folder), random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_calendar_samples(samples_per_period=10)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_filtered_sampler_filter_dataset_loop(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.filter_dataset()
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_filtered_sampler_get_random_sample_loop(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        # get_random_sample's own first call on each batch is len(), not
+        # is_empty(); patched after the sampler (and its own __init__-
+        # time DataFrame work) already exists, so only this call, inside
+        # the loop body, is affected.
+        def len_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "__len__", len_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_random_sample(1)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_filtered_sampler_get_stratified_sample_loop(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1], "QuadClass": [1],
+        }).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_stratified_sample("QuadClass", n_per_group=1)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
