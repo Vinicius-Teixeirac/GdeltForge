@@ -478,7 +478,17 @@ class GDELTFilter:
             output_path = self.output_folder / f"{file_path.stem}_filtered.parquet"
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = output_path.with_name(output_path.name + ".tmp")
+        # PID-suffixed, matching write_parquet_atomic's own fix for the
+        # identical race: two concurrent filter invocations targeting the
+        # same output_path built this same fixed ".tmp" name, so whichever
+        # process's os.replace() ran second found its own tmp file already
+        # renamed away by the other, failing with a raw FileNotFoundError
+        # despite neither run actually doing anything wrong. This can't go
+        # through write_parquet_atomic directly: it writes an already-
+        # materialized DataFrame, while sink_parquet below streams lf
+        # straight to disk to keep peak memory bounded, which is the whole
+        # point of scanning rather than collecting above.
+        tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.tmp")
 
         if existing_columns:
             lf = lf.filter(

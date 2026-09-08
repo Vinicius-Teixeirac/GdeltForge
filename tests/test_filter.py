@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import polars as pl
@@ -1393,6 +1394,11 @@ class TestFilterSingleFileAtomicity:
     pattern already used for converter output."""
 
     def test_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        # PID-pinned: filter_single_file's own staging name is now PID-
+        # suffixed (the fix for two concurrent filter runs sharing one
+        # output path), so the leftover-tmp check below has to know the
+        # exact name to look for.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -1410,9 +1416,10 @@ class TestFilterSingleFileAtomicity:
             filt.filter_single_file(src, out_path)
 
         assert not out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
 
-    def test_successful_write_leaves_no_tmp_behind(self, tmp_path):
+    def test_successful_write_leaves_no_tmp_behind(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -1423,5 +1430,79 @@ class TestFilterSingleFileAtomicity:
         filt.filter_single_file(src, out_path)
 
         assert out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
         assert pq.read_table(out_path).num_rows == 2
+
+
+class TestFilterSingleFileConcurrentInvocations:
+    """
+    filter_single_file used to build its own fixed ".tmp" suffix inline
+    (tmp_path = output_path.with_name(output_path.name + ".tmp")),
+    unlike utils.io.write_parquet_atomic's already-fixed equivalent. Two
+    concurrent GDELTFilter instances filtering the same source file into
+    the same output path raced on that shared name: whichever process's
+    os.replace() ran second found its own tmp file already renamed away
+    by the other, raising a raw FileNotFoundError and counting an
+    otherwise-successful file as "failed" (e.g. two overlapping
+    `gdeltforge filter --dataset events --force` runs, one launched
+    before realizing the first was still going).
+
+    filter_single_file streams through lf.sink_parquet rather than
+    materializing a DataFrame first, specifically to keep peak memory
+    bounded for a large file, so it can't route through
+    write_parquet_atomic (which writes an already-collected DataFrame)
+    the way _write_partition_file now does; it needs its own PID-suffixed
+    name instead.
+
+    A genuine two-process race turned out to be a poor fit for a fast,
+    reliable unit test: two real OS processes started at the same
+    instant via a multiprocessing.Barrier reproduced the bug 0/8 times on
+    this platform, since a rename of a small/medium file is fast enough
+    relative to process-wake scheduling jitter that one side routinely
+    finishes its entire write-then-rename before the other even starts,
+    even though the exact same code, against real live data, reproduced
+    it in a live QA pass. Instead, "process B" is run to completion from
+    inside a patched sink_parquet, right after "process A"'s own write
+    lands on disk but before A's rename runs, deterministically forcing
+    the interleaving that a real race only produces by chance: A's
+    os.replace() now always runs against whatever B's own run already
+    did to the filesystem, regardless of platform timing. Distinct
+    os.getpid() values (mocked) are what the fix keys its own tmp-name
+    uniqueness on, the same as two genuinely separate OS processes.
+    """
+
+    def test_two_concurrent_filters_of_the_same_file_do_not_race(
+        self, tmp_path, monkeypatch
+    ):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2, 3, 4], "QuadClass": [1, 2, 3, 4]})
+        out_dir = tmp_path / "out"
+        out_path = out_dir / "data_filtered.parquet"
+
+        filt_a = GDELTFilter(str(input_dir), str(out_dir), ["QuadClass"])
+        filt_b = GDELTFilter(str(input_dir), str(out_dir), ["QuadClass"])
+
+        pids = iter([111, 222, 333, 444])
+        monkeypatch.setattr(os, "getpid", lambda: next(pids))
+
+        real_sink_parquet = pl.LazyFrame.sink_parquet
+        state = {"ran_b": False}
+
+        def sink_parquet_then_run_b(self, path, *args, **kwargs):
+            result = real_sink_parquet(self, path, *args, **kwargs)
+            if not state["ran_b"]:
+                state["ran_b"] = True
+                filt_b.filter_single_file(src, out_path)
+            return result
+
+        monkeypatch.setattr(pl.LazyFrame, "sink_parquet", sink_parquet_then_run_b)
+
+        # Must not raise: under the bug, B's completed rename (using the
+        # same shared tmp name A just wrote to) leaves nothing at A's own
+        # tmp path by the time A's own os.replace() runs.
+        filt_a.filter_single_file(src, out_path)
+
+        assert out_path.exists()
+        assert len(pl.read_parquet(out_path)) == 4

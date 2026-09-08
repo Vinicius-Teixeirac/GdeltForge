@@ -1,6 +1,7 @@
 import fnmatch
 import json
 import logging
+import os
 import subprocess
 import sys
 import zipfile
@@ -1917,6 +1918,11 @@ class TestSaveParquetAtomicity:
     sample output."""
 
     def test_save_parquet_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        # PID-pinned: _save_parquet writes through write_parquet_atomic,
+        # whose own staging name is PID-suffixed (utils.io's fix for
+        # concurrent writers sharing one destination path), so the
+        # leftover-tmp check below has to know the exact name to look for.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         cfg = _make_config(tmp_path)
         converter = GDELTConverter(cfg)
 
@@ -1932,9 +1938,13 @@ class TestSaveParquetAtomicity:
         assert result is None
         out_path = tmp_path / "parquet" / "20200101.parquet"
         assert not out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
 
     def test_save_historical_parquet_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        # Same PID-pinning reasoning as test_save_parquet_leaves_no_file_
+        # on_write_failure above: _save_historical_parquet's write now
+        # goes through _write_partition_file -> write_parquet_atomic too.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         cfg = _make_config(
             tmp_path,
             partitioning={
@@ -1957,7 +1967,79 @@ class TestSaveParquetAtomicity:
 
         out_path = tmp_path / "historical" / "Year=2020" / "2020.parquet"
         assert not out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
+
+
+class TestWritePartitionFileConcurrentInvocations:
+    """
+    _write_partition_file used to build its own fixed ".tmp" suffix
+    inline (tmp_path = out_path.with_name(out_path.name + ".tmp")),
+    missing the PID-suffix fix write_parquet_atomic already applies for
+    _save_parquet's flat-file writes. Two concurrent invocations writing
+    the same historical/partitioned output path (e.g. two overlapping
+    `gdeltforge convert --dataset events --force` runs both touching
+    200601.parquet) raced on that shared name: whichever process's
+    os.replace() ran second found its own tmp file already renamed away
+    by the other, failing with a raw FileNotFoundError even though the
+    file was written correctly by whichever process won the race.
+
+    A genuine two-process race turned out to be a poor fit for a fast,
+    reliable unit test: two real OS processes started at the same
+    instant via a multiprocessing.Barrier reproduced the bug 0/6 times on
+    this platform, since a rename of a small/medium file is fast enough
+    relative to process-wake scheduling jitter that one side routinely
+    finishes its entire write-then-rename before the other even starts,
+    even though the exact same code, against real live data, reproduced
+    it in a live QA pass. Instead, "process B" is run to completion from
+    inside a patched write_parquet, right after "process A"'s own write
+    lands on disk but before A's rename runs, deterministically forcing
+    the interleaving a real race only produces by chance: A's
+    os.replace() now always runs against whatever B's own run already
+    did to the filesystem, regardless of platform timing. Distinct
+    os.getpid() values (mocked) are what the fix keys its own tmp-name
+    uniqueness on, the same as two genuinely separate OS processes.
+    """
+
+    def test_two_concurrent_writers_to_the_same_partition_file_do_not_race(
+        self, tmp_path, monkeypatch
+    ):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={
+                "enabled": True,
+                "rules": [{"file_type": "monthly", "by": ["Year", "MonthYear"]}],
+            },
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        converter_a = GDELTConverter(cfg)
+        converter_b = GDELTConverter(cfg)
+
+        out_path = tmp_path / "historical" / "Year=2006" / "200601.parquet"
+        out_path.parent.mkdir(parents=True)
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3], "Day": [20060101, 20060102, 20060103]})
+
+        pids = iter([111, 222, 333, 444])
+        monkeypatch.setattr(os, "getpid", lambda: next(pids))
+
+        real_write_parquet = pl.DataFrame.write_parquet
+        state = {"ran_b": False}
+
+        def write_parquet_then_run_b(self, file, *args, **kwargs):
+            result = real_write_parquet(self, file, *args, **kwargs)
+            if not state["ran_b"]:
+                state["ran_b"] = True
+                converter_b._write_partition_file(df, out_path)
+            return result
+
+        monkeypatch.setattr(pl.DataFrame, "write_parquet", write_parquet_then_run_b)
+
+        # Must not raise: under the bug, B's completed rename (using the
+        # same shared tmp name A just wrote to) leaves nothing at A's own
+        # tmp path by the time A's own os.replace() runs.
+        converter_a._write_partition_file(df, out_path)
+
+        assert out_path.exists()
+        assert len(pl.read_parquet(out_path)) == 3
 
 
 _REDUCED_COLUMNS = [
