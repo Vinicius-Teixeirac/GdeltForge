@@ -187,6 +187,42 @@ _FLOAT_NUMERIC_COLUMNS = frozenset({
     "ActionGeoLat", "ActionGeoLong",
 })
 
+
+def _cast_numeric_columns(
+    df: pl.DataFrame, numeric_columns: list[str], context: str
+) -> pl.DataFrame:
+    """
+    Casts every configured numeric column present in df to its target
+    dtype (Float64 for _FLOAT_NUMERIC_COLUMNS, Int64 otherwise) via
+    cast(strict=False), and warns, naming the column and how many new
+    nulls appeared, whenever that introduces a null the column didn't
+    already have. cast(strict=False) can't tell "this field was
+    genuinely blank" apart from "this field held something that
+    couldn't be parsed" (an out-of-range integer, unparseable garbage,
+    even a whitespace-padded numeric string, unlike pandas.to_numeric,
+    which strips whitespace first): both become null, with nothing in
+    the output, or previously in the log at any level, to distinguish
+    them.
+    """
+    present = [col for col in numeric_columns if col in df.columns]
+    if not present:
+        return df
+
+    nulls_before = {col: df[col].null_count() for col in present}
+    df = df.with_columns([
+        pl.col(col).cast(pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64, strict=False)
+        for col in present
+    ])
+    for col in present:
+        new_nulls = df[col].null_count() - nulls_before[col]
+        if new_nulls:
+            logger.warning(
+                f"{context}: {new_nulls} value(s) in {col!r} couldn't be "
+                f"parsed as numeric and became null."
+            )
+    return df
+
+
 # GDELT.MASTERREDUCEDV2.1979-2013.zip's single member is 6.58GB / roughly
 # 87.3M rows uncompressed; reading it whole with schema_overrides=pl.Utf8
 # for every column (every other dataset's individual files are small
@@ -835,16 +871,9 @@ class GDELTConverter:
             for chunk_idx, chunk in enumerate(
                 lf.collect_batches(chunk_size=_EVENT_REDUCED_CHUNK_SIZE)
             ):
-                cast_exprs = [
-                    pl.col(col).cast(
-                        pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64,
-                        strict=False,
-                    )
-                    for col in self.NUMERIC_COLUMNS
-                    if col in chunk.columns
-                ]
-                if cast_exprs:
-                    chunk = chunk.with_columns(cast_exprs)
+                chunk = _cast_numeric_columns(
+                    chunk, self.NUMERIC_COLUMNS, f"{zip_p.name} chunk {chunk_idx}"
+                )
 
                 chunk = chunk.with_columns((pl.col("Date") // 10000).alias("_Year"))
                 n_unparseable = chunk["_Year"].null_count()
@@ -994,15 +1023,7 @@ class GDELTConverter:
             )
             df = pl.read_csv(csv_path, encoding="utf8-lossy", **read_kwargs)
 
-        cast_exprs = [
-            pl.col(col).cast(
-                pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64, strict=False
-            )
-            for col in self.NUMERIC_COLUMNS
-            if col in df.columns
-        ]
-        if cast_exprs:
-            df = df.with_columns(cast_exprs)
+        df = _cast_numeric_columns(df, self.NUMERIC_COLUMNS, str(csv_path))
 
         return df
 
