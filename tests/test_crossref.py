@@ -20,7 +20,6 @@ from gdeltforge.crossref.crossref import (
     warn_if_events_predate_gkg_coverage,
     warn_if_output_columns_drops_join_key,
 )
-from gdeltforge.scraping.scraper import parse_gdeltv2_file_date
 
 GKG_V1_COLUMNS = ["Date", "EventIds", "NumArticles", "Themes"]
 GKG_V2_COLUMNS = ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V1THEMES"]
@@ -267,64 +266,146 @@ class TestWarnIfDirectoryIsLarge:
     error: a genuinely large local archive is a real directory someone
     might legitimately point crossref at, just a slow one to list.
 
-    Path.glob is faked here rather than creating tens of thousands of
-    real files on disk, matching the same trick this file's dedup tests
-    already use (test_reprocessed_article_dedup_is_correct_regardless_
-    of_glob_order): fine for these isolated tests, which call
-    warn_if_directory_is_large directly and never reach _dataset()'s own
-    real file I/O the way the integration tests below do.
+    Takes an already-listed files list directly rather than a folder to
+    list itself: it used to call _list_files (glob + date-filter) on its
+    own, redoing the identical listing/date-filter pass
+    crossref_events_gkg_v1/_v2 immediately went on to repeat via
+    _dataset(), a real, consistently reproducible doubling of I/O work
+    found via a live comprehensive QA pass (every crossref run printed
+    each directory's own "Date filter [...]" log line twice, with
+    identical file counts both times). See TestCrossrefListsEach
+    DirectoryExactlyOnce below for the regression guard on that shared-
+    list property itself; these tests only cover this function's own
+    logic (count files, warn or don't past the threshold) in isolation.
     """
 
-    @staticmethod
-    def _fake_glob(n):
-        def glob(_self, _pattern):
-            return [Path(f"{i}.parquet") for i in range(n)]
-        return glob
-
-    def test_no_warning_at_or_below_threshold(self, tmp_path, caplog, monkeypatch):
+    def test_no_warning_at_or_below_threshold(self, tmp_path, caplog):
         n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD
-        monkeypatch.setattr(Path, "glob", self._fake_glob(n))
+        files = [Path(f"{i}.parquet") for i in range(n)]
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
+            warn_if_directory_is_large(files, str(tmp_path), "Mentions")
         assert caplog.records == []
 
-    def test_warns_above_threshold(self, tmp_path, caplog, monkeypatch):
+    def test_warns_above_threshold(self, tmp_path, caplog):
         n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD + 1
-        monkeypatch.setattr(Path, "glob", self._fake_glob(n))
+        files = [Path(f"{i}.parquet") for i in range(n)]
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
+            warn_if_directory_is_large(files, str(tmp_path), "Mentions")
         assert any(
             f"{n:,}" in r.message and "Mentions" in r.message and repr(str(tmp_path)) in r.message
             for r in caplog.records
         )
 
     def test_no_warning_for_a_typical_local_directory(self, tmp_path, caplog):
-        (tmp_path / "a.parquet").touch()
-        (tmp_path / "b.parquet").touch()
+        files = [tmp_path / "a.parquet", tmp_path / "b.parquet"]
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
+            warn_if_directory_is_large(files, str(tmp_path), "Mentions")
         assert caplog.records == []
 
-    def test_counts_the_post_date_filter_list_not_the_raw_directory(
-        self, tmp_path, caplog, monkeypatch
-    ):
-        # Three real, date-parseable files; narrowing to the last two
-        # must be what gets counted, not the raw directory's three,
-        # proving the file count this warning reports is the same list
-        # crossref_events_gkg_v1/_v2 would actually open with the same
-        # bounds, not a stale, pre-narrowing total.
-        for name in ("20200101000000", "20200102000000", "20200103000000"):
-            (tmp_path / f"{name}.gkg.parquet").touch()
+    def test_counts_exactly_the_files_list_it_was_given(self, tmp_path, caplog, monkeypatch):
+        # Whatever narrowing already happened before this function ever
+        # sees the list (date filtering, or anything else a caller might
+        # apply) is reflected purely by what's in files; this function
+        # itself does no listing or filtering of its own.
         monkeypatch.setattr(crossref_module, "_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD", 1)
+        files = [tmp_path / "a.parquet", tmp_path / "b.parquet"]
 
         with caplog.at_level(logging.WARNING):
             warn_if_directory_is_large(
-                str(tmp_path), "GKG 2.1", parse_gdeltv2_file_date,
-                start_date=date(2020, 1, 2), end_date=None,
+                files, str(tmp_path), "GKG 2.1", start_date=date(2020, 1, 2), end_date=None,
             )
 
         assert any("2 files" in r.message and "GKG 2.1" in r.message for r in caplog.records)
-        assert not any("3 files" in r.message for r in caplog.records)
+
+
+class TestCrossrefListsEachDirectoryExactlyOnce:
+    """
+    warn_if_directory_is_large and _dataset each used to list and date-
+    filter a configured GKG/Mentions directory independently, so a
+    single crossref run doubled the real I/O cost cli-reference.md's own
+    capacity-planning numbers document for exactly this operation. Found
+    via a live comprehensive QA pass: a real crossref --gkg-version v2
+    run printed each of Mentions/GKG 2.1's own "Date filter [...]" log
+    line twice, with identical "kept"/"excluded" counts both times.
+    crossref_events_gkg_v1/_v2 now list each directory exactly once and
+    share that same list between the warning and the actual scan; this
+    spies on _list_files (the shared listing/date-filter helper both
+    used to call independently) to assert on call count directly, not
+    wall-clock time, which wouldn't reproduce reliably in CI.
+    """
+
+    def test_v1_lists_its_directory_exactly_once(self, tmp_path, monkeypatch):
+        folder = TestCrossrefEventsGkgV1._write_gkg_v1(tmp_path)
+        calls = []
+        real_list_files = crossref_module._list_files
+
+        def spy(folder, date_parser, start_date=None, end_date=None):
+            calls.append(folder)
+            return real_list_files(folder, date_parser, start_date, end_date)
+
+        monkeypatch.setattr(crossref_module, "_list_files", spy)
+
+        crossref_events_gkg_v1(TestCrossrefEventsGkgV1._events_df(), folder, GKG_V1_COLUMNS)
+
+        assert calls == [folder], (
+            f"expected exactly 1 directory-listing call for the GKG 1.0 folder, "
+            f"got {len(calls)}: {calls}"
+        )
+
+    def test_v2_lists_each_of_its_two_directories_exactly_once(self, tmp_path, monkeypatch):
+        mentions_folder = TestCrossrefEventsGkgV2._write_mentions(tmp_path)
+        gkg_v2_folder = TestCrossrefEventsGkgV2._write_gkg_v2(tmp_path)
+        calls = []
+        real_list_files = crossref_module._list_files
+
+        def spy(folder, date_parser, start_date=None, end_date=None):
+            calls.append(folder)
+            return real_list_files(folder, date_parser, start_date, end_date)
+
+        monkeypatch.setattr(crossref_module, "_list_files", spy)
+
+        crossref_events_gkg_v2(
+            TestCrossrefEventsGkgV2._events_df(), mentions_folder, gkg_v2_folder, GKG_V2_COLUMNS,
+        )
+
+        assert sorted(calls) == sorted([mentions_folder, gkg_v2_folder]), (
+            f"expected exactly 1 directory-listing call each for Mentions and GKG 2.1 "
+            f"(2 total), got {len(calls)}: {calls}"
+        )
+
+    def test_auto_still_lists_each_of_v1s_and_v2s_directories_exactly_once(
+        self, tmp_path, monkeypatch
+    ):
+        # auto calls straight into crossref_events_gkg_v1/_v2 with no
+        # directory handling of its own (see crossref_events_gkg_auto's
+        # own docstring), so fixing those two is sufficient here; this
+        # confirms that composition doesn't reintroduce doubling at the
+        # auto layer itself.
+        gkg_v1_folder = TestCrossrefEventsGkgV1._write_gkg_v1(tmp_path)
+        mentions_folder = TestCrossrefEventsGkgV2._write_mentions(tmp_path)
+        gkg_v2_folder = TestCrossrefEventsGkgV2._write_gkg_v2(tmp_path)
+        calls = []
+        real_list_files = crossref_module._list_files
+
+        def spy(folder, date_parser, start_date=None, end_date=None):
+            calls.append(folder)
+            return real_list_files(folder, date_parser, start_date, end_date)
+
+        monkeypatch.setattr(crossref_module, "_list_files", spy)
+
+        events_df = pl.DataFrame({
+            "GlobalEventID": [1001, 2001],
+            "DATEADDED": [20130401000000, 20200101000000],
+        })
+        crossref_events_gkg_auto(
+            events_df, gkg_v1_folder, GKG_V1_COLUMNS,
+            mentions_folder, gkg_v2_folder, GKG_V2_COLUMNS,
+        )
+
+        assert sorted(calls) == sorted([gkg_v1_folder, mentions_folder, gkg_v2_folder]), (
+            f"expected exactly 1 directory-listing call each for GKG 1.0, Mentions, "
+            f"and GKG 2.1 (3 total), got {len(calls)}: {calls}"
+        )
 
 
 # ------------------------------------------------------------

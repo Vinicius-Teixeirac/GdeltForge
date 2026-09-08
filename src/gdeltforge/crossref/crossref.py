@@ -210,13 +210,19 @@ def _list_files(
     return filter_paths_by_date(files, start_date, end_date, date_parser=date_parser)
 
 
-def _dataset(
-    folder: str,
-    date_parser: Callable[[str], tuple[date | None, date | None]],
-    start_date: date | None = None,
-    end_date: date | None = None,
-) -> pl.LazyFrame:
-    files = _list_files(folder, date_parser, start_date, end_date)
+def _dataset(files: list[Path], folder: str, start_date: date | None = None,
+             end_date: date | None = None) -> pl.LazyFrame:
+    # files is the caller's own already-listed, already-date-filtered
+    # result (see warn_if_directory_is_large's identical parameter and
+    # crossref_events_gkg_v1/_v2, which each list a directory exactly
+    # once and hand the same list to both): _dataset no longer lists the
+    # directory itself, since doing so independently here duplicated
+    # that same listing/date-filter pass on every call, found via a live
+    # comprehensive QA pass as a real, consistently reproducible doubling
+    # of I/O work (confirmed live: every crossref run printed each
+    # directory's own "Date filter [...]" log line twice, with identical
+    # file counts both times). folder/start_date/end_date are kept only
+    # to word this error the same way as before.
     if not files:
         raise FileNotFoundError(
             f"No parquet files found in {folder}"
@@ -473,9 +479,9 @@ def warn_if_events_df_is_large(events_df: pl.DataFrame) -> None:
 
 
 def warn_if_directory_is_large(
+    files: list[Path],
     folder: str,
     label: str,
-    date_parser: Callable[[str], tuple[date | None, date | None]],
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> None:
@@ -487,17 +493,26 @@ def warn_if_directory_is_large(
     crossref does this on every single run, not once and cached: pyarrow's
     filter pushdown narrows which rows get read within a file, not which
     files get opened at all, so the file count itself is what this
-    tracks. Counts the same post-start_date/end_date file list
-    crossref_events_gkg_v1/_v2 actually open, not the raw directory: once
-    those are narrowed, that's the real lever reducing this, on top of
-    pointing paths.* at a smaller, already-narrowed directory.
+    tracks.
+
+    files is the caller's own already-listed, already-date-filtered
+    result, the same one it goes on to pass to _dataset, not a directory
+    this function lists again on its own: crossref_events_gkg_v1/_v2
+    each list a directory exactly once and share that same list between
+    this warning and the actual scan, closing a real, consistently
+    reproducible doubling of I/O work a live comprehensive QA pass found
+    (every crossref run printed each directory's own "Date filter [...]"
+    log line twice, with identical file counts both times, since this
+    function used to redo that same listing/date-filter pass
+    independently just to count it before throwing the result away).
+    folder is kept only to name the directory in the warning text.
 
     Deliberately a plain file count, not a byte total: the cost this
     flags is per-file listing/opening overhead (open a footer, read a
     schema), which doesn't scale with how much data is inside each file,
     unlike warn_if_events_df_is_large's memory concern.
     """
-    n = len(_list_files(folder, date_parser, start_date, end_date))
+    n = len(files)
     if n <= _LARGE_GKG_DIRECTORY_WARNING_THRESHOLD:
         return
     logger.warning(
@@ -590,9 +605,12 @@ def crossref_events_gkg_v1(
     _require_column(gkg_columns, REQUIRED_JOIN_COLUMNS["gdelt_gkg_v1"][0], "gkg_columns")
     warn_if_events_predate_gkg_coverage("GKG 1.0", GKG_V1_COVERAGE_START, events_df)
     warn_if_events_df_is_large(events_df)
-    warn_if_directory_is_large(
-        gkg_folder, "GKG 1.0", parse_gdelt_gkg_v1_file_date, start_date, end_date
-    )
+    # Listed exactly once and shared with _dataset() below, rather than
+    # each independently re-listing and re-date-filtering the same
+    # directory (see warn_if_directory_is_large's own docstring for the
+    # doubled-I/O bug this closes).
+    gkg_files = _list_files(gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date)
+    warn_if_directory_is_large(gkg_files, gkg_folder, "GKG 1.0", start_date, end_date)
 
     columns = _validate_columns(columns, gkg_columns, "GKG_")
     requested_columns = columns if columns is not None else set(gkg_columns)
@@ -607,7 +625,7 @@ def crossref_events_gkg_v1(
     # union schema= scan_parquet needs), not only the later batch
     # collection.
     with clearer_dataset_errors(f"GKG 1.0 dataset in {gkg_folder}"):
-        lf = _dataset(gkg_folder, parse_gdelt_gkg_v1_file_date, start_date, end_date)
+        lf = _dataset(gkg_files, gkg_folder, start_date, end_date)
         gkg_schema = lf.collect_schema()
         # requested_columns defaults to this dataset's full declared
         # schema when the caller doesn't pass --columns, which isn't the
@@ -761,12 +779,14 @@ def crossref_events_gkg_v2(
         "GDELT 2.0 (GKG 2.1 / Mentions)", GKG_V2_COVERAGE_START, events_df
     )
     warn_if_events_df_is_large(events_df)
-    warn_if_directory_is_large(
-        mentions_folder, "Mentions", parse_gdeltv2_file_date, start_date, end_date
-    )
-    warn_if_directory_is_large(
-        gkg_v2_folder, "GKG 2.1", parse_gdeltv2_file_date, start_date, end_date
-    )
+    # Each listed exactly once and shared with _dataset() below, rather
+    # than each independently re-listing and re-date-filtering the same
+    # directory (see warn_if_directory_is_large's own docstring for the
+    # doubled-I/O bug this closes).
+    mentions_files = _list_files(mentions_folder, parse_gdeltv2_file_date, start_date, end_date)
+    gkg_v2_files = _list_files(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+    warn_if_directory_is_large(mentions_files, mentions_folder, "Mentions", start_date, end_date)
+    warn_if_directory_is_large(gkg_v2_files, gkg_v2_folder, "GKG 2.1", start_date, end_date)
 
     columns = _validate_columns(columns, gkg_v2_columns, "GKG_")
     requested_gkg_columns = columns if columns is not None else set(gkg_v2_columns)
@@ -783,9 +803,7 @@ def crossref_events_gkg_v2(
     # footer read _dataset() itself already pays to build its own union
     # schema; nothing here is a real data read.
     with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
-        mentions_lf = _dataset(
-            mentions_folder, parse_gdeltv2_file_date, start_date, end_date
-        )
+        mentions_lf = _dataset(mentions_files, mentions_folder, start_date, end_date)
         mentions_schema = mentions_lf.collect_schema()
         for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
             _require_column(mentions_schema.names(), required, "mentions_folder")
@@ -802,7 +820,7 @@ def crossref_events_gkg_v2(
         )
 
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
-        gkg_lf = _dataset(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+        gkg_lf = _dataset(gkg_v2_files, gkg_v2_folder, start_date, end_date)
         gkg_schema = gkg_lf.collect_schema()
         # requested_gkg_columns defaults to this dataset's full declared
         # schema when the caller doesn't pass --columns, which isn't the
