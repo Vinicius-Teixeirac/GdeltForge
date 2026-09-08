@@ -430,6 +430,47 @@ def reconcile_file_schemas(
     return resolved
 
 
+# Float64 represents an integer exactly only up to 2**53
+# (9,007,199,254,740,992); a larger one silently loses precision instead
+# of merely widening type. Every real GDELT column this project's own
+# dtype-reconciliation has hit so far (events' Actor1Geo_Type/
+# Actor2Geo_Type/ActionGeo_Type, GKG 2.1's V2.1DATE/
+# V2SOURCECOLLECTIONIDENTIFIER) stays far under this by nature (a small
+# enum, a 14-digit datetime-as-integer, a 1-2 range), confirmed directly
+# against the real archive, not assumed, but that's an empirical fact
+# about today's data, not a guarantee the next dtype-drifted column
+# will share; a genuine ID/count column hitting the identical drift
+# could exceed it. _verify_int_to_float64_widening_is_safe below checks
+# this for real rather than trusting the pattern to hold indefinitely.
+_FLOAT64_SAFE_INT_BOUND = 2**53
+
+
+def _verify_int_to_float64_widening_is_safe(lf: pl.LazyFrame, file: Path, column: str) -> None:
+    """
+    Raises if column's real values in file exceed what Float64 can
+    represent exactly, instead of letting the cast silently corrupt
+    them. min()/max() on a plain column reference (not an .abs()
+    transform, which would defeat it) are the aggregate shape parquet's
+    own row-group statistics already satisfy without decompressing the
+    full column, so this stays cheap on a real, large file: confirmed
+    directly, the same order of cost as the footer-only schema read
+    already paid elsewhere in this reconciliation.
+    """
+    bounds = lf.select(pl.col(column).min().alias("_min"), pl.col(column).max().alias("_max"))
+    row = bounds.collect().row(0, named=True)
+    values = [v for v in (row["_min"], row["_max"]) if v is not None]
+    max_abs = max((abs(v) for v in values), default=0)
+    if max_abs > _FLOAT64_SAFE_INT_BOUND:
+        raise pl.exceptions.SchemaError(
+            f"column {column!r} in {file} holds a value ({max_abs}) too large "
+            f"to widen from Int64 to Float64 without losing precision (Float64 "
+            f"only represents an integer exactly up to {_FLOAT64_SAFE_INT_BOUND}). "
+            f"This file's own dtype disagrees with a sibling file that declares "
+            f"{column!r} as Float64, and gdeltforge can't safely reconcile that "
+            f"automatically here; the source data needs manual investigation."
+        )
+
+
 def scan_file_against_schema(
     file: Path,
     target_schema: dict[str, pl.DataType],
@@ -448,6 +489,13 @@ def scan_file_against_schema(
     against this file's own real dtype for anything that disagrees, then
     applies the cast to target_schema immediately after.
 
+    Widening an Int64 column to Float64 specifically also checks the
+    file's own real values first (_verify_int_to_float64_widening_is_
+    safe): a mixed-int-width widening (Int32 -> Int64) is always exact
+    and needs no such check, but Int64 -> Float64 can silently lose
+    precision above 2**53, and this reconciliation shouldn't trade one
+    silent-corruption risk for the crash it was built to fix.
+
     real_schema lets a caller that already read this file's own schema
     (scan_dataset_reconciled) pass it straight through instead of paying
     for a second footer read.
@@ -457,13 +505,18 @@ def scan_file_against_schema(
 
     per_file_schema = dict(target_schema)
     casts = []
+    unsafe_widenings = []
     for name, target_dtype in target_schema.items():
         real_dtype = real_schema.get(name)
         if real_dtype is not None and real_dtype != target_dtype:
             per_file_schema[name] = real_dtype
             casts.append(pl.col(name).cast(target_dtype))
+            if real_dtype.is_integer() and target_dtype == pl.Float64():
+                unsafe_widenings.append(name)
 
     lf = pl.scan_parquet(file, schema=per_file_schema, missing_columns="insert")
+    for name in unsafe_widenings:
+        _verify_int_to_float64_widening_is_safe(lf, file, name)
     return lf.with_columns(casts) if casts else lf
 
 
