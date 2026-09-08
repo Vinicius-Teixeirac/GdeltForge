@@ -120,6 +120,16 @@ _DAILY_PAT          = re.compile(r'^\d{8}\..+\.zip$',       re.IGNORECASE)
 # below for why nothing did).
 _QUARTER_HOURLY_PAT = re.compile(r'^\d{14}\..+\.zip$',      re.IGNORECASE)
 
+# "yearly"/"monthly" file_types are only ever produced by gdelt_event:
+# GDELT's own pre-April-2013 bulk archive shipped bare YYYY.zip/YYYYMM.zip
+# files for Events alone (see scraper.py's _is_gdelt_dataset_file, whose
+# own docstring calls this out as an Events-archive-specific shape). Every
+# other dataset's real archive is daily or quarter_hourly only, so a
+# partitioning.rules entry for "yearly" or "monthly" can never actually
+# apply to it, unlike a "daily"/"quarter_hourly" rule, which any dataset
+# could in principle match.
+_EVENTS_ONLY_FILE_TYPES = frozenset({"yearly", "monthly"})
+
 # Every configured numeric column is cast to either pl.Int64 or pl.Float64
 # in _read_csv, and this set decides which: every columns_numeric entry
 # across every dataset is integer-semantic (an ID, a type/flag code, a
@@ -356,13 +366,34 @@ class GDELTConverter:
         self._partitioning_enabled = part_cfg.get("enabled", False)
         self._partition_rules: list[dict] = part_cfg.get("rules", [])
 
+        # A configured rule only requires this dataset's own historical
+        # directory if the rule's file_type is one this dataset could
+        # actually produce. converter.partitioning.enabled is documented
+        # as an Events-only opt-in (docs/configuration.md), but the check
+        # below used to fire for every dataset the moment the flag was
+        # true, regardless of whether any of its own rules could ever
+        # match this dataset's real file types: enabling it for Events'
+        # own yearly/monthly split broke convert for GKG v2/Mentions/
+        # GKG v1/GKG v1-counts, none of which can ever produce a yearly-
+        # or monthly-typed file, demanding a *_parquet_historical_
+        # directory they would never actually write to. An enabled flag
+        # with no rules at all (nothing to partition by) is the same
+        # "nothing applicable" case and no longer requires it either.
+        applicable_rule_exists = any(
+            rule.get("file_type") not in _EVENTS_ONLY_FILE_TYPES or dataset == "gdelt_event"
+            for rule in self._partition_rules
+        )
+
         # gdelt_event_reduced has no flat output mode at all: its converted
         # output only ever exists Hive-partitioned by Year, so its
         # historical directory must resolve regardless of
         # converter.partitioning.enabled, a toggle that otherwise only
         # ever governed Events' own opt-in yearly/monthly split.
         self.historical_folder: Path | None = None
-        if self._partitioning_enabled or dataset_is_always_historical(dataset):
+        if (
+            (self._partitioning_enabled and applicable_rule_exists)
+            or dataset_is_always_historical(dataset)
+        ):
             hist_key = dataset_path_key(dataset, "parquet_historical_directory")
             hist_path = config["paths"].get(hist_key)
             if not hist_path:

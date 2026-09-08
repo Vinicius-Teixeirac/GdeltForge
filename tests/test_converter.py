@@ -235,6 +235,84 @@ class TestHistoricalEventsMissingColumns:
         assert df["SOURCEURL"].to_list() == [None]
 
 
+class TestPartitioningEnabledIsPerDatasetNotGlobal:
+    """
+    converter.partitioning.enabled is documented (docs/configuration.md)
+    as an Events-only opt-in for its own yearly/monthly legacy split, but
+    __init__ used to require *_parquet_historical_directory for every
+    dataset the instant the flag was true, regardless of whether any
+    configured rule could ever apply to that dataset's own real file
+    types. Turning it on for Events broke `convert` outright for GKG v2,
+    Mentions, GKG v1, and GKG v1-counts: none of them can ever produce a
+    yearly- or monthly-typed file (see _EVENTS_ONLY_FILE_TYPES), so the
+    directory they were being forced to configure would never actually
+    be written to.
+    """
+
+    @staticmethod
+    def _gkg_v2_config(tmp_path, **partitioning):
+        return {
+            "paths": {
+                "gkg_v2_downloaded_data_directory": str(tmp_path / "raw"),
+                "gkg_v2_unzipped_data_directory": str(tmp_path / "csv"),
+                "gkg_v2_parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {
+                "keep_unzipped": False,
+                "file_pattern": "*.zip",
+                "partitioning": partitioning,
+            },
+            "columns": {"gdelt_gkg_v2": ["GKGRECORDID", "V2.1DATE"]},
+            "columns_numeric": {"gdelt_gkg_v2": []},
+        }
+
+    def test_dataset_with_no_yearly_or_monthly_rule_does_not_require_historical_dir(
+        self, tmp_path
+    ):
+        cfg = self._gkg_v2_config(
+            tmp_path,
+            enabled=True,
+            rules=[{"file_type": "yearly", "by": ["Year"]}],
+        )
+        # No gkg_v2_parquet_historical_directory set at all: must not be
+        # required, since GKG v2 never produces a yearly-typed file.
+        GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+    def test_gdelt_event_with_the_same_rule_still_requires_historical_dir(
+        self, tmp_path
+    ):
+        # Same rule as above, but for the one dataset it can actually
+        # apply to: the original, still-valid half of this behavior.
+        cfg = _make_config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        with pytest.raises(ValueError, match="parquet_historical_directory"):
+            GDELTConverter(cfg, dataset="gdelt_event")
+
+    def test_a_rule_targeting_daily_still_requires_historical_dir_for_any_dataset(
+        self, tmp_path
+    ):
+        # Unlike yearly/monthly, a daily-typed rule could in principle
+        # apply to any dataset (every dataset has daily-shaped files), so
+        # this must still be enforced rather than exempted too broadly.
+        cfg = self._gkg_v2_config(
+            tmp_path,
+            enabled=True,
+            rules=[{"file_type": "daily", "by": ["Year"]}],
+        )
+        with pytest.raises(ValueError, match="parquet_historical_directory"):
+            GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+    def test_enabled_with_no_rules_at_all_requires_no_historical_dir(self, tmp_path):
+        # A degenerate config (partitioning turned on, nothing under
+        # rules) previously still demanded a historical directory for
+        # every dataset, Events included, despite there being nothing to
+        # partition by at all.
+        cfg = _make_config(tmp_path, partitioning={"enabled": True, "rules": []})
+        GDELTConverter(cfg, dataset="gdelt_event")
+
+
 class TestIntegerDtypePreservation:
     """Regression coverage for the real bug this was found from: GDELT's
     own raw archive can carry a blank value for a genuinely integer field
