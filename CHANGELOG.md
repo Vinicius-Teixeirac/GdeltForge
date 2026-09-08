@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- `crossref` listed and date-filtered each configured GKG/Mentions directory twice per run (`crossref_events_gkg_auto`, which calls straight into both single-version joins, up to six times), doubling the real I/O cost `cli-reference.md`'s own capacity-planning numbers document: `warn_if_directory_is_large` and the actual scan each redid the identical listing pass independently, not sharing one. Both now consume one already-listed file set per directory, computed exactly once per run. Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
