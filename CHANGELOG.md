@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- SIGKILL of a running `scrape`/`convert`/`filter` process left its already-dispatched `ProcessPoolExecutor` workers running as orphans, still pulling from the shared task queue, for minutes after the parent process was gone, since SIGKILL can't be caught by anything. `gdeltforge` now makes itself its own process group leader on POSIX at startup, so killing the whole group (`kill -KILL -$(pgid)`) reliably stops every worker too; a real SIGTERM handler also now cancels queued work immediately, the same way Ctrl+C already does, before a process manager's escalation to SIGKILL ever becomes necessary. Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
