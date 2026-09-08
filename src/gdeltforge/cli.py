@@ -1,6 +1,8 @@
 import argparse
 import json
 import logging
+import os
+import signal
 import sys
 from datetime import date
 from pathlib import Path
@@ -44,6 +46,95 @@ from gdeltforge.utils.logging import get_logger
 # ======================================================================
 
 logger = get_logger(__name__, log_to_file=True)
+
+
+class _Terminated(KeyboardInterrupt):
+    """
+    Raised by the SIGTERM handler _install_sigterm_handler installs
+    below. A subclass of KeyboardInterrupt, not a separate exception
+    type: scrape/convert/filter's own executor loops already catch
+    KeyboardInterrupt specifically, to cancel queued work immediately
+    rather than draining the whole batch, and every one of those call
+    sites needs no change at all to also cover SIGTERM, since an
+    instance of this class satisfies that same except clause by
+    ordinary inheritance. main()'s own top-level handler below catches
+    this subclass first, so a SIGTERM-triggered exit is still reported
+    distinctly, a different message and the conventional 128+signal
+    exit code, from a real Ctrl+C.
+    """
+
+
+def _handle_sigterm(_signum, _frame) -> None:
+    raise _Terminated()
+
+
+def _isolate_process_group() -> None:
+    """
+    Makes this process a new session/process-group leader (POSIX only;
+    os.setsid doesn't exist on Windows) so an external caller can
+    reliably stop the whole run, including every worker
+    scrape/convert/filter's own ProcessPoolExecutor has already
+    dispatched, by killing the *group* instead of just this one PID.
+
+    Found via a live comprehensive QA pass: SIGKILL of the main process
+    left ProcessPoolExecutor's own worker subprocesses running as
+    orphans, still pulling from the shared task queue, for minutes after
+    the parent was gone. SIGKILL can't be caught by anything, so no
+    signal handler, including SIGTERM's below, can ever help with this
+    specific case; the process group is what actually closes it. Every
+    child gdeltforge spawns (via multiprocessing, directly or through
+    concurrent.futures) inherits this same process group automatically,
+    so `kill -KILL -$(pgid)` (or `pkill -KILL -g $PGID`; setsid makes
+    pgid equal this process's own PID) now reaches every worker at once,
+    unconditionally, the same way SIGKILL always reaches a single
+    process. Windows has no equivalent of POSIX process groups; killing
+    the whole tree there is `taskkill /F /T /PID <pid>`, native to
+    Windows already and needing no code-level counterpart here.
+
+    A caller's shell often already made this process its own group
+    leader on its own (an interactive shell's job control, most `&`-
+    backgrounded jobs): setsid() then fails with EPERM, which is not a
+    problem, since the property this exists for, a process group whose
+    leader is gdeltforge's own main process, already holds either way.
+    """
+    # getattr, not a direct os.setsid reference: os.setsid is POSIX-only
+    # at both runtime and in typeshed's own stubs, so a direct reference
+    # is a real pyright error on a platform (Windows) whose stub subset
+    # never declares it, not just a runtime AttributeError risk.
+    setsid = getattr(os, "setsid", None)
+    if setsid is None:
+        return
+    try:
+        setsid()
+    except OSError:
+        pass
+
+
+def _install_sigterm_handler() -> None:
+    """
+    Makes a plain SIGTERM (POSIX) behave exactly like Ctrl+C/SIGINT
+    already does everywhere in this codebase: cancel queued work
+    immediately rather than draining the whole batch (see
+    scrape/convert/filter's own KeyboardInterrupt handling), instead of
+    the default action, which terminates immediately with no cleanup at
+    all, the same abruptness as SIGKILL just without SIGKILL's own
+    invisibility to code. SIGTERM, unlike SIGKILL, is what process
+    managers send by convention before escalating (systemd, Docker,
+    Kubernetes, most orchestrators' own "stop" action, a plain `kill`
+    with no -9), so this is what actually makes that first, polite
+    request work rather than it being silently ignored until the
+    escalation arrives.
+
+    Best-effort: signal handlers can only be installed from the main
+    thread of the main interpreter, true here for the real CLI entry
+    point, so this only guards against an environment that disallows
+    signal handling entirely (some restricted sandboxes).
+    """
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        pass
+
 
 _TAGLINE = "Global Event Data Pipeline"
 
@@ -359,13 +450,22 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # -----------------------------
     if args.mode == "filtered":
         if args.filter is None:
-            raise ValueError(
-                "--filter is required when mode == 'filtered' "
-                "(must be JSON string)"
-            )
+            if not args.stratify:
+                raise ValueError(
+                    "--filter is required when mode == 'filtered' "
+                    "(must be JSON string)"
+                )
+            # --stratify targets rows by group membership on its own; it
+            # doesn't need a separate row-level --filter condition the way
+            # get_random_sample does, so an omitted --filter defaults to no
+            # filtering here instead of forcing every stratified call to
+            # pass an explicit '{}'.
+            filter_arg = "{}"
+        else:
+            filter_arg = args.filter
 
         try:
-            filter_dict = json.loads(args.filter)
+            filter_dict = json.loads(filter_arg)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON passed to --filter: {e}") from e
 
@@ -468,6 +568,25 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
         )
     else:
+        # --on-duplicate-document/--collapse-duplicate-mentions are both
+        # v2/auto-only concepts (GKG 1.0 carries EventIds directly, no
+        # document-level or per-sentence Mentions dedup to speak of), so
+        # crossref_events_gkg_v1 doesn't accept either. Both flags'
+        # --help text already says "only affects v2/auto", but passing
+        # one alongside --gkg-version v1/v1-counts was otherwise silently
+        # accepted with zero warning that it did nothing at all.
+        if args.on_duplicate_document != "all" or args.collapse_duplicate_mentions:
+            ignored = [
+                name for name, is_set in (
+                    ("--on-duplicate-document", args.on_duplicate_document != "all"),
+                    ("--collapse-duplicate-mentions", args.collapse_duplicate_mentions),
+                )
+                if is_set
+            ]
+            logger.warning(
+                f"{', '.join(ignored)} only affect(s) --gkg-version v2/auto; "
+                f"ignored for --gkg-version {args.gkg_version}."
+            )
         dataset = _CROSSREF_GKG_TO_CONFIG[args.gkg_version]
         gkg_folder = ensure_exists(
             config["paths"][dataset_path_key(dataset, source_key)],
@@ -811,7 +930,9 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--stratify",
         metavar="COLUMN",
-        help="Column to stratify by (filtered mode only); requires --n-per-group"
+        help="Column to stratify by (filtered mode only); requires --n-per-group. "
+             "--filter is not required alongside it; omitting --filter samples "
+             "across the whole dataset"
     )
     sample.add_argument(
         "--n-per-group",
@@ -843,7 +964,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["parquet", "csv"],
         default="parquet",
         help="Output file format. csv rewrites --out's extension to .csv. "
-             "Off (parquet) by default"
+             "Off (parquet) by default. csv writes a <name>.csv.schema.json "
+             "sidecar alongside it; read the file back with gdeltforge's own "
+             "read_csv_export(path), not a bare pl.read_csv/pd.read_csv, or "
+             "zero-padded string codes like EventCode lose their leading zero"
     )
 
     # ----------------------------------------------------
@@ -879,8 +1003,10 @@ def build_parser() -> argparse.ArgumentParser:
     crossref.add_argument(
         "--columns",
         nargs="*",
-        help="Restrict GKG-side output to these columns; cuts I/O and memory. The join key "
-             "column is always included regardless. Not supported with --gkg-version auto"
+        help="Restrict GKG-side output to these columns; cuts I/O and memory. Takes either "
+             "the raw GKG column name (Date, Tone) or the prefixed name it has in this "
+             "command's own output (GKG_Date, GKG_Tone), never GlobalEventID, the join key "
+             "column, always included regardless. Not supported with --gkg-version auto"
     )
     crossref.add_argument(
         "--on-duplicate-document",
@@ -923,7 +1049,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["parquet", "csv"],
         default="parquet",
         help="Output file format. csv rewrites --out's extension to .csv. "
-             "Off (parquet) by default"
+             "Off (parquet) by default. csv writes a <name>.csv.schema.json "
+             "sidecar alongside it; read the file back with gdeltforge's own "
+             "read_csv_export(path), not a bare pl.read_csv/pd.read_csv, or "
+             "zero-padded string codes like EventCode lose their leading zero"
     )
 
     # ----------------------------------------------------
@@ -952,6 +1081,12 @@ def build_parser() -> argparse.ArgumentParser:
 # ======================================================================
 
 def main() -> None:
+    # As early as possible, before argparse or any actual work: see each
+    # function's own docstring for why. Neither can meaningfully fail in
+    # a way that should block the CLI from running at all.
+    _isolate_process_group()
+    _install_sigterm_handler()
+
     parser = build_parser()
 
     # Printed before parse_args, not after: argparse's own -h/--help
@@ -991,6 +1126,14 @@ def main() -> None:
         elif args.command == "crossref":
             run_crossref_cmd(config, args)
 
+    except _Terminated:
+        # Caught ahead of the plain KeyboardInterrupt clause below, since
+        # _Terminated is a subclass of it: a real Ctrl+C and a SIGTERM
+        # both cancel queued work the same way, but are still reported
+        # distinctly here, matching each signal's own conventional
+        # 128+signal exit code.
+        print("Terminated.", file=sys.stderr)
+        sys.exit(143)
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         sys.exit(130)

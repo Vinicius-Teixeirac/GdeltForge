@@ -1,9 +1,12 @@
 import logging
+import sys
+from contextlib import contextmanager
 from datetime import date
 
 import numpy as np
 import polars as pl
 import pytest
+from tqdm import tqdm
 
 from gdeltforge.sampling.samplers import (
     CalendarSampler,
@@ -78,6 +81,31 @@ class TestIndexedSampler:
         with pytest.raises(ValueError):
             sampler.get_random_sample(10)
 
+    def test_n_zero_is_a_clean_empty_success(self, tmp_path):
+        # n==0 used to reach pl.concat([]) with nothing ever appended to
+        # sampled, raising a raw, unhandled "cannot concat empty list"
+        # instead of the clean 0-row success FilteredSampler's own
+        # get_random_sample already gives n<=0.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(0)
+
+        assert len(df) == 0
+
+    def test_negative_n_raises_a_clear_error_not_a_raw_numpy_one(self, tmp_path):
+        # A negative n used to reach numpy's own random.choice unchecked,
+        # raising its raw "negative dimensions are not allowed".
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_random_sample(-5)
+
     def test_reproducible_with_same_seed(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -116,6 +144,97 @@ class TestIndexedSampler:
         assert len(df) == 5
         assert df["Date"].n_unique() == len(df)
 
+    def test_a_narrower_historical_file_mixed_with_wider_flat_files_no_longer_crashes(
+        self, tmp_path
+    ):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: a genuinely accumulated data directory can hold files
+        # whose own physical schema differs (a Hive-partitioned historical
+        # file converted before a schema fix landed, an output_columns
+        # setting narrowed at one point and widened again later), and
+        # get_random_sample's own per-file pl.read_parquet(columns=...)
+        # read every file at its own physical width with no reconciliation
+        # across files at all, unlike CalendarSampler/FilteredSampler's
+        # single shared scan. Concatenating a full-width flat file's rows
+        # with a much narrower historical file's rows raised a raw
+        # "unable to append to a DataFrame of width X with a DataFrame of
+        # width Y" the moment both were drawn into the same sample.
+        flat_folder = tmp_path / "flat"
+        flat_folder.mkdir()
+        historical_folder = tmp_path / "historical"
+        hist_partition = historical_folder / "Year=2008" / "MonthYear=200801"
+        hist_partition.mkdir(parents=True)
+
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3], "SOURCEURL": ["a", "b", "c"],
+        }).write_parquet(flat_folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [4, 5, 6], "QuadClass": [4, 1, 2], "SOURCEURL": ["d", "e", "f"],
+        }).write_parquet(flat_folder / "b.parquet")
+        # Narrower on purpose: only GlobalEventID, no QuadClass/SOURCEURL,
+        # the same shape a stale historical conversion predating a schema
+        # fix (or an earlier, narrower output_columns run) would leave.
+        pl.DataFrame({"GlobalEventID": [7, 8, 9]}).write_parquet(
+            hist_partition / "200801.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(historical_folder), random_state=1,
+        )
+        df = sampler.get_random_sample(9)
+
+        assert len(df) == 9
+        assert set(df.columns) == {"GlobalEventID", "QuadClass", "SOURCEURL"}
+        assert sorted(df["GlobalEventID"].to_list()) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    def test_missing_columns_in_a_narrower_file_come_back_null_not_dropped(self, tmp_path):
+        flat_folder = tmp_path / "flat"
+        flat_folder.mkdir()
+        historical_folder = tmp_path / "historical" / "Year=2008"
+        historical_folder.mkdir(parents=True)
+
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            flat_folder / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(
+            historical_folder / "hist.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(tmp_path / "historical"), random_state=1,
+        )
+        df = sampler.get_random_sample(4)
+
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in df.to_dicts()}
+        assert by_id[1] == 1 and by_id[2] == 2
+        assert by_id[3] is None and by_id[4] is None
+
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real Actor2Geo_Type split: events' own yearly/
+        # monthly archives declare it Float64 through 2007-10 and Int64
+        # from 2007-11 onward, both genuinely correct for their own file.
+        # get_random_sample's per-file scan used to pass every file the
+        # SAME schema (whichever file was read first won the dtype), and
+        # scan_parquet raised "data type mismatch ... incoming: Int64 !=
+        # target: Float64" the moment a draw touched both files.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(folder / "200710.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(folder / "200711.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(4)
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
+
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -128,6 +247,37 @@ class TestIndexedSampler:
 
         assert list(df.columns) == ["GlobalEventID"]
 
+    def test_columns_restriction_still_works_against_a_file_missing_that_column(
+        self, tmp_path
+    ):
+        # The fix for the width-mismatch crash above changed the read path
+        # from pl.read_parquet(file_path, columns=read_columns) to a
+        # schema-reconciled scan_parquet + select; --columns naming a
+        # column one particular file physically lacks must still resolve
+        # to null for that file's rows rather than raising, the same way
+        # an implicit full read already does.
+        flat_folder = tmp_path / "flat"
+        flat_folder.mkdir()
+        historical_folder = tmp_path / "historical" / "Year=2008"
+        historical_folder.mkdir(parents=True)
+
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            flat_folder / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(
+            historical_folder / "hist.parquet"
+        )
+
+        sampler = IndexedSampler(
+            str(flat_folder), historical_folder=str(tmp_path / "historical"),
+            random_state=1, columns={"GlobalEventID", "QuadClass"},
+        )
+        df = sampler.get_random_sample(4)
+
+        assert set(df.columns) == {"GlobalEventID", "QuadClass"}
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in df.to_dicts()}
+        assert by_id[3] is None and by_id[4] is None
+
     def test_no_columns_arg_returns_everything(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
@@ -139,6 +289,31 @@ class TestIndexedSampler:
         df = sampler.get_random_sample(5)
 
         assert set(df.columns) == {"GlobalEventID", "QuadClass"}
+
+    def test_a_genuinely_nonexistent_column_is_dropped_with_a_warning_not_a_crash(
+        self, tmp_path, caplog
+    ):
+        # A --columns name absent from every real file used to reach
+        # pl.read_parquet(file_path, columns=read_columns) unchecked, a
+        # projection pushed straight into polars' own scan: the failure
+        # was a raw, unhandled internal error, including a full
+        # query-plan dump, not a clean, actionable message. Narrowed
+        # against the real schema up front instead now, matching
+        # CalendarSampler's own identical treatment of the same mistake.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(10), "QuadClass": [1] * 10,
+        }).write_parquet(folder / "a.parquet")
+
+        with caplog.at_level(logging.WARNING):
+            sampler = IndexedSampler(
+                str(folder), random_state=1, columns={"GlobalEventID", "ThisColumnIsFake"}
+            )
+            df = sampler.get_random_sample(5)
+
+        assert list(df.columns) == ["GlobalEventID"]
+        assert any("ThisColumnIsFake" in r.message for r in caplog.records)
 
 
 class TestCalendarSampler:
@@ -169,6 +344,35 @@ class TestCalendarSampler:
 
         assert len(df) == 2
 
+    def test_zero_samples_per_period_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame(
+            {"GlobalEventID": [1, 2], "Day": [20200101, 20200101]}
+        ).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=0)
+
+        assert len(df) == 0
+
+    def test_negative_samples_per_period_raises_instead_of_a_nonsensical_success(
+        self, tmp_path
+    ):
+        # A negative value used to reach the reservoir machinery
+        # unchecked, same as 0, logging "Saved calendar sample (0 rows,
+        # period=day)" as though -5 were a valid, deliberately chosen
+        # configuration rather than a mistake.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame(
+            {"GlobalEventID": [1, 2], "Day": [20200101, 20200101]}
+        ).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_calendar_samples(samples_per_period=-5)
+
     def test_date_column_missing_from_every_file_raises_clearly(self, tmp_path):
         # Replaces the old DailySampler's own flaw of silently skipping a
         # file missing its date column and returning an empty result: a
@@ -183,6 +387,32 @@ class TestCalendarSampler:
         sampler = CalendarSampler(str(folder), random_state=1)
         with pytest.raises(ValueError, match="'Day' is not a column"):
             sampler.get_calendar_samples(samples_per_period=5)
+
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # single shared scan CalendarSampler and FilteredSampler both go
+        # through: scan_parquet's own schema= parameter is an assertion,
+        # so a plain union scan crashed ("data type mismatch ...
+        # incoming: Int64 != target: Float64") the moment it reached the
+        # file whose real dtype disagreed with whichever file the schema
+        # happened to be inferred from.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Day": [20071001, 20071002], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(folder / "200710.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Day": [20071101, 20071102], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(folder / "200711.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        df = sampler.get_calendar_samples(samples_per_period=10)
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
 
     def test_columns_restricts_output(self, tmp_path):
         folder = tmp_path / "data"
@@ -214,6 +444,30 @@ class TestCalendarSampler:
 
         assert not df.is_empty()
         assert "Day" in df.columns
+
+    def test_a_genuinely_nonexistent_column_is_dropped_with_a_warning_not_a_crash(
+        self, tmp_path, caplog
+    ):
+        # CalendarSampler's own _batches goes through the identical
+        # narrow_to_available_columns call IndexedSampler's equivalent
+        # test in TestIndexedSampler now exercises; this pins that
+        # calendar mode gets the same warn-and-drop treatment, not a
+        # separate, untested path that happens to share the same helper
+        # today.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(6), "Day": [20200101] * 6,
+        }).write_parquet(folder / "a.parquet")
+
+        with caplog.at_level(logging.WARNING):
+            sampler = CalendarSampler(
+                str(folder), random_state=1, columns={"GlobalEventID", "ThisColumnIsFake"}
+            )
+            df = sampler.get_calendar_samples(samples_per_period=3)
+
+        assert set(df.columns) == {"GlobalEventID", "Day"}
+        assert any("ThisColumnIsFake" in r.message for r in caplog.records)
 
     def test_date_column_can_be_overridden_for_non_events_schemas(self, tmp_path):
         # Events uses "Day"; other GDELT datasets (GKG, Mentions) use a
@@ -383,6 +637,71 @@ class TestCalendarSampler:
         assert df["NumArticles"].null_count() == 1
 
 
+class TestCalendarSamplerSeedReproducibility:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: two runs with the same --seed over the same data picked
+    different rows (confirmed for real: ~25-30% GlobalEventID overlap
+    between repeated runs), contradicting --seed's own documented
+    contract. The reservoir draw pulls sequentially from one shared RNG,
+    once per (period, batch) combination, in whatever order group_by
+    visits groups; maintain_order=False let that order vary run to run,
+    so the same fixed sequence of random draws landed on different
+    groups' positions each time. A single-file, single-period fixture
+    can't manifest this at all (there's only one group, so there's
+    nothing for visitation order to reorder); this needs several files
+    (several batches) and several periods."""
+
+    @staticmethod
+    def _write_multi_file_multi_period(folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        # Three files, each contributing rows to several of the same four
+        # periods, the shape that actually exercises "the same period's
+        # reservoir accumulates draws across more than one batch."
+        pl.DataFrame({
+            "GlobalEventID": list(range(0, 12)),
+            "Day": [20200101] * 4 + [20200102] * 4 + [20200103] * 2 + [20200104] * 2,
+        }).write_parquet(folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(12, 24)),
+            "Day": [20200101] * 2 + [20200102] * 2 + [20200103] * 4 + [20200104] * 4,
+        }).write_parquet(folder / "b.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(24, 36)),
+            "Day": [20200104] * 3 + [20200103] * 3 + [20200102] * 3 + [20200101] * 3,
+        }).write_parquet(folder / "c.parquet")
+
+    def test_repeated_runs_with_the_same_seed_pick_the_same_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        self._write_multi_file_multi_period(folder)
+
+        results = [
+            CalendarSampler(str(folder), random_state=7).get_calendar_samples(
+                samples_per_period=3
+            )
+            for _ in range(3)
+        ]
+
+        first = sorted(results[0]["GlobalEventID"].to_list())
+        for other in results[1:]:
+            assert sorted(other["GlobalEventID"].to_list()) == first
+
+    def test_different_seeds_can_pick_different_rows(self, tmp_path):
+        # Sanity check that the fix didn't accidentally make the sampler
+        # ignore the seed entirely: a different seed is still allowed
+        # (though not guaranteed) to land on a different selection.
+        folder = tmp_path / "data"
+        self._write_multi_file_multi_period(folder)
+
+        a = CalendarSampler(str(folder), random_state=1).get_calendar_samples(
+            samples_per_period=3
+        )
+        b = CalendarSampler(str(folder), random_state=2).get_calendar_samples(
+            samples_per_period=3
+        )
+
+        assert sorted(a["GlobalEventID"].to_list()) != sorted(b["GlobalEventID"].to_list())
+
+
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
         folder = tmp_path / "data"
@@ -413,6 +732,112 @@ class TestFilteredSamplerValidation:
         )
         with pytest.raises(RuntimeError, match="filtered sample dataset"):
             sampler.filter_dataset()
+
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # same shared scan CalendarSampler's own identical test above
+        # covers; see that test's comment for the exact failure this
+        # replaces.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(folder / "200710.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(folder / "200711.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "Actor2Geo_Type"])
+        df = sampler.filter_dataset()
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
+
+
+class TestFilterValueTypeMismatch:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: none of the filtered-sampling DSL's operators checked that
+    a --filter value's type actually matched its target column's real
+    dtype before pushing the comparison into the scan. equals/gt/lt/
+    between all raised polars' own ComputeError ("cannot compare string
+    with numeric type"), which the surrounding clearer_dataset_errors
+    wrapper (correctly, for a genuinely corrupt or non-parquet file)
+    rewrote into "the file might be corrupt, try removing or
+    re-fetching it", actively blaming an innocent, correctly-written
+    data file for a mistake in the --filter argument itself. in_list
+    raised a different exception that wrapper doesn't catch at all, so
+    it reached the user as a completely raw, unformatted internal trace
+    including a full query-plan dump. All four are now checked up front,
+    against the real scanned schema, before any of that ever runs."""
+
+    def test_between_with_string_bounds_on_a_numeric_column(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"GoldsteinScale": {"op": "between", "min": "a", "max": "z"}},
+        )
+        with pytest.raises(ValueError, match="'GoldsteinScale' is numeric"):
+            sampler.get_random_sample(2)
+
+    def test_equals_with_a_string_value_on_a_numeric_column(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"NumArticles": {"op": "equals", "value": "notanumber"}},
+        )
+        with pytest.raises(ValueError, match="'NumArticles' is numeric"):
+            sampler.filter_dataset()
+
+    def test_gt_with_a_numeric_value_on_a_string_column(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"Actor1CountryCode": {"op": "gt", "value": 5}},
+        )
+        with pytest.raises(ValueError, match="'Actor1CountryCode' is a string column"):
+            sampler.filter_dataset()
+
+    def test_in_list_with_string_values_on_a_numeric_column(self, tmp_path):
+        # The worst of the four before this fix: in_list's own
+        # InvalidOperationError wasn't caught by clearer_dataset_errors
+        # at all, so it reached the user as a raw, unformatted internal
+        # trace rather than even the (wrongly attributed) corrupt-file
+        # message the other three operators got.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"NumArticles": {"op": "in_list", "values": ["x", "y"]}},
+        )
+        with pytest.raises(ValueError, match="'NumArticles' is numeric"):
+            sampler.filter_dataset()
+
+    def test_a_correctly_typed_filter_is_unaffected(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        sampler = FilteredSampler(
+            str(folder), GDELT_COLUMNS,
+            filter_dict={"GoldsteinScale": {"op": "between", "min": -10.0, "max": 10.0}},
+        )
+        df = sampler.filter_dataset()
+
+        assert len(df) == 6
 
 
 def _make_pruned_dataset(folder):
@@ -678,6 +1103,32 @@ class TestFilteredSamplerReservoirSampling:
 
         assert len(df) == 10
         assert df["GlobalEventID"].n_unique() == len(df)
+
+    def test_n_zero_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(15), "QuadClass": [1] * 15,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_random_sample(0)
+
+        assert len(df) == 0
+
+    def test_negative_n_raises_instead_of_a_nonsensical_success(self, tmp_path):
+        # A negative n used to reach the reservoir machinery unchecked,
+        # same as 0, producing a nonsensical but "successful" empty
+        # result rather than an error naming the actual mistake.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(15), "QuadClass": [1] * 15,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_random_sample(-5)
 
     def test_takes_everything_when_n_equals_total(self, tmp_path):
         folder = tmp_path / "data"
@@ -1014,6 +1465,35 @@ class TestStratifiedSampling:
         assert counts[1] == 2
         assert counts[2] == 5
 
+    def test_zero_n_per_group_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(4),
+            "QuadClass": [1] * 2 + [2] * 2,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_stratified_sample("QuadClass", n_per_group=0)
+
+        assert len(df) == 0
+
+    def test_negative_n_per_group_raises_instead_of_a_nonsensical_success(self, tmp_path):
+        # A negative value used to reach the reservoir machinery
+        # unchecked, same as 0, logging "Saved stratified sample (0 rows)
+        # stratified by 'QuadClass' (-3 per group)" as though -3 were a
+        # valid, chosen configuration.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(4),
+            "QuadClass": [1] * 2 + [2] * 2,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        with pytest.raises(ValueError, match="non-negative"):
+            sampler.get_stratified_sample("QuadClass", n_per_group=-3)
+
     def test_reconciles_dtype_when_groups_disagree_on_nullability(self, tmp_path):
         # Same root cause as CalendarSampler's identical regression test
         # (test_reconciles_dtype_when_periods_disagree_on_nullability):
@@ -1038,6 +1518,45 @@ class TestStratifiedSampling:
         assert df["NumArticles"].dtype == pl.Float64
         assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1.0, 2.0, 3.0]
         assert df["NumArticles"].null_count() == 1
+
+
+class TestStratifiedSamplingSeedReproducibility:
+    """--stratify's own version of TestCalendarSamplerSeedReproducibility
+    above: get_stratified_sample shares the identical shared-RNG,
+    group_by-visitation-order reservoir draw as get_calendar_samples, so
+    it shares the identical fixed-seed reproducibility gap. Needs several
+    files (several batches) and several groups, same reasoning as above."""
+
+    @staticmethod
+    def _write_multi_file_multi_group(folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({
+            "GlobalEventID": list(range(0, 12)),
+            "QuadClass": [1] * 4 + [2] * 4 + [3] * 2 + [4] * 2,
+        }).write_parquet(folder / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(12, 24)),
+            "QuadClass": [1] * 2 + [2] * 2 + [3] * 4 + [4] * 4,
+        }).write_parquet(folder / "b.parquet")
+        pl.DataFrame({
+            "GlobalEventID": list(range(24, 36)),
+            "QuadClass": [4] * 3 + [3] * 3 + [2] * 3 + [1] * 3,
+        }).write_parquet(folder / "c.parquet")
+
+    def test_repeated_runs_with_the_same_seed_pick_the_same_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        self._write_multi_file_multi_group(folder)
+
+        results = [
+            FilteredSampler(
+                str(folder), ["GlobalEventID", "QuadClass"], random_state=7
+            ).get_stratified_sample("QuadClass", n_per_group=3)
+            for _ in range(3)
+        ]
+
+        first = sorted(results[0]["GlobalEventID"].to_list())
+        for other in results[1:]:
+            assert sorted(other["GlobalEventID"].to_list()) == first
 
 
 # ----------------------------------------------------------
@@ -1240,3 +1759,228 @@ class TestFilteredSamplerDateFiltering:
         )
         with pytest.raises(FileNotFoundError):
             sampler.filter_dataset()
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """
+    sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so
+    replacing it here is what lets a test observe the exact leak this
+    class guards against, rather than only being able to see it as
+    incidental stderr noise a real terminal user would notice by eye.
+    """
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """
+    Simulates a second interrupt landing while tqdm's own close() (an
+    otherwise fast, do-nothing-visible call) happens to be running: this
+    is deterministic and platform-independent, unlike waiting for a real
+    signal's own timing to land there by chance. Raises exactly once per
+    instance, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op) -- an
+    unconditional always-raise would fail this same way for tqdm's own
+    __del__ falling back to a redundant close() later, which isn't the
+    bug under test.
+
+    Scoped to instances created while this patch is active, not global:
+    monkeypatching tqdm.close replaces it for every tqdm object in the
+    process, including one left over from an unrelated, already-finished
+    test whose own __del__ happens to fire during this test's own
+    window. Running the full suite (not this class in isolation) hits
+    that for real: a foreign instance's deferred __del__ call raced
+    ahead of the pbar actually under test, consuming this test's one
+    allowed raise and leaving the real pbar's own close to reach
+    sys.unraisablehook uncaught, a false failure with nothing wrong in
+    the code under test. Tracking which instances were actually
+    constructed here and no-op'ing close() for anything else closes that
+    gap regardless of unrelated objects' own GC timing.
+    """
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestTqdmInterruptDoesNotLeakATraceback:
+    """
+    Every tqdm-wrapped loop in this module used to iterate the bare
+    "for x in tqdm(iterable):" form. Found via a live comprehensive QA
+    pass, specifically for IndexedSampler's "Loading samples" loop: a
+    real SIGINT partway through it printed a stray "Exception ignored
+    in: <generator object tqdm.__iter__ ...>" / KeyboardInterrupt
+    traceback fragment to stderr before the documented, clean
+    "Interrupted." message, since that generator's own implicit close()
+    runs via garbage collection when the for-loop's frame unwinds on
+    interrupt, a context with no legitimate way to propagate a second
+    exception raised during it (confirmed directly: forcing close() to
+    raise while the generator is discarded mid-suspension reaches
+    sys.unraisablehook for the bare-iteration form). Every other tqdm
+    loop in this module shares the identical mechanism (it lives
+    entirely in tqdm's own generic __iter__/close(), independent of
+    what the wrapped loop body does), so each is covered here too, not
+    only the one the report happened to test.
+
+    Each site now drives its own tqdm object manually inside an explicit
+    "with tqdm(...) as pbar:" block, iterating the real underlying
+    iterable directly and calling pbar.update() by hand, rather than
+    ever creating tqdm's own __iter__ generator at all: with tqdm(...)
+    as pbar: still isn't sufficient on its own, since for x in pbar:
+    creates that same generator internally regardless.
+
+    Each test forces a first KeyboardInterrupt partway through the real
+    per-site loop (simulating where a real signal would land) and a
+    second one during tqdm's own close() (see
+    _patch_tqdm_close_to_raise_once), then asserts nothing reaches
+    sys.unraisablehook, only a normally-propagating KeyboardInterrupt.
+    """
+
+    def test_indexed_sampler_loading_samples(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        for i in range(3):
+            pl.DataFrame({"GlobalEventID": [i]}).write_parquet(folder / f"{i}.parquet")
+        sampler = IndexedSampler(str(folder), random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        call_count = [0]
+        real_collect = pl.LazyFrame.collect
+
+        def collect_and_interrupt_once(self, *args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise KeyboardInterrupt("first interrupt, mid-loop")
+            return real_collect(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", collect_and_interrupt_once)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_random_sample(3)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_calendar_sampler_sampling_loop(self, tmp_path, monkeypatch):
+        # The interrupt must originate from inside the loop BODY (where
+        # tqdm's own generator is suspended at its yield, the same place
+        # a real signal actually lands), not from the underlying
+        # _batches generator itself (still running its own frame, which
+        # propagates normally either way and would prove nothing).
+        # is_empty() is this body's own first call on each batch.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(folder / "a.parquet")
+        sampler = CalendarSampler(str(folder), random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_calendar_samples(samples_per_period=10)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_filtered_sampler_filter_dataset_loop(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.filter_dataset()
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_filtered_sampler_get_random_sample_loop(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        # get_random_sample's own first call on each batch is len(), not
+        # is_empty(); patched after the sampler (and its own __init__-
+        # time DataFrame work) already exists, so only this call, inside
+        # the loop body, is affected.
+        def len_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "__len__", len_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_random_sample(1)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+    def test_filtered_sampler_get_stratified_sample_loop(self, tmp_path, monkeypatch):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1], "QuadClass": [1],
+        }).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def fake_batches(needed_columns):
+            yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(sampler, "_batches", fake_batches)
+
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                sampler.get_stratified_sample("QuadClass", n_per_group=1)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"

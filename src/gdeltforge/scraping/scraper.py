@@ -521,49 +521,55 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
     """
     Return (period_start, period_end) for the time window a GDELT file covers.
 
-    File naming conventions:
-      - Daily   YYYYMMDD.export.CSV.zip  -> single day
-      - Monthly YYYYMM.zip               -> full calendar month
-      - Yearly  YYYY.zip                 -> full calendar year
+    File naming conventions, identified by the length of the digit run at
+    the start of the filename, the same way parse_gdeltv2_file_date/
+    parse_gdelt_gkg_v1_file_date below already identify theirs, not by
+    matching a specific suffix:
+      - Daily   YYYYMMDD (8 digits) -> single day
+      - Monthly YYYYMM   (6 digits) -> full calendar month
+      - Yearly  YYYY     (4 digits) -> full calendar year
 
-    Also matches the equivalent already-converted Parquet names
-    (YYYYMMDD.export.parquet, YYYYMM.parquet, YYYY.parquet): convert only
-    ever sees the raw .zip form, but filter operates on converted output,
-    which keeps the source file's stem and swaps the extension.
+    This matches the raw .zip form (20150218.export.CSV.zip, 200601.zip,
+    2005.zip), the converted .parquet form (20150218.export.parquet,
+    200601.parquet, 2005.parquet), and filter's own
+    <stem>_filtered.parquet form (20150218.export_filtered.parquet,
+    200601_filtered.parquet) alike, since none of those change the length
+    of the leading digit run, only what comes after it.
+
+    An earlier version of this function matched the raw and converted
+    suffixes explicitly instead of just the leading digit run's length.
+    filter's own output filename fell through every one of those branches
+    as unparseable, and filter_paths_by_date's "keep what can't be parsed"
+    fallback (a deliberate choice for genuinely unparseable pre-daily
+    archives) then silently kept every filtered-stage file regardless of
+    --start-date/--end-date: sample's default source is filtered output,
+    so this made date narrowing a silent no-op for the single most common
+    invocation. Found via a live comprehensive QA pass.
 
     Returns (None, None) when the date cannot be determined.
     """
-    # Daily: 20150218.export.CSV.zip (raw) or 20150218.export.parquet (converted)
-    if filename.endswith(".export.CSV.zip") or filename.endswith(".export.parquet"):
-        raw = filename[:8]
-        if raw.isdigit() and len(raw) == 8:
-            try:
-                d = date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
-                return d, d
-            except ValueError:
-                pass
-        return None, None
+    match = re.match(r"^(\d+)", filename)
+    raw = match.group(1) if match else ""
 
-    # Monthly: YYYYMM.zip (10 chars) or YYYYMM.parquet (14 chars)
-    if filename[:6].isdigit() and (
-        (len(filename) == 10 and filename.endswith(".zip"))
-        or (len(filename) == 14 and filename.endswith(".parquet"))
-    ):
+    if len(raw) == 8:
         try:
-            year, month = int(filename[:4]), int(filename[4:6])
+            d = date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
+            return d, d
+        except ValueError:
+            return None, None
+
+    if len(raw) == 6:
+        try:
+            year, month = int(raw[:4]), int(raw[4:6])
             start = date(year, month, 1)
             end = date(year, month, monthrange(year, month)[1])
             return start, end
         except ValueError:
             return None, None
 
-    # Yearly: YYYY.zip (8 chars) or YYYY.parquet (12 chars)
-    if filename[:4].isdigit() and (
-        (len(filename) == 8 and filename.endswith(".zip"))
-        or (len(filename) == 12 and filename.endswith(".parquet"))
-    ):
+    if len(raw) == 4:
         try:
-            year = int(filename[:4])
+            year = int(raw)
             return date(year, 1, 1), date(year, 12, 31)
         except ValueError:
             return None, None
@@ -934,29 +940,63 @@ def download_gdelt_files(
                 ): file
                 for file in files
             }
-            for future in tqdm(
-                as_completed(futures), total=len(futures),
-                desc="Downloading GDELT files", unit="file",
-            ):
-                try:
-                    status, filename = future.result()
-                except Exception as e:
-                    # Defense in depth against the same class of issue
-                    # _download_one's own retry loop now guards against:
-                    # one file's unexpected failure must not take the
-                    # whole batch down, matching process_all_files'
-                    # equivalent per-future try/except in converter.py.
-                    filename = futures[future].url.split("/")[-1]
-                    logger.error(f"Unexpected error downloading {filename}: {e}")
-                    failed.append(filename)
-                    continue
+            try:
+                # Driven manually (with + explicit update()) rather than
+                # iterated directly (for x in tqdm(...)): see converter.py's
+                # process_all_files for the full mechanism this avoids (a
+                # bare "for x in tqdm(iterable):" builds a second, separate
+                # generator via tqdm's own __iter__, which leaks a stray
+                # KeyboardInterrupt traceback fragment if interrupted while
+                # suspended mid-loop).
+                with tqdm(
+                    total=len(futures), desc="Downloading GDELT files", unit="file",
+                ) as pbar:
+                    for future in as_completed(futures):
+                        try:
+                            status, filename = future.result()
+                        except Exception as e:
+                            # Defense in depth against the same class of issue
+                            # _download_one's own retry loop now guards against:
+                            # one file's unexpected failure must not take the
+                            # whole batch down, matching process_all_files'
+                            # equivalent per-future try/except in converter.py.
+                            filename = futures[future].url.split("/")[-1]
+                            logger.error(f"Unexpected error downloading {filename}: {e}")
+                            failed.append(filename)
+                            pbar.update(1)
+                            continue
 
-                if status == "success":
-                    success += 1
-                elif status == "skipped":
-                    skipped += 1
-                else:
-                    failed.append(filename)
+                        if status == "success":
+                            success += 1
+                        elif status == "skipped":
+                            skipped += 1
+                        else:
+                            failed.append(filename)
+                        pbar.update(1)
+            except KeyboardInterrupt:
+                # Every future was submitted up front, so the executor's
+                # own default __exit__ (shutdown(wait=True)) would drain
+                # every one of them, including ones that haven't even
+                # started yet, before actually exiting: confirmed for
+                # real, SIGINT 1.5s into a 731-file scrape still let all
+                # 731 finish downloading over the next 93.5 seconds before
+                # "Interrupted." ever printed. cancel_futures=True (Python
+                # >=3.9, this project's own floor is 3.10) cancels every
+                # not-yet-started future immediately; wait=False doesn't
+                # additionally block here for the (at most max_workers)
+                # downloads already in flight, since there's no safe way
+                # to force-kill a running thread mid-request anyway, and
+                # the executor's own __exit__ will still wait for those
+                # specific ones as this exception continues propagating.
+                still_running = sum(1 for f in futures if f.running())
+                already_done = success + skipped + len(failed)
+                queued = len(futures) - still_running - already_done
+                logger.warning(
+                    f"Interrupted: waiting for {still_running} in-flight download(s) "
+                    f"to finish; {queued} queued download(s) will not be started."
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
     logger.info(f"Download summary: {success} success, {skipped} skipped, {len(failed)} failed.")
 

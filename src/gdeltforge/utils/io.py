@@ -1,14 +1,163 @@
+import json
 import os
+import re
+import sys
 import zipfile
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
 import pyarrow as pa
 
+# polars genuinely exports this type alias at runtime, under a
+# private-looking module name; matches converter.py's own identical
+# ParquetCompression import, covered by this project's own
+# reportPrivateImportUsage = false.
+from polars._typing import PolarsDataType
+
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Columns genuinely typed String whose real values look like plain
+# integers, leading zeros meaningful ("020", "07"), found via a live
+# comprehensive QA pass: a CSV export of these silently loses the leading
+# zero on a standard read-back, since a reader's default type inference
+# goes by the field's content, not by whether the writer quoted it (see
+# write_dataframe_atomic's own comment for why quoting alone doesn't fix
+# this). Scoped to what's actually been found broken; extend this if
+# another zero-padded string column is confirmed to have the same risk.
+_KNOWN_ZERO_PADDED_STRING_COLUMNS = frozenset({"EventCode", "EventBaseCode", "EventRootCode"})
+
+
+def _schema_to_json(schema: Mapping[str, PolarsDataType]) -> dict[str, str]:
+    """
+    Every dtype this project's own data ever produces (Int64/Float64/
+    String, the only three real column shapes GDELT's own schema uses,
+    per columns_numeric's own integer/float split; String for everything
+    else) round-trips through str(dtype) <-> getattr(pl, name) exactly,
+    confirmed directly. Written as plain {name: dtype_name} JSON rather
+    than anything polars-specific, so the sidecar stays readable by a
+    caller who never imports polars at all, and by a human debugging it.
+    """
+    return {name: str(dtype) for name, dtype in schema.items()}
+
+
+def _schema_from_json(data: dict[str, str]) -> dict[str, PolarsDataType]:
+    """
+    Inverse of _schema_to_json. A dtype name this polars version doesn't
+    recognize (an export written by a newer/older gdeltforge, or a hand-
+    edited sidecar) is skipped rather than raising: that one column falls
+    back to read_csv's own default inference, the same degradation a
+    missing sidecar already produces for every column, rather than
+    failing the whole read over one unresolvable entry.
+    """
+    schema: dict[str, PolarsDataType] = {}
+    for name, dtype_name in data.items():
+        dtype = getattr(pl, dtype_name, None)
+        if isinstance(dtype, type) and issubclass(dtype, pl.DataType):
+            schema[name] = dtype
+    return schema
+
+
+def _schema_sidecar_path(csv_path: str | Path) -> Path:
+    return Path(csv_path).with_name(Path(csv_path).name + ".schema.json")
+
+
+_ORPHAN_TMP_PAT = re.compile(r"^(?P<name>.+)\.(?P<pid>\d+)\.tmp$")
+
+
+def _pid_exists(pid: int) -> bool:
+    """
+    Best-effort check for whether a process with this PID is currently
+    alive, used only to decide whether a leftover PID-suffixed temp file
+    (see write_parquet_atomic/write_dataframe_atomic below) is safe to
+    remove. Its own writer being confirmed dead is what makes it safe:
+    a live PID might belong to a genuinely concurrent, healthy
+    invocation still mid-write to this same destination, exactly the
+    scenario the PID suffix itself exists to allow safely, and deleting
+    its in-progress temp file out from under it would reintroduce a
+    version of the same race the PID suffix was meant to close.
+
+    On POSIX, os.kill(pid, 0) is the standard, safe-by-definition way to
+    ask this without actually signaling anything. On Windows, os.kill's
+    own signal 0 is not a safe no-op the way POSIX's is: unlike POSIX,
+    where signal 0 is specifically defined as a pure existence/
+    permission probe, Windows' os.kill(pid, 0) calls TerminateProcess
+    with that same value, which can actually terminate a live process
+    rather than just check it. OpenProcess with a query-only access
+    right, released immediately without ever signaling the target, is
+    used there instead.
+
+    Every PID this function is ever asked about here belongs to a past
+    gdeltforge invocation launched by the same user account checking it
+    now, so the one real-world ambiguity this simple a check can't
+    resolve in general, a process that exists but isn't ours to query,
+    never actually arises in this specific use.
+    """
+    if pid == os.getpid():
+        return True
+    if sys.platform == "win32":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Exists but not ours to signal (a different user's process):
+        # still alive as far as this check is concerned.
+        return True
+    return True
+
+
+def _clean_orphaned_tmp_files(out: Path) -> None:
+    """
+    Finds every <out.name>.<pid>.tmp leftover at out's own destination,
+    from any PID, and removes the ones whose writer is confirmed dead.
+
+    write_parquet_atomic/write_dataframe_atomic's temp path is PID-
+    suffixed specifically so two genuinely concurrent processes never
+    collide on one shared name. That fix has a side effect on this same
+    leftover-detection idea: a process killed mid-write leaves a temp
+    file named with *that* process's own PID, essentially never this
+    one's, so a check against only the current process's exact path can
+    practically never find it again. Found via a live comprehensive QA
+    pass, reproduced with a real SIGKILL mid-write: the orphaned temp
+    file survives indefinitely, silently, through any number of later,
+    fully successful runs against the same destination.
+    """
+    for leftover in sorted(out.parent.glob(f"{out.name}.*.tmp")):
+        match = _ORPHAN_TMP_PAT.match(leftover.name)
+        if not match:
+            continue
+        pid = int(match.group("pid"))
+        if pid == os.getpid():
+            # A recycled PID landed on the exact path this call's own
+            # write is about to target: the write below overwrites it
+            # regardless, so this is purely informational, not something
+            # to unlink separately.
+            logger.warning(
+                f"Found a leftover incomplete file from a previous interrupted "
+                f"run: {leftover}. It will be overwritten."
+            )
+            continue
+        if _pid_exists(pid):
+            continue
+        logger.warning(
+            f"Found a leftover incomplete file from a previous interrupted "
+            f"run (PID {pid}, no longer running): {leftover}. Removing it."
+        )
+        leftover.unlink(missing_ok=True)
 
 
 def ensure_exists(path: str | Path, description: str) -> Path:
@@ -78,13 +227,17 @@ def write_parquet_atomic(df: pl.DataFrame, out: str | Path, **write_parquet_kwar
     than polars' own default (zstd, already matching this project's own).
     """
     out = Path(out)
-    tmp_path = out.with_name(out.name + ".tmp")
-
-    if tmp_path.exists():
-        logger.warning(
-            f"Found a leftover incomplete file from a previous interrupted "
-            f"run: {tmp_path}. It will be overwritten."
-        )
+    # The PID, not just a fixed ".tmp" suffix: found via a live
+    # comprehensive QA pass that two concurrent gdeltforge processes
+    # writing the same destination path raced on this exact temp name,
+    # one process's os.replace() below failing with "No such file or
+    # directory" because the other process had already renamed the
+    # shared .tmp file away out from under it. A real, separate OS
+    # process (this project's own worker pools included) always has a
+    # distinct PID, so this can never collide between two genuinely
+    # concurrent writers the same fixed name did.
+    tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
+    _clean_orphaned_tmp_files(out)
 
     try:
         df.write_parquet(tmp_path, **write_parquet_kwargs)
@@ -119,12 +272,49 @@ def write_dataframe_atomic(
         )
 
     out = Path(out)
-    tmp_path = out.with_name(out.name + ".tmp")
+    # PID-suffixed, same reasoning as write_parquet_atomic's identical
+    # fix: two concurrent gdeltforge invocations exporting to the same
+    # --out path must never share one fixed temp name.
+    tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
+    _clean_orphaned_tmp_files(out)
 
-    if tmp_path.exists():
+    # quote_style="non_numeric" (a caller-passed kwarg still overrides it):
+    # protects a string column value containing a comma, newline, or quote
+    # character regardless, and costs nothing for the ordinary case. It
+    # does NOT, on its own, fix the actual bug found via a live
+    # comprehensive QA pass: EventCode/EventBaseCode/EventRootCode are
+    # zero-padded strings ("020", "07") in the parquet source, and a
+    # standard CSV read with default type inference silently reads an
+    # unquoted-looking numeric field as an integer, dropping the leading
+    # zero. Quoting the field in the written file does not change that:
+    # confirmed directly, polars' own read_csv (the tool this pipeline's
+    # own output is most likely to be re-read with) still infers Int64
+    # from a quoted "020" and drops the zero exactly the same way,
+    # because its default schema inference decides by the field's
+    # content, not by whether the source quoted it. There is no write-side
+    # CSV setting that fixes a reader's own default inference: the CSV
+    # format itself carries no type information at all, so any reader
+    # with no side channel to consult has no way to tell a zero-padded
+    # code apart from a real integer. The schema sidecar written below is
+    # exactly that side channel, for a caller willing to read it back
+    # through read_csv_export instead of a bare pl.read_csv/pd.read_csv;
+    # the warning still names the manual fix for anyone who isn't.
+    kwargs.setdefault("quote_style", "non_numeric")
+
+    zero_padded_present = _KNOWN_ZERO_PADDED_STRING_COLUMNS & set(df.columns)
+    if zero_padded_present:
+        cols = sorted(zero_padded_present)
+        overrides = ", ".join(f'"{c}": pl.Utf8' for c in cols)
         logger.warning(
-            f"Found a leftover incomplete file from a previous interrupted "
-            f"run: {tmp_path}. It will be overwritten."
+            f"{out} includes zero-padded numeric-looking string column(s) "
+            f"{', '.join(cols)}. A standard CSV read with default type "
+            f"inference, including polars' own read_csv, reads these back "
+            f"as an integer and drops the leading zero; quoting the "
+            f"written field does not prevent this. gdeltforge's own "
+            f"read_csv_export(path) restores every column's real dtype "
+            f"automatically; otherwise read back with "
+            f"pl.read_csv(path, schema_overrides={{{overrides}}}) "
+            f"yourself to preserve the original string values."
         )
 
     try:
@@ -134,10 +324,81 @@ def write_dataframe_atomic(
         tmp_path.unlink(missing_ok=True)
         raise
 
+    # Written only once the CSV itself is confirmed in place: a full
+    # column-name -> dtype-name map, not just the known zero-padded ones
+    # above, so read_csv_export below gets a genuinely lossless round
+    # trip for every column this project's data ever has (Int64/Float64/
+    # String), not only the handful of names this module happens to know
+    # about today. Plain, human-readable JSON, not a polars-specific
+    # format, so it stays inspectable without importing polars at all.
+    # Best-effort: a failure writing the sidecar (a read-only directory,
+    # a full disk) degrades to read_csv_export's own no-sidecar fallback
+    # rather than losing the CSV export that already succeeded above.
+    schema_path = _schema_sidecar_path(out)
+    schema_tmp_path = schema_path.with_name(schema_path.name + ".tmp")
+    try:
+        schema_tmp_path.write_text(json.dumps(_schema_to_json(df.schema), indent=2))
+        os.replace(schema_tmp_path, schema_path)
+    except OSError as e:
+        logger.warning(f"Could not write schema sidecar {schema_path}: {e}")
+        schema_tmp_path.unlink(missing_ok=True)
+
+
+def read_csv_export(path: str | Path, **kwargs) -> pl.DataFrame:
+    """
+    Read a CSV file written by write_dataframe_atomic(..., export_format=
+    "csv"), restoring every column's real dtype from the schema sidecar
+    written alongside it, rather than leaving pl.read_csv to infer types
+    from content the way a bare pl.read_csv/pd.read_csv call would.
+
+    This is the actual fix for the CSV round-trip gap named in
+    write_dataframe_atomic's own warning: EventCode/EventBaseCode/
+    EventRootCode (zero-padded numeric-looking strings) and any other
+    column's real dtype both come back exactly as written, confirmed
+    directly against a real write/read cycle including null vs genuine-
+    empty-string values, which is not a fix a write-side CSV setting can
+    ever provide on its own (see write_dataframe_atomic's own comment):
+    CSV itself carries no type information, so any reader with nothing
+    but the file's own content to go on, including one written by this
+    same function's caller running a bare pl.read_csv instead, has no
+    way to recover it.
+
+    Falls back to a plain pl.read_csv (default inference, same
+    zero-padded-column warning as write time if the file's header names
+    any of them) when no sidecar is found: an export written before this
+    existed, one whose sidecar was lost or never written (a read-only
+    destination at write time), or a CSV that never came from gdeltforge
+    at all. kwargs are passed straight through to pl.read_csv either way,
+    the same as write_dataframe_atomic's own passthrough to write_csv;
+    an explicit schema_overrides here takes precedence over the sidecar's
+    own, since a caller who bothered to pass one clearly wants it to win.
+    """
+    path = Path(path)
+    schema_path = _schema_sidecar_path(path)
+
+    if not schema_path.exists():
+        zero_padded_present = _KNOWN_ZERO_PADDED_STRING_COLUMNS & set(
+            pl.scan_csv(path).collect_schema().names()
+        )
+        if zero_padded_present:
+            cols = sorted(zero_padded_present)
+            overrides = ", ".join(f'"{c}": pl.Utf8' for c in cols)
+            logger.warning(
+                f"No schema sidecar found for {path} (missing, or this file "
+                f"wasn't written by gdeltforge); reading with default type "
+                f"inference. Column(s) {', '.join(cols)} will lose a "
+                f"leading zero unless schema_overrides={{{overrides}}} is passed."
+            )
+        return pl.read_csv(path, **kwargs)
+
+    schema = _schema_from_json(json.loads(schema_path.read_text()))
+    schema.update(kwargs.pop("schema_overrides", None) or {})
+    return pl.read_csv(path, schema_overrides=schema, **kwargs)
+
 
 def read_parquet_path(path: str | Path) -> pl.DataFrame:
     """
-    Read a single Parquet file, or every Parquet file directly in a
+    Read a single Parquet file, or every Parquet file anywhere under a
     directory, concatenated into one DataFrame. A directory is globbed to
     *.parquet explicitly rather than handed to polars as-is: convert and
     filter's own resumability markers (mark_done above writes them as a
@@ -152,16 +413,51 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     produced but still a failure. The explicit *.parquet glob here avoids
     the question either way, by construction rather than by relying on
     whichever behavior the current engine happens to have.
+
+    Globbed recursively (rglob), not just the directory's own top level:
+    found via a live comprehensive QA pass, crossref --events <dir>
+    reported "No parquet files found" against a real, valid, non-empty
+    Hive-partitioned historical directory (Year=YYYY/MonthYear=YYYYMM/
+    *.parquet), the exact directory shape converter.partitioning writes
+    for events/events-reduced and IndexedSampler's own FileIndex already
+    walks. A flat, non-nested directory's own files are still found the
+    same way as before, one level down being the trivial case of
+    "anywhere under."
+
+    Files are read through a per-file union schema with missing_columns=
+    "insert", the same reconciliation IndexedSampler's own get_random_
+    sample and CalendarSampler/FilteredSampler's shared _scan_dataset
+    already apply: a real accumulated directory mixing flat and
+    historical files can genuinely disagree on physical schema (a
+    Hive-partitioned file converted before a schema fix landed, an
+    output_columns setting narrowed at one point and widened again
+    later), and a plain per-file pl.read_parquet followed by pl.concat
+    has no way to tolerate that, raising a raw "unable to append to a
+    DataFrame of width X with a DataFrame of width Y" the moment two
+    such files are both pulled into --events.
     """
-    p = Path(path)
+    # A path that names neither a file nor a directory used to reach
+    # pl.read_parquet below unchecked, surfacing polars' own raw,
+    # unformatted "No such file or directory (os error 2): <path>"
+    # straight from its underlying Rust reader, unlike every other
+    # missing-path case in this project, which gets ensure_exists' own
+    # crafted "... does not exist: <path>".
+    p = ensure_exists(path, "parquet path")
     if not p.is_dir():
         return pl.read_parquet(p)
 
-    files = sorted(p.glob("*.parquet"))
+    files = sorted(p.rglob("*.parquet"))
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
-        return pl.concat([pl.read_parquet(f) for f in files])
+        schema: dict[str, PolarsDataType] = {}
+        for f in files:
+            for name, dtype in pl.read_parquet_schema(f).items():
+                schema.setdefault(name, dtype)
+        return pl.concat(
+            pl.scan_parquet(f, schema=schema, missing_columns="insert").collect()
+            for f in files
+        )
 
 
 def _fingerprint_value(value: object) -> str:
@@ -362,6 +658,155 @@ def narrow_to_available_columns(
         )
 
     return sorted((requested & available) | required)
+
+
+def _file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
+    return {f: dict(pl.read_parquet_schema(f).items()) for f in files}
+
+
+def _widen_conflicting_dtypes(dtypes: set[pl.DataType], column: str) -> pl.DataType:
+    if all(dtype.is_integer() for dtype in dtypes):
+        return pl.Int64()
+    if all(dtype.is_numeric() for dtype in dtypes):
+        return pl.Float64()
+    raise pl.exceptions.SchemaError(
+        f"column {column!r} has incompatible types across files: "
+        f"{sorted(str(d) for d in dtypes)}. gdeltforge can only reconcile "
+        f"numeric width differences (e.g. Int64/Float64) automatically; "
+        f"this looks like a genuine data problem across the source files "
+        f"and needs manual investigation."
+    )
+
+
+def reconcile_parquet_schema(files: list[Path]) -> dict[str, pl.DataType]:
+    """
+    Union schema across every file's own real per-column dtype, widening a
+    column to a common dtype wherever files genuinely disagree on it,
+    rather than silently keeping whichever file happened to be read first
+    the way a plain schema.setdefault(name, dtype) scan would.
+
+    A real accumulated GDELT archive can hit this at a specific dtype
+    boundary: events' own Actor2Geo_Type is declared Float64 in every
+    yearly/monthly archive through 2007-10, then Int64 in every file from
+    2007-11 onward, both genuinely correct for their own file, neither
+    wrong on its own. A read spanning that boundary needs both files' own
+    data preserved, not one silently coerced to null (missing_columns=
+    "insert" only reconciles a column ABSENT from a file, not one present
+    under a different dtype) or the whole read rejected outright the
+    moment scan_parquet hits a file whose real dtype disagrees with
+    whichever file's it happened to infer its schema from.
+
+    Only reconciles combinations pl.concat(..., how="vertical_relaxed")
+    would itself accept: numeric widening (Int64 -> Float64, mixed
+    integer widths -> Int64). A genuine non-numeric conflict (a column
+    typed Utf8 in one file, Int64 in another) raises a clear error naming
+    the column and every dtype seen for it, rather than guessing, since
+    silently casting between those would risk corrupting real data
+    instead of merely widening its numeric range.
+    """
+    return reconcile_file_schemas(_file_schemas(files))
+
+
+def reconcile_file_schemas(
+    file_schemas: dict[Path, dict[str, pl.DataType]],
+) -> dict[str, pl.DataType]:
+    """Same reconciliation as reconcile_parquet_schema, for a caller that
+    already has each file's own real schema read (scan_dataset_reconciled
+    below), so the footer isn't read a second time."""
+    seen: dict[str, set[pl.DataType]] = {}
+    for schema in file_schemas.values():
+        for name, dtype in schema.items():
+            seen.setdefault(name, set()).add(dtype)
+
+    resolved: dict[str, pl.DataType] = {}
+    for name, dtypes in seen.items():
+        resolved[name] = (
+            next(iter(dtypes)) if len(dtypes) == 1 else _widen_conflicting_dtypes(dtypes, name)
+        )
+    return resolved
+
+
+def scan_file_against_schema(
+    file: Path,
+    target_schema: dict[str, pl.DataType],
+    real_schema: dict[str, pl.DataType] | None = None,
+) -> pl.LazyFrame:
+    """
+    Scan a single file toward a schema reconciled across a wider set of
+    files (reconcile_parquet_schema), casting this file's own columns to
+    the target dtype wherever its real per-file dtype disagrees, rather
+    than handing scan_parquet a dtype it will reject the file for
+    declaring "wrong". scan_parquet's own schema= parameter is an
+    assertion, not a request: passing target_schema straight through
+    only works when this file's real dtypes already match it, and raises
+    ("data type mismatch ... incoming: X != target: Y") for exactly the
+    files reconcile_parquet_schema exists to reconcile. This scans
+    against this file's own real dtype for anything that disagrees, then
+    applies the cast to target_schema immediately after.
+
+    real_schema lets a caller that already read this file's own schema
+    (scan_dataset_reconciled) pass it straight through instead of paying
+    for a second footer read.
+    """
+    if real_schema is None:
+        real_schema = dict(pl.read_parquet_schema(file).items())
+
+    per_file_schema = dict(target_schema)
+    casts = []
+    for name, target_dtype in target_schema.items():
+        real_dtype = real_schema.get(name)
+        if real_dtype is not None and real_dtype != target_dtype:
+            per_file_schema[name] = real_dtype
+            casts.append(pl.col(name).cast(target_dtype))
+
+    lf = pl.scan_parquet(file, schema=per_file_schema, missing_columns="insert")
+    return lf.with_columns(casts) if casts else lf
+
+
+def scan_dataset_reconciled(files: list[Path]) -> pl.LazyFrame:
+    """
+    Lazily scan every file in `files` as one dataset, reconciling both a
+    column missing entirely from some files (pre-existing: comes back
+    null for those files' own rows) and a column present everywhere but
+    typed differently in some files (reconcile_parquet_schema; comes back
+    widened to whichever dtype all of them can be cast to). Shared by
+    samplers.py's CalendarSampler/FilteredSampler and crossref.py's GKG/
+    Mentions reads, both of which scan an entire multi-file dataset at
+    once rather than gathering specific rows per file the way
+    IndexedSampler.get_random_sample does (that one calls
+    scan_file_against_schema directly instead, once per file it actually
+    draws from).
+
+    When every file already agrees on every column's dtype (the common
+    case), this is a single combined pl.scan_parquet(files, ...) call, so
+    polars' own multi-file parallelism and predicate pushdown (row-group
+    skipping on a historical partition's constant Year/MonthYear, for
+    instance) stay intact exactly as before this existed. Only when at
+    least one column's real dtype genuinely disagrees across files does
+    this fall back to one LazyFrame per file, each scanned against its
+    own real dtype for whatever disagrees and cast to the reconciled
+    target immediately after, then unioned with how="vertical_relaxed"
+    (the same reconciliation this project's own reservoir-concat fix
+    already relies on elsewhere for the identical Int64/Float64 shape).
+    That fallback only costs the files actually affected, in practice a
+    small minority sitting right at a real historical dtype boundary.
+    """
+    file_schemas = _file_schemas(files)
+    target_schema = reconcile_file_schemas(file_schemas)
+
+    conflicting = {
+        name
+        for name in target_schema
+        if len({schema[name] for schema in file_schemas.values() if name in schema}) > 1
+    }
+
+    if not conflicting:
+        return pl.scan_parquet(files, schema=target_schema, missing_columns="insert")
+
+    lazy_frames = [
+        scan_file_against_schema(f, target_schema, real_schema=file_schemas[f]) for f in files
+    ]
+    return pl.concat(lazy_frames, how="vertical_relaxed")
 
 
 def unzip_file(zip_filepath: str | Path, extract_to_dir: str | Path | None = None) -> list[Path]:

@@ -28,13 +28,23 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 
     `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
 
-    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130.
+    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130. A `scrape`/`convert`/`filter` run backed by a worker pool cancels every not-yet-started file immediately on either signal, rather than draining the whole remaining queue first; the handful of files already in flight are still allowed to finish. A plain `kill` (SIGTERM, no `-9`) behaves the same way, printing `Terminated.` and exiting with status 143, since that's what most process managers (systemd, Docker, Kubernetes) send by convention before escalating.
+
+    `gdeltforge` makes itself its own process group leader on POSIX at startup, so `kill -KILL -$(pgid)` (or `pkill -KILL -g $PGID`) reliably stops the whole run, worker processes included, in one shot. A bare `kill -9 <pid>` targeting only the main process cannot be caught by anything, including this: its already-dispatched workers keep running to completion, orphaned, since SIGKILL never reaches them at all. On Windows, the equivalent whole-tree stop is `taskkill /F /T /PID <pid>`.
 
 ## Global options
 
 `--config PATH`
 
 : Path to `settings.yaml`. Defaults to the `GDELTFORGE_CONFIG` environment variable, then `./config/settings.yaml` relative to the current working directory. Use this (or the env var) to run `gdeltforge` from outside the repo checkout, pointing at a config file anywhere on disk.
+
+    `--config` goes **before** the subcommand, not after it, unlike every other flag documented below:
+
+    ```bash
+    gdeltforge --config /path/to/settings.yaml scrape --dataset events
+    ```
+
+    Placing it after the subcommand (`gdeltforge scrape --config ...`) fails with argparse's own generic `unrecognized arguments: --config ...`, since `--config` is a top-level option, not defined on any individual subcommand's own parser.
 
 ## `gdeltforge scrape`
 
@@ -199,7 +209,17 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 `--start-date`/`--end-date` narrow which files each mode reads before it does anything else, the same file-level date filter `scrape`/`convert`/`filter`/`crossref` already apply (reusing `filter_paths_by_date`). In `filtered` mode this stacks with `--filter`'s own row-level predicate pushdown rather than replacing it: the date range prunes which files even get opened, `--filter` then narrows rows within whatever remains. Setting both together logs a warning, since a result narrower than either constraint alone implied is otherwise easy to misread as a bug.
 
-`--export-format csv` is meant for handing a finished sample to a tool that doesn't read Parquet (Excel, a quick spreadsheet look), not as a second internal storage format: CSV has no typed schema, so nullable `Int64` columns and dates round-trip as plain digits with empty-string `NaN`s, not restored automatically the way Parquet's schema is on the next read.
+`--export-format csv` is meant for handing a finished sample to a tool that doesn't read Parquet (Excel, a quick spreadsheet look), not as a second internal storage format: CSV itself has no typed schema, so a numeric-looking string column (`EventCode`, `EventBaseCode`, `EventRootCode`; their zero-padded values, `"020"`, are meaningful) reads back as a plain integer, leading zero dropped, under a standard CSV reader's own default type inference, including a bare `pl.read_csv`/`pd.read_csv` call. A `<name>.csv.schema.json` sidecar is written alongside the CSV recording every column's real dtype; `gdeltforge.utils.io.read_csv_export(path)` reads it back through that sidecar for a fully lossless round trip (confirmed against real content, including null vs. genuine-empty-string values), and is the right way to read a gdeltforge CSV export back in Python. A plain CSV reader with no sidecar to consult, or a `--out` file moved away from its sidecar, still hits the original limitation; a warning naming the affected columns and a manual `schema_overrides` fix fires at export time either way.
+
+!!! note "`--columns` isn't always a strict projection"
+
+    Each sampling mode has its own idea of which columns it can't function without, and always keeps them in the output regardless of what `--columns` requests:
+
+    - `indexed`: a true strict projection. Output is exactly the columns named in `--columns`, or the dataset's full declared schema if `--columns` is omitted.
+    - `calendar`: the grouping column (`--date-column`, or the per-dataset default) is always kept, even if `--columns` doesn't name it.
+    - `filtered`/`stratified`: every column your `--filter` condition or `--stratify` reads is always kept, even if `--columns` doesn't name it. `crossref`'s own `--columns` behaves the same way for its join key.
+
+    This is deliberate, not a bug: a mode can't group or filter by a column it silently dropped from the scan. A column `--columns` drops for real is anything not covered by one of those cases above.
 
 ### Indexed sampling (uniform random)
 
@@ -222,6 +242,10 @@ Group by month or year instead of day, and by a different dataset's own date col
 ```bash
 gdeltforge sample --dataset gkg-v2 --mode calendar --period month --per-period 50 --out monthly.parquet
 ```
+
+!!! warning "The period count can badly exceed intuition"
+
+    `--period day` groups strictly by the grouping column's own `YYYYMMDD` value, not by which file a row came from. GDELT's own event-date misdating means a single day's file can legitimately carry `Day` values spanning a decade (a wire report referencing a much older date, a source article with a malformed or placeholder date), so the number of distinct periods a run actually produces can be far larger than "one per file downloaded" suggests. This is a real property of the underlying data, not a bug in the grouping itself.
 
 ### Filtered sampling (JSON filters)
 
@@ -298,9 +322,9 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/filter output directly); `.done` resumability markers in it are ignored |
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
-| `--columns COL [COL ...]` | Restrict GKG-side output to these columns; the join key column is always included regardless. Not supported with `--gkg-version auto` |
-| `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto` |
-| `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto` |
+| `--columns COL [COL ...]` | Restrict GKG-side output to these columns, named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
+| `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
+| `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--start-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period starts on or after this date. Narrows the configured directories being read, not `--events` |
 | `--end-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period ends on or before this date. Narrows the configured directories being read, not `--events` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
@@ -320,6 +344,14 @@ Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure ra
 gdeltforge sample --dataset events --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet
 gdeltforge crossref --events us_events.parquet --gkg-version v2 --out us_events_enriched.parquet
 ```
+
+Restricting GKG-side output with `--columns` accepts either the raw source name or the prefixed name the column actually ends up with:
+
+```bash
+gdeltforge crossref --events us_events.parquet --gkg-version v2 --columns V1THEMES GKG_V1.5TONE --out us_events_themes_tone.parquet
+```
+
+`V1THEMES` and `GKG_V1.5TONE` above resolve to the same underlying columns as the raw `config["columns"]["gdelt_gkg_v2"]` and the prefixed `GKG_V1.5TONE` output name would, respectively; mixing the two conventions in one `--columns` call is fine.
 
 For a sample spanning the 2013-2015 window specifically (see [Recipes](recipes.md) for the full worked example):
 

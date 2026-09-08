@@ -1,10 +1,12 @@
 import logging
+import sys
 from datetime import date
 from pathlib import Path
 
 import polars as pl
 import polars.testing as pl_testing
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.crossref.crossref as crossref_module
 from gdeltforge.crossref.crossref import (
@@ -20,7 +22,6 @@ from gdeltforge.crossref.crossref import (
     warn_if_events_predate_gkg_coverage,
     warn_if_output_columns_drops_join_key,
 )
-from gdeltforge.scraping.scraper import parse_gdeltv2_file_date
 
 GKG_V1_COLUMNS = ["Date", "EventIds", "NumArticles", "Themes"]
 GKG_V2_COLUMNS = ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V1THEMES"]
@@ -267,64 +268,146 @@ class TestWarnIfDirectoryIsLarge:
     error: a genuinely large local archive is a real directory someone
     might legitimately point crossref at, just a slow one to list.
 
-    Path.glob is faked here rather than creating tens of thousands of
-    real files on disk, matching the same trick this file's dedup tests
-    already use (test_reprocessed_article_dedup_is_correct_regardless_
-    of_glob_order): fine for these isolated tests, which call
-    warn_if_directory_is_large directly and never reach _dataset()'s own
-    real file I/O the way the integration tests below do.
+    Takes an already-listed files list directly rather than a folder to
+    list itself: it used to call _list_files (glob + date-filter) on its
+    own, redoing the identical listing/date-filter pass
+    crossref_events_gkg_v1/_v2 immediately went on to repeat via
+    _dataset(), a real, consistently reproducible doubling of I/O work
+    found via a live comprehensive QA pass (every crossref run printed
+    each directory's own "Date filter [...]" log line twice, with
+    identical file counts both times). See TestCrossrefListsEach
+    DirectoryExactlyOnce below for the regression guard on that shared-
+    list property itself; these tests only cover this function's own
+    logic (count files, warn or don't past the threshold) in isolation.
     """
 
-    @staticmethod
-    def _fake_glob(n):
-        def glob(_self, _pattern):
-            return [Path(f"{i}.parquet") for i in range(n)]
-        return glob
-
-    def test_no_warning_at_or_below_threshold(self, tmp_path, caplog, monkeypatch):
+    def test_no_warning_at_or_below_threshold(self, tmp_path, caplog):
         n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD
-        monkeypatch.setattr(Path, "glob", self._fake_glob(n))
+        files = [Path(f"{i}.parquet") for i in range(n)]
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
+            warn_if_directory_is_large(files, str(tmp_path), "Mentions")
         assert caplog.records == []
 
-    def test_warns_above_threshold(self, tmp_path, caplog, monkeypatch):
+    def test_warns_above_threshold(self, tmp_path, caplog):
         n = crossref_module._LARGE_GKG_DIRECTORY_WARNING_THRESHOLD + 1
-        monkeypatch.setattr(Path, "glob", self._fake_glob(n))
+        files = [Path(f"{i}.parquet") for i in range(n)]
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
+            warn_if_directory_is_large(files, str(tmp_path), "Mentions")
         assert any(
             f"{n:,}" in r.message and "Mentions" in r.message and repr(str(tmp_path)) in r.message
             for r in caplog.records
         )
 
     def test_no_warning_for_a_typical_local_directory(self, tmp_path, caplog):
-        (tmp_path / "a.parquet").touch()
-        (tmp_path / "b.parquet").touch()
+        files = [tmp_path / "a.parquet", tmp_path / "b.parquet"]
         with caplog.at_level(logging.WARNING):
-            warn_if_directory_is_large(str(tmp_path), "Mentions", parse_gdeltv2_file_date)
+            warn_if_directory_is_large(files, str(tmp_path), "Mentions")
         assert caplog.records == []
 
-    def test_counts_the_post_date_filter_list_not_the_raw_directory(
-        self, tmp_path, caplog, monkeypatch
-    ):
-        # Three real, date-parseable files; narrowing to the last two
-        # must be what gets counted, not the raw directory's three,
-        # proving the file count this warning reports is the same list
-        # crossref_events_gkg_v1/_v2 would actually open with the same
-        # bounds, not a stale, pre-narrowing total.
-        for name in ("20200101000000", "20200102000000", "20200103000000"):
-            (tmp_path / f"{name}.gkg.parquet").touch()
+    def test_counts_exactly_the_files_list_it_was_given(self, tmp_path, caplog, monkeypatch):
+        # Whatever narrowing already happened before this function ever
+        # sees the list (date filtering, or anything else a caller might
+        # apply) is reflected purely by what's in files; this function
+        # itself does no listing or filtering of its own.
         monkeypatch.setattr(crossref_module, "_LARGE_GKG_DIRECTORY_WARNING_THRESHOLD", 1)
+        files = [tmp_path / "a.parquet", tmp_path / "b.parquet"]
 
         with caplog.at_level(logging.WARNING):
             warn_if_directory_is_large(
-                str(tmp_path), "GKG 2.1", parse_gdeltv2_file_date,
-                start_date=date(2020, 1, 2), end_date=None,
+                files, str(tmp_path), "GKG 2.1", start_date=date(2020, 1, 2), end_date=None,
             )
 
         assert any("2 files" in r.message and "GKG 2.1" in r.message for r in caplog.records)
-        assert not any("3 files" in r.message for r in caplog.records)
+
+
+class TestCrossrefListsEachDirectoryExactlyOnce:
+    """
+    warn_if_directory_is_large and _dataset each used to list and date-
+    filter a configured GKG/Mentions directory independently, so a
+    single crossref run doubled the real I/O cost cli-reference.md's own
+    capacity-planning numbers document for exactly this operation. Found
+    via a live comprehensive QA pass: a real crossref --gkg-version v2
+    run printed each of Mentions/GKG 2.1's own "Date filter [...]" log
+    line twice, with identical "kept"/"excluded" counts both times.
+    crossref_events_gkg_v1/_v2 now list each directory exactly once and
+    share that same list between the warning and the actual scan; this
+    spies on _list_files (the shared listing/date-filter helper both
+    used to call independently) to assert on call count directly, not
+    wall-clock time, which wouldn't reproduce reliably in CI.
+    """
+
+    def test_v1_lists_its_directory_exactly_once(self, tmp_path, monkeypatch):
+        folder = TestCrossrefEventsGkgV1._write_gkg_v1(tmp_path)
+        calls = []
+        real_list_files = crossref_module._list_files
+
+        def spy(folder, date_parser, start_date=None, end_date=None):
+            calls.append(folder)
+            return real_list_files(folder, date_parser, start_date, end_date)
+
+        monkeypatch.setattr(crossref_module, "_list_files", spy)
+
+        crossref_events_gkg_v1(TestCrossrefEventsGkgV1._events_df(), folder, GKG_V1_COLUMNS)
+
+        assert calls == [folder], (
+            f"expected exactly 1 directory-listing call for the GKG 1.0 folder, "
+            f"got {len(calls)}: {calls}"
+        )
+
+    def test_v2_lists_each_of_its_two_directories_exactly_once(self, tmp_path, monkeypatch):
+        mentions_folder = TestCrossrefEventsGkgV2._write_mentions(tmp_path)
+        gkg_v2_folder = TestCrossrefEventsGkgV2._write_gkg_v2(tmp_path)
+        calls = []
+        real_list_files = crossref_module._list_files
+
+        def spy(folder, date_parser, start_date=None, end_date=None):
+            calls.append(folder)
+            return real_list_files(folder, date_parser, start_date, end_date)
+
+        monkeypatch.setattr(crossref_module, "_list_files", spy)
+
+        crossref_events_gkg_v2(
+            TestCrossrefEventsGkgV2._events_df(), mentions_folder, gkg_v2_folder, GKG_V2_COLUMNS,
+        )
+
+        assert sorted(calls) == sorted([mentions_folder, gkg_v2_folder]), (
+            f"expected exactly 1 directory-listing call each for Mentions and GKG 2.1 "
+            f"(2 total), got {len(calls)}: {calls}"
+        )
+
+    def test_auto_still_lists_each_of_v1s_and_v2s_directories_exactly_once(
+        self, tmp_path, monkeypatch
+    ):
+        # auto calls straight into crossref_events_gkg_v1/_v2 with no
+        # directory handling of its own (see crossref_events_gkg_auto's
+        # own docstring), so fixing those two is sufficient here; this
+        # confirms that composition doesn't reintroduce doubling at the
+        # auto layer itself.
+        gkg_v1_folder = TestCrossrefEventsGkgV1._write_gkg_v1(tmp_path)
+        mentions_folder = TestCrossrefEventsGkgV2._write_mentions(tmp_path)
+        gkg_v2_folder = TestCrossrefEventsGkgV2._write_gkg_v2(tmp_path)
+        calls = []
+        real_list_files = crossref_module._list_files
+
+        def spy(folder, date_parser, start_date=None, end_date=None):
+            calls.append(folder)
+            return real_list_files(folder, date_parser, start_date, end_date)
+
+        monkeypatch.setattr(crossref_module, "_list_files", spy)
+
+        events_df = pl.DataFrame({
+            "GlobalEventID": [1001, 2001],
+            "DATEADDED": [20130401000000, 20200101000000],
+        })
+        crossref_events_gkg_auto(
+            events_df, gkg_v1_folder, GKG_V1_COLUMNS,
+            mentions_folder, gkg_v2_folder, GKG_V2_COLUMNS,
+        )
+
+        assert sorted(calls) == sorted([gkg_v1_folder, mentions_folder, gkg_v2_folder]), (
+            f"expected exactly 1 directory-listing call each for GKG 1.0, Mentions, "
+            f"and GKG 2.1 (3 total), got {len(calls)}: {calls}"
+        )
 
 
 # ------------------------------------------------------------
@@ -402,6 +485,36 @@ class TestCrossrefEventsGkgV1:
         assert row["NumArticles"] == 5       # Events' own NumArticles
         assert row["GKG_NumArticles"] == 10  # GKG's NumArticles, untouched
 
+    def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
+        self, tmp_path
+    ):
+        # Mirrors the real V2.1DATE split found independently against the
+        # real GKG 2.1 archive (Float64 in 441 files scattered across six
+        # years, Int64 everywhere else), reached here through GKG 1.0's
+        # own _dataset scan instead. scan_parquet's own schema=
+        # parameter is an assertion, so a plain union scan crashed ("data
+        # type mismatch ... incoming: Int64 != target: Float64") the
+        # moment it reached the file whose real dtype disagreed with
+        # whichever file the schema happened to be inferred from.
+        folder = tmp_path / "gkg_v1"
+        folder.mkdir()
+        pl.DataFrame({
+            "Date": [20130401], "EventIds": ["1001"],
+            "NumArticles": [10], "Themes": ["TAX_FNCACT"], "Confidence": [1.0],
+        }).write_parquet(folder / "20130401.gkg.parquet")
+        pl.DataFrame({
+            "Date": [20130402], "EventIds": ["1002"],
+            "NumArticles": [4], "Themes": ["ECON_STOCKMARKET"], "Confidence": [2],
+        }).write_parquet(folder / "20130402.gkg.parquet")
+
+        result = crossref_events_gkg_v1(
+            self._events_df(), str(folder), [*GKG_V1_COLUMNS, "Confidence"]
+        )
+
+        assert result["GKG_Confidence"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["GKG_Confidence"] for row in result.to_dicts()}
+        assert by_id[1001] == 1.0 and by_id[1002] == 2.0
+
     def test_columns_restricts_gkg_side_output(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
         result = crossref_events_gkg_v1(
@@ -414,11 +527,53 @@ class TestCrossrefEventsGkgV1:
         # EventIds is always read (it's the join key) even when not requested.
         assert "GKG_EventIds" in result.columns
 
+    def test_columns_accepts_the_prefixed_output_name_too(self, tmp_path):
+        # A live comprehensive QA pass built its --columns repro from a
+        # completed run's own real output column names, which are
+        # prefixed (GKG_Date, not Date), and had every one rejected on
+        # an ordinary, fully matching run, not only a zero-match one.
+        # Same run as test_columns_restricts_gkg_side_output just above,
+        # restricted by the prefixed name instead of the raw one.
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, columns={"GKG_Date"}
+        )
+
+        assert "GKG_Date" in result.columns
+        assert "GKG_Themes" not in result.columns
+
+    def test_columns_accepts_a_mix_of_raw_and_prefixed_names(self, tmp_path):
+        # A caller isn't required to pick one convention consistently;
+        # each name in the set resolves independently.
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS, columns={"Date", "GKG_Themes"}
+        )
+
+        assert "GKG_Date" in result.columns
+        assert "GKG_Themes" in result.columns
+        assert "GKG_NumArticles" not in result.columns
+
     def test_invalid_columns_raises(self, tmp_path):
         folder = self._write_gkg_v1(tmp_path)
         with pytest.raises(ValueError, match="Invalid columns"):
             crossref_events_gkg_v1(
                 self._events_df(), folder, GKG_V1_COLUMNS, columns={"NotARealColumn"}
+            )
+
+    def test_columns_naming_the_join_key_gets_a_specific_explanation(self, tmp_path):
+        # A live comprehensive QA pass repeatedly misread this exact
+        # rejection as evidence the check was validating against a
+        # broken/incomplete schema (confused further by testing it
+        # specifically against a zero-match run, whose own schema bug is
+        # what _empty_crossref_result fixes separately). It's neither:
+        # GlobalEventID is always included in the output regardless of
+        # --columns, on any run, matching or not, so it was never a
+        # valid name to restrict to in the first place.
+        folder = self._write_gkg_v1(tmp_path)
+        with pytest.raises(ValueError, match="always included in crossref's output"):
+            crossref_events_gkg_v1(
+                self._events_df(), folder, GKG_V1_COLUMNS, columns={"GlobalEventID"}
             )
 
     def test_missing_global_event_id_column_raises(self, tmp_path):
@@ -437,6 +592,52 @@ class TestCrossrefEventsGkgV1:
         events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
         result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
         assert result.is_empty()
+
+    def test_no_matches_still_carries_the_real_target_schema(self, tmp_path):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: a zero-match run used to return a bare pl.DataFrame(),
+        # (0, 0), not the join's own real target schema at zero rows. A
+        # scripted pipeline processing one day at a time (a genuinely
+        # quiet news day, a narrow --filter, a real coverage gap) writes
+        # that (0, 0) result out with no columns at all, a much worse
+        # citizen for any downstream tool than a 0-row file with the
+        # right columns.
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+
+        result = crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
+
+        assert result.columns == [
+            "GlobalEventID", "NumArticles",
+            "GKG_Date", "GKG_EventIds", "GKG_NumArticles", "GKG_Themes",
+        ]
+        assert result.schema["GKG_Date"] == pl.Int64
+        assert result.schema["GKG_Themes"] == pl.String
+
+    def test_no_matches_schema_respects_an_explicit_columns_restriction(self, tmp_path):
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+
+        result = crossref_events_gkg_v1(
+            events_df, folder, GKG_V1_COLUMNS, columns={"Themes"}
+        )
+
+        # EventIds is always kept regardless (the join key), Themes is
+        # the one requested optional column; Date/NumArticles are not.
+        assert set(result.columns) == {"GlobalEventID", "NumArticles", "GKG_EventIds", "GKG_Themes"}
+
+    def test_no_matches_schema_respects_a_prefixed_columns_restriction(self, tmp_path):
+        # Same restriction as the test just above, named the way it
+        # actually appears in the output (GKG_Themes) instead of the raw
+        # source name (Themes).
+        folder = self._write_gkg_v1(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "NumArticles": [1]})
+
+        result = crossref_events_gkg_v1(
+            events_df, folder, GKG_V1_COLUMNS, columns={"GKG_Themes"}
+        )
+
+        assert set(result.columns) == {"GlobalEventID", "NumArticles", "GKG_EventIds", "GKG_Themes"}
 
     def test_warns_when_some_events_predate_gkg_v1_coverage(self, tmp_path, caplog):
         # Event 1001 (real match, DATEADDED within coverage) must still
@@ -520,6 +721,78 @@ class TestCrossrefEventsGkgV1:
             crossref_events_gkg_v1(
                 self._events_df(), folder, GKG_V1_COLUMNS, start_date=date(2013, 5, 1),
             )
+
+
+class TestIterRowSlicesBoundedByExplosion:
+    """_iter_row_slices_bounded_by_explosion caps how many rows a single
+    explode step downstream can produce, found necessary via a live
+    comprehensive QA pass: a real GKG 1.0 Counts file had one row with
+    13,051 comma-separated EventIds against a same-file mean of ~37,
+    which let that single row dominate an entire batch's peak memory
+    once exploded, surfacing as a Rust-level allocation failure under
+    real memory pressure."""
+
+    @staticmethod
+    def _slice_lengths(df, list_col, max_exploded):
+        return [
+            s.height
+            for s in crossref_module._iter_row_slices_bounded_by_explosion(
+                df, list_col, max_exploded
+            )
+        ]
+
+    def test_ordinary_rows_stay_in_one_slice_when_under_the_cap(self):
+        df = pl.DataFrame({"ids": [["a", "b"], ["c"], ["d", "e", "f"]]})
+        assert self._slice_lengths(df, "ids", max_exploded=100) == [3]
+
+    def test_a_slice_boundary_is_drawn_once_the_running_total_would_exceed_the_cap(self):
+        df = pl.DataFrame({"ids": [["a"], ["b"], ["c"], ["d"]]})
+        # Running totals: 1, 2, 3, 4. Capped at 2, a slice never accumulates
+        # past it, so the boundary falls after every second row.
+        assert self._slice_lengths(df, "ids", max_exploded=2) == [2, 2]
+
+    def test_a_single_pathological_row_gets_its_own_slice_rather_than_looping_forever(self):
+        df = pl.DataFrame({"ids": [["a"], [str(i) for i in range(50)], ["b"]]})
+        # The middle row's own length (50) already exceeds the cap (10); it
+        # must still be yielded, alone, not silently dropped or split.
+        assert self._slice_lengths(df, "ids", max_exploded=10) == [1, 1, 1]
+
+    def test_every_row_is_covered_exactly_once(self):
+        df = pl.DataFrame({"ids": [["a", "b"], ["c"], ["d", "e"], ["f"], ["g", "h", "i"]]})
+        total = sum(self._slice_lengths(df, "ids", max_exploded=3))
+        assert total == df.height
+
+    def test_join_result_is_identical_whether_or_not_bounding_forces_multiple_steps(
+        self, tmp_path, monkeypatch
+    ):
+        # A real end-to-end join, forced through several internal bounded
+        # steps by lowering the cap far below what a real run would ever
+        # use, must produce exactly the same rows as the unbounded case:
+        # the cap only changes how much memory one step touches at a time,
+        # never which matches are found.
+        folder = tmp_path / "gkg_v1"
+        folder.mkdir()
+        pl.DataFrame({
+            "Date": [20130401] * 3,
+            "EventIds": [
+                ",".join(str(1000 + i) for i in range(20)),  # one large row
+                "1001,1002",
+                "9999",
+            ],
+            "NumArticles": [1, 2, 3],
+        }).write_parquet(folder / "20130401.gkg.parquet")
+        events_df = pl.DataFrame({"GlobalEventID": list(range(1000, 1020))})
+        gkg_columns = ["Date", "EventIds", "NumArticles"]
+
+        unbounded = crossref_events_gkg_v1(events_df, str(folder), gkg_columns)
+
+        monkeypatch.setattr(crossref_module, "_MAX_EXPLODED_ROWS_PER_STEP", 3)
+        bounded = crossref_events_gkg_v1(events_df, str(folder), gkg_columns)
+
+        pl_testing.assert_frame_equal(
+            unbounded.sort("GlobalEventID", "GKG_EventIds"),
+            bounded.sort("GlobalEventID", "GKG_EventIds"),
+        )
 
 
 class TestCrossrefEventsGkgV1ColumnNarrowing:
@@ -788,6 +1061,20 @@ class TestCrossrefEventsGkgV2:
         # V2DOCUMENTIDENTIFIER is always read (it's the join key).
         assert "GKG_V2DOCUMENTIDENTIFIER" in result.columns
 
+    def test_columns_accepts_the_prefixed_output_name_too(self, tmp_path):
+        # Same real-output-name repro as crossref_events_gkg_v1's own
+        # test_columns_accepts_the_prefixed_output_name_too, against an
+        # ordinary, fully matching v2 run.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            columns={"GKG_GKGRECORDID"},
+        )
+        assert "GKG_GKGRECORDID" in result.columns
+        assert "GKG_V1THEMES" not in result.columns
+
     def test_invalid_columns_raises(self, tmp_path):
         mentions_folder = self._write_mentions(tmp_path)
         gkg_folder = self._write_gkg_v2(tmp_path)
@@ -795,6 +1082,18 @@ class TestCrossrefEventsGkgV2:
             crossref_events_gkg_v2(
                 self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
                 columns={"NotARealColumn"},
+            )
+
+    def test_columns_naming_the_join_key_gets_a_specific_explanation(self, tmp_path):
+        # Same rejection, same real reason, as crossref_events_gkg_v1's
+        # own identical test: GlobalEventID is always included regardless
+        # of --columns, on any run, so it's never a valid name to pass.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        with pytest.raises(ValueError, match="always included in crossref's output"):
+            crossref_events_gkg_v2(
+                self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+                columns={"GlobalEventID"},
             )
 
     def test_missing_global_event_id_column_raises(self, tmp_path):
@@ -852,6 +1151,59 @@ class TestCrossrefEventsGkgV2:
         events_df = pl.DataFrame({"GlobalEventID": [424242]})
         result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
         assert result.is_empty()
+
+    def test_no_matching_mentions_still_carries_the_real_target_schema(self, tmp_path):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: a zero-match run used to return a bare pl.DataFrame(),
+        # (0, 0), not the join's own real target schema (events columns +
+        # Mention_/GKG_-prefixed columns) at zero rows. This hop (no event
+        # in the Mentions bridge at all) is the earliest of four separate
+        # "nothing matched" points in this function, all of which used to
+        # hit the same bare-empty-frame bug.
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242], "Actor1Name": ["Nobody"]})
+
+        result = crossref_events_gkg_v2(events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS)
+
+        assert set(result.columns) == {
+            "GlobalEventID", "Actor1Name",
+            "Mention_MentionTimeDate", "Mention_Confidence",
+            "GKG_V2DOCUMENTIDENTIFIER", "GKG_GKGRECORDID", "GKG_V1THEMES",
+        }
+        assert result.schema["GKG_GKGRECORDID"] == pl.String
+
+    def test_no_matching_gkg_side_still_carries_the_real_target_schema(self, tmp_path):
+        # A later hop than the one above: this event genuinely appears in
+        # Mentions (so hop 1 succeeds), but the article it's mentioned in
+        # was never actually crawled into GKG 2.1 at all, so hop 2 finds
+        # nothing. A separate, later "nothing matched" point from the one
+        # above, and the fix has to cover both.
+        folder = tmp_path / "mentions"
+        folder.mkdir()
+        pl.DataFrame({
+            "GLOBALEVENTID": [2001],
+            "MentionIdentifier": ["http://never-crawled.example/article"],
+        }).write_parquet(folder / "20200101120000.mentions.parquet")
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(self._events_df(), str(folder), gkg_folder, GKG_V2_COLUMNS)
+
+        assert result.is_empty()
+        assert "GKG_GKGRECORDID" in result.columns
+        assert "GKG_V1THEMES" in result.columns
+
+    def test_no_matches_schema_includes_mention_count_when_deduping(self, tmp_path):
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [424242]})
+
+        result = crossref_events_gkg_v2(
+            events_df, mentions_folder, gkg_folder, GKG_V2_COLUMNS, dedupe_mentions=True
+        )
+
+        assert result.is_empty()
+        assert result.schema["Mention_Count"] == pl.UInt32
 
     def test_warns_when_some_events_predate_gdelt_2_coverage(self, tmp_path, caplog):
         # Event 2001 (real match, DATEADDED within coverage) must still
@@ -1408,6 +1760,51 @@ class TestCrossrefEventsGkgAuto:
             "1 of 1" in r.message and "20130401" in r.message for r in caplog.records
         )
 
+    def test_no_eligible_events_at_all_still_carries_the_full_combined_schema(
+        self, tmp_path
+    ):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: every sampled event predating GKG_V1_COVERAGE_START, so
+        # eligible_events itself is entirely empty, used to fall through
+        # to a bare pl.DataFrame(), (0, 0), rather than the union of both
+        # paths' own real target schemas at zero rows, the same class of
+        # bug fixed for crossref_events_gkg_v1/_v2 directly.
+        paths = self._paths(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [999], "DATEADDED": [20100101]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert set(result.columns) == {
+            "GlobalEventID", "DATEADDED", "CrossrefSource",
+            "GKG_Date", "GKG_EventIds", "GKG_Themes",
+            "GKG_V2DOCUMENTIDENTIFIER", "GKG_V1THEMES",
+        }
+
+    def test_a_path_that_matches_nothing_still_contributes_its_own_columns(
+        self, tmp_path
+    ):
+        # An event eligible for both generations but that only actually
+        # matches through GKG 1.0: the v2 path used to be skipped from
+        # the concat entirely once it came back as a bare, columnless
+        # pl.DataFrame(), silently dropping v2's own GKG_/Mention_ column
+        # names from the final result's schema even though the v1 row
+        # itself is real and correct.
+        paths = self._paths(tmp_path)
+        events_df = pl.DataFrame({"GlobalEventID": [1001], "DATEADDED": [20130401]})
+
+        result = crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+        )
+
+        assert len(result) == 1
+        assert result["CrossrefSource"][0] == "v1"
+        assert "GKG_V2DOCUMENTIDENTIFIER" in result.columns
+        assert "GKG_V1THEMES" in result.columns
+
     def test_partial_pre_coverage_still_routes_the_valid_events(self, tmp_path, caplog):
         paths = self._paths(tmp_path)
         events_df = pl.DataFrame({
@@ -1524,3 +1921,67 @@ class TestCrossrefEventsGkgAuto:
 
         large_join_warnings = [r for r in caplog.records if "gdeltforge sample" in r.message]
         assert len(large_join_warnings) == 2
+
+
+class TestTqdmInterruptDoesNotLeakATraceback:
+    """
+    crossref_events_gkg_v1's own tqdm-wrapped batch loop shares the
+    identical bare-"for x in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full: see that class's own docstring for the real
+    mechanism (a live comprehensive QA pass found it via
+    IndexedSampler's "Loading samples" loop specifically, but it lives
+    entirely in tqdm's own generic __iter__/close(), independent of
+    what any particular wrapped loop body does). This test applies the
+    identical technique here.
+    """
+
+    def test_v1_cross_referencing_loop(self, tmp_path, monkeypatch):
+        folder = TestCrossrefEventsGkgV1._write_gkg_v1(tmp_path)
+        events_df = TestCrossrefEventsGkgV1._events_df()
+
+        # Scoped to instances created while this patch is active, not
+        # global: see samplers.py's own TestTqdmInterruptDoesNotLeakA
+        # Traceback._patch_tqdm_close_to_raise_once for why an unscoped
+        # patch (a bare closed_once flag shared by every tqdm instance
+        # process-wide) is a real test-isolation hazard, confirmed
+        # against the full suite, not just this bug's own mechanism.
+        real_init = tqdm.__init__
+        tracked_ids: set[int] = set()
+
+        def tracking_init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            tracked_ids.add(id(self))
+
+        closed_once_ids: set[int] = set()
+
+        def close_raises_once(self):
+            if id(self) not in tracked_ids or id(self) in closed_once_ids:
+                return
+            closed_once_ids.add(id(self))
+            raise KeyboardInterrupt("second interrupt, during close")
+
+        monkeypatch.setattr(tqdm, "__init__", tracking_init)
+        monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+        # The interrupt must originate from inside the loop BODY (where
+        # tqdm's own generator is suspended at its yield, the same place
+        # a real signal actually lands), not from collect_batches itself
+        # (still running its own frame, which propagates normally either
+        # way and would prove nothing about tqdm). is_empty() is this
+        # body's own first call on each batch.
+        def is_empty_and_interrupt(self):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(pl.DataFrame, "is_empty", is_empty_and_interrupt)
+
+        events = []
+        original_hook = sys.unraisablehook
+        sys.unraisablehook = events.append
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                crossref_events_gkg_v1(events_df, folder, GKG_V1_COLUMNS)
+        finally:
+            sys.unraisablehook = original_hook
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"

@@ -1,15 +1,21 @@
+import concurrent.futures
+import fnmatch
 import json
 import logging
+import os
 import subprocess
 import sys
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
 import pyarrow.parquet as pq
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.conversion.converter as converter_module
+import gdeltforge.utils.io as io_module
 from gdeltforge.conversion.converter import GDELTConverter, run_converter
 
 
@@ -115,6 +121,200 @@ class TestPartitionRuleRouting:
 
         assert len(outputs) == 1
         assert (tmp_path / "parquet" / "20200101.export.parquet").exists()
+
+
+class TestHistoricalEventsMissingColumns:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: gdelt_event's monthly/yearly archive (pre-April-2013) is a
+    genuinely older, 57-column schema, missing SOURCEURL, which the
+    modern daily archive's 58-column columns.gdelt_event list doesn't
+    account for. Reading a real 57-column file against the full 58-name
+    list requested a column position (57, 0-indexed) that doesn't exist
+    in the file at all, raising a raw "projection index: 57 is out of
+    bounds" with no indication it's a schema-vintage mismatch. Reproduced
+    against real, live-downloaded 2005 (yearly) and 2008-01 (monthly)
+    archives."""
+
+    @staticmethod
+    def _config(tmp_path, **converter_overrides):
+        cfg = {
+            "paths": {
+                "downloaded_data_directory": str(tmp_path / "raw"),
+                "unzipped_data_directory": str(tmp_path / "csv"),
+                "parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {"keep_unzipped": False, "file_pattern": "*.zip"},
+            "columns": {
+                "gdelt_event": ["GlobalEventID", "Day", "QuadClass", "SOURCEURL"],
+            },
+            "columns_numeric": {
+                "gdelt_event": ["GlobalEventID", "Day", "QuadClass"],
+            },
+        }
+        cfg["converter"].update(converter_overrides)
+        return cfg
+
+    def test_a_57_column_shaped_monthly_file_no_longer_raises_a_projection_error(
+        self, tmp_path
+    ):
+        # Real historical rows: 3 fields, ending on QuadClass, no
+        # SOURCEURL at all, the exact shape a real 2008-01 monthly file has.
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", filename="200801.zip", rows="1\t20080115\t2\n2\t20080116\t3\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["GlobalEventID"].to_list() == [1, 2]
+        assert df["QuadClass"].to_list() == [2, 3]
+        # The missing column is still present in the output schema, as
+        # null, so a caller sees the same columns whether the source row
+        # is modern or historical.
+        assert "SOURCEURL" in df.columns
+        assert df["SOURCEURL"].to_list() == [None, None]
+
+    def test_a_57_column_shaped_yearly_file_is_read_the_same_way(self, tmp_path):
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(tmp_path / "raw", filename="2005.zip", rows="1\t20050301\t1\n")
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["GlobalEventID"].to_list() == [1]
+        assert df["SOURCEURL"].to_list() == [None]
+
+    def test_a_modern_daily_file_is_unaffected_and_keeps_its_real_sourceurl(
+        self, tmp_path
+    ):
+        # The common case, unchanged: a daily file genuinely has all 4
+        # columns, SOURCEURL included, and is read exactly as before.
+        cfg = self._config(tmp_path)
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", rows="1\t20200101\t2\thttps://example.com/a\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert df["SOURCEURL"].to_list() == ["https://example.com/a"]
+
+    def test_sourceurl_is_omitted_entirely_when_output_columns_dont_request_it(
+        self, tmp_path
+    ):
+        # output_columns pruning already means "the caller doesn't want
+        # this column"; a historical file's missing SOURCEURL shouldn't
+        # be added back as a null column nobody asked for.
+        cfg = self._config(
+            tmp_path, output_columns={"gdelt_event": ["GlobalEventID", "QuadClass"]},
+        )
+        zip_path = _write_flat_zip(
+            tmp_path / "raw", filename="200801.zip", rows="1\t20080115\t2\n",
+        )
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        df = pl.read_parquet(outputs[0])
+        assert set(df.columns) == {"GlobalEventID", "QuadClass"}
+
+    def test_historical_hive_partitioned_write_also_gets_the_narrower_schema(
+        self, tmp_path
+    ):
+        # The same fix must apply whether or not converter.partitioning
+        # is enabled: file_type is now detected unconditionally for
+        # schema purposes, independent of whether the user has also
+        # opted into Hive-partitioned historical output.
+        cfg = self._config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["QuadClass"]}]},
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        zip_path = _write_flat_zip(tmp_path / "raw", filename="2005.zip", rows="1\t20050301\t1\n")
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        df = pl.read_parquet(outputs[0])
+        assert df["SOURCEURL"].to_list() == [None]
+
+
+class TestPartitioningEnabledIsPerDatasetNotGlobal:
+    """
+    converter.partitioning.enabled is documented (docs/configuration.md)
+    as an Events-only opt-in for its own yearly/monthly legacy split, but
+    __init__ used to require *_parquet_historical_directory for every
+    dataset the instant the flag was true, regardless of whether any
+    configured rule could ever apply to that dataset's own real file
+    types. Turning it on for Events broke `convert` outright for GKG v2,
+    Mentions, GKG v1, and GKG v1-counts: none of them can ever produce a
+    yearly- or monthly-typed file (see _EVENTS_ONLY_FILE_TYPES), so the
+    directory they were being forced to configure would never actually
+    be written to.
+    """
+
+    @staticmethod
+    def _gkg_v2_config(tmp_path, **partitioning):
+        return {
+            "paths": {
+                "gkg_v2_downloaded_data_directory": str(tmp_path / "raw"),
+                "gkg_v2_unzipped_data_directory": str(tmp_path / "csv"),
+                "gkg_v2_parquet_data_directory": str(tmp_path / "parquet"),
+            },
+            "converter": {
+                "keep_unzipped": False,
+                "file_pattern": "*.zip",
+                "partitioning": partitioning,
+            },
+            "columns": {"gdelt_gkg_v2": ["GKGRECORDID", "V2.1DATE"]},
+            "columns_numeric": {"gdelt_gkg_v2": []},
+        }
+
+    def test_dataset_with_no_yearly_or_monthly_rule_does_not_require_historical_dir(
+        self, tmp_path
+    ):
+        cfg = self._gkg_v2_config(
+            tmp_path,
+            enabled=True,
+            rules=[{"file_type": "yearly", "by": ["Year"]}],
+        )
+        # No gkg_v2_parquet_historical_directory set at all: must not be
+        # required, since GKG v2 never produces a yearly-typed file.
+        GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+    def test_gdelt_event_with_the_same_rule_still_requires_historical_dir(
+        self, tmp_path
+    ):
+        # Same rule as above, but for the one dataset it can actually
+        # apply to: the original, still-valid half of this behavior.
+        cfg = _make_config(
+            tmp_path,
+            partitioning={"enabled": True, "rules": [{"file_type": "yearly", "by": ["Year"]}]},
+        )
+        with pytest.raises(ValueError, match="parquet_historical_directory"):
+            GDELTConverter(cfg, dataset="gdelt_event")
+
+    def test_a_rule_targeting_daily_still_requires_historical_dir_for_any_dataset(
+        self, tmp_path
+    ):
+        # Unlike yearly/monthly, a daily-typed rule could in principle
+        # apply to any dataset (every dataset has daily-shaped files), so
+        # this must still be enforced rather than exempted too broadly.
+        cfg = self._gkg_v2_config(
+            tmp_path,
+            enabled=True,
+            rules=[{"file_type": "daily", "by": ["Year"]}],
+        )
+        with pytest.raises(ValueError, match="parquet_historical_directory"):
+            GDELTConverter(cfg, dataset="gdelt_gkg_v2")
+
+    def test_enabled_with_no_rules_at_all_requires_no_historical_dir(self, tmp_path):
+        # A degenerate config (partitioning turned on, nothing under
+        # rules) previously still demanded a historical directory for
+        # every dataset, Events included, despite there being nothing to
+        # partition by at all.
+        cfg = _make_config(tmp_path, partitioning={"enabled": True, "rules": []})
+        GDELTConverter(cfg, dataset="gdelt_event")
 
 
 class TestIntegerDtypePreservation:
@@ -224,6 +424,76 @@ class TestIntegerDtypePreservation:
         assert df["Year"].to_list() == [1979, 1979]
 
 
+class TestCastNumericColumnsWarnsOnNewNulls:
+    """
+    cast(strict=False) turns any value that doesn't fit the target dtype
+    into null: an out-of-range integer, unparseable garbage, or (unlike
+    pandas.to_numeric, which strips it first) even a whitespace-padded
+    numeric string. That was previously indistinguishable from a field
+    that was genuinely blank to begin with, in both the output and the
+    log at any level. _cast_numeric_columns now compares each column's
+    null count before and after the cast and warns, naming the column
+    and how many new nulls appeared, whenever the two differ. Real GDELT
+    exports were confirmed clean of this (no such values found in a
+    real, freshly-scraped Events file), so this is defense in depth, not
+    a fix for corruption observed in real data today.
+    """
+
+    def test_a_value_that_cannot_be_parsed_warns_naming_the_column(self, caplog):
+        df = pl.DataFrame({
+            # Past Int64's ~9.22e18 ceiling: cast(strict=False) cannot
+            # represent this, unlike a genuinely blank field.
+            "GlobalEventID": ["1", "999999999999999999999999999999"],
+            "Day": ["20200101", "20200102"],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = converter_module._cast_numeric_columns(
+                df, ["GlobalEventID", "Day"], "adversarial.csv"
+            )
+
+        assert result["GlobalEventID"].null_count() == 1
+        assert result["GlobalEventID"].to_list() == [1, None]
+        assert any(
+            "adversarial.csv" in r.message
+            and "'GlobalEventID'" in r.message
+            and "1 value" in r.message
+            for r in caplog.records
+        )
+        # Day had nothing unparseable in it; only the column that
+        # actually gained a null is named.
+        assert not any("'Day'" in r.message for r in caplog.records)
+
+    def test_a_genuinely_blank_field_does_not_warn(self, caplog):
+        # The common, legitimate case (GDELT's own real archive ships
+        # blank DATEADDED for entire days, see TestIntegerDtypePreservation
+        # above): a null that was already there going in must not be
+        # reported as a new one.
+        df = pl.DataFrame({"DATEADDED": ["20200101000000", None]})
+
+        with caplog.at_level("WARNING"):
+            result = converter_module._cast_numeric_columns(df, ["DATEADDED"], "clean.csv")
+
+        assert result["DATEADDED"].null_count() == 1
+        assert not caplog.records
+
+    def test_read_csv_surfaces_the_same_warning_end_to_end(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path)
+        converter = GDELTConverter(cfg)
+        csv_path = tmp_path / "raw" / "adversarial.csv"
+        csv_path.parent.mkdir(parents=True)
+        csv_path.write_text("999999999999999999999999999999\t20200101\n")
+
+        with caplog.at_level("WARNING"):
+            df = converter._read_csv(csv_path)
+
+        assert df["GlobalEventID"].null_count() == 1
+        assert any(
+            "GlobalEventID" in r.message and "couldn't be parsed" in r.message
+            for r in caplog.records
+        )
+
+
 class TestBlankStringFieldsBecomeNull:
     """Regression coverage for a real bug found by a full content-equality
     diff against pandas' own output on a 10M-row convert fixture: without
@@ -323,6 +593,24 @@ class TestMaxWorkersConfig:
         converter = GDELTConverter(_make_config(tmp_path, max_workers=2))
         assert converter.max_workers == 2
 
+    def test_zero_raises_immediately_instead_of_a_contradictory_log_sequence(
+        self, tmp_path
+    ):
+        # max_workers: 0 used to reach ProcessPoolExecutor unchecked: 0
+        # is falsy, so the pre-flight "Converting N zip file(s) using X
+        # worker process(es)..." log line's own `self.max_workers or
+        # os.cpu_count()` fallback silently reported the real CPU count
+        # instead, one line before ProcessPoolExecutor's own constructor
+        # raised "max_workers must be greater than 0" against the
+        # original, still-0 value: two contradictory statements about the
+        # same run. Checked eagerly here now, before either ever sees it.
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTConverter(_make_config(tmp_path, max_workers=0))
+
+    def test_negative_value_raises_the_same_way_as_zero(self, tmp_path):
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTConverter(_make_config(tmp_path, max_workers=-1))
+
 
 class TestMaxWorkersByDataset:
     def test_falls_back_to_the_scalar_default_when_unset(self, tmp_path):
@@ -359,6 +647,16 @@ class TestMaxWorkersByDataset:
             _make_config(tmp_path, max_workers=4, max_workers_by_dataset=None)
         )
         assert converter.max_workers == 4
+
+    def test_a_zero_dataset_override_raises_the_same_way_as_a_zero_scalar(
+        self, tmp_path
+    ):
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTConverter(
+                _make_config(
+                    tmp_path, max_workers=4, max_workers_by_dataset={"gdelt_event": 0}
+                )
+            )
 
 
 class TestOutputColumnsConfig:
@@ -828,6 +1126,128 @@ def _write_flat_zip(raw_dir, filename="20200101.export.CSV.zip", rows="1\t202001
         z.write(csv_path, arcname=csv_name)
     csv_path.unlink()
     return zip_path
+
+
+class TestProcessAllFilesInterruptHandling:
+    """process_all_files' own version of scrape's identical regression
+    coverage (test_scraper.py's TestDownloadGdeltFilesInterruptHandling):
+    every future is submitted up front, so the executor's own default
+    __exit__ (shutdown(wait=True)) would drain every one of them,
+    including ones that hadn't even started, before actually exiting.
+    Simulated at the as_completed() iteration point, the same place a
+    real Ctrl+C signal actually lands, rather than trying to raise it
+    from inside a worker process."""
+
+    def test_interrupt_cancels_queued_futures_and_still_propagates(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = _make_config(tmp_path)
+        for i in range(3):
+            _write_flat_zip(tmp_path / "raw", filename=f"2020010{i + 1}.export.CSV.zip")
+
+        real_as_completed = converter_module.as_completed
+
+        def interrupting_as_completed(fs, *a, **kw):
+            for i, f in enumerate(real_as_completed(fs, *a, **kw)):
+                if i == 1:
+                    raise KeyboardInterrupt()
+                yield f
+
+        monkeypatch.setattr(converter_module, "as_completed", interrupting_as_completed)
+
+        shutdown_calls = []
+        original_shutdown = converter_module.ProcessPoolExecutor.shutdown
+
+        def spying_shutdown(self, *a, **kw):
+            shutdown_calls.append(kw)
+            return original_shutdown(self, *a, **kw)
+
+        monkeypatch.setattr(converter_module.ProcessPoolExecutor, "shutdown", spying_shutdown)
+
+        with pytest.raises(KeyboardInterrupt):
+            GDELTConverter(cfg).process_all_files()
+
+        assert any(
+            c.get("wait") is False and c.get("cancel_futures") is True
+            for c in shutdown_calls
+        )
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so replacing
+    it here is what lets a test observe the exact leak this guards
+    against, rather than only being able to see it as incidental stderr
+    noise a real terminal user would notice by eye."""
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """Simulates a second interrupt landing while tqdm's own close() is
+    running, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op). Scoped to
+    instances created while this patch is active, not global: see
+    samplers.py's own test_samplers.py::TestTqdmInterruptDoesNotLeakA
+    Traceback._patch_tqdm_close_to_raise_once for why an unscoped patch
+    (a bare shared flag) is a real test-isolation hazard, confirmed
+    against the full suite under this project's own pinned dependency
+    floor: a leftover tqdm instance from an unrelated, already-finished
+    test being garbage collected during this test's own window could
+    consume its one allowed raise."""
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestProcessAllFilesTqdmInterruptDoesNotLeakATraceback:
+    """process_all_files' executor loop shares the identical bare-"for x
+    in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full (see that class's own docstring for the real
+    mechanism): a KeyboardInterrupt landing while tqdm's own __iter__
+    generator is suspended mid-loop tears its frame down via garbage
+    collection instead of a normal return, with no legitimate way to
+    propagate a second exception raised during its implicit close()."""
+
+    def test_interrupt_during_future_result_does_not_leak_a_traceback(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = _make_config(tmp_path)
+        _write_flat_zip(tmp_path / "raw")
+
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def result_and_interrupt(self, *a, **kw):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(concurrent.futures.Future, "result", result_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                GDELTConverter(cfg).process_all_files()
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
 
 class TestConversionResumability:
@@ -1331,6 +1751,99 @@ class TestBareCsvInput:
         assert pl.read_parquet(outputs[0])["GlobalEventID"].to_list() == [1]
 
 
+class TestConcurrentConversionIsolation:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: two concurrent gdeltforge invocations converting overlapping
+    files (a cron double-fire, an accidental double-launch, two people
+    sharing a data directory) both extracted the same zip's same member
+    name into the same shared unzip_folder, racing on it: one process's
+    os.replace() found its own .tmp already renamed away by the other,
+    and one process deleted a CSV mid-read by the other. Extraction now
+    goes into a private, per-process subdirectory (named by os.getpid())
+    instead, moved back to the shared, flat unzip_folder only once this
+    process's own work on it is fully over, success or failure alike, so
+    two processes never share one extracted file during the read/convert
+    window itself. Simulated here by mocking os.getpid() to distinct
+    values across sequential calls, rather than real concurrent processes,
+    to prove the isolation mechanism deterministically."""
+
+    def test_extraction_uses_a_pid_named_private_subdirectory(self, tmp_path, monkeypatch):
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 4242)
+
+        converter = GDELTConverter(_make_config(tmp_path))
+        outputs = converter.process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        # The private subdirectory is gone once processing finishes
+        # (success, and not keep_unzipped): nothing left over for a
+        # second process to ever collide with.
+        assert not (tmp_path / "csv" / ".pid4242_20200101.export.CSV").exists()
+
+    def test_two_simulated_processes_never_share_an_extraction_directory(
+        self, tmp_path, monkeypatch
+    ):
+        # Same source zip "downloaded" twice (the real double-launch
+        # shape), converted under two different simulated PIDs. Neither
+        # call's extraction directory exists while the other one's own
+        # extraction is what a real race would have collided on.
+        seen_dirs = []
+        real_unzip_file = converter_module.unzip_file
+
+        def spying_unzip_file(zip_path, extract_to_dir):
+            seen_dirs.append(Path(extract_to_dir))
+            assert not any(d.exists() for d in seen_dirs[:-1]), (
+                "a prior call's private extraction directory was still "
+                "around during a later call: not actually isolated"
+            )
+            return real_unzip_file(zip_path, extract_to_dir)
+
+        monkeypatch.setattr(converter_module, "unzip_file", spying_unzip_file)
+
+        zip_a = _write_flat_zip(tmp_path / "raw_a", filename="20200101.export.CSV.zip")
+        zip_b = _write_flat_zip(tmp_path / "raw_b", filename="20200101.export.CSV.zip")
+        cfg = _make_config(tmp_path)
+
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 1001)
+        GDELTConverter(cfg).process_single_file(str(zip_a))
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 1002)
+        GDELTConverter(cfg).process_single_file(str(zip_b))
+
+        assert seen_dirs[0] != seen_dirs[1]
+
+    def test_keep_unzipped_still_lands_flat_after_success(self, tmp_path):
+        # recover_unzipped_files' own flat glob (unzip_folder / "*.csv")
+        # must still find a kept CSV: this is the "moved back once
+        # conversion succeeded" half of the fix.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        cfg = _make_config(tmp_path, keep_unzipped=True)
+
+        outputs = GDELTConverter(cfg).process_single_file(str(zip_path))
+
+        assert len(outputs) == 1
+        assert (tmp_path / "csv" / "20200101.export.CSV").exists()
+
+    def test_a_genuine_failure_still_lands_the_csv_flat_for_recovery(
+        self, tmp_path, monkeypatch
+    ):
+        # The other documented contract process_single_file already had:
+        # a real CSV-to-Parquet failure leaves the CSV where
+        # recover_unzipped_files' own flat glob can find it, unchanged by
+        # this fix's private-subdirectory extraction.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+
+        def boom(self, csv_path, file_type="flat"):
+            raise RuntimeError("simulated read failure")
+
+        monkeypatch.setattr(GDELTConverter, "_read_csv", boom)
+
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=False))
+        with pytest.raises(RuntimeError, match="could not be processed"):
+            converter.process_single_file(str(zip_path))
+
+        assert (tmp_path / "csv" / "20200101.export.CSV").exists()
+
+
 class TestRecoverUnzippedFiles:
     """recover_unzipped_files (CLI: --recover-unzipped) converts a leftover
     .csv sitting directly in unzipped_data_directory, the dedicated path
@@ -1363,6 +1876,52 @@ class TestRecoverUnzippedFiles:
         assert len(outputs) == 1
         assert pl.read_parquet(outputs[0])["Day"].to_list() == [20200101, 20200102]
         assert csv_path.exists()  # keep_unzipped=True, no delete_source
+
+    def test_finds_an_upper_case_csv_extension(self, tmp_path):
+        # events, events-15min, and mentions all extract their real zip
+        # members as upper-case .CSV (confirmed against live downloads);
+        # only gkg-v2 uses lower-case .csv. A prior case-sensitive glob
+        # found nothing to recover for any of the former three on a
+        # case-sensitive filesystem, a silent no-op rather than a crash.
+        # Windows itself can't reproduce that here: its filesystem matches
+        # glob.glob("*.csv") case-insensitively regardless of pattern
+        # case, which is exactly why the bug went unnoticed until tested
+        # against real Linux downloads. fnmatch.fnmatchcase is what
+        # glob.glob's own matching reduces to on a case-sensitive
+        # filesystem (POSIX's os.path.normcase is a no-op), so asserting
+        # against it directly anchors this test to the actual mechanism
+        # regardless of which platform runs the suite.
+        assert not fnmatch.fnmatchcase("20200101.export.CSV", "*.csv")
+
+        csv_path = self._write_csv(
+            tmp_path / "csv", filename="20200101.export.CSV", rows="1\t20200101\n"
+        )
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+
+        outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 1
+        assert pl.read_parquet(outputs[0])["Day"].to_list() == [20200101]
+        assert csv_path.exists()  # keep_unzipped=True, no delete_source
+
+    def test_recovers_mixed_case_extensions_in_the_same_folder(self, tmp_path):
+        # A single glob("*") pass classified by suffix.lower(), not two
+        # separate case-specific globs concatenated together: each real
+        # file is listed exactly once regardless of its own extension's
+        # case, so a lower-case and an upper-case CSV sitting side by
+        # side are both recovered, neither shadowing nor double-counting
+        # the other.
+        self._write_csv(tmp_path / "csv", filename="20200101.export.csv")
+        self._write_csv(
+            tmp_path / "csv", filename="20240101.export.CSV", rows="2\t20240101\n"
+        )
+        converter = GDELTConverter(_make_config(tmp_path, keep_unzipped=True))
+
+        outputs, failed = converter.recover_unzipped_files()
+
+        assert failed == []
+        assert len(outputs) == 2
 
     def test_a_csv_already_marked_done_is_skipped_on_rerun(self, tmp_path):
         self._write_csv(tmp_path / "csv")
@@ -1606,6 +2165,11 @@ class TestSaveParquetAtomicity:
     sample output."""
 
     def test_save_parquet_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        # PID-pinned: _save_parquet writes through write_parquet_atomic,
+        # whose own staging name is PID-suffixed (utils.io's fix for
+        # concurrent writers sharing one destination path), so the
+        # leftover-tmp check below has to know the exact name to look for.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         cfg = _make_config(tmp_path)
         converter = GDELTConverter(cfg)
 
@@ -1621,9 +2185,13 @@ class TestSaveParquetAtomicity:
         assert result is None
         out_path = tmp_path / "parquet" / "20200101.parquet"
         assert not out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
 
     def test_save_historical_parquet_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        # Same PID-pinning reasoning as test_save_parquet_leaves_no_file_
+        # on_write_failure above: _save_historical_parquet's write now
+        # goes through _write_partition_file -> write_parquet_atomic too.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         cfg = _make_config(
             tmp_path,
             partitioning={
@@ -1646,7 +2214,93 @@ class TestSaveParquetAtomicity:
 
         out_path = tmp_path / "historical" / "Year=2020" / "2020.parquet"
         assert not out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
+
+
+class TestWritePartitionFileConcurrentInvocations:
+    """
+    _write_partition_file used to build its own fixed ".tmp" suffix
+    inline (tmp_path = out_path.with_name(out_path.name + ".tmp")),
+    missing the PID-suffix fix write_parquet_atomic already applies for
+    _save_parquet's flat-file writes. Two concurrent invocations writing
+    the same historical/partitioned output path (e.g. two overlapping
+    `gdeltforge convert --dataset events --force` runs both touching
+    200601.parquet) raced on that shared name: whichever process's
+    os.replace() ran second found its own tmp file already renamed away
+    by the other, failing with a raw FileNotFoundError even though the
+    file was written correctly by whichever process won the race.
+
+    A genuine two-process race turned out to be a poor fit for a fast,
+    reliable unit test: two real OS processes started at the same
+    instant via a multiprocessing.Barrier reproduced the bug 0/6 times on
+    this platform, since a rename of a small/medium file is fast enough
+    relative to process-wake scheduling jitter that one side routinely
+    finishes its entire write-then-rename before the other even starts,
+    even though the exact same code, against real live data, reproduced
+    it in a live QA pass. Instead, "process B" is run to completion from
+    inside a patched write_parquet, right after "process A"'s own write
+    lands on disk but before A's rename runs, deterministically forcing
+    the interleaving a real race only produces by chance: A's
+    os.replace() now always runs against whatever B's own run already
+    did to the filesystem, regardless of platform timing. Distinct
+    os.getpid() values (mocked) are what the fix keys its own tmp-name
+    uniqueness on, the same as two genuinely separate OS processes.
+
+    write_parquet_atomic (which _write_partition_file now delegates to)
+    also runs its own orphaned-temp-file cleanup pass before every
+    write, which queries the real OS for whether a leftover file's own
+    PID is still alive. That check is patched to always report alive
+    here: A and B's mocked PIDs (111/222) don't correspond to any real
+    OS process, so the genuine liveness check would (correctly, for a
+    real dead PID, but wrongly for what this test means to simulate)
+    treat A's own still-in-progress tmp file as an orphan and delete it
+    out from under it, a false failure specific to this test's fake-PID
+    setup rather than anything wrong in either fix; the orphan-cleanup
+    mechanism's own real dead-PID detection is already covered directly
+    in test_io.py.
+    """
+
+    def test_two_concurrent_writers_to_the_same_partition_file_do_not_race(
+        self, tmp_path, monkeypatch
+    ):
+        cfg = _make_config(
+            tmp_path,
+            partitioning={
+                "enabled": True,
+                "rules": [{"file_type": "monthly", "by": ["Year", "MonthYear"]}],
+            },
+        )
+        cfg["paths"]["parquet_historical_directory"] = str(tmp_path / "historical")
+        converter_a = GDELTConverter(cfg)
+        converter_b = GDELTConverter(cfg)
+
+        out_path = tmp_path / "historical" / "Year=2006" / "200601.parquet"
+        out_path.parent.mkdir(parents=True)
+        df = pl.DataFrame({"GlobalEventID": [1, 2, 3], "Day": [20060101, 20060102, 20060103]})
+
+        pids = iter([111, 222, 333, 444])
+        monkeypatch.setattr(os, "getpid", lambda: next(pids))
+        monkeypatch.setattr(io_module, "_pid_exists", lambda pid: True)
+
+        real_write_parquet = pl.DataFrame.write_parquet
+        state = {"ran_b": False}
+
+        def write_parquet_then_run_b(self, file, *args, **kwargs):
+            result = real_write_parquet(self, file, *args, **kwargs)
+            if not state["ran_b"]:
+                state["ran_b"] = True
+                converter_b._write_partition_file(df, out_path)
+            return result
+
+        monkeypatch.setattr(pl.DataFrame, "write_parquet", write_parquet_then_run_b)
+
+        # Must not raise: under the bug, B's completed rename (using the
+        # same shared tmp name A just wrote to) leaves nothing at A's own
+        # tmp path by the time A's own os.replace() runs.
+        converter_a._write_partition_file(df, out_path)
+
+        assert out_path.exists()
+        assert len(pl.read_parquet(out_path)) == 3
 
 
 _REDUCED_COLUMNS = [
@@ -1718,13 +2372,11 @@ class TestProcessReducedFile:
         outputs = converter.process_reduced_file(str(zip_path))
 
         assert sorted(Path(p).relative_to(tmp_path / "historical").as_posix() for p in outputs) == [
-            "Year=1979/GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
-            "Year=2013/GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
+            "Year=1979/part00000.parquet",
+            "Year=2013/part00000.parquet",
         ]
         year_1979_dir = tmp_path / "historical" / "Year=1979"
-        df_1979 = pl.read_parquet(
-            year_1979_dir / "GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet"
-        )
+        df_1979 = pl.read_parquet(year_1979_dir / "part00000.parquet")
         assert df_1979["Date"].to_list() == [19790101]
         # Year is directory-only: it must never leak into the written columns.
         assert "Year" not in df_1979.columns
@@ -1797,9 +2449,9 @@ class TestProcessReducedFile:
         # 3 rows at chunk_size=1 is 3 chunks; two land in Year=1979, each its
         # own part file since each chunk is written independently.
         assert sorted(Path(p).name for p in outputs) == [
-            "GDELT.MASTERREDUCEDV2.1979-2013.part00000.parquet",
-            "GDELT.MASTERREDUCEDV2.1979-2013.part00001.parquet",
-            "GDELT.MASTERREDUCEDV2.1979-2013.part00002.parquet",
+            "part00000.parquet",
+            "part00001.parquet",
+            "part00002.parquet",
         ]
         all_dates = sorted(
             date for p in outputs for date in pl.read_parquet(p)["Date"].to_list()

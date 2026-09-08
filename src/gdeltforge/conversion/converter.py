@@ -52,7 +52,12 @@ from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
-from gdeltforge.utils.config import dataset_is_always_historical, dataset_path_key, get_dict
+from gdeltforge.utils.config import (
+    dataset_is_always_historical,
+    dataset_path_key,
+    get_dict,
+    validate_max_workers,
+)
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -114,6 +119,16 @@ _DAILY_PAT          = re.compile(r'^\d{8}\..+\.zip$',       re.IGNORECASE)
 # anything ever actually called it on such a name (see process_single_file
 # below for why nothing did).
 _QUARTER_HOURLY_PAT = re.compile(r'^\d{14}\..+\.zip$',      re.IGNORECASE)
+
+# "yearly"/"monthly" file_types are only ever produced by gdelt_event:
+# GDELT's own pre-April-2013 bulk archive shipped bare YYYY.zip/YYYYMM.zip
+# files for Events alone (see scraper.py's _is_gdelt_dataset_file, whose
+# own docstring calls this out as an Events-archive-specific shape). Every
+# other dataset's real archive is daily or quarter_hourly only, so a
+# partitioning.rules entry for "yearly" or "monthly" can never actually
+# apply to it, unlike a "daily"/"quarter_hourly" rule, which any dataset
+# could in principle match.
+_EVENTS_ONLY_FILE_TYPES = frozenset({"yearly", "monthly"})
 
 # Every configured numeric column is cast to either pl.Int64 or pl.Float64
 # in _read_csv, and this set decides which: every columns_numeric entry
@@ -187,6 +202,42 @@ _FLOAT_NUMERIC_COLUMNS = frozenset({
     "ActionGeoLat", "ActionGeoLong",
 })
 
+
+def _cast_numeric_columns(
+    df: pl.DataFrame, numeric_columns: list[str], context: str
+) -> pl.DataFrame:
+    """
+    Casts every configured numeric column present in df to its target
+    dtype (Float64 for _FLOAT_NUMERIC_COLUMNS, Int64 otherwise) via
+    cast(strict=False), and warns, naming the column and how many new
+    nulls appeared, whenever that introduces a null the column didn't
+    already have. cast(strict=False) can't tell "this field was
+    genuinely blank" apart from "this field held something that
+    couldn't be parsed" (an out-of-range integer, unparseable garbage,
+    even a whitespace-padded numeric string, unlike pandas.to_numeric,
+    which strips whitespace first): both become null, with nothing in
+    the output, or previously in the log at any level, to distinguish
+    them.
+    """
+    present = [col for col in numeric_columns if col in df.columns]
+    if not present:
+        return df
+
+    nulls_before = {col: df[col].null_count() for col in present}
+    df = df.with_columns([
+        pl.col(col).cast(pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64, strict=False)
+        for col in present
+    ])
+    for col in present:
+        new_nulls = df[col].null_count() - nulls_before[col]
+        if new_nulls:
+            logger.warning(
+                f"{context}: {new_nulls} value(s) in {col!r} couldn't be "
+                f"parsed as numeric and became null."
+            )
+    return df
+
+
 # GDELT.MASTERREDUCEDV2.1979-2013.zip's single member is 6.58GB / roughly
 # 87.3M rows uncompressed; reading it whole with schema_overrides=pl.Utf8
 # for every column (every other dataset's individual files are small
@@ -201,6 +252,26 @@ _EVENT_REDUCED_CHUNK_SIZE = 500_000
 # are all genuinely headerless. Confirmed by downloading and inspecting one
 # real file per dataset, not assumed from the codebook/parser source alone.
 _DATASETS_WITH_HEADER_ROW = frozenset({"gdelt_gkg_v1", "gdelt_gkg_v1_counts"})
+
+# gdelt_event's monthly/yearly archive (pre-April-2013, before the daily
+# cadence starts) is a genuinely older, narrower schema, not the same 58
+# columns as the modern daily files: SOURCEURL was added to GDELT's export
+# later and is simply absent from these files' own trailing field, real
+# monthly/yearly files confirmed to have exactly 57 tab-separated columns,
+# ending on what would be DATEADDED. Reading them with columns.gdelt_event's
+# full 58-name list unmodified means the last requested column position
+# (57, 0-indexed) doesn't exist in the file at all, raising a raw
+# "projection index: 57 is out of bounds for csv schema with length: 57"
+# with no indication it's a schema-vintage mismatch. Found via a live
+# comprehensive QA pass against real 2005 (yearly) and 2008-01 (monthly)
+# archives, both downloaded and confirmed live.
+#
+# Keyed by dataset, since this is specific to gdelt_event's own schema
+# history, not a general "historical files are narrower" rule; nothing
+# else in this pipeline has been found to vary by vintage this way.
+_HISTORICAL_MISSING_COLUMNS: dict[str, tuple[str, ...]] = {
+    "gdelt_event": ("SOURCEURL",),
+}
 
 
 class GDELTConverter:
@@ -278,9 +349,12 @@ class GDELTConverter:
         # depends on peak per-worker memory, which output_columns above
         # changes a lot for wide datasets like GKG 2.1), so a value safe
         # for one dataset isn't necessarily safe for another.
-        self.max_workers: int | None = get_dict(
-            config["converter"], "max_workers_by_dataset"
-        ).get(dataset, config["converter"].get("max_workers"))
+        self.max_workers: int | None = validate_max_workers(
+            get_dict(config["converter"], "max_workers_by_dataset").get(
+                dataset, config["converter"].get("max_workers")
+            ),
+            "converter.max_workers",
+        )
 
         self.COLUMN_NAMES    = config["columns"][dataset]
         self.NUMERIC_COLUMNS = config["columns_numeric"][dataset]
@@ -328,13 +402,34 @@ class GDELTConverter:
         self._partitioning_enabled = part_cfg.get("enabled", False)
         self._partition_rules: list[dict] = part_cfg.get("rules", [])
 
+        # A configured rule only requires this dataset's own historical
+        # directory if the rule's file_type is one this dataset could
+        # actually produce. converter.partitioning.enabled is documented
+        # as an Events-only opt-in (docs/configuration.md), but the check
+        # below used to fire for every dataset the moment the flag was
+        # true, regardless of whether any of its own rules could ever
+        # match this dataset's real file types: enabling it for Events'
+        # own yearly/monthly split broke convert for GKG v2/Mentions/
+        # GKG v1/GKG v1-counts, none of which can ever produce a yearly-
+        # or monthly-typed file, demanding a *_parquet_historical_
+        # directory they would never actually write to. An enabled flag
+        # with no rules at all (nothing to partition by) is the same
+        # "nothing applicable" case and no longer requires it either.
+        applicable_rule_exists = any(
+            rule.get("file_type") not in _EVENTS_ONLY_FILE_TYPES or dataset == "gdelt_event"
+            for rule in self._partition_rules
+        )
+
         # gdelt_event_reduced has no flat output mode at all: its converted
         # output only ever exists Hive-partitioned by Year, so its
         # historical directory must resolve regardless of
         # converter.partitioning.enabled, a toggle that otherwise only
         # ever governed Events' own opt-in yearly/monthly split.
         self.historical_folder: Path | None = None
-        if self._partitioning_enabled or dataset_is_always_historical(dataset):
+        if (
+            (self._partitioning_enabled and applicable_rule_exists)
+            or dataset_is_always_historical(dataset)
+        ):
             hist_key = dataset_path_key(dataset, "parquet_historical_directory")
             hist_path = config["paths"].get(hist_key)
             if not hist_path:
@@ -532,7 +627,18 @@ class GDELTConverter:
                 "the source file directly, with no per-CSV leftover to recover."
             )
 
-        csv_files = glob.glob(str(self.unzip_folder / "*.csv"))
+        # Matched by suffix, not glob.glob(str(self.unzip_folder / "*.csv")):
+        # glob is case-sensitive on Linux/macOS, and a real GDELT zip's
+        # internal member casing is dataset-dependent. events, events-15min,
+        # and mentions all extract as upper-case .CSV; a plain "*.csv" glob
+        # silently found nothing to recover for any of them on those
+        # platforms, while gkg-v2's lower-case .csv members happened to
+        # still match. Windows was unaffected, its filesystem already
+        # matches glob.glob case-insensitively regardless of pattern case.
+        csv_files = [
+            str(p) for p in self.unzip_folder.glob("*")
+            if p.is_file() and p.suffix.lower() == ".csv"
+        ]
 
         if not csv_files:
             logger.info(f"No leftover CSVs found in {self.unzip_folder}")
@@ -601,22 +707,59 @@ class GDELTConverter:
                 for source_file in to_process
             }
 
-            for future in tqdm(
-                as_completed(futures), total=len(futures),
-                desc=f"Converting {unit.upper()} files", unit=unit,
-            ):
-                source_path = Path(futures[future])
-                try:
-                    outputs = future.result()
-                    all_outputs.extend(outputs)
-                    self._mark_done(source_path)
+            try:
+                # Driven manually (with + explicit update()) rather than
+                # iterated directly (for x in tqdm(...)): a bare "for x
+                # in tqdm(iterable):" builds a second, separate generator
+                # via tqdm's own __iter__ under the hood, and a
+                # KeyboardInterrupt raised while it's suspended at that
+                # generator's own yield point (mid-loop, exactly where a
+                # real Ctrl+C lands) tears down its frame via garbage
+                # collection instead of a normal return, triggering its
+                # implicit close() with no legitimate way to propagate a
+                # second exception raised during it (see samplers.py's
+                # IndexedSampler.get_random_sample for the full
+                # mechanism, found first there). Iterating as_completed's
+                # real iterator directly and calling pbar.update() by
+                # hand avoids creating that second generator at all.
+                with tqdm(
+                    total=len(futures), desc=f"Converting {unit.upper()} files", unit=unit,
+                ) as pbar:
+                    for future in as_completed(futures):
+                        source_path = Path(futures[future])
+                        try:
+                            outputs = future.result()
+                            all_outputs.extend(outputs)
+                            self._mark_done(source_path)
 
-                    if self.delete_source:
-                        self._delete_source(source_path)
+                            if self.delete_source:
+                                self._delete_source(source_path)
 
-                except Exception as e:
-                    logger.error(f"Failed to process {source_path.name}: {e}")
-                    failed.append(source_path.name)
+                        except Exception as e:
+                            logger.error(f"Failed to process {source_path.name}: {e}")
+                            failed.append(source_path.name)
+                        pbar.update(1)
+            except KeyboardInterrupt:
+                # Every future was submitted up front, so the executor's
+                # own default __exit__ (shutdown(wait=True)) would drain
+                # every one of them, including ones that haven't even
+                # started yet, before actually exiting, the same real
+                # timing gap found in scrape's identical loop (see
+                # download_gdelt_files for the full measurement).
+                # cancel_futures=True (Python >=3.9, this project's own
+                # floor is 3.10) cancels every not-yet-started future
+                # immediately; wait=False doesn't additionally block here
+                # for the (at most max_workers) files already in flight,
+                # since a running worker process can't be safely
+                # force-killed mid-write anyway, and the executor's own
+                # __exit__ will still wait for those specific ones as this
+                # exception continues propagating.
+                still_running = sum(1 for f in futures if f.running())
+                logger.warning(
+                    f"Interrupted: waiting for {still_running} in-flight {unit}(s) to finish."
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         logger.info(
             f"Conversion complete. Total Parquets created: {len(all_outputs)}, "
@@ -670,11 +813,14 @@ class GDELTConverter:
         # name: the real yearly/monthly historical shape this partitioning
         # exists for is a scrape artifact (1979.zip, 200601.zip), not
         # something a bare .csv input is expected to represent.
-        file_type = (
-            self._detect_file_type(zip_p.name)
-            if self._partitioning_enabled
-            else "flat"
-        )
+        # Detected unconditionally, independent of _partitioning_enabled
+        # below: a monthly/yearly gdelt_event file's real schema (see
+        # _HISTORICAL_MISSING_COLUMNS) doesn't depend on whether the user
+        # has opted into Hive-partitioned output for it, only on the
+        # file's own actual vintage.
+        detected_type = self._detect_file_type(zip_p.name)
+
+        file_type = detected_type if self._partitioning_enabled else "flat"
         partition_rule = (
             self._partition_rule_for(file_type) if self._partitioning_enabled else None
         )
@@ -688,12 +834,30 @@ class GDELTConverter:
         # call, which raised a confusing BadZipFile for this input before
         # this branch existed.
         is_bare_csv = zip_p.suffix.lower() == ".csv"
+        private_extract_dir = None
         if is_bare_csv:
             extracted_files = [zip_p]
         else:
-            extracted_files = unzip_file(zip_path, self.unzip_folder)
+            # Extracted into a private, per-process subdirectory rather
+            # than directly into the shared unzip_folder: found via a live
+            # comprehensive QA pass that two concurrent gdeltforge
+            # invocations converting overlapping files raced on that
+            # shared path, both extracting the same zip's same member
+            # name into it, one process's os.replace() finding its own
+            # .tmp already renamed away by the other, and one process
+            # deleting a CSV while the other was still mid-read against
+            # it. Naming this uniquely per OS process (a real, separate
+            # gdeltforge invocation's own worker gets a distinct PID)
+            # means two concurrent processes never share a single
+            # extracted file at any point during the read/convert window.
+            private_extract_dir = self.unzip_folder / f".pid{os.getpid()}_{zip_p.stem}"
+            extracted_files = unzip_file(zip_path, private_extract_dir)
             if not extracted_files:
                 logger.warning(f"No extracted files from {zip_p.name}")
+                try:
+                    private_extract_dir.rmdir()
+                except OSError:
+                    pass  # not empty: a non-file member extracted alongside
                 return created_parquets
 
         failed_csvs = []
@@ -703,7 +867,7 @@ class GDELTConverter:
                 continue
 
             try:
-                df = self._read_csv(csv_path)
+                df = self._read_csv(csv_path, file_type=detected_type)
                 if df.is_empty():
                     continue
 
@@ -716,18 +880,43 @@ class GDELTConverter:
                         created_parquets.append(str(parquet_path))
 
                 # is_bare_csv's csv_path IS zip_p, the source file itself,
-                # not a scratch copy unzip_file extracted into
-                # self.unzip_folder: only --delete-source (via
-                # process_all_files' own _delete_source, gated on that
-                # flag) is allowed to remove it. Deleting it here
-                # regardless of keep_unzipped would silently destroy the
-                # only copy of a source that was never actually unzipped.
-                if not is_bare_csv and not self.keep_unzipped:
-                    csv_path.unlink()
+                # not a scratch copy unzip_file extracted into a private
+                # directory: only --delete-source (via process_all_files'
+                # own _delete_source, gated on that flag) is allowed to
+                # remove it. Deleting it here regardless of keep_unzipped
+                # would silently destroy the only copy of a source that
+                # was never actually unzipped.
+                if not is_bare_csv:
+                    if self.keep_unzipped:
+                        # Moved into the shared, flat unzip_folder only now
+                        # that conversion has already succeeded: this is
+                        # what keeps it discoverable by name for
+                        # recover_unzipped_files' own flat glob, the same
+                        # contract it had before this fix, without ever
+                        # exposing a partially-written or actively-being-
+                        # read file at that shared path.
+                        os.replace(csv_path, self.unzip_folder / csv_path.name)
+                    else:
+                        csv_path.unlink()
 
             except Exception as e:
                 logger.error(f"Error processing CSV {csv_path.name}: {e}")
                 failed_csvs.append(csv_path.name)
+                if not is_bare_csv:
+                    # Moved back to the shared, flat unzip_folder so
+                    # recover_unzipped_files' own existing "found a
+                    # leftover CSV whose ZIP is now gone" recovery path
+                    # still finds it there, matching this method's
+                    # documented behavior before this fix: a genuinely
+                    # failed CSV survives, findable, once its own
+                    # process's work on it is over either way.
+                    os.replace(csv_path, self.unzip_folder / csv_path.name)
+
+        if private_extract_dir is not None:
+            try:
+                private_extract_dir.rmdir()
+            except OSError:
+                pass  # not empty: a non-CSV member extracted alongside, left as before
 
         if failed_csvs:
             # Raising (rather than swallowing and returning whatever
@@ -835,16 +1024,9 @@ class GDELTConverter:
             for chunk_idx, chunk in enumerate(
                 lf.collect_batches(chunk_size=_EVENT_REDUCED_CHUNK_SIZE)
             ):
-                cast_exprs = [
-                    pl.col(col).cast(
-                        pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64,
-                        strict=False,
-                    )
-                    for col in self.NUMERIC_COLUMNS
-                    if col in chunk.columns
-                ]
-                if cast_exprs:
-                    chunk = chunk.with_columns(cast_exprs)
+                chunk = _cast_numeric_columns(
+                    chunk, self.NUMERIC_COLUMNS, f"{zip_p.name} chunk {chunk_idx}"
+                )
 
                 chunk = chunk.with_columns((pl.col("Date") // 10000).alias("_Year"))
                 n_unparseable = chunk["_Year"].null_count()
@@ -862,7 +1044,16 @@ class GDELTConverter:
                 for (year,), group in chunk.group_by("_Year", maintain_order=False):
                     out_dir = self.historical_folder / f"Year={int(year)}"
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    out_path = out_dir / f"{zip_p.stem}.part{chunk_idx:05d}.parquet"
+                    # Just the chunk index, not zip_p.stem: there is only ever
+                    # one source file for this dataset, so repeating its full
+                    # name ("GDELT.MASTERREDUCEDV2.1979-2013", 32 characters)
+                    # in every single part file added nothing but length, and
+                    # a real run from a moderately nested project directory
+                    # pushed the resulting path past Windows' 260-character
+                    # MAX_PATH, confirmed directly: the identical conversion
+                    # succeeded from a short path and failed only from a
+                    # deep one, with no other difference.
+                    out_path = out_dir / f"part{chunk_idx:05d}.parquet"
                     self._write_partition_file(group.drop("_Year"), out_path)
                     created.add(out_path)
         finally:
@@ -874,7 +1065,7 @@ class GDELTConverter:
     # ------------------------------------------------------------
     # READ CSV
     # ------------------------------------------------------------
-    def _read_csv(self, csv_path: str | Path) -> pl.DataFrame:
+    def _read_csv(self, csv_path: str | Path, file_type: str = "flat") -> pl.DataFrame:
         # has_header=True + new_columns=... together mean "the first line
         # is a real header, skip it, then use our own names instead of
         # its literal text" (confirmed directly: new_columns renames past
@@ -882,15 +1073,28 @@ class GDELTConverter:
         # all" (that's has_header=False).
         has_header = self.dataset in _DATASETS_WITH_HEADER_ROW
 
-        # usecols must reference names from the full COLUMN_NAMES list
-        # (position -> name is COLUMN_NAMES' own order, header or not),
-        # and drops any configured name that isn't actually one of this
-        # dataset's columns rather than erroring, matching how
-        # columns_to_check/output_columns are handled elsewhere in the
-        # pipeline. Passed to read_csv as integer positions (not the
-        # names themselves): confirmed directly that selecting by
-        # position at parse time, rather than reading every column and
-        # projecting down afterward, is what makes polars skip
+        # A monthly/yearly gdelt_event file genuinely lacks the columns in
+        # _HISTORICAL_MISSING_COLUMNS (SOURCEURL); reading it against the
+        # full column list would request a position past the real file's
+        # last one. missing_columns is only ever non-empty for that one
+        # dataset/file_type combination, everything else reads its full
+        # declared schema exactly as before.
+        missing_columns = (
+            _HISTORICAL_MISSING_COLUMNS.get(self.dataset, ())
+            if file_type in ("monthly", "yearly")
+            else ()
+        )
+        readable_columns = [c for c in self.COLUMN_NAMES if c not in missing_columns]
+
+        # usecols must reference names from readable_columns (position ->
+        # name is its own order, header or not, matching what's actually
+        # in the file for this vintage), and drops any configured name
+        # that isn't actually one of this dataset's columns rather than
+        # erroring, matching how columns_to_check/output_columns are
+        # handled elsewhere in the pipeline. Passed to read_csv as integer
+        # positions (not the names themselves): confirmed directly that
+        # selecting by position at parse time, rather than reading every
+        # column and projecting down afterward, is what makes polars skip
         # allocating/decoding the dropped columns at all, the same
         # optimization pandas' own usecols gave GKG 2.1's expensive
         # free-text fields under output_columns. It also happens to be
@@ -902,11 +1106,11 @@ class GDELTConverter:
         # case, kept below for that real, verified hazard in this
         # project's own downloaded data).
         usecols = (
-            [c for c in self.output_columns if c in self.COLUMN_NAMES]
+            [c for c in self.output_columns if c in readable_columns]
             if self.output_columns is not None
-            else self.COLUMN_NAMES
+            else readable_columns
         )
-        positions = [self.COLUMN_NAMES.index(c) for c in usecols]
+        positions = [readable_columns.index(c) for c in usecols]
 
         read_kwargs = {
             "separator": "\t",
@@ -994,15 +1198,22 @@ class GDELTConverter:
             )
             df = pl.read_csv(csv_path, encoding="utf8-lossy", **read_kwargs)
 
-        cast_exprs = [
-            pl.col(col).cast(
-                pl.Float64 if col in _FLOAT_NUMERIC_COLUMNS else pl.Int64, strict=False
-            )
-            for col in self.NUMERIC_COLUMNS
-            if col in df.columns
+        df = _cast_numeric_columns(df, self.NUMERIC_COLUMNS, str(csv_path))
+
+        # A column skipped above because this vintage's real file doesn't
+        # have it (missing_columns) still gets added back as an all-null
+        # column when it was actually requested (output_columns unset, or
+        # explicitly naming it): a caller comparing a modern and a
+        # historical gdelt_event file's schema sees the same columns
+        # either way, with the historical row's genuine absence of data
+        # represented as null rather than the column not existing at all.
+        columns_to_add_back = [
+            c for c in missing_columns
+            if (self.output_columns is None or c in self.output_columns) and c not in df.columns
         ]
-        if cast_exprs:
-            df = df.with_columns(cast_exprs)
+        if columns_to_add_back:
+            null_exprs = [pl.lit(None, dtype=pl.Utf8).alias(c) for c in columns_to_add_back]
+            df = df.with_columns(null_exprs)
 
         return df
 
@@ -1035,21 +1246,20 @@ class GDELTConverter:
         monthly partitioning) and process_reduced_file (events-reduced's
         always-partitioned chunked write) instead of each duplicating the
         same tmp-then-rename guarantee.
+
+        Delegates to write_parquet_atomic rather than reimplementing the
+        tmp-then-rename itself: this used to build its own fixed ".tmp"
+        suffix inline, missing the PID-suffix fix write_parquet_atomic
+        already applies for _save_parquet's flat-file writes, so two
+        concurrent invocations writing the same historical/partitioned
+        output raced on it exactly as _save_parquet's own writes once did.
         """
-        tmp_path = out_path.with_name(out_path.name + ".tmp")
-        try:
-            # self.compression is user config, a plain str at gdeltforge's
-            # own boundary; polars' own write_parquet narrows it to a
-            # specific Literal set for its own internal type-checking, so
-            # an actually-invalid codec name still surfaces as a real
-            # error from polars itself at write time, just not one
-            # pyright can prove here.
-            df.write_parquet(tmp_path, compression=cast(ParquetCompression, self.compression))
-            os.replace(tmp_path, out_path)
-        except Exception:
-            if tmp_path.exists():
-                tmp_path.unlink()
-            raise
+        # self.compression is user config, a plain str at gdeltforge's own
+        # boundary; polars' own write_parquet narrows it to a specific
+        # Literal set for its own internal type-checking, so an actually-
+        # invalid codec name still surfaces as a real error from polars
+        # itself at write time, just not one pyright can prove here.
+        write_parquet_atomic(df, out_path, compression=cast(ParquetCompression, self.compression))
 
     # ------------------------------------------------------------
     # SAVE HISTORICAL PARQUET  (Hive-partitioned)

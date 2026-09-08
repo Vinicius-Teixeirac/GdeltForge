@@ -21,7 +21,13 @@ import polars as pl
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
-from gdeltforge.utils.io import clearer_dataset_errors, narrow_to_available_columns
+from gdeltforge.utils.io import (
+    clearer_dataset_errors,
+    narrow_to_available_columns,
+    reconcile_parquet_schema,
+    scan_dataset_reconciled,
+    scan_file_against_schema,
+)
 from gdeltforge.utils.logging import get_logger
 
 from . import cameo_codes
@@ -71,20 +77,14 @@ def _scan_dataset(files: list[Path]) -> pl.LazyFrame:
     # and absent from others (e.g. a historical partition file converted
     # under an older, narrower output_columns) raises "extra column ...
     # outside of expected schema" for whichever file doesn't match the
-    # schema scan_parquet happened to infer, regardless of file order.
-    # Reading every file's own footer schema first (cheap, metadata-only,
-    # the same order of cost pyarrow.dataset's own schema unification
-    # already paid) and passing the union explicitly as schema=
-    # reproduces that unification regardless of which file scan_parquet
-    # would otherwise have picked. Predicate pushdown on Year / MonthYear
-    # still works via row-group statistics: each historical partition
-    # file has constant values for those columns, so non-matching files
-    # are skipped without reading any row data.
-    schema: dict[str, pl.DataType] = {}
-    for f in files:
-        for name, dtype in pl.read_parquet_schema(f).items():
-            schema.setdefault(name, dtype)
-    return pl.scan_parquet(files, schema=schema, missing_columns="insert")
+    # schema scan_parquet happened to infer, regardless of file order. A
+    # column present in every file but typed differently in some of them
+    # (e.g. events' own Actor2Geo_Type, Float64 through 2007-10 and Int64
+    # from 2007-11 onward) raises a different but related "data type
+    # mismatch" once scan_parquet hits a file whose own dtype disagrees
+    # with the schema it inferred. scan_dataset_reconciled resolves both:
+    # see its own docstring for the full mechanism.
+    return scan_dataset_reconciled(files)
 
 
 # ----------------------------------------------------------
@@ -295,7 +295,6 @@ class IndexedSampler:
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
     ):
         self.folder = Path(folder_path)
-        self.columns = columns
         parquet_files = sorted(self.folder.glob("*.parquet"))
 
         if historical_folder:
@@ -319,6 +318,25 @@ class IndexedSampler:
         self.rng   = ReproducibleRNG(random_state)
         self.index = FileIndex(parquet_files)
 
+        # A genuinely nonexistent --columns name used to reach
+        # pl.read_parquet(file_path, columns=read_columns) unchecked in
+        # get_random_sample below, a projection pushed straight into
+        # polars' own scan; the resulting failure was a raw, unhandled
+        # internal error, including a full query-plan dump, the single
+        # ugliest leak found across a full QA pass. Narrowed here instead
+        # against the real, already-built file index's own schema,
+        # against CalendarSampler's own identical treatment of the same
+        # mistake for its own --columns.
+        self.columns = (
+            set(
+                narrow_to_available_columns(
+                    logger, f"indexed sample dataset in {self.folder}",
+                    columns, set(), set(self.index.schema_names),
+                )
+            )
+            if columns else None
+        )
+
         logger.info(
             f"IndexedSampler: {len(self.index.files)} files, "
             f"{self.index.total_rows:,} total rows."
@@ -326,6 +344,18 @@ class IndexedSampler:
 
     def get_random_sample(self, n: int) -> pl.DataFrame:
         """Sample n rows uniformly across all parquet files."""
+        # n==0 and n<0 used to reach self.rng.choice below unchecked: 0
+        # produced an empty per-file split, so no chunk was ever appended
+        # to sampled and pl.concat raised a raw "cannot concat empty
+        # list"; a negative value reached numpy's own random.choice and
+        # raised its raw "negative dimensions are not allowed". Handled
+        # explicitly here instead: 0 is a valid request (FilteredSampler's
+        # own get_random_sample already treats it as a clean, empty
+        # success the same way), a negative one is a real usage error.
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if n == 0:
+            return pl.DataFrame()
         if n > self.index.total_rows:
             raise ValueError("Requested sample size > total available rows")
 
@@ -336,13 +366,60 @@ class IndexedSampler:
         logger.info("Mapped the indices to the correspondent files")
 
         read_columns = list(self.columns) if self.columns else None
+
+        # Reconciled schema across just the files this call actually
+        # touches, the same reconciliation _scan_dataset/
+        # scan_dataset_reconciled already applies for CalendarSampler/
+        # FilteredSampler: a real accumulated data directory can hold
+        # files whose own physical schema genuinely differs, whether a
+        # column missing entirely from one file (a Hive-partitioned
+        # historical file converted before a schema fix landed, an
+        # output_columns setting narrowed at one point in time and
+        # widened again later) or a column present everywhere but typed
+        # differently in some files (events' own Actor2Geo_Type, Float64
+        # through 2007-10 and Int64 from 2007-11 onward). This sampler's
+        # own per-file read never accounted for either shape, unlike the
+        # other two sampling modes' single shared scan. Found via a live
+        # comprehensive QA pass: a directory mixing full-width flat files
+        # with one much narrower historical file raised a raw "unable to
+        # append to a DataFrame of width X with a DataFrame of width Y"
+        # the moment two such files were both drawn into the same sample;
+        # a directory spanning the Actor2Geo_Type dtype boundary raised a
+        # "data type mismatch" instead, once a draw crossed it.
+        schema = reconcile_parquet_schema(list(indices_by_file))
+
         sampled = []
-        for file_path, relative_rows in tqdm(indices_by_file.items(), desc="Loading samples"):
-            df = pl.read_parquet(file_path, columns=read_columns)
-            # See _apply_reservoir_replacements above: DataFrame.gather()
-            # isn't available on this project's declared minimum polars
-            # version, bracket indexing is.
-            sampled.append(df[relative_rows])
+        # Driven manually (with + explicit update()) rather than iterated
+        # directly (for x in tqdm(...)), which builds a second, separate
+        # generator via tqdm's own __iter__ under the hood: found via a
+        # live comprehensive QA pass, a real SIGINT partway through this
+        # loop printed a stray "Exception ignored in: <generator object
+        # tqdm.__iter__ ...>" / KeyboardInterrupt traceback fragment to
+        # stderr before the documented, clean "Interrupted." message,
+        # since that generator's own implicit close() runs via garbage
+        # collection when the for-loop's frame unwinds, a context with no
+        # legitimate way to propagate a second exception raised during
+        # it. Reproduced deterministically (not dependent on real signal
+        # timing) by making close() itself raise and confirming that
+        # reaches sys.unraisablehook for the bare-iteration form but not
+        # this one. with tqdm(...) as pbar: still isn't sufficient on its
+        # own: pbar's own __exit__ closes pbar itself deterministically,
+        # but for x in pbar: still creates that same second, separate
+        # __iter__ generator internally, with its own independent
+        # implicit close. Iterating the real underlying dict directly and
+        # calling pbar.update() by hand avoids creating that generator at
+        # all, leaving only the one, explicit, __exit__-driven close.
+        with tqdm(total=len(indices_by_file), desc="Loading samples") as pbar:
+            for file_path, relative_rows in indices_by_file.items():
+                lf = scan_file_against_schema(file_path, schema)
+                if read_columns is not None:
+                    lf = lf.select(read_columns)
+                df = lf.collect()
+                # See _apply_reservoir_replacements above: DataFrame.gather()
+                # isn't available on this project's declared minimum polars
+                # version, bracket indexing is.
+                sampled.append(df[relative_rows])
+                pbar.update(1)
 
         return pl.concat(sampled)
 
@@ -421,7 +498,18 @@ class CalendarSampler:
             yield from lf.collect_batches(chunk_size=64_000)
 
     def get_calendar_samples(self, samples_per_period: int = 10) -> pl.DataFrame:
-        if samples_per_period <= 0:
+        # A negative value used to reach the reservoir machinery below
+        # unchecked, same as 0, producing a nonsensical but "successful"
+        # 0-row result: "Saved calendar sample (0 rows, period=day)" logged
+        # as though -5 were a valid, deliberately chosen configuration
+        # rather than a mistake. 0 itself is a real, valid request (an
+        # explicit "sample nothing"), so only a genuinely negative value
+        # is rejected here.
+        if samples_per_period < 0:
+            raise ValueError(
+                f"samples_per_period must be non-negative, got {samples_per_period}"
+            )
+        if samples_per_period == 0:
             return pl.DataFrame()
 
         prefix_len = self._PERIOD_PREFIX_LENGTH[self.period]
@@ -477,67 +565,95 @@ class CalendarSampler:
         total_seen:       dict[Any, int]                     = {}
         n_unparseable = 0
 
-        for df_batch in tqdm(self._batches(needed), desc="Sampling (calendar)"):
-            if df_batch.is_empty() or self.date_column not in df_batch.columns:
-                continue
+        # Driven manually rather than iterated directly: see
+        # IndexedSampler.get_random_sample's own detailed note on why a
+        # bare "for x in tqdm(...):" can leak a stray KeyboardInterrupt
+        # traceback fragment to stderr on a real interrupt, and why an
+        # outer "with tqdm(...) as pbar:" alone doesn't fix it either.
+        # total=None (self._batches is a generator with no cheap upfront
+        # count): the bar still shows a live count/rate, just no percent.
+        with tqdm(total=None, desc="Sampling (calendar)") as pbar:
+            for df_batch in self._batches(needed):
+                if df_batch.is_empty() or self.date_column not in df_batch.columns:
+                    pbar.update(1)
+                    continue
 
-            keyed_batch = df_batch.with_columns(
-                pl.col(self.date_column).cast(pl.Utf8).str.slice(0, prefix_len)
-                .alias(self._PERIOD_KEY)
-            )
-            n_unparseable += keyed_batch[self._PERIOD_KEY].null_count()
+                keyed_batch = df_batch.with_columns(
+                    pl.col(self.date_column).cast(pl.Utf8).str.slice(0, prefix_len)
+                    .alias(self._PERIOD_KEY)
+                )
+                n_unparseable += keyed_batch[self._PERIOD_KEY].null_count()
 
-            # Unlike get_stratified_sample's fillna("__NA__") (which keeps
-            # a null stratum as its own real group), a row whose date
-            # can't be resolved to a period has nothing meaningful to be
-            # grouped under, so it's dropped here (counted above instead)
-            # rather than sampled as if "unparseable" were itself a
-            # calendar period. Polars' own group_by, unlike pandas'
-            # groupby's dropna=True default, keeps a null key as its own
-            # group, so this has to be explicit rather than assumed.
-            keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
+                # Unlike get_stratified_sample's fillna("__NA__") (which keeps
+                # a null stratum as its own real group), a row whose date
+                # can't be resolved to a period has nothing meaningful to be
+                # grouped under, so it's dropped here (counted above instead)
+                # rather than sampled as if "unparseable" were itself a
+                # calendar period. Polars' own group_by, unlike pandas'
+                # groupby's dropna=True default, keeps a null key as its own
+                # group, so this has to be explicit rather than assumed.
+                keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
 
-            for (period_key,), group_df in keyed_batch.group_by(
-                self._PERIOD_KEY, maintain_order=False
-            ):
-                group_df   = group_df.drop([self._PERIOD_KEY])
-                group_size = len(group_df)
-
-                if period_key not in total_seen:
-                    total_seen[period_key]  = 0
-                    fill_chunks[period_key] = []
-                    filled[period_key]      = 0
-
-                # Fill phase: see FilteredSampler.get_random_sample's fill
-                # phase, same pattern, once per calendar period.
-                if filled[period_key] < samples_per_period:
-                    take = min(samples_per_period - filled[period_key], group_size)
-                    fill_chunks[period_key].append(group_df.head(take))
-                    filled[period_key]     += take
-                    total_seen[period_key] += take
-
-                    if filled[period_key] == samples_per_period:
-                        filled_df = pl.concat(fill_chunks[period_key])
-                        reservoir_schema[period_key] = dict(filled_df.schema)
-                        reservoir_cols[period_key] = {
-                            c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
-                        }
-                        fill_chunks[period_key] = []
-
-                    if take == group_size:
-                        continue
-
-                    group_df   = group_df.slice(take)
+                # maintain_order=True, not False: the reservoir draws below pull
+                # sequentially from one shared RNG, once per (period, batch)
+                # combination, in whatever order this loop visits groups. A
+                # fixed --seed only fixes the sequence of numbers drawn, not
+                # which group's positions a given draw lands on; with
+                # maintain_order=False that assignment depended on polars' own
+                # unspecified group iteration order, so two runs with the same
+                # seed over the same data could still pick different rows
+                # (confirmed for real: ~25-30% GlobalEventID overlap between
+                # repeated runs). maintain_order=True visits groups in their
+                # first-appearance order within this batch, which is itself
+                # deterministic (the same file list, in the same sorted order,
+                # read in the same row order every run), making group
+                # visitation order, and therefore which draw lands where,
+                # reproducible under a fixed seed the way --seed documents.
+                # Found via a live comprehensive QA pass.
+                for (period_key,), group_df in keyed_batch.group_by(
+                    self._PERIOD_KEY, maintain_order=True
+                ):
+                    group_df   = group_df.drop([self._PERIOD_KEY])
                     group_size = len(group_df)
 
-                # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
-                positions  = np.arange(total_seen[period_key], total_seen[period_key] + group_size)
-                rand_slots = self.rng.rng.integers(0, positions + 1)
-                _apply_reservoir_replacements(
-                    reservoir_cols[period_key], group_df, rand_slots, samples_per_period
-                )
+                    if period_key not in total_seen:
+                        total_seen[period_key]  = 0
+                        fill_chunks[period_key] = []
+                        filled[period_key]      = 0
 
-                total_seen[period_key] += group_size
+                    # Fill phase: see FilteredSampler.get_random_sample's fill
+                    # phase, same pattern, once per calendar period.
+                    if filled[period_key] < samples_per_period:
+                        take = min(samples_per_period - filled[period_key], group_size)
+                        fill_chunks[period_key].append(group_df.head(take))
+                        filled[period_key]     += take
+                        total_seen[period_key] += take
+
+                        if filled[period_key] == samples_per_period:
+                            filled_df = pl.concat(fill_chunks[period_key])
+                            reservoir_schema[period_key] = dict(filled_df.schema)
+                            reservoir_cols[period_key] = {
+                                c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
+                            }
+                            fill_chunks[period_key] = []
+
+                        if take == group_size:
+                            continue
+
+                        group_df   = group_df.slice(take)
+                        group_size = len(group_df)
+
+                    # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
+                    seen = total_seen[period_key]
+                    positions  = np.arange(seen, seen + group_size)
+                    rand_slots = self.rng.rng.integers(0, positions + 1)
+                    _apply_reservoir_replacements(
+                        reservoir_cols[period_key], group_df, rand_slots, samples_per_period
+                    )
+
+                    total_seen[period_key] += group_size
+
+                pbar.update(1)
 
         if n_unparseable:
             logger.warning(
@@ -715,6 +831,97 @@ class FilteredSampler:
 
         raise ValueError(f"Invalid condition for {column}: {cond}")
 
+    @staticmethod
+    def _condition_operands(cond: Any) -> list[Any]:
+        """
+        Every literal value a condition would actually compare against
+        the column, mirroring _expr_for_condition's own operand
+        extraction exactly, so _validate_filter_value_types below checks
+        precisely what polars would otherwise be asked to evaluate.
+        """
+        if isinstance(cond, (str, int, float, bool)):
+            return [cond]
+        if isinstance(cond, list):
+            return list(cond)
+        if isinstance(cond, tuple) and len(cond) == 2:
+            return list(cond)
+        if isinstance(cond, dict):
+            op = cond.get("op")
+            if op == FilterType.EQUALS.value:
+                return [cond.get("value")]
+            if op == FilterType.IN_LIST.value:
+                return list(cond.get("values", []))
+            if op in (FilterType.GREATER_THAN.value, FilterType.LESS_THAN.value):
+                return [cond.get("value")]
+            if op in (FilterType.RANGE.value, FilterType.BETWEEN.value):
+                return [cond.get("min"), cond.get("max")]
+        return []
+
+    def _validate_filter_value_types(self, schema: dict[str, pl.DataType]) -> None:
+        """
+        Reject a --filter value whose type plainly can't match the real
+        column it's compared against (a string bound on a numeric
+        column, a numeric value against a string column) before the
+        expression this builds ever reaches the scan below.
+
+        Found via a live QA pass: every operator eventually raised
+        *something*, but never anything that named the actual problem.
+        equals/gt/lt/between all raised polars' own ComputeError
+        ("cannot compare string with numeric type"), which _batches'
+        clearer_dataset_errors wrapper (correctly, for a real corrupt or
+        non-parquet file) rewrites into "the file might be
+        corrupt, try removing or re-fetching it", actively blaming an
+        innocent, correctly-written data file for a mistake in the
+        --filter argument itself. in_list raised a different exception
+        (InvalidOperationError) that wrapper doesn't catch at all, so it
+        reached the user as a completely raw, unformatted internal trace
+        (a full query-plan dump) instead. Checked here, once, up front,
+        against the real scanned schema (already read by _needed_columns'
+        own caller, see there for why this is a real necessity, not
+        every declared column is guaranteed to survive an earlier
+        convert/filter's own output_columns pruning), all four operators
+        get one identical, correctly-attributed error instead of three
+        different, all-unsatisfying ones.
+
+        A column missing from the real schema entirely is intentionally
+        skipped here; narrow_to_available_columns' own required-column
+        check (called right after this, in _needed_columns) already
+        raises its own clear error for that separately.
+        """
+        def walk(block: dict[str, Any]) -> None:
+            for key, val in block.items():
+                if key in ("AND", "OR"):
+                    if isinstance(val, dict):
+                        walk(val)
+                    continue
+
+                dtype = schema.get(key)
+                if dtype is None:
+                    continue
+
+                operands = self._condition_operands(val)
+                if dtype.is_numeric():
+                    bad = [v for v in operands if isinstance(v, str)]
+                    if bad:
+                        raise ValueError(
+                            f"--filter: column {key!r} is numeric ({dtype}), but "
+                            f"the filter value(s) {bad} are string(s). Check the "
+                            f"--filter argument."
+                        )
+                elif dtype == pl.Utf8:
+                    bad = [
+                        v for v in operands
+                        if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    ]
+                    if bad:
+                        raise ValueError(
+                            f"--filter: column {key!r} is a string column "
+                            f"({dtype}), but the filter value(s) {bad} are "
+                            f"numeric. Check the --filter argument."
+                        )
+
+        walk(self.filter_dict)
+
     # ---------- recursive builder: filter_dict -> polars expression ----------
     def _build_expression(
         self, block: dict[str, Any], _join_with: str = "AND"
@@ -799,7 +1006,15 @@ class FilteredSampler:
         # before _batches ever does, so a corrupt/non-parquet file needs
         # the same clear error here too, not a bare arrow one.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            available = set(self._dataset().collect_schema().names())
+            schema = self._dataset().collect_schema()
+
+        # Checked against the real schema, before _batches ever runs: see
+        # _validate_filter_value_types' own docstring for why a --filter
+        # type mismatch must be caught here rather than left to surface
+        # from inside the scan below.
+        self._validate_filter_value_types(schema)
+
+        available = set(schema.names())
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
         return narrow_to_available_columns(
             logger, f"filtered sample dataset in {self.folder}", self.columns, required, available
@@ -810,12 +1025,16 @@ class FilteredSampler:
         needed = self._needed_columns()
 
         frames: list[pl.DataFrame] = []
-        for batch in tqdm(self._batches(needed), desc="Filtering parquet files"):
-            try:
-                if not batch.is_empty():
-                    frames.append(batch.select(needed))
-            except Exception as e:
-                logger.warning(f"Skipping batch due to error: {e}")
+        # Driven manually rather than iterated directly: see
+        # IndexedSampler.get_random_sample's own detailed note on why.
+        with tqdm(total=None, desc="Filtering parquet files") as pbar:
+            for batch in self._batches(needed):
+                try:
+                    if not batch.is_empty():
+                        frames.append(batch.select(needed))
+                except Exception as e:
+                    logger.warning(f"Skipping batch due to error: {e}")
+                pbar.update(1)
 
         if not frames:
             return pl.DataFrame()
@@ -823,7 +1042,14 @@ class FilteredSampler:
 
     # ---------- reservoir sampling for random sample ----------
     def get_random_sample(self, n: int) -> pl.DataFrame:
-        if n <= 0:
+        # Same reasoning as IndexedSampler.get_random_sample's identical
+        # check: a negative n used to reach the reservoir machinery below
+        # unchecked, same as 0, producing a nonsensical but "successful"
+        # 0-row result rather than an error naming the actual mistake. 0
+        # remains a valid, explicit "sample nothing" request.
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if n == 0:
             return pl.DataFrame()
 
         needed = self._needed_columns()
@@ -833,51 +1059,57 @@ class FilteredSampler:
         reservoir_schema: dict[str, pl.DataType] | None = None
         total_seen = 0
 
-        for df_batch in tqdm(self._batches(needed), desc="Sampling (random)"):
-            batch_size = len(df_batch)
-            if batch_size == 0:
-                continue
-
-            # Fill phase: accumulate chunks until the reservoir has n rows,
-            # then turn it into plain per-column numpy arrays; see
-            # _apply_reservoir_replacements for why.
-            if filled < n:
-                take = min(n - filled, batch_size)
-                fill_chunks.append(df_batch.head(take))
-                filled     += take
-                total_seen += take
-
-                if filled == n:
-                    filled_df = pl.concat(fill_chunks)
-                    # writable=True forces a genuinely independent copy:
-                    # polars' own to_numpy() otherwise returns a read-only
-                    # array sharing memory with the source column
-                    # (confirmed directly; assigning into it without this
-                    # raises "assignment destination is read-only"), unlike
-                    # pandas' to_numpy(copy=True) equivalent this replaces.
-                    reservoir_schema = dict(filled_df.schema)
-                    reservoir_cols = {
-                        c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
-                    }
-                    fill_chunks.clear()
-
-                if take == batch_size:
+        # Driven manually rather than iterated directly: see
+        # IndexedSampler.get_random_sample's own detailed note on why.
+        with tqdm(total=None, desc="Sampling (random)") as pbar:
+            for df_batch in self._batches(needed):
+                batch_size = len(df_batch)
+                if batch_size == 0:
+                    pbar.update(1)
                     continue
 
-                df_batch   = df_batch.slice(take)
-                batch_size = len(df_batch)
+                # Fill phase: accumulate chunks until the reservoir has n rows,
+                # then turn it into plain per-column numpy arrays; see
+                # _apply_reservoir_replacements for why.
+                if filled < n:
+                    take = min(n - filled, batch_size)
+                    fill_chunks.append(df_batch.head(take))
+                    filled     += take
+                    total_seen += take
 
-            # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
-            # For each row at global position p, draw j uniformly from [0, p].
-            # Accept (replace reservoir slot j) iff j < n.
-            # reservoir_cols is always set by this point: either from a
-            # previous batch, or by the fill phase above within this same batch.
-            assert reservoir_cols is not None
-            positions  = np.arange(total_seen, total_seen + batch_size)
-            rand_slots = self.rng.rng.integers(0, positions + 1)
-            _apply_reservoir_replacements(reservoir_cols, df_batch, rand_slots, n)
+                    if filled == n:
+                        filled_df = pl.concat(fill_chunks)
+                        # writable=True forces a genuinely independent copy:
+                        # polars' own to_numpy() otherwise returns a read-only
+                        # array sharing memory with the source column
+                        # (confirmed directly; assigning into it without this
+                        # raises "assignment destination is read-only"), unlike
+                        # pandas' to_numpy(copy=True) equivalent this replaces.
+                        reservoir_schema = dict(filled_df.schema)
+                        reservoir_cols = {
+                            c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
+                        }
+                        fill_chunks.clear()
 
-            total_seen += batch_size
+                    if take == batch_size:
+                        pbar.update(1)
+                        continue
+
+                    df_batch   = df_batch.slice(take)
+                    batch_size = len(df_batch)
+
+                # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
+                # For each row at global position p, draw j uniformly from [0, p].
+                # Accept (replace reservoir slot j) iff j < n.
+                # reservoir_cols is always set by this point: either from a
+                # previous batch, or by the fill phase above within this same batch.
+                assert reservoir_cols is not None
+                positions  = np.arange(total_seen, total_seen + batch_size)
+                rand_slots = self.rng.rng.integers(0, positions + 1)
+                _apply_reservoir_replacements(reservoir_cols, df_batch, rand_slots, n)
+
+                total_seen += batch_size
+                pbar.update(1)
 
         reservoir = (
             _reservoir_to_dataframe(reservoir_cols, reservoir_schema)
@@ -902,7 +1134,15 @@ class FilteredSampler:
     _STRATIFY_GROUP_KEY = "__stratify_group_key__"
 
     def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pl.DataFrame:
-        if n_per_group <= 0:
+        # Same reasoning as CalendarSampler.get_calendar_samples' identical
+        # check: a negative value used to reach the reservoir machinery
+        # below unchecked, same as 0, producing "Saved stratified sample
+        # (0 rows) stratified by 'QuadClass' (-3 per group)" as though -3
+        # were a valid, chosen configuration. 0 remains a valid, explicit
+        # "sample nothing" request.
+        if n_per_group < 0:
+            raise ValueError(f"n_per_group must be non-negative, got {n_per_group}")
+        if n_per_group == 0:
             return pl.DataFrame()
 
         needed = self._needed_columns(extra_required={stratify_col})
@@ -913,63 +1153,73 @@ class FilteredSampler:
         reservoir_schema: dict[Any, dict[str, pl.DataType]] = {}
         total_seen:       dict[Any, int]                    = {}
 
-        for df_batch in tqdm(self._batches(needed), desc="Sampling (stratified)"):
-            if df_batch.is_empty() or stratify_col not in df_batch.columns:
-                continue
+        # Driven manually rather than iterated directly: see
+        # IndexedSampler.get_random_sample's own detailed note on why.
+        with tqdm(total=None, desc="Sampling (stratified)") as pbar:
+            for df_batch in self._batches(needed):
+                if df_batch.is_empty() or stratify_col not in df_batch.columns:
+                    pbar.update(1)
+                    continue
 
-            # polars' group_by keeps null as its own group natively
-            # (unlike pandas, which drops null-key groups by default),
-            # but the "__NA__" sentinel is kept anyway rather than relied
-            # on for a group KEY, since it's the group's dict key returned
-            # to the caller too, and None and the literal string "__NA__"
-            # need to be distinguishable there the same way they were
-            # before this port.
-            keyed_batch = df_batch.with_columns(
-                pl.col(stratify_col).fill_null("__NA__").alias(self._STRATIFY_GROUP_KEY)
-            )
-            for (g,), group_df in keyed_batch.group_by(
-                self._STRATIFY_GROUP_KEY, maintain_order=False
-            ):
-                group_df   = group_df.drop([self._STRATIFY_GROUP_KEY])
-                group_size = len(group_df)
-
-                if g not in total_seen:
-                    total_seen[g]   = 0
-                    fill_chunks[g]  = []
-                    filled[g]       = 0
-
-                # Fill phase: see get_random_sample's fill phase, same
-                # pattern, once per stratify group.
-                if filled[g] < n_per_group:
-                    take = min(n_per_group - filled[g], group_size)
-                    fill_chunks[g].append(group_df.head(take))
-                    filled[g]      += take
-                    total_seen[g]  += take
-
-                    if filled[g] == n_per_group:
-                        filled_df = pl.concat(fill_chunks[g])
-                        # writable=True: see get_random_sample's identical
-                        # fill-phase comment for why this can't be omitted.
-                        reservoir_schema[g] = dict(filled_df.schema)
-                        reservoir_cols[g] = {
-                            c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
-                        }
-                        fill_chunks[g] = []
-
-                    if take == group_size:
-                        continue
-
-                    group_df   = group_df.slice(take)
+                # polars' group_by keeps null as its own group natively
+                # (unlike pandas, which drops null-key groups by default),
+                # but the "__NA__" sentinel is kept anyway rather than relied
+                # on for a group KEY, since it's the group's dict key returned
+                # to the caller too, and None and the literal string "__NA__"
+                # need to be distinguishable there the same way they were
+                # before this port.
+                keyed_batch = df_batch.with_columns(
+                    pl.col(stratify_col).fill_null("__NA__").alias(self._STRATIFY_GROUP_KEY)
+                )
+                # maintain_order=True: see get_calendar_samples' identical fix
+                # for why. The same shared-RNG-in-visitation-order reservoir
+                # draw applies here, so the same fixed-seed reproducibility gap
+                # applies too.
+                for (g,), group_df in keyed_batch.group_by(
+                    self._STRATIFY_GROUP_KEY, maintain_order=True
+                ):
+                    group_df   = group_df.drop([self._STRATIFY_GROUP_KEY])
                     group_size = len(group_df)
 
-                # Replacement phase: vectorized slot selection via Vitter's Algorithm R
-                positions  = np.arange(total_seen[g], total_seen[g] + group_size)
-                rand_slots = self.rng.rng.integers(0, positions + 1)
-                _apply_reservoir_replacements(
-                    reservoir_cols[g], group_df, rand_slots, n_per_group
-                )
+                    if g not in total_seen:
+                        total_seen[g]   = 0
+                        fill_chunks[g]  = []
+                        filled[g]       = 0
 
-                total_seen[g] += group_size
+                    # Fill phase: see get_random_sample's fill phase, same
+                    # pattern, once per stratify group.
+                    if filled[g] < n_per_group:
+                        take = min(n_per_group - filled[g], group_size)
+                        fill_chunks[g].append(group_df.head(take))
+                        filled[g]      += take
+                        total_seen[g]  += take
+
+                        if filled[g] == n_per_group:
+                            filled_df = pl.concat(fill_chunks[g])
+                            # writable=True: see get_random_sample's identical
+                            # fill-phase comment for why this can't be omitted.
+                            reservoir_schema[g] = dict(filled_df.schema)
+                            reservoir_cols[g] = {
+                                c: filled_df[c].to_numpy(writable=True) for c in filled_df.columns
+                            }
+                            fill_chunks[g] = []
+
+                        if take == group_size:
+                            continue
+
+                        group_df   = group_df.slice(take)
+                        group_size = len(group_df)
+
+                    # Replacement phase: vectorized slot selection via Vitter's Algorithm R
+                    positions  = np.arange(total_seen[g], total_seen[g] + group_size)
+                    rand_slots = self.rng.rng.integers(0, positions + 1)
+                    _apply_reservoir_replacements(
+                        reservoir_cols[g], group_df, rand_slots, n_per_group
+                    )
+
+                    total_seen[g] += group_size
+
+                pbar.update(1)
 
         reservoirs: dict[Any, pl.DataFrame] = {
             g: _reservoir_to_dataframe(cols, reservoir_schema[g])

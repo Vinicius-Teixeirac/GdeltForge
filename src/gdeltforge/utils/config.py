@@ -76,6 +76,34 @@ def dataset_path_key(dataset: str, base_key: str) -> str:
     return f"{prefix}{base_key}"
 
 
+def validate_max_workers(value: int | None, label: str) -> int | None:
+    """
+    Check a resolved converter.max_workers/filter.max_workers value
+    before it's ever logged or handed to ProcessPoolExecutor.
+
+    None means "let ProcessPoolExecutor pick os.cpu_count() on its own",
+    a real, valid, and by far the most common configuration (the default,
+    unset value); it's returned unchanged. Anything else must be a
+    positive int. This used to be checked only implicitly, by
+    ProcessPoolExecutor's own constructor, well after a pre-flight log
+    line had already announced a *different*, already-resolved worker
+    count for the same run: max_workers: 0 is falsy in Python, so a
+    "config_value or cpu_count()"-style fallback silently took the same
+    branch a genuinely unset value would, logging the real CPU count
+    convert/filter would use, e.g. 32, one line before ProcessPoolExecutor
+    raised its own "max_workers must be greater than 0" against the
+    original, still-0 value. Checking explicitly here, before either the
+    log line or the executor ever see the value, makes 0 (and any other
+    non-positive value) fail immediately with one clear error instead of
+    two contradictory statements about the same run.
+    """
+    if value is None:
+        return None
+    if value <= 0:
+        raise ValueError(f"{label} must be greater than 0, got {value}")
+    return value
+
+
 def get_dict(section: dict, key: str) -> dict:
     """
     section.get(key, {}), except an explicit `key: null` in the YAML is
@@ -115,6 +143,53 @@ def _normalize_top_level_sections(config: dict) -> dict:
     return {key: ({} if value is None else value) for key, value in config.items()}
 
 
+def _bundled_default_dict() -> dict:
+    """
+    Parse GdeltForge's own bundled default config (see
+    _BUNDLED_DEFAULT_RESOURCE above), normalized the same way a real config
+    file is, with none of _load_bundled_default's file-write/warning side
+    effects. Used both as the tier-4 fallback itself and as the fallback
+    layer merged under a real, user-supplied config (see
+    _deep_merge_defaults), so both paths read the exact same source.
+    """
+    text = _BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8")
+    return _normalize_top_level_sections(yaml.safe_load(text))
+
+
+def _deep_merge_defaults(config: dict, defaults: dict) -> dict:
+    """
+    Fill in any key missing from `config` with the equivalent value from
+    `defaults`, recursing into nested dicts so a hand-written settings.yaml
+    only needs to specify what it actually wants to change.
+
+    A real user config that omits a whole section entirely (columns,
+    columns_numeric) or a nested one (filter.columns_to_check,
+    converter.output_columns, a specific dataset under paths) used to crash
+    deep inside converter.py/filter.py/cli.py with a bare KeyError naming
+    just the missing key: every one of those reads its section with a
+    direct config["..."][...] access, not .get(), on the assumption the
+    section is always present the way the bundled default always has it.
+    _normalize_top_level_sections already covers a section being present
+    but null; this covers it being absent, arguably the more natural
+    mistake for someone writing a small, targeted config instead of
+    starting from the full settings.example.yaml.
+
+    A key already present in `config` is never touched, regardless of its
+    type: the user's own value always wins over the default. Only a dict
+    value recurses; a list or scalar default is used as-is when the key is
+    missing, never merged element-by-element (so a user's own, possibly
+    empty, columns_to_check list for one dataset is never padded with the
+    default's entries for that same dataset).
+    """
+    merged = dict(config)
+    for key, default_value in defaults.items():
+        if key not in merged:
+            merged[key] = default_value
+        elif isinstance(merged[key], dict) and isinstance(default_value, dict):
+            merged[key] = _deep_merge_defaults(merged[key], default_value)
+    return merged
+
+
 def _load_bundled_default(path: Path) -> dict:
     """
     Read GdeltForge's own built-in fallback config (bundled inside the
@@ -126,12 +201,15 @@ def _load_bundled_default(path: Path) -> dict:
     config rather than failing outright, just without the "now edit
     config/settings.yaml" convenience.
     """
-    text = _BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8")
-    config = _normalize_top_level_sections(yaml.safe_load(text))
+    config = _bundled_default_dict()
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        # The raw resource text, not a re-serialization of `config`: writing
+        # the parsed-and-rebuilt dict would drop every comment in the
+        # bundled file, and dict ordering isn't guaranteed to round-trip
+        # through YAML the same way.
+        path.write_text(_BUNDLED_DEFAULT_RESOURCE.read_text(encoding="utf-8"), encoding="utf-8")
         logger.warning(
             f"No config found (no --config, no {CONFIG_ENV_VAR}, nothing at {path}); "
             f"using GdeltForge's built-in default and writing it to {path}, so it's a "
@@ -179,15 +257,31 @@ def load_config(config_path: str | None = None) -> dict:
         config_path = os.environ.get(CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH)
 
     path = Path(config_path)
+    # Checked ahead of path.exists() below, which is true for a directory
+    # too: open(path) on one raises a raw, unformatted OSError straight
+    # from the filesystem ("[Errno 21] Is a directory: '...'"), unlike
+    # every other malformed-config case here (missing file, empty file,
+    # invalid YAML), which all get a clear, crafted message.
+    if path.is_dir():
+        raise IsADirectoryError(
+            f"Config path is a directory, not a file: {path}. Point --config "
+            f"or {CONFIG_ENV_VAR} at the settings.yaml file itself."
+        )
     if path.exists():
         with open(path) as f:
-            config = yaml.safe_load(f)
+            try:
+                config = yaml.safe_load(f)
+            except yaml.YAMLError as e:
+                raise ValueError(
+                    f"Config file at {path} contains invalid YAML: {e}"
+                ) from e
         if not config:
             raise ValueError(
                 f"Config file is empty: {path}. Copy config/settings.example.yaml as a "
                 f"starting point, or see docs/configuration.md."
             )
-        return _normalize_top_level_sections(config)
+        config = _normalize_top_level_sections(config)
+        return _deep_merge_defaults(config, _bundled_default_dict())
 
     if not explicit:
         return _load_bundled_default(path)

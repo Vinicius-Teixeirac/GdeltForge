@@ -1,9 +1,13 @@
+import concurrent.futures
 import hashlib
 import logging
+import sys
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.scraping.scraper as scraper
 from gdeltforge.scraping.scraper import (
@@ -53,6 +57,25 @@ class TestParseFileDate:
 
     def test_yearly_converted_parquet(self):
         assert parse_file_date("2020.parquet") == (date(2020, 1, 1), date(2020, 12, 31))
+
+    def test_daily_filtered_parquet(self):
+        # filter's own <stem>_filtered.parquet naming (filter.py's
+        # _output_path_for), the shape a real live comprehensive QA pass
+        # found fell through every branch of the old suffix-anchored
+        # version as unparseable, silently defeating --start-date/
+        # --end-date narrowing for sample's default source.
+        assert parse_file_date("20200315.export_filtered.parquet") == (
+            date(2020, 3, 15), date(2020, 3, 15),
+        )
+
+    def test_monthly_filtered_parquet(self):
+        assert parse_file_date("202003_filtered.parquet") == (date(2020, 3, 1), date(2020, 3, 31))
+
+    def test_yearly_filtered_parquet(self):
+        assert parse_file_date("2020_filtered.parquet") == (date(2020, 1, 1), date(2020, 12, 31))
+
+    def test_filtered_form_with_invalid_calendar_date_is_rejected(self):
+        assert parse_file_date("20201332.export_filtered.parquet") == (None, None)
 
 
 # ------------------------------------------------------------
@@ -298,6 +321,26 @@ class TestFilterPathsByDate:
             date(2020, 1, 1), date(2020, 12, 31), parse_file_date,
         )
         assert kept == ["/data/2020.parquet"]
+
+    def test_filtered_stage_filenames_are_genuinely_narrowed_not_just_kept(self):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: sample's default --source filtered reads filter's own
+        # <stem>_filtered.parquet output, a shape the old suffix-anchored
+        # parse_file_date couldn't match at all. Every such file fell
+        # through as unparseable and was kept regardless of the requested
+        # range, so a two-file, two-different-dates fixture like this one
+        # is essential here: a single-file fixture can't tell "correctly
+        # narrowed" apart from "coincidentally correct because there was
+        # nothing else to wrongly include", which is exactly how that bug
+        # passed the existing suite unnoticed.
+        kept = scraper.filter_paths_by_date(
+            [
+                "/data/20240101.export_filtered.parquet",
+                "/data/20240615.export_filtered.parquet",
+            ],
+            date(2024, 1, 1), date(2024, 1, 1), parse_file_date,
+        )
+        assert kept == ["/data/20240101.export_filtered.parquet"]
 
     def test_open_ended_start(self):
         kept = scraper.filter_paths_by_date(
@@ -1005,6 +1048,147 @@ class TestDownloadGdeltFiles:
         result = download_gdelt_files([file], config)
 
         assert result["success"] == 1
+
+
+class TestDownloadGdeltFilesInterruptHandling:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: SIGINT 1.5s into a real 731-file scrape still let all 731
+    finish downloading over the next 93.5 seconds before 'Interrupted.'
+    ever printed. Every future is submitted up front, so the executor's
+    own default __exit__ (shutdown(wait=True)) drained every one of
+    them, including ones that hadn't even started, before actually
+    exiting. Simulated at the as_completed() iteration point, the same
+    place a real Ctrl+C signal actually lands (delivered to the main
+    thread, which spends this loop's whole duration inside that call),
+    rather than trying to raise it from inside a worker thread."""
+
+    def test_interrupt_cancels_queued_futures_and_still_propagates(
+        self, monkeypatch, tmp_path
+    ):
+        files = [GdeltFile(url=f"http://x/{i}.export.CSV.zip") for i in range(5)]
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            return "success", file.url.split("/")[-1]
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+
+        real_as_completed = scraper.as_completed
+
+        def interrupting_as_completed(fs, *a, **kw):
+            for i, f in enumerate(real_as_completed(fs, *a, **kw)):
+                if i == 1:
+                    raise KeyboardInterrupt()
+                yield f
+
+        monkeypatch.setattr(scraper, "as_completed", interrupting_as_completed)
+
+        shutdown_calls = []
+        original_shutdown = scraper.ThreadPoolExecutor.shutdown
+
+        def spying_shutdown(self, *a, **kw):
+            shutdown_calls.append(kw)
+            return original_shutdown(self, *a, **kw)
+
+        monkeypatch.setattr(scraper.ThreadPoolExecutor, "shutdown", spying_shutdown)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+
+        with pytest.raises(KeyboardInterrupt):
+            download_gdelt_files(files, config)
+
+        # Our own explicit cleanup call, not the executor's own automatic
+        # one from __exit__ (which still runs afterward with its default
+        # wait=True and is harmless here since every submitted task is a
+        # fast, already-fake-completed function).
+        assert any(
+            c.get("wait") is False and c.get("cancel_futures") is True
+            for c in shutdown_calls
+        )
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so replacing
+    it here is what lets a test observe the exact leak this guards
+    against, rather than only being able to see it as incidental stderr
+    noise a real terminal user would notice by eye."""
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """Simulates a second interrupt landing while tqdm's own close() is
+    running, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op). Scoped to
+    instances created while this patch is active, not global: see
+    samplers.py's own test_samplers.py::TestTqdmInterruptDoesNotLeakA
+    Traceback._patch_tqdm_close_to_raise_once for why an unscoped patch
+    (a bare shared flag) is a real test-isolation hazard, confirmed
+    against the full suite under this project's own pinned dependency
+    floor: a leftover tqdm instance from an unrelated, already-finished
+    test being garbage collected during this test's own window could
+    consume its one allowed raise."""
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestDownloadGdeltFilesTqdmInterruptDoesNotLeakATraceback:
+    """download_gdelt_files' executor loop shares the identical bare-"for
+    x in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full (see that class's own docstring for the real
+    mechanism)."""
+
+    def test_interrupt_during_future_result_does_not_leak_a_traceback(
+        self, monkeypatch, tmp_path
+    ):
+        files = [GdeltFile(url="http://x/0.export.CSV.zip")]
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            return "success", file.url.split("/")[-1]
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def result_and_interrupt(self, *a, **kw):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(concurrent.futures.Future, "result", result_and_interrupt)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                download_gdelt_files(files, config)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
 
 class TestRunScrapingPipelineVerboseLogging:

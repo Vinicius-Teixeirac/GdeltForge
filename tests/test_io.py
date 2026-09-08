@@ -1,17 +1,30 @@
+import gc
+import json
 import logging
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import polars as pl
 import pytest
 
 from gdeltforge.utils.io import (
+    _pid_exists,
+    _schema_from_json,
+    _schema_to_json,
     clearer_dataset_errors,
     config_fingerprint,
     delete_done_marker,
     is_marked_done,
     mark_done,
     narrow_to_available_columns,
+    read_csv_export,
     read_parquet_path,
+    reconcile_parquet_schema,
+    scan_dataset_reconciled,
+    scan_file_against_schema,
     warn_if_delete_source_drops_recoverable_data,
     write_dataframe_atomic,
     write_parquet_atomic,
@@ -29,9 +42,18 @@ class TestWriteParquetAtomic:
         assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
         assert not (tmp_path / "sample.parquet.tmp").exists()
 
-    def test_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+    def test_warns_and_overwrites_leftover_tmp_from_interrupted_run(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # The tmp name is PID-suffixed (see the concurrent-write fix this
+        # guards against below), so a "leftover" this run can actually
+        # recognize is scoped to its own PID: pinning os.getpid() is what
+        # makes this deterministic to set up, the same class of leftover
+        # a hard-killed process's own next run under OS PID reuse would
+        # otherwise reproduce.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         out = tmp_path / "sample.parquet"
-        tmp_path_leftover = tmp_path / "sample.parquet.tmp"
+        tmp_path_leftover = tmp_path / "sample.parquet.12345.tmp"
         tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
 
         df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
@@ -116,9 +138,94 @@ class TestWriteDataframeAtomic:
 
         assert pl.read_csv(out).columns == ["GlobalEventID"]
 
-    def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+    def test_csv_warns_about_zero_padded_string_codes_with_the_read_back_fix(
+        self, tmp_path, caplog
+    ):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: EventCode/EventBaseCode/EventRootCode are zero-padded
+        # strings ("020", "07") in the parquet source, correctly typed
+        # String. A standard CSV read with default type inference,
+        # confirmed directly for polars' own read_csv (the tool this
+        # pipeline's own output is most likely to be re-read with), reads
+        # an unquoted-looking numeric field back as an integer and drops
+        # the leading zero, EVEN when the written field was quoted:
+        # quoting does not change a reader's own default inference. There
+        # is no write-side fix for that, so this checks the warning names
+        # the real limitation and a working read-back fix instead.
         out = tmp_path / "sample.csv"
-        tmp_path_leftover = tmp_path / "sample.csv.tmp"
+        df = pl.DataFrame({
+            "GlobalEventID": [1, 2],
+            "EventCode": ["020", "173"],
+            "EventBaseCode": ["02", "17"],
+        })
+
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(df, out, export_format="csv")
+
+        assert any(
+            "EventCode" in r.message and "EventBaseCode" in r.message for r in caplog.records
+        )
+        assert any("schema_overrides" in r.message for r in caplog.records)
+        assert any("read_csv_export" in r.message for r in caplog.records)
+
+        # The suggested manual fix from the warning must actually work,
+        # for a caller who reads the file back some other way than
+        # read_csv_export (its own dedicated tests below cover that path).
+        result = pl.read_csv(out, schema_overrides={"EventCode": pl.Utf8, "EventBaseCode": pl.Utf8})
+        assert result["EventCode"].to_list() == ["020", "173"]
+        assert result["EventBaseCode"].to_list() == ["02", "17"]
+
+    def test_csv_no_warning_when_no_zero_padded_columns_are_present(self, tmp_path, caplog):
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(df, out, export_format="csv")
+
+        assert not any("schema_overrides" in r.message for r in caplog.records)
+
+    def test_csv_still_quotes_the_zero_padded_field_in_the_written_file(self, tmp_path):
+        # quote_style="non_numeric" is still applied: it protects a value
+        # containing a comma/newline/quote regardless, and costs nothing,
+        # even though it does not by itself fix the read-back inference
+        # issue the warning above describes.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"EventCode": ["020"]})
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        assert '"020"' in out.read_text()
+
+    def test_csv_genuine_numeric_columns_stay_unquoted(self, tmp_path):
+        # quote_style="non_numeric" must not force-quote a real numeric
+        # column just for being adjacent to string ones in the same file.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"GlobalEventID": [1, 2], "GoldsteinScale": [-5.0, 3.0]})
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        raw = out.read_text()
+        assert '"1"' not in raw
+        assert '"-5.0"' not in raw
+
+    def test_csv_caller_can_still_override_quote_style(self, tmp_path):
+        # kwargs.setdefault, not an unconditional override: an explicit
+        # caller preference still wins.
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({"EventCode": ["020"]})
+
+        write_dataframe_atomic(df, out, export_format="csv", quote_style="never")
+
+        assert out.read_text().strip() == "EventCode\n020"
+
+    def test_csv_warns_and_overwrites_leftover_tmp_from_interrupted_run(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # Same PID-pinning reasoning as write_parquet_atomic's identical
+        # test above.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
+        out = tmp_path / "sample.csv"
+        tmp_path_leftover = tmp_path / "sample.csv.12345.tmp"
         tmp_path_leftover.write_bytes(b"partial garbage from a killed run")
 
         df = pl.DataFrame({"GlobalEventID": [1, 2, 3]})
@@ -151,6 +258,349 @@ class TestWriteDataframeAtomic:
 
         assert not out.exists()
 
+    def test_csv_export_writes_a_schema_sidecar(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({
+            "GlobalEventID": [1, 2], "GoldsteinScale": [-5.0, 3.0], "EventCode": ["020", "173"],
+        })
+
+        write_dataframe_atomic(df, out, export_format="csv")
+
+        sidecar = tmp_path / "sample.csv.schema.json"
+        assert sidecar.exists()
+        assert not sidecar.with_name(sidecar.name + ".tmp").exists()
+        assert json.loads(sidecar.read_text()) == {
+            "GlobalEventID": "Int64", "GoldsteinScale": "Float64", "EventCode": "String",
+        }
+
+    def test_parquet_export_writes_no_sidecar(self, tmp_path):
+        # The sidecar exists to work around CSV's own lack of a type
+        # system; Parquet already carries its schema natively, so there's
+        # nothing for a sidecar to add here.
+        out = tmp_path / "sample.parquet"
+        write_dataframe_atomic(pl.DataFrame({"EventCode": ["020"]}), out, export_format="parquet")
+
+        assert not (tmp_path / "sample.parquet.schema.json").exists()
+
+    def test_a_sidecar_write_failure_degrades_without_losing_the_csv(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # Best-effort: the CSV export the caller actually asked for must
+        # survive even if the schema sidecar can't be written (a
+        # read-only destination, a full disk), degrading to
+        # read_csv_export's own no-sidecar fallback rather than losing
+        # output that already succeeded.
+        out = tmp_path / "sample.csv"
+
+        real_write_text = Path.write_text
+
+        def boom(self, *args, **kwargs):
+            if self.name.endswith(".schema.json.tmp"):
+                raise OSError("disk full")
+            return real_write_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", boom)
+
+        with caplog.at_level(logging.WARNING):
+            write_dataframe_atomic(
+                pl.DataFrame({"GlobalEventID": [1, 2]}), out, export_format="csv"
+            )
+
+        assert out.exists()
+        assert not (tmp_path / "sample.csv.schema.json").exists()
+        assert not (tmp_path / "sample.csv.schema.json.tmp").exists()
+        assert any("schema sidecar" in r.message for r in caplog.records)
+
+
+class TestReadCsvExport:
+    """read_csv_export is the actual fix for the CSV round-trip gap named
+    in write_dataframe_atomic's own warning (EventCode/EventBaseCode/
+    EventRootCode losing their leading zero on a standard re-read, and
+    any other column silently losing its real dtype the same way): it
+    restores every column's real dtype from the schema sidecar written
+    alongside a gdeltforge CSV export, rather than leaving pl.read_csv to
+    infer types from content the way a bare pl.read_csv/pd.read_csv call
+    would. No write-side CSV setting can close this gap on its own (CSV
+    itself carries no type information at all), so this is a read-side
+    fix: a caller who reads back through this function instead of a bare
+    pl.read_csv gets a genuinely lossless round trip; one who doesn't
+    still gets the documented warning and manual workaround."""
+
+    def test_full_round_trip_is_byte_for_byte_lossless(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        df = pl.DataFrame({
+            "GlobalEventID": [1, 2, None],
+            "GoldsteinScale": [-5.0, None, 3.0],
+            "EventCode": ["020", None, "057"],
+            "EventBaseCode": ["02", "01", ""],
+            "Actor1Name": ["A", None, "C"],
+        })
+
+        write_dataframe_atomic(df, out, export_format="csv")
+        result = read_csv_export(out)
+
+        assert result.schema == df.schema
+        assert result.equals(df)
+
+    def test_zero_padded_codes_keep_their_leading_zero(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        write_dataframe_atomic(
+            pl.DataFrame({"EventCode": ["020", "173"]}), out, export_format="csv"
+        )
+
+        result = read_csv_export(out)
+
+        assert result["EventCode"].to_list() == ["020", "173"]
+
+    def test_no_sidecar_falls_back_to_default_inference_with_a_warning(
+        self, tmp_path, caplog
+    ):
+        # A CSV that never came from gdeltforge (or a pre-existing export
+        # from before this existed): no sidecar to consult, so this can
+        # only degrade to the same documented limitation write time
+        # already warns about, not silently claim a fix that isn't there.
+        out = tmp_path / "foreign.csv"
+        pl.DataFrame({"EventCode": ["020", "173"]}).write_csv(out, quote_style="non_numeric")
+
+        with caplog.at_level(logging.WARNING):
+            result = read_csv_export(out)
+
+        assert result["EventCode"].to_list() == [20, 173]
+        assert any("schema sidecar" in r.message for r in caplog.records)
+        assert any("schema_overrides" in r.message for r in caplog.records)
+
+    def test_no_sidecar_no_warning_when_no_zero_padded_columns_present(
+        self, tmp_path, caplog
+    ):
+        out = tmp_path / "foreign.csv"
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_csv(out)
+
+        with caplog.at_level(logging.WARNING):
+            read_csv_export(out)
+
+        assert not caplog.records
+
+    def test_explicit_schema_overrides_win_over_the_sidecar(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        write_dataframe_atomic(
+            pl.DataFrame({"GlobalEventID": [1, 2], "EventCode": ["020", "173"]}),
+            out, export_format="csv",
+        )
+
+        result = read_csv_export(out, schema_overrides={"GlobalEventID": pl.Float64})
+
+        assert result.schema["GlobalEventID"] == pl.Float64
+        assert result["GlobalEventID"].to_list() == [1.0, 2.0]
+        # The column the caller didn't override still comes from the
+        # sidecar, not default inference.
+        assert result["EventCode"].to_list() == ["020", "173"]
+
+    def test_other_read_csv_kwargs_still_pass_through(self, tmp_path):
+        out = tmp_path / "sample.csv"
+        write_dataframe_atomic(
+            pl.DataFrame({"GlobalEventID": [1, 2, 3]}), out, export_format="csv"
+        )
+
+        result = read_csv_export(out, n_rows=2)
+
+        assert len(result) == 2
+
+
+class TestSchemaJson:
+    """_schema_to_json/_schema_from_json: the plain-JSON representation
+    the schema sidecar is written as, kept polars-independent on purpose
+    (a human, or a caller who never imports polars, can still read it)."""
+
+    def test_round_trips_every_dtype_this_project_s_data_actually_uses(self):
+        schema = {"GlobalEventID": pl.Int64, "GoldsteinScale": pl.Float64, "EventCode": pl.String}
+
+        assert _schema_from_json(_schema_to_json(schema)) == schema
+
+    def test_an_unrecognized_dtype_name_is_skipped_not_raised(self):
+        # A sidecar from a newer/older gdeltforge naming a dtype this
+        # polars version doesn't have, or a hand-edited one with a typo,
+        # degrades to default inference for just that column rather than
+        # failing the whole read.
+        result = _schema_from_json({"A": "Int64", "B": "NotARealDtype"})
+
+        assert result == {"A": pl.Int64}
+
+    def test_a_non_dtype_polars_attribute_name_is_also_skipped(self):
+        # "concat" is a real name on the polars module, just not a dtype;
+        # getattr(pl, "concat") must not be mistaken for one.
+        result = _schema_from_json({"A": "concat"})
+
+        assert result == {}
+
+
+class TestPidExists:
+    """
+    Used only to decide whether a leftover PID-suffixed temp file (see
+    TestOrphanedTempFileCleanup below) is safe to remove. Checked
+    directly here since getting this wrong in either direction is real:
+    a false "alive" leaves a genuine orphan on disk forever; a false
+    "dead" could delete a live, concurrent process's own in-progress
+    write.
+    """
+
+    def test_own_pid_is_alive(self):
+        assert _pid_exists(os.getpid())
+
+    def test_an_almost_certainly_nonexistent_pid_is_not_alive(self):
+        # PIDs are a bounded, kernel-assigned namespace on every real
+        # platform (Windows: typically < ~2^32 but practically always
+        # small; POSIX: PID_MAX_LIMIT is 2^22); this value is chosen far
+        # outside any range a real running process would ever hold.
+        assert not _pid_exists(2**31 - 1)
+
+    def test_a_real_child_process_is_alive_until_it_exits(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        pid = proc.pid
+        try:
+            assert _pid_exists(pid)
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+        # On Windows, a process stays queryable as long as any handle to
+        # it is still open, including the parent's own Popen object, a
+        # real OS semantic, not a bug in _pid_exists: the actual
+        # production caller (an unrelated, later gdeltforge invocation)
+        # never holds such a handle to a dead writer it didn't spawn.
+        # Dropping this process's own handle reproduces that condition.
+        del proc
+        gc.collect()
+        assert not _pid_exists(pid)
+
+
+class TestOrphanedTempFileCleanup:
+    """
+    write_parquet_atomic/write_dataframe_atomic's temp path is PID-
+    suffixed so two genuinely concurrent processes never collide on one
+    shared name (TestWriteParquetAtomic/TestWriteDataframeAtomic's own
+    leftover tests above cover that). That fix has a side effect: the
+    leftover-detection warning used to check only the exact current-PID
+    path, which a genuinely different, now-dead process's own leftover
+    essentially never is, so it accumulated on disk indefinitely with no
+    warning at any level. Found via a live comprehensive QA pass,
+    reproduced with a real SIGKILL mid-write.
+
+    The naive fix (glob any PID and delete unconditionally) would
+    introduce a worse bug than the one it closes: two processes writing
+    the same destination concurrently is exactly the scenario the PID
+    suffix exists to allow safely, and deleting a live sibling's own
+    in-progress temp file out from under it would silently corrupt that
+    write. _clean_orphaned_tmp_files only removes a match whose owning
+    PID is confirmed dead; a live PID (this process's own, or another
+    genuinely running one) is left untouched.
+    """
+
+    def test_a_different_dead_pids_leftover_is_detected_and_removed(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        monkeypatch.setattr("gdeltforge.utils.io._pid_exists", lambda pid: False)
+        out = tmp_path / "sample.parquet"
+        orphan = out.with_name(f"{out.name}.999999.tmp")
+        orphan.write_bytes(b"partial parquet bytes from a killed run, different pid")
+
+        with caplog.at_level(logging.WARNING):
+            write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1, 2, 3]}), out)
+
+        assert "leftover incomplete file" in caplog.text
+        assert "999999" in caplog.text
+        assert not orphan.exists()
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
+
+    def test_a_different_but_still_alive_pids_leftover_is_left_alone(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # The critical safety property: a live PID must never be treated
+        # as an orphan, since it could be a genuinely concurrent, healthy
+        # writer mid-write to this exact destination right now.
+        monkeypatch.setattr("gdeltforge.utils.io._pid_exists", lambda pid: True)
+        out = tmp_path / "sample.parquet"
+        active = out.with_name(f"{out.name}.999999.tmp")
+        active.write_bytes(b"a live sibling process's own in-progress write")
+
+        with caplog.at_level(logging.WARNING):
+            write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1, 2, 3]}), out)
+
+        assert "999999" not in caplog.text
+        assert active.exists()
+        assert active.read_bytes() == b"a live sibling process's own in-progress write"
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
+
+    def test_csv_export_gets_the_same_cleanup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gdeltforge.utils.io._pid_exists", lambda pid: False)
+        out = tmp_path / "sample.csv"
+        orphan = out.with_name(f"{out.name}.999999.tmp")
+        orphan.write_bytes(b"partial csv bytes from a killed run")
+
+        write_dataframe_atomic(pl.DataFrame({"GlobalEventID": [1, 2]}), out, export_format="csv")
+
+        assert not orphan.exists()
+        assert pl.read_csv(out)["GlobalEventID"].to_list() == [1, 2]
+
+    def test_a_non_matching_file_is_left_alone(self, tmp_path):
+        # Anything at the destination that doesn't match the <name>.<pid>.tmp
+        # shape at all (a stray unrelated file, or a name a caller happens
+        # to control) is never touched by this cleanup.
+        out = tmp_path / "sample.parquet"
+        unrelated = out.with_name(f"{out.name}.backup.tmp")
+        unrelated.write_bytes(b"not an orphaned write, just a similarly-named file")
+
+        write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1]}), out)
+
+        assert unrelated.exists()
+
+    def test_real_sigkill_mid_write_leaves_an_orphan_that_a_later_run_cleans_up(
+        self, tmp_path
+    ):
+        # The un-mocked, real-process version of the two tests above:
+        # a genuine SIGKILL mid-write leaves a real orphaned temp file,
+        # and a later, unrelated, fully successful run at the same
+        # destination detects and removes it.
+        script = tmp_path / "slow_writer.py"
+        script.write_text(
+            "import time\n"
+            "import polars as pl\n"
+            "from pathlib import Path\n"
+            "from gdeltforge.utils.io import write_parquet_atomic\n"
+            "_orig = pl.DataFrame.write_parquet\n"
+            "def slow(self, path, *a, **kw):\n"
+            "    Path(path).write_bytes(b'partial')\n"
+            "    time.sleep(10)\n"
+            "    return _orig(self, path, *a, **kw)\n"
+            "pl.DataFrame.write_parquet = slow\n"
+            "write_parquet_atomic(pl.DataFrame({'GlobalEventID': [1]}), 'out.parquet')\n"
+        )
+        proc = subprocess.Popen([sys.executable, str(script)], cwd=tmp_path)
+        try:
+            time.sleep(1.5)
+            proc.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
+            proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        # See TestPidExists' identical note: a process stays queryable on
+        # Windows as long as any handle to it (including this test's own
+        # Popen object) is still open. A real, later, unrelated
+        # gdeltforge invocation never holds such a handle to begin with.
+        del proc
+        gc.collect()
+
+        orphans_after_kill = list(tmp_path.glob("out.parquet.*.tmp"))
+        assert len(orphans_after_kill) == 1, (
+            "expected one orphaned tmp file from the killed process"
+        )
+
+        write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1, 2, 3]}), tmp_path / "out.parquet")
+
+        assert not orphans_after_kill[0].exists(), (
+            "the orphan should be cleaned up by the later run"
+        )
+        assert pl.read_parquet(tmp_path / "out.parquet")["GlobalEventID"].to_list() == [1, 2, 3]
+
 
 class TestReadParquetPath:
     def test_reads_a_single_file_directly(self, tmp_path):
@@ -181,6 +631,82 @@ class TestReadParquetPath:
         pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(f)
         mark_done(f, "some-fingerprint")
         assert (tmp_path / ".20260811.export.parquet.done").exists()
+
+        result = read_parquet_path(tmp_path)
+
+        assert result["GlobalEventID"].to_list() == [1, 2]
+
+    def test_nonexistent_path_raises_a_crafted_error_not_a_raw_os_one(self, tmp_path):
+        # A path naming neither a file nor a directory used to reach
+        # pl.read_parquet unchecked, surfacing its own raw "No such file
+        # or directory (os error 2): ..." straight from polars' Rust
+        # reader, unlike every other missing-path case in this project.
+        missing = tmp_path / "nonexistent.parquet"
+
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            read_parquet_path(missing)
+
+    def test_reads_files_in_a_hive_partitioned_subdirectory_too(self, tmp_path):
+        # Regression coverage for a real gap found via a live comprehensive
+        # QA pass: crossref --events <a real, valid, non-empty Hive-
+        # partitioned historical directory> reported "No parquet files
+        # found", since the directory branch only ever globbed its own
+        # top level, never Year=YYYY/MonthYear=YYYYMM/*.parquet -- the
+        # exact shape converter.partitioning writes for events/events-
+        # reduced, and IndexedSampler's own FileIndex already walks.
+        hist_dir = tmp_path / "Year=2008" / "MonthYear=200801"
+        hist_dir.mkdir(parents=True)
+        pl.DataFrame({"GlobalEventID": [1, 2, 3]}).write_parquet(
+            hist_dir / "200801_filtered.parquet"
+        )
+
+        result = read_parquet_path(tmp_path)
+
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3]
+
+    def test_reads_a_mix_of_flat_and_hive_partitioned_files_together(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        hist_dir = tmp_path / "Year=2008" / "MonthYear=200801"
+        hist_dir.mkdir(parents=True)
+        pl.DataFrame({"GlobalEventID": [3, 4, 5]}).write_parquet(hist_dir / "hist.parquet")
+
+        result = read_parquet_path(tmp_path)
+
+        assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3, 4, 5]
+
+    def test_reconciles_a_narrower_historical_file_with_wider_flat_files(self, tmp_path):
+        # Same root cause as IndexedSampler's own identical fix: a real
+        # accumulated directory can genuinely mix files whose own
+        # physical schema differs (a Hive-partitioned file converted
+        # before a schema fix landed, an output_columns setting narrowed
+        # at one point and widened again later). A plain per-file
+        # pl.read_parquet + pl.concat has no way to tolerate that; this
+        # is the same class of "unable to append to a DataFrame of width
+        # X with a DataFrame of width Y" crash #13 found for --mode
+        # indexed, reachable here too the moment --events points crossref
+        # at a directory mixing both shapes.
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        hist_dir = tmp_path / "Year=2008"
+        hist_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(hist_dir / "hist.parquet")
+
+        result = read_parquet_path(tmp_path)
+
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in result.to_dicts()}
+        assert by_id[1] == 1 and by_id[2] == 2
+        assert by_id[3] is None and by_id[4] is None
+
+    def test_ignores_done_resumability_markers_in_a_nested_historical_directory(
+        self, tmp_path
+    ):
+        hist_dir = tmp_path / "Year=2008"
+        hist_dir.mkdir()
+        f = hist_dir / "hist.parquet"
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(f)
+        mark_done(f, "some-fingerprint")
+        assert (hist_dir / ".hist.parquet.done").exists()
 
         result = read_parquet_path(tmp_path)
 
@@ -533,3 +1059,173 @@ class TestNarrowToAvailableColumns:
             requested={"Date"}, required={"EventIds"}, available={"EventIds", "Date"},
         )
         assert result == ["Date", "EventIds"]
+
+
+class TestReconcileParquetSchema:
+    """
+    Shared by samplers.py's _scan_dataset/IndexedSampler.get_random_sample
+    and crossref.py's _dataset: a real accumulated GDELT archive can
+    declare the same column under genuinely different dtypes in different
+    files (events' own Actor2Geo_Type is Float64 in every archive through
+    2007-10, Int64 from 2007-11 onward; GKG 2.1's V2.1DATE is Float64 in
+    441 files scattered across six years, Int64 everywhere else), and a
+    plain schema.setdefault(name, dtype) union silently keeps whichever
+    file was read first rather than detecting the conflict at all.
+    """
+
+    def test_a_single_shared_dtype_across_files_is_kept_as_is(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [2], "QuadClass": [2]}).write_parquet(
+            tmp_path / "b.parquet"
+        )
+
+        schema = reconcile_parquet_schema([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
+        assert schema == {"GlobalEventID": pl.Int64(), "QuadClass": pl.Int64()}
+
+    def test_int_and_float_across_files_widens_to_float(self, tmp_path):
+        pl.DataFrame({"Actor2Geo_Type": [1.0, 2.0]}).write_parquet(tmp_path / "old.parquet")
+        pl.DataFrame({"Actor2Geo_Type": [1, 2]}).write_parquet(tmp_path / "new.parquet")
+
+        schema = reconcile_parquet_schema([tmp_path / "old.parquet", tmp_path / "new.parquet"])
+
+        assert schema["Actor2Geo_Type"] == pl.Float64()
+
+    def test_mixed_integer_widths_across_files_widen_to_int64(self, tmp_path):
+        pl.DataFrame({"n": pl.Series([1, 2], dtype=pl.Int32)}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"n": pl.Series([3, 4], dtype=pl.Int64)}).write_parquet(
+            tmp_path / "b.parquet"
+        )
+
+        schema = reconcile_parquet_schema([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
+        assert schema["n"] == pl.Int64()
+
+    def test_a_non_numeric_conflict_raises_a_clear_error_naming_both_dtypes(self, tmp_path):
+        # A string column in one file and a numeric column of the same
+        # name in another is a real data problem, not a width difference
+        # pl.concat(..., how="vertical_relaxed") could paper over safely;
+        # this must fail loudly rather than silently coercing one side.
+        pl.DataFrame({"code": ["US", "BR"]}).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({"code": [1, 2]}).write_parquet(tmp_path / "b.parquet")
+
+        with pytest.raises(
+            pl.exceptions.SchemaError, match="code.*Int64.*String|code.*String.*Int64"
+        ):
+            reconcile_parquet_schema([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
+
+class TestScanDatasetReconciled:
+    def test_no_conflict_reads_correctly_across_files(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(tmp_path / "b.parquet")
+
+        df = scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"]).collect()
+
+        assert sorted(df["GlobalEventID"].to_list()) == [1, 2, 3, 4]
+
+    def test_a_column_missing_from_one_file_comes_back_null_for_its_rows(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(tmp_path / "b.parquet")
+
+        df = scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"]).collect()
+
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in df.to_dicts()}
+        assert by_id[1] == 1 and by_id[2] == 2
+        assert by_id[3] is None and by_id[4] is None
+
+    def test_a_dtype_conflict_across_files_reconciles_instead_of_crashing(self, tmp_path):
+        # Mirrors the real Actor2Geo_Type split directly: scan_parquet's
+        # own schema= parameter is an assertion, so a plain union scan
+        # crashes ("data type mismatch ... incoming: Int64 != target:
+        # Float64") the moment it reaches the file whose real dtype
+        # disagrees with whichever file the schema was inferred from.
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(tmp_path / "before_2007_11.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(tmp_path / "after_2007_11.parquet")
+
+        df = scan_dataset_reconciled(
+            [tmp_path / "before_2007_11.parquet", tmp_path / "after_2007_11.parquet"]
+        ).collect()
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
+
+    def test_a_dtype_conflict_alongside_a_missing_column_reconciles_both_at_once(
+        self, tmp_path
+    ):
+        # A real archive can hit both reconciliation shapes in the same
+        # multi-file read: one file both disagrees on a shared column's
+        # dtype AND lacks a column entirely (an output_columns change and
+        # a later schema fix landing at different times).
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0], "SOURCEURL": ["a", "b"],
+        }).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3], "Actor2Geo_Type": [3],
+        }).write_parquet(tmp_path / "b.parquet")
+
+        df = scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"]).collect()
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["SOURCEURL"] for row in df.to_dicts()}
+        assert by_id[1] == "a" and by_id[2] == "b" and by_id[3] is None
+
+    def test_three_way_dtype_conflict_reconciles_across_every_file(self, tmp_path):
+        pl.DataFrame({"n": pl.Series([1.0], dtype=pl.Float64)}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"n": pl.Series([2], dtype=pl.Int32)}).write_parquet(
+            tmp_path / "b.parquet"
+        )
+        pl.DataFrame({"n": pl.Series([3], dtype=pl.Int64)}).write_parquet(
+            tmp_path / "c.parquet"
+        )
+
+        df = scan_dataset_reconciled(
+            [tmp_path / "a.parquet", tmp_path / "b.parquet", tmp_path / "c.parquet"]
+        ).collect()
+
+        assert df["n"].dtype == pl.Float64
+        assert sorted(df["n"].to_list()) == [1.0, 2.0, 3.0]
+
+
+class TestScanFileAgainstSchema:
+    def test_a_file_matching_the_target_schema_reads_unmodified(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1], "n": [1]}).write_parquet(tmp_path / "a.parquet")
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Int64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Int64
+
+    def test_a_file_whose_own_dtype_disagrees_is_cast_to_the_target(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1], "n": [1]}).write_parquet(tmp_path / "a.parquet")
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Float64
+        assert df["n"].to_list() == [1.0]
+
+    def test_a_column_the_file_lacks_comes_back_null_at_the_target_dtype(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1]}).write_parquet(tmp_path / "a.parquet")
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Float64
+        assert df["n"].to_list() == [None]

@@ -1,10 +1,15 @@
+import concurrent.futures
 import logging
+import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.filtering.filter as filter_module
 from gdeltforge.filtering.filter import GDELTFilter, run_filter
@@ -24,6 +29,28 @@ class TestMaxWorkersConfig:
             str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=2
         )
         assert filt.max_workers == 2
+
+    def test_zero_raises_immediately_instead_of_a_contradictory_log_sequence(
+        self, tmp_path
+    ):
+        # max_workers: 0 used to reach ProcessPoolExecutor unchecked: 0
+        # is falsy, so the pre-flight "Filtering N flat file(s) ... using
+        # X worker process(es)..." log line's own `self.max_workers or
+        # os.cpu_count()` fallback silently reported the real CPU count
+        # instead, one line before ProcessPoolExecutor's own constructor
+        # raised "max_workers must be greater than 0" against the
+        # original, still-0 value. Checked eagerly here now, before
+        # either ever sees it.
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTFilter(
+                str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=0
+            )
+
+    def test_negative_value_raises_the_same_way_as_zero(self, tmp_path):
+        with pytest.raises(ValueError, match="must be greater than 0"):
+            GDELTFilter(
+                str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=-1
+            )
 
 
 class TestFilterSingleFile:
@@ -85,12 +112,19 @@ class TestFilterSingleFile:
         result = pl.read_parquet(out_path)
         assert sorted(result["GlobalEventID"].to_list()) == [1, 2, 3]
 
-    def test_configured_columns_all_missing_still_skips_writing(self, tmp_path, caplog):
+    def test_configured_columns_all_missing_raises_instead_of_a_silent_success(
+        self, tmp_path
+    ):
         # Distinct from the empty-columns_to_check case above: here the
         # caller actually configured filter columns, and none of them
         # exist in this file's schema, a real signal something's
-        # misconfigured (e.g. a typo), not a no-op. Must still bail out
-        # without writing, same as before this fix.
+        # misconfigured (e.g. a typo), not a no-op. This used to log an
+        # ERROR and return as though the file had been filtered
+        # successfully, at 100% retention, with no output written; a
+        # caller working only from the returned counts (as filter_all_
+        # files does) had no way to tell that apart from a genuine,
+        # correctly-checked file. It now raises, so filter_all_files
+        # counts this file as failed rather than processed.
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -98,12 +132,11 @@ class TestFilterSingleFile:
 
         filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
         out_path = tmp_path / "out" / "data_filtered.parquet"
-        with caplog.at_level("ERROR"):
-            rows_before, rows_after = filt.filter_single_file(src, out_path)
 
-        assert (rows_before, rows_after) == (2, 2)
+        with pytest.raises(ValueError, match="none of the configured columns_to_check"):
+            filt.filter_single_file(src, out_path)
+
         assert not out_path.exists()
-        assert any("None of the filter columns exist" in r.message for r in caplog.records)
 
     def test_empty_file_returns_zero_zero(self, tmp_path):
         input_dir = tmp_path / "in"
@@ -164,6 +197,22 @@ class TestFilterAllFiles:
         assert processed == 0
         assert failed == 1
 
+    def test_counts_an_all_invalid_columns_to_check_file_as_failed(self, tmp_path):
+        # Batch-level version of TestFilterSingleFile's equivalent test:
+        # this used to be indistinguishable, at the filter_all_files
+        # level, from a file that was genuinely and correctly filtered,
+        # counted under "processed" at 100% retention with a 0 exit code
+        # despite the ERROR logged for it.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "data.parquet", {"GlobalEventID": [1, 2]})
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
+        processed, failed = filt.filter_all_files()
+
+        assert (processed, failed) == (0, 1)
+        assert not (tmp_path / "out" / "data_filtered.parquet").exists()
+
     def test_one_corrupt_file_does_not_abort_the_others(self, tmp_path):
         # Now that files run across a worker pool (see TestMaxWorkersConfig),
         # this is the same guarantee test_counts_a_corrupt_file_as_failed
@@ -202,6 +251,131 @@ class TestFilterAllFiles:
 
         assert (processed, failed) == (1, 0)
         assert (tmp_path / "hist_out" / "Year=1979" / "1979_filtered.parquet").exists()
+
+
+class TestFilterAllFilesInterruptHandling:
+    """filter_all_files' own version of convert's identical regression
+    coverage (test_converter.py's TestProcessAllFilesInterruptHandling):
+    every future is submitted up front, so the executor's own default
+    __exit__ (shutdown(wait=True)) would drain every one of them,
+    including ones that hadn't even started, before actually exiting.
+    Simulated at the as_completed() iteration point, the same place a
+    real Ctrl+C signal actually lands, rather than trying to raise it
+    from inside a worker process."""
+
+    def test_interrupt_cancels_queued_futures_and_still_propagates(
+        self, monkeypatch, tmp_path
+    ):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        for i in range(3):
+            _write_parquet(input_dir / f"{i}.parquet", {"GlobalEventID": [1, 2]})
+
+        real_as_completed = filter_module.as_completed
+
+        def interrupting_as_completed(fs, *a, **kw):
+            for i, f in enumerate(real_as_completed(fs, *a, **kw)):
+                if i == 1:
+                    raise KeyboardInterrupt()
+                yield f
+
+        monkeypatch.setattr(filter_module, "as_completed", interrupting_as_completed)
+
+        shutdown_calls = []
+        original_shutdown = filter_module.ProcessPoolExecutor.shutdown
+
+        def spying_shutdown(self, *a, **kw):
+            shutdown_calls.append(kw)
+            return original_shutdown(self, *a, **kw)
+
+        monkeypatch.setattr(filter_module.ProcessPoolExecutor, "shutdown", spying_shutdown)
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+
+        with pytest.raises(KeyboardInterrupt):
+            filt.filter_all_files()
+
+        assert any(
+            c.get("wait") is False and c.get("cancel_futures") is True
+            for c in shutdown_calls
+        )
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so replacing
+    it here is what lets a test observe the exact leak this guards
+    against, rather than only being able to see it as incidental stderr
+    noise a real terminal user would notice by eye."""
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """Simulates a second interrupt landing while tqdm's own close() is
+    running, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op). Scoped to
+    instances created while this patch is active, not global: see
+    samplers.py's own test_samplers.py::TestTqdmInterruptDoesNotLeakA
+    Traceback._patch_tqdm_close_to_raise_once for why an unscoped patch
+    (a bare shared flag) is a real test-isolation hazard, confirmed
+    against the full suite under this project's own pinned dependency
+    floor: a leftover tqdm instance from an unrelated, already-finished
+    test being garbage collected during this test's own window could
+    consume its one allowed raise."""
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestFilterAllFilesTqdmInterruptDoesNotLeakATraceback:
+    """filter_all_files' executor loop shares the identical bare-"for x
+    in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full (see that class's own docstring for the real
+    mechanism)."""
+
+    def test_interrupt_during_future_result_does_not_leak_a_traceback(
+        self, monkeypatch, tmp_path
+    ):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "0.parquet", {"GlobalEventID": [1, 2]})
+
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def result_and_interrupt(self, *a, **kw):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(concurrent.futures.Future, "result", result_and_interrupt)
+
+        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                filt.filter_all_files()
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
 
 class TestFilterResumability:
@@ -600,9 +774,15 @@ class TestOutputColumns:
         result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID", "QuadClass"]
 
-    def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(self, tmp_path):
+    def test_a_configured_column_missing_from_the_file_is_skipped_not_fatal(
+        self, tmp_path, caplog
+    ):
         # Mirrors columns_to_check's existing/missing split: schema drift
         # (a column absent from one file) shouldn't crash the whole run.
+        # This used to drop DoesNotExist with no trace at any log level;
+        # a warning naming it now fires, matching narrow_to_available_
+        # columns' own treatment of the same mistake in sample/crossref,
+        # so a real typo here is no longer silently, permanently invisible.
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -613,10 +793,31 @@ class TestOutputColumns:
             output_columns=["GlobalEventID", "DoesNotExist"],
         )
         out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        with caplog.at_level("WARNING"):
+            filt.filter_single_file(src, out_path)
 
         result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID"]
+        assert any(
+            "output_columns" in r.message and "DoesNotExist" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_when_every_output_column_exists(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+
+        filt = GDELTFilter(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            output_columns=["GlobalEventID", "QuadClass"],
+        )
+        out_path = tmp_path / "out" / "data_filtered.parquet"
+        with caplog.at_level("WARNING"):
+            filt.filter_single_file(src, out_path)
+
+        assert not any("output_columns" in r.message for r in caplog.records)
 
     def test_row_filtering_is_unaffected_by_column_projection(self, tmp_path):
         # Row-drop decisions must still be based on columns_to_check even
@@ -1274,6 +1475,11 @@ class TestFilterSingleFileAtomicity:
     pattern already used for converter output."""
 
     def test_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
+        # PID-pinned: filter_single_file's own staging name is now PID-
+        # suffixed (the fix for two concurrent filter runs sharing one
+        # output path), so the leftover-tmp check below has to know the
+        # exact name to look for.
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -1291,9 +1497,10 @@ class TestFilterSingleFileAtomicity:
             filt.filter_single_file(src, out_path)
 
         assert not out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
 
-    def test_successful_write_leaves_no_tmp_behind(self, tmp_path):
+    def test_successful_write_leaves_no_tmp_behind(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(os, "getpid", lambda: 12345)
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
@@ -1304,5 +1511,79 @@ class TestFilterSingleFileAtomicity:
         filt.filter_single_file(src, out_path)
 
         assert out_path.exists()
-        assert not out_path.with_name(out_path.name + ".tmp").exists()
+        assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
         assert pq.read_table(out_path).num_rows == 2
+
+
+class TestFilterSingleFileConcurrentInvocations:
+    """
+    filter_single_file used to build its own fixed ".tmp" suffix inline
+    (tmp_path = output_path.with_name(output_path.name + ".tmp")),
+    unlike utils.io.write_parquet_atomic's already-fixed equivalent. Two
+    concurrent GDELTFilter instances filtering the same source file into
+    the same output path raced on that shared name: whichever process's
+    os.replace() ran second found its own tmp file already renamed away
+    by the other, raising a raw FileNotFoundError and counting an
+    otherwise-successful file as "failed" (e.g. two overlapping
+    `gdeltforge filter --dataset events --force` runs, one launched
+    before realizing the first was still going).
+
+    filter_single_file streams through lf.sink_parquet rather than
+    materializing a DataFrame first, specifically to keep peak memory
+    bounded for a large file, so it can't route through
+    write_parquet_atomic (which writes an already-collected DataFrame)
+    the way _write_partition_file now does; it needs its own PID-suffixed
+    name instead.
+
+    A genuine two-process race turned out to be a poor fit for a fast,
+    reliable unit test: two real OS processes started at the same
+    instant via a multiprocessing.Barrier reproduced the bug 0/8 times on
+    this platform, since a rename of a small/medium file is fast enough
+    relative to process-wake scheduling jitter that one side routinely
+    finishes its entire write-then-rename before the other even starts,
+    even though the exact same code, against real live data, reproduced
+    it in a live QA pass. Instead, "process B" is run to completion from
+    inside a patched sink_parquet, right after "process A"'s own write
+    lands on disk but before A's rename runs, deterministically forcing
+    the interleaving that a real race only produces by chance: A's
+    os.replace() now always runs against whatever B's own run already
+    did to the filesystem, regardless of platform timing. Distinct
+    os.getpid() values (mocked) are what the fix keys its own tmp-name
+    uniqueness on, the same as two genuinely separate OS processes.
+    """
+
+    def test_two_concurrent_filters_of_the_same_file_do_not_race(
+        self, tmp_path, monkeypatch
+    ):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        src = input_dir / "data.parquet"
+        _write_parquet(src, {"GlobalEventID": [1, 2, 3, 4], "QuadClass": [1, 2, 3, 4]})
+        out_dir = tmp_path / "out"
+        out_path = out_dir / "data_filtered.parquet"
+
+        filt_a = GDELTFilter(str(input_dir), str(out_dir), ["QuadClass"])
+        filt_b = GDELTFilter(str(input_dir), str(out_dir), ["QuadClass"])
+
+        pids = iter([111, 222, 333, 444])
+        monkeypatch.setattr(os, "getpid", lambda: next(pids))
+
+        real_sink_parquet = pl.LazyFrame.sink_parquet
+        state = {"ran_b": False}
+
+        def sink_parquet_then_run_b(self, path, *args, **kwargs):
+            result = real_sink_parquet(self, path, *args, **kwargs)
+            if not state["ran_b"]:
+                state["ran_b"] = True
+                filt_b.filter_single_file(src, out_path)
+            return result
+
+        monkeypatch.setattr(pl.LazyFrame, "sink_parquet", sink_parquet_then_run_b)
+
+        # Must not raise: under the bug, B's completed rename (using the
+        # same shared tmp name A just wrote to) leaves nothing at A's own
+        # tmp path by the time A's own os.replace() runs.
+        filt_a.filter_single_file(src, out_path)
+
+        assert out_path.exists()
+        assert len(pl.read_parquet(out_path)) == 4

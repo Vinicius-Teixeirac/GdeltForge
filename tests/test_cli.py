@@ -1,5 +1,6 @@
 import argparse
 import re
+import signal
 import sys
 from datetime import date
 from pathlib import Path
@@ -102,6 +103,20 @@ class TestExportFormatFlag:
                 ["crossref", "--events", "x.parquet", "--gkg-version", "v1",
                  "--export-format", "feather"]
             )
+
+    def test_help_names_read_csv_export_for_both_commands(self):
+        # A live comprehensive QA pass tested the CSV round-trip fix only
+        # through a bare pl.read_csv call, missing that gdeltforge's own
+        # read_csv_export is the actual fix; --help is the one place a
+        # user is most likely to see this without reading the full docs.
+        parser = cli.build_parser()
+        subparsers_action = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+        )
+
+        for command in ("sample", "crossref"):
+            help_text = subparsers_action.choices[command].format_help()
+            assert "read_csv_export" in help_text
 
 
 class TestOutPathForExportFormat:
@@ -1037,6 +1052,186 @@ class TestRunSamplingCmdDateFiltering:
         assert not any("both set" in r.message for r in caplog.records)
 
 
+class TestRunSamplingCmdStratifyWithoutFilter:
+    """--stratify targets rows by group membership on its own; it doesn't
+    need a separate row-level --filter condition the way get_random_sample
+    does. --filter is only ever required for a plain --mode filtered call
+    with no --stratify."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            out="o.parquet", columns=None, export_format="parquet",
+            filter=None, stratify=None, n_per_group=None,
+            start_date=None, end_date=None,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_stratify_without_filter_defaults_to_no_filtering(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        cli.run_sampling_cmd(
+            self._config(),
+            self._args(
+                stratify="QuadClass", n_per_group=50, filter=None,
+                out=str(tmp_path / "o.parquet"),
+            ),
+        )
+
+        assert captured["filter_dict"] == {}
+
+    def test_plain_filtered_mode_without_stratify_still_requires_filter(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+
+        with pytest.raises(ValueError, match="--filter is required"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(stratify=None, filter=None, out=str(tmp_path / "o.parquet")),
+            )
+
+    def test_explicit_filter_alongside_stratify_is_still_honored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        cli.run_sampling_cmd(
+            self._config(),
+            self._args(
+                stratify="QuadClass", n_per_group=50, filter='{"QuadClass": [1, 2]}',
+                out=str(tmp_path / "o.parquet"),
+            ),
+        )
+
+        assert captured["filter_dict"] == {"QuadClass": [1, 2]}
+
+
+class TestStratifyWithoutFilterThroughRealArgparse:
+    """The three tests above call run_sampling_cmd directly with a
+    hand-built argparse.Namespace, which never exercises build_parser's
+    own --stratify/--filter/--n-per-group argument definitions at all.
+    That gap is exactly how this exact behavior (an omitted --filter
+    defaulting to no filtering when --stratify is set) regressed once
+    already, silently, in a rebuild that carried this module's own code
+    and unit tests forward correctly but was cut from a base that never
+    had this fix applied at all: every test here still passed, because
+    none of them ever went through the real parser to notice the flag
+    combination it was supposed to protect was gone. These three run the
+    real, unmodified argv a user would type through cli.build_parser()
+    itself before dispatching, so a future change to any of these flags'
+    own argparse definitions (a renamed dest, a changed default, a
+    removed argument) fails here too, not only in the hand-built-
+    Namespace tests above."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    def test_stratify_without_filter_defaults_to_no_filtering(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "sample", "--dataset", "events", "--mode", "filtered",
+            "--stratify", "QuadClass", "--n-per-group", "50",
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["filter_dict"] == {}
+
+    def test_plain_filtered_mode_without_stratify_still_requires_filter(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "sample", "--dataset", "events", "--mode", "filtered",
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        with pytest.raises(ValueError, match="--filter is required"):
+            cli.run_sampling_cmd(self._config(), args)
+
+    def test_explicit_filter_alongside_stratify_is_still_honored(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "sample", "--dataset", "events", "--mode", "filtered",
+            "--stratify", "QuadClass", "--n-per-group", "50",
+            "--filter", '{"QuadClass": [1, 2]}',
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["filter_dict"] == {"QuadClass": [1, 2]}
+
+
 class TestRunCrossrefCmd:
     """The join logic itself (crossref_events_gkg_v1/v2) has its own
     dedicated tests in test_crossref.py; these only check that the CLI
@@ -1107,6 +1302,98 @@ class TestRunCrossrefCmd:
         cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1-counts"))
 
         assert captured["folder"] == "/gkg_v1_counts_filtered"
+
+    def test_v1_warns_when_on_duplicate_document_is_set(self, tmp_path, monkeypatch, caplog):
+        # Both flags' own --help text already says "only affects
+        # v2/auto"; passing one alongside v1/v1-counts used to be
+        # silently accepted with zero warning that it did nothing.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(
+                self._config(),
+                self._args(tmp_path, gkg_version="v1", on_duplicate_document="latest"),
+            )
+
+        assert any(
+            "--on-duplicate-document" in r.message and "v1" in r.message
+            for r in caplog.records
+        )
+
+    def test_v1_warns_when_collapse_duplicate_mentions_is_set(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(
+                self._config(),
+                self._args(
+                    tmp_path, gkg_version="v1-counts", collapse_duplicate_mentions=True
+                ),
+            )
+
+        assert any("--collapse-duplicate-mentions" in r.message for r in caplog.records)
+
+    def test_v1_no_warning_at_defaults(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(self._config(), self._args(tmp_path, gkg_version="v1"))
+
+        assert not any("--on-duplicate-document" in r.message for r in caplog.records)
+        assert not any("--collapse-duplicate-mentions" in r.message for r in caplog.records)
+
+    def test_v1_warns_through_real_argparse_not_just_a_hand_built_namespace(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # The tests above all call run_crossref_cmd directly with a
+        # hand-built argparse.Namespace, never exercising build_parser's
+        # own --gkg-version/--on-duplicate-document/--collapse-duplicate-
+        # mentions argument definitions at all. A regression in sample's
+        # own --stratify/--filter carve-out slipped past an identically-
+        # shaped set of hand-built-Namespace-only tests once already
+        # (see TestStratifyWithoutFilterThroughRealArgparse), so this
+        # runs the actual argv a user would type through
+        # cli.build_parser() itself before dispatching.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(
+            cli, "crossref_events_gkg_v1",
+            lambda events_df, folder, cols, columns=None, start_date=None,
+            end_date=None: pl.DataFrame(),
+        )
+
+        parser = cli.build_parser()
+        args = parser.parse_args([
+            "crossref", "--events", self._events_path(tmp_path),
+            "--gkg-version", "v1", "--on-duplicate-document", "latest",
+            "--out", str(tmp_path / "o.parquet"),
+        ])
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_crossref_cmd(self._config(), args)
+
+        assert any(
+            "--on-duplicate-document" in r.message and "v1" in r.message
+            for r in caplog.records
+        )
 
     def test_v2_reads_both_mentions_and_gkg_v2_filtered_folders(self, tmp_path, monkeypatch):
         captured = {}
@@ -1437,6 +1724,89 @@ class TestMainErrorHandling:
 
         assert exc_info.value.code == 1
         assert "no CAMEO code reference list" in capsys.readouterr().err
+
+    def test_terminated_prints_terminated_and_exits_143(self, monkeypatch, capsys):
+        # _Terminated (raised by the SIGTERM handler) must be caught
+        # ahead of the plain KeyboardInterrupt clause, since it's a
+        # subclass of it, and reported with its own distinct message and
+        # the conventional 128+SIGTERM exit code, not silently folded
+        # into the SIGINT/Ctrl+C case.
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+
+        def terminated(config, dataset):
+            raise cli._Terminated
+
+        monkeypatch.setattr(cli, "run_convert_cmd", terminated)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+        assert exc_info.value.code == 143
+        assert capsys.readouterr().err.strip() == "Terminated."
+
+
+class TestSigtermHandling:
+    """
+    SIGKILL of the main gdeltforge process left scrape/convert/filter's
+    own ProcessPoolExecutor workers running as orphans, since SIGKILL
+    can't be caught by anything and the workers keep pulling from the
+    shared task queue independently of whether their parent is still
+    alive. Two changes address this, installed as early as possible in
+    main(): a process group of its own (_isolate_process_group), so an
+    external caller can reliably kill the whole tree by killing the
+    *group* instead of one PID, and a real SIGTERM handler
+    (_install_sigterm_handler), so the polite request most process
+    managers send before escalating to SIGKILL now actually triggers the
+    same cancel-queued-work-immediately behavior Ctrl+C/SIGINT already
+    gets, rather than terminating instantly with no cleanup at all.
+    """
+
+    def test_terminated_is_a_keyboard_interrupt_subclass(self):
+        # scrape/convert/filter's own executor loops catch
+        # KeyboardInterrupt specifically; this is what lets a SIGTERM
+        # reach that same handling with no changes needed at any of
+        # those call sites.
+        assert issubclass(cli._Terminated, KeyboardInterrupt)
+
+    def test_handle_sigterm_raises_terminated(self):
+        with pytest.raises(cli._Terminated):
+            cli._handle_sigterm(signal.SIGTERM, None)
+
+    def test_install_sigterm_handler_wires_up_handle_sigterm(self):
+        original = signal.getsignal(signal.SIGTERM)
+        try:
+            cli._install_sigterm_handler()
+            assert signal.getsignal(signal.SIGTERM) is cli._handle_sigterm
+        finally:
+            signal.signal(signal.SIGTERM, original)
+
+    def test_isolate_process_group_calls_setsid_when_available(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(cli.os, "setsid", lambda: calls.append(1), raising=False)
+
+        cli._isolate_process_group()
+
+        assert calls == [1]
+
+    def test_isolate_process_group_swallows_os_error(self, monkeypatch):
+        # The common case: a caller's shell already made this process its
+        # own group leader (job control, most `&`-backgrounded jobs), so
+        # setsid() fails with EPERM. Not a problem: that property already
+        # holds either way, so this must not crash the CLI over it.
+        def already_a_leader():
+            raise OSError("Operation not permitted")
+
+        monkeypatch.setattr(cli.os, "setsid", already_a_leader, raising=False)
+
+        cli._isolate_process_group()  # must not raise
+
+    def test_isolate_process_group_is_a_noop_where_setsid_does_not_exist(self, monkeypatch):
+        # Windows: os.setsid doesn't exist at all, unlike a POSIX
+        # platform where it exists but might fail.
+        monkeypatch.delattr(cli.os, "setsid", raising=False)
+
+        cli._isolate_process_group()  # must not raise
 
 
 class TestCliReferenceDocsSync:

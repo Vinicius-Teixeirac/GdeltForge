@@ -80,7 +80,12 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
-from gdeltforge.utils.config import dataset_is_always_historical, dataset_path_key, get_dict
+from gdeltforge.utils.config import (
+    dataset_is_always_historical,
+    dataset_path_key,
+    get_dict,
+    validate_max_workers,
+)
 from gdeltforge.utils.io import (
     config_fingerprint,
     delete_done_marker,
@@ -189,8 +194,14 @@ class GDELTFilter:
             Path(historical_output_folder) if historical_output_folder else None
         )
         # None is a valid value here: ProcessPoolExecutor treats
-        # max_workers=None as "use os.cpu_count()" on its own.
-        self.max_workers = max_workers
+        # max_workers=None as "use os.cpu_count()" on its own. Anything
+        # else must be a positive int, checked eagerly here rather than
+        # left to ProcessPoolExecutor's own constructor: that used to
+        # raise well after a pre-flight log line had already announced a
+        # different, already-resolved worker count for the same run (see
+        # validate_max_workers' own docstring for the exact contradiction
+        # a falsy-but-invalid max_workers: 0 produced).
+        self.max_workers = validate_max_workers(max_workers, "filter.max_workers")
         # GDELTFilter stays dataset-agnostic (it never sees a dataset name,
         # only already-resolved paths/columns, see run_filter below), so
         # the caller resolves which filename convention date_parser needs
@@ -319,33 +330,59 @@ class GDELTFilter:
                 for parquet_path, is_historical in to_process
             }
 
-            for future in tqdm(
-                as_completed(futures), total=len(futures), desc="Filtering parquet files"
-            ):
-                parquet_path = futures[future]
-                try:
-                    rows_before, rows_after = future.result()
-                    mark_done(parquet_path, self._config_fingerprint)
+            try:
+                # Driven manually (with + explicit update()) rather than
+                # iterated directly (for x in tqdm(...)): see converter.py's
+                # process_all_files for the full mechanism this avoids (a
+                # bare "for x in tqdm(iterable):" builds a second, separate
+                # generator via tqdm's own __iter__, which leaks a stray
+                # KeyboardInterrupt traceback fragment if interrupted while
+                # suspended mid-loop).
+                with tqdm(total=len(futures), desc="Filtering parquet files") as pbar:
+                    for future in as_completed(futures):
+                        parquet_path = futures[future]
+                        try:
+                            rows_before, rows_after = future.result()
+                            mark_done(parquet_path, self._config_fingerprint)
 
-                    if self.delete_source:
-                        self._delete_source(parquet_path)
+                            if self.delete_source:
+                                self._delete_source(parquet_path)
 
-                    total_rows_before += rows_before
-                    total_rows_after  += rows_after
-                    files_processed   += 1
+                            total_rows_before += rows_before
+                            total_rows_after  += rows_after
+                            files_processed   += 1
 
-                    rate = (rows_after / rows_before * 100) if rows_before else 0
-                    # DEBUG, not INFO: unconditional, once per file, same
-                    # rationale as convert's equivalent per-file lines --
-                    # see run_filter's verbose docstring.
-                    logger.debug(
-                        f"{parquet_path.name}: "
-                        f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
-                    )
+                            rate = (rows_after / rows_before * 100) if rows_before else 0
+                            # DEBUG, not INFO: unconditional, once per file, same
+                            # rationale as convert's equivalent per-file lines --
+                            # see run_filter's verbose docstring.
+                            logger.debug(
+                                f"{parquet_path.name}: "
+                                f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
+                            )
 
-                except Exception as e:
-                    files_failed += 1
-                    logger.error(f"Failed to filter {parquet_path.name}: {e}")
+                        except Exception as e:
+                            files_failed += 1
+                            logger.error(f"Failed to filter {parquet_path.name}: {e}")
+                        pbar.update(1)
+            except KeyboardInterrupt:
+                # Same real gap as convert's identical loop (see
+                # converter.py's process_all_files for the full
+                # measurement): every future was submitted up front, so
+                # the executor's own default __exit__ would otherwise
+                # drain every one of them, including ones that haven't
+                # even started, before actually exiting. cancel_futures
+                # cancels every not-yet-started future immediately;
+                # wait=False doesn't additionally block here for files
+                # already in flight, since the executor's own __exit__
+                # still waits for those specific ones as this exception
+                # continues propagating.
+                still_running = sum(1 for f in futures if f.running())
+                logger.warning(
+                    f"Interrupted: waiting for {still_running} in-flight file(s) to finish."
+                )
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         logger.info("===============================================")
         logger.info("FILTERING SUMMARY")
@@ -428,16 +465,37 @@ class GDELTFilter:
         # number of output rows is unknown"), confirmed directly. That's
         # a different case from columns_to_check being non-empty but
         # matching nothing in this file's schema, which genuinely can't
-        # be checked and bails out below without writing.
+        # be checked at all. This used to log an ERROR and return as
+        # though the file had been filtered successfully, so the run's
+        # own summary reported it under "Files processed successfully"
+        # at 100% retention and exited 0, silently turning the requested
+        # null-check into a no-op. Raising here instead routes it through
+        # filter_all_files' existing per-file exception handling, so the
+        # file is counted under "Files failed" and the run exits non-zero,
+        # matching the documented contract that filter fails the run if
+        # any individual file failed.
         if self.columns_to_check and not existing_columns:
-            logger.error(f"{file_path.name}: None of the filter columns exist.")
-            return rows_before, rows_before
+            raise ValueError(
+                f"{file_path.name}: none of the configured columns_to_check "
+                f"{self.columns_to_check} exist in this file's schema. There is "
+                f"nothing to filter on."
+            )
 
         if output_path is None:
             output_path = self.output_folder / f"{file_path.stem}_filtered.parquet"
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = output_path.with_name(output_path.name + ".tmp")
+        # PID-suffixed, matching write_parquet_atomic's own fix for the
+        # identical race: two concurrent filter invocations targeting the
+        # same output_path built this same fixed ".tmp" name, so whichever
+        # process's os.replace() ran second found its own tmp file already
+        # renamed away by the other, failing with a raw FileNotFoundError
+        # despite neither run actually doing anything wrong. This can't go
+        # through write_parquet_atomic directly: it writes an already-
+        # materialized DataFrame, while sink_parquet below streams lf
+        # straight to disk to keep peak memory bounded, which is the whole
+        # point of scanning rather than collecting above.
+        tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.tmp")
 
         if existing_columns:
             lf = lf.filter(
@@ -457,6 +515,25 @@ class GDELTFilter:
         # configured output column that isn't in this file's schema is
         # dropped rather than treated as fatal, since schemas can drift
         # release to release the same way they already can for row-filters.
+        # This used to drop such a name with no trace at any log level,
+        # including --verbose, indistinguishable from a deliberate,
+        # working projection: a typo in output_columns silently and
+        # permanently discarded that column from every future run. Warned
+        # here now, naming exactly what was dropped and why, matching
+        # narrow_to_available_columns' own treatment of the same mistake
+        # in sample/crossref.
+        missing_output_columns = (
+            [c for c in self.output_columns if c not in schema_cols]
+            if self.output_columns is not None
+            else []
+        )
+        if missing_output_columns:
+            logger.warning(
+                f"{file_path.name}: output_columns names {len(missing_output_columns)} "
+                f"column(s) not present in this file's schema: {missing_output_columns}. "
+                f"They will be excluded from the output."
+            )
+
         keep_columns = (
             [c for c in self.output_columns if c in schema_cols]
             if self.output_columns is not None
