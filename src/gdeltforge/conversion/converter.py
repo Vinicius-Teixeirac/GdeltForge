@@ -1078,21 +1078,20 @@ class GDELTConverter:
         monthly partitioning) and process_reduced_file (events-reduced's
         always-partitioned chunked write) instead of each duplicating the
         same tmp-then-rename guarantee.
+
+        Delegates to write_parquet_atomic rather than reimplementing the
+        tmp-then-rename itself: this used to build its own fixed ".tmp"
+        suffix inline, missing the PID-suffix fix write_parquet_atomic
+        already applies for _save_parquet's flat-file writes, so two
+        concurrent invocations writing the same historical/partitioned
+        output raced on it exactly as _save_parquet's own writes once did.
         """
-        tmp_path = out_path.with_name(out_path.name + ".tmp")
-        try:
-            # self.compression is user config, a plain str at gdeltforge's
-            # own boundary; polars' own write_parquet narrows it to a
-            # specific Literal set for its own internal type-checking, so
-            # an actually-invalid codec name still surfaces as a real
-            # error from polars itself at write time, just not one
-            # pyright can prove here.
-            df.write_parquet(tmp_path, compression=cast(ParquetCompression, self.compression))
-            os.replace(tmp_path, out_path)
-        except Exception:
-            if tmp_path.exists():
-                tmp_path.unlink()
-            raise
+        # self.compression is user config, a plain str at gdeltforge's own
+        # boundary; polars' own write_parquet narrows it to a specific
+        # Literal set for its own internal type-checking, so an actually-
+        # invalid codec name still surfaces as a real error from polars
+        # itself at write time, just not one pyright can prove here.
+        write_parquet_atomic(df, out_path, compression=cast(ParquetCompression, self.compression))
 
     # ------------------------------------------------------------
     # SAVE HISTORICAL PARQUET  (Hive-partitioned)
