@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- Two concurrent `filter` or `convert` invocations writing to the same output path (a retry launched before realizing the first was still going, an overlapping cron run) could both fail with a raw `FileNotFoundError`, one process's `os.replace()` finding its own temp file already renamed away by the other: `filter_single_file`'s and `_write_partition_file`'s own hand-rolled temp-file naming never adopted the PID-suffix fix `write_parquet_atomic`/`write_dataframe_atomic` already carry for the identical race. Both now use a PID-suffixed name too, `_write_partition_file` by delegating to `write_parquet_atomic` directly, not duplicating the pattern. Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
