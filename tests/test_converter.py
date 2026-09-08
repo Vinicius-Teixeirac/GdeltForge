@@ -12,6 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import gdeltforge.conversion.converter as converter_module
+import gdeltforge.utils.io as io_module
 from gdeltforge.conversion.converter import GDELTConverter, run_converter
 
 
@@ -2146,6 +2147,19 @@ class TestWritePartitionFileConcurrentInvocations:
     did to the filesystem, regardless of platform timing. Distinct
     os.getpid() values (mocked) are what the fix keys its own tmp-name
     uniqueness on, the same as two genuinely separate OS processes.
+
+    write_parquet_atomic (which _write_partition_file now delegates to)
+    also runs its own orphaned-temp-file cleanup pass before every
+    write, which queries the real OS for whether a leftover file's own
+    PID is still alive. That check is patched to always report alive
+    here: A and B's mocked PIDs (111/222) don't correspond to any real
+    OS process, so the genuine liveness check would (correctly, for a
+    real dead PID, but wrongly for what this test means to simulate)
+    treat A's own still-in-progress tmp file as an orphan and delete it
+    out from under it, a false failure specific to this test's fake-PID
+    setup rather than anything wrong in either fix; the orphan-cleanup
+    mechanism's own real dead-PID detection is already covered directly
+    in test_io.py.
     """
 
     def test_two_concurrent_writers_to_the_same_partition_file_do_not_race(
@@ -2168,6 +2182,7 @@ class TestWritePartitionFileConcurrentInvocations:
 
         pids = iter([111, 222, 333, 444])
         monkeypatch.setattr(os, "getpid", lambda: next(pids))
+        monkeypatch.setattr(io_module, "_pid_exists", lambda pid: True)
 
         real_write_parquet = pl.DataFrame.write_parquet
         state = {"ran_b": False}
