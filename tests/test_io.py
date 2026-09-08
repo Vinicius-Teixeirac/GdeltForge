@@ -12,6 +12,9 @@ from gdeltforge.utils.io import (
     mark_done,
     narrow_to_available_columns,
     read_parquet_path,
+    reconcile_parquet_schema,
+    scan_dataset_reconciled,
+    scan_file_against_schema,
     warn_if_delete_source_drops_recoverable_data,
     write_dataframe_atomic,
     write_parquet_atomic,
@@ -533,3 +536,173 @@ class TestNarrowToAvailableColumns:
             requested={"Date"}, required={"EventIds"}, available={"EventIds", "Date"},
         )
         assert result == ["Date", "EventIds"]
+
+
+class TestReconcileParquetSchema:
+    """
+    Shared by samplers.py's _scan_dataset/IndexedSampler.get_random_sample
+    and crossref.py's _dataset: a real accumulated GDELT archive can
+    declare the same column under genuinely different dtypes in different
+    files (events' own Actor2Geo_Type is Float64 in every archive through
+    2007-10, Int64 from 2007-11 onward; GKG 2.1's V2.1DATE is Float64 in
+    441 files scattered across six years, Int64 everywhere else), and a
+    plain schema.setdefault(name, dtype) union silently keeps whichever
+    file was read first rather than detecting the conflict at all.
+    """
+
+    def test_a_single_shared_dtype_across_files_is_kept_as_is(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [2], "QuadClass": [2]}).write_parquet(
+            tmp_path / "b.parquet"
+        )
+
+        schema = reconcile_parquet_schema([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
+        assert schema == {"GlobalEventID": pl.Int64(), "QuadClass": pl.Int64()}
+
+    def test_int_and_float_across_files_widens_to_float(self, tmp_path):
+        pl.DataFrame({"Actor2Geo_Type": [1.0, 2.0]}).write_parquet(tmp_path / "old.parquet")
+        pl.DataFrame({"Actor2Geo_Type": [1, 2]}).write_parquet(tmp_path / "new.parquet")
+
+        schema = reconcile_parquet_schema([tmp_path / "old.parquet", tmp_path / "new.parquet"])
+
+        assert schema["Actor2Geo_Type"] == pl.Float64()
+
+    def test_mixed_integer_widths_across_files_widen_to_int64(self, tmp_path):
+        pl.DataFrame({"n": pl.Series([1, 2], dtype=pl.Int32)}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"n": pl.Series([3, 4], dtype=pl.Int64)}).write_parquet(
+            tmp_path / "b.parquet"
+        )
+
+        schema = reconcile_parquet_schema([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
+        assert schema["n"] == pl.Int64()
+
+    def test_a_non_numeric_conflict_raises_a_clear_error_naming_both_dtypes(self, tmp_path):
+        # A string column in one file and a numeric column of the same
+        # name in another is a real data problem, not a width difference
+        # pl.concat(..., how="vertical_relaxed") could paper over safely;
+        # this must fail loudly rather than silently coercing one side.
+        pl.DataFrame({"code": ["US", "BR"]}).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({"code": [1, 2]}).write_parquet(tmp_path / "b.parquet")
+
+        with pytest.raises(
+            pl.exceptions.SchemaError, match="code.*Int64.*String|code.*String.*Int64"
+        ):
+            reconcile_parquet_schema([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
+
+class TestScanDatasetReconciled:
+    def test_no_conflict_reads_correctly_across_files(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(tmp_path / "b.parquet")
+
+        df = scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"]).collect()
+
+        assert sorted(df["GlobalEventID"].to_list()) == [1, 2, 3, 4]
+
+    def test_a_column_missing_from_one_file_comes_back_null_for_its_rows(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 2]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [3, 4]}).write_parquet(tmp_path / "b.parquet")
+
+        df = scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"]).collect()
+
+        by_id = {row["GlobalEventID"]: row["QuadClass"] for row in df.to_dicts()}
+        assert by_id[1] == 1 and by_id[2] == 2
+        assert by_id[3] is None and by_id[4] is None
+
+    def test_a_dtype_conflict_across_files_reconciles_instead_of_crashing(self, tmp_path):
+        # Mirrors the real Actor2Geo_Type split directly: scan_parquet's
+        # own schema= parameter is an assertion, so a plain union scan
+        # crashes ("data type mismatch ... incoming: Int64 != target:
+        # Float64") the moment it reaches the file whose real dtype
+        # disagrees with whichever file the schema was inferred from.
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0],
+        }).write_parquet(tmp_path / "before_2007_11.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3, 4], "Actor2Geo_Type": [3, 4],
+        }).write_parquet(tmp_path / "after_2007_11.parquet")
+
+        df = scan_dataset_reconciled(
+            [tmp_path / "before_2007_11.parquet", tmp_path / "after_2007_11.parquet"]
+        ).collect()
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["Actor2Geo_Type"] for row in df.to_dicts()}
+        assert by_id == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
+
+    def test_a_dtype_conflict_alongside_a_missing_column_reconciles_both_at_once(
+        self, tmp_path
+    ):
+        # A real archive can hit both reconciliation shapes in the same
+        # multi-file read: one file both disagrees on a shared column's
+        # dtype AND lacks a column entirely (an output_columns change and
+        # a later schema fix landing at different times).
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Actor2Geo_Type": [1.0, 2.0], "SOURCEURL": ["a", "b"],
+        }).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [3], "Actor2Geo_Type": [3],
+        }).write_parquet(tmp_path / "b.parquet")
+
+        df = scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"]).collect()
+
+        assert df["Actor2Geo_Type"].dtype == pl.Float64
+        by_id = {row["GlobalEventID"]: row["SOURCEURL"] for row in df.to_dicts()}
+        assert by_id[1] == "a" and by_id[2] == "b" and by_id[3] is None
+
+    def test_three_way_dtype_conflict_reconciles_across_every_file(self, tmp_path):
+        pl.DataFrame({"n": pl.Series([1.0], dtype=pl.Float64)}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+        pl.DataFrame({"n": pl.Series([2], dtype=pl.Int32)}).write_parquet(
+            tmp_path / "b.parquet"
+        )
+        pl.DataFrame({"n": pl.Series([3], dtype=pl.Int64)}).write_parquet(
+            tmp_path / "c.parquet"
+        )
+
+        df = scan_dataset_reconciled(
+            [tmp_path / "a.parquet", tmp_path / "b.parquet", tmp_path / "c.parquet"]
+        ).collect()
+
+        assert df["n"].dtype == pl.Float64
+        assert sorted(df["n"].to_list()) == [1.0, 2.0, 3.0]
+
+
+class TestScanFileAgainstSchema:
+    def test_a_file_matching_the_target_schema_reads_unmodified(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1], "n": [1]}).write_parquet(tmp_path / "a.parquet")
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Int64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Int64
+
+    def test_a_file_whose_own_dtype_disagrees_is_cast_to_the_target(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1], "n": [1]}).write_parquet(tmp_path / "a.parquet")
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Float64
+        assert df["n"].to_list() == [1.0]
+
+    def test_a_column_the_file_lacks_comes_back_null_at_the_target_dtype(self, tmp_path):
+        pl.DataFrame({"GlobalEventID": [1]}).write_parquet(tmp_path / "a.parquet")
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Float64
+        assert df["n"].to_list() == [None]

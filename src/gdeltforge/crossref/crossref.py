@@ -91,7 +91,11 @@ from gdeltforge.scraping.scraper import (
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
-from gdeltforge.utils.io import clearer_dataset_errors, narrow_to_available_columns
+from gdeltforge.utils.io import (
+    clearer_dataset_errors,
+    narrow_to_available_columns,
+    scan_dataset_reconciled,
+)
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -227,20 +231,15 @@ def _dataset(
     # reason for existing, e.g. an older Mentions file predating
     # Confidence/MentionTimeDate) raises "extra column ... outside of
     # expected schema" for whichever file doesn't match the schema
-    # scan_parquet happened to infer, regardless of file order.
-    # missing_columns="insert" alone only null-fills a column the SCHEMA
-    # has but a given file lacks; it does nothing for a column a LATER
-    # file has that the inferred schema didn't already include. Reading
-    # every file's own footer schema first (cheap, metadata-only, the
-    # same order of cost pyarrow.dataset's own schema unification already
-    # paid) and passing the union explicitly as schema= reproduces that
-    # unification regardless of which file scan_parquet would otherwise
-    # have picked.
-    schema: dict[str, pl.DataType] = {}
-    for f in files:
-        for name, dtype in pl.read_parquet_schema(f).items():
-            schema.setdefault(name, dtype)
-    return pl.scan_parquet(files, schema=schema, missing_columns="insert")
+    # scan_parquet happened to infer, regardless of file order. A column
+    # present in every file but typed differently in some of them (a real
+    # GKG 2.1 archive has V2.1DATE as Float64 in 441 files scattered
+    # across 2015 to 2021, Int64 in every other file) raises a different
+    # but related "data type mismatch" once scan_parquet hits a file
+    # whose own dtype disagrees with the schema it inferred.
+    # scan_dataset_reconciled resolves both: see its own docstring for
+    # the full mechanism.
+    return scan_dataset_reconciled(files)
 
 
 def _validate_columns(columns: set[str] | None, available: list[str]) -> set[str] | None:
@@ -479,47 +478,55 @@ def crossref_events_gkg_v1(
         )
         lf = lf.select(read_columns)
 
-        for df_batch in tqdm(
-            lf.collect_batches(chunk_size=64_000), desc="Cross-referencing GKG 1.0"
-        ):
-            if df_batch.is_empty():
-                continue
+        # Driven manually rather than iterated directly: see
+        # samplers.py's IndexedSampler.get_random_sample for the detailed
+        # note on why a bare "for x in tqdm(...):" can leak a stray
+        # KeyboardInterrupt traceback fragment to stderr on a real
+        # interrupt. total=None: collect_batches is a generator with no
+        # cheap upfront count.
+        with tqdm(total=None, desc="Cross-referencing GKG 1.0") as pbar:
+            for df_batch in lf.collect_batches(chunk_size=64_000):
+                if df_batch.is_empty():
+                    pbar.update(1)
+                    continue
 
-            original_columns = df_batch.columns
-            # explode()'s empty_as_null keyword doesn't exist until a
-            # polars release newer than this project's own declared
-            # minimum (polars>=1.34): confirmed directly, installing
-            # exactly 1.34.0 raises "unexpected keyword argument". Its
-            # only effect here would be whether a genuinely empty EventIds
-            # list (a blank/null source field, split into []) explodes to
-            # a null or an empty-string row; either way the is_in() filter
-            # below drops it, so filtering an empty list out before
-            # exploding at all reaches the same result without needing
-            # the keyword. A non-empty list with a blank entry (e.g. a
-            # trailing comma splitting "5," into ["5", ""]) isn't affected
-            # by this filter at all and explodes normally either way.
-            exploded = (
-                df_batch
-                .with_columns(
-                    pl.col("EventIds").fill_null("").str.split(",")
-                    .alias("_matched_event_id")
+                original_columns = df_batch.columns
+                # explode()'s empty_as_null keyword doesn't exist until a
+                # polars release newer than this project's own declared
+                # minimum (polars>=1.34): confirmed directly, installing
+                # exactly 1.34.0 raises "unexpected keyword argument". Its
+                # only effect here would be whether a genuinely empty EventIds
+                # list (a blank/null source field, split into []) explodes to
+                # a null or an empty-string row; either way the is_in() filter
+                # below drops it, so filtering an empty list out before
+                # exploding at all reaches the same result without needing
+                # the keyword. A non-empty list with a blank entry (e.g. a
+                # trailing comma splitting "5," into ["5", ""]) isn't affected
+                # by this filter at all and explodes normally either way.
+                exploded = (
+                    df_batch
+                    .with_columns(
+                        pl.col("EventIds").fill_null("").str.split(",")
+                        .alias("_matched_event_id")
+                    )
+                    .filter(pl.col("_matched_event_id").list.len() > 0)
+                    .explode("_matched_event_id")
+                    .with_columns(pl.col("_matched_event_id").str.strip_chars())
+                    .filter(pl.col("_matched_event_id").is_in(event_id_set))
                 )
-                .filter(pl.col("_matched_event_id").list.len() > 0)
-                .explode("_matched_event_id")
-                .with_columns(pl.col("_matched_event_id").str.strip_chars())
-                .filter(pl.col("_matched_event_id").is_in(event_id_set))
-            )
 
-            if exploded.is_empty():
-                continue
+                if exploded.is_empty():
+                    pbar.update(1)
+                    continue
 
-            gkg_side = exploded.rename({c: f"GKG_{c}" for c in original_columns})
-            matches.append(
-                events_side.join(
-                    gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
-                    how="inner", coalesce=False,
+                gkg_side = exploded.rename({c: f"GKG_{c}" for c in original_columns})
+                matches.append(
+                    events_side.join(
+                        gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
+                        how="inner", coalesce=False,
+                    )
                 )
-            )
+                pbar.update(1)
 
     if not matches:
         return pl.DataFrame()
