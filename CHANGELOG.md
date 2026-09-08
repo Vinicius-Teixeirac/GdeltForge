@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- Every gdeltforge command, including `--help`, crashed with an unhandled `PermissionError` in a working directory the process can't write to: `cli.py` builds its own logger with `log_to_file=True` unconditionally at import time, before argparse or any command dispatch ever runs, and `get_logger()` created the log directory with no error handling at all. `get_logger()` now falls back to console-only logging with a warning when the log directory or file can't be created. Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
