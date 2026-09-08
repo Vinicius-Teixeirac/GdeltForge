@@ -420,6 +420,76 @@ class TestIntegerDtypePreservation:
         assert df["Year"].to_list() == [1979, 1979]
 
 
+class TestCastNumericColumnsWarnsOnNewNulls:
+    """
+    cast(strict=False) turns any value that doesn't fit the target dtype
+    into null: an out-of-range integer, unparseable garbage, or (unlike
+    pandas.to_numeric, which strips it first) even a whitespace-padded
+    numeric string. That was previously indistinguishable from a field
+    that was genuinely blank to begin with, in both the output and the
+    log at any level. _cast_numeric_columns now compares each column's
+    null count before and after the cast and warns, naming the column
+    and how many new nulls appeared, whenever the two differ. Real GDELT
+    exports were confirmed clean of this (no such values found in a
+    real, freshly-scraped Events file), so this is defense in depth, not
+    a fix for corruption observed in real data today.
+    """
+
+    def test_a_value_that_cannot_be_parsed_warns_naming_the_column(self, caplog):
+        df = pl.DataFrame({
+            # Past Int64's ~9.22e18 ceiling: cast(strict=False) cannot
+            # represent this, unlike a genuinely blank field.
+            "GlobalEventID": ["1", "999999999999999999999999999999"],
+            "Day": ["20200101", "20200102"],
+        })
+
+        with caplog.at_level("WARNING"):
+            result = converter_module._cast_numeric_columns(
+                df, ["GlobalEventID", "Day"], "adversarial.csv"
+            )
+
+        assert result["GlobalEventID"].null_count() == 1
+        assert result["GlobalEventID"].to_list() == [1, None]
+        assert any(
+            "adversarial.csv" in r.message
+            and "'GlobalEventID'" in r.message
+            and "1 value" in r.message
+            for r in caplog.records
+        )
+        # Day had nothing unparseable in it; only the column that
+        # actually gained a null is named.
+        assert not any("'Day'" in r.message for r in caplog.records)
+
+    def test_a_genuinely_blank_field_does_not_warn(self, caplog):
+        # The common, legitimate case (GDELT's own real archive ships
+        # blank DATEADDED for entire days, see TestIntegerDtypePreservation
+        # above): a null that was already there going in must not be
+        # reported as a new one.
+        df = pl.DataFrame({"DATEADDED": ["20200101000000", None]})
+
+        with caplog.at_level("WARNING"):
+            result = converter_module._cast_numeric_columns(df, ["DATEADDED"], "clean.csv")
+
+        assert result["DATEADDED"].null_count() == 1
+        assert not caplog.records
+
+    def test_read_csv_surfaces_the_same_warning_end_to_end(self, tmp_path, caplog):
+        cfg = _make_config(tmp_path)
+        converter = GDELTConverter(cfg)
+        csv_path = tmp_path / "raw" / "adversarial.csv"
+        csv_path.parent.mkdir(parents=True)
+        csv_path.write_text("999999999999999999999999999999\t20200101\n")
+
+        with caplog.at_level("WARNING"):
+            df = converter._read_csv(csv_path)
+
+        assert df["GlobalEventID"].null_count() == 1
+        assert any(
+            "GlobalEventID" in r.message and "couldn't be parsed" in r.message
+            for r in caplog.records
+        )
+
+
 class TestBlankStringFieldsBecomeNull:
     """Regression coverage for a real bug found by a full content-equality
     diff against pandas' own output on a 10M-row convert fixture: without
