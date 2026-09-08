@@ -28,7 +28,9 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 
     `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
 
-    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130.
+    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130. A `scrape`/`convert`/`filter` run backed by a worker pool cancels every not-yet-started file immediately on either signal, rather than draining the whole remaining queue first; the handful of files already in flight are still allowed to finish. A plain `kill` (SIGTERM, no `-9`) behaves the same way, printing `Terminated.` and exiting with status 143, since that's what most process managers (systemd, Docker, Kubernetes) send by convention before escalating.
+
+    `gdeltforge` makes itself its own process group leader on POSIX at startup, so `kill -KILL -$(pgid)` (or `pkill -KILL -g $PGID`) reliably stops the whole run, worker processes included, in one shot. A bare `kill -9 <pid>` targeting only the main process cannot be caught by anything, including this: its already-dispatched workers keep running to completion, orphaned, since SIGKILL never reaches them at all. On Windows, the equivalent whole-tree stop is `taskkill /F /T /PID <pid>`.
 
 ## Global options
 
