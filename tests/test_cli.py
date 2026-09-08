@@ -1,5 +1,6 @@
 import argparse
 import re
+import signal
 import sys
 from datetime import date
 from pathlib import Path
@@ -1437,6 +1438,89 @@ class TestMainErrorHandling:
 
         assert exc_info.value.code == 1
         assert "no CAMEO code reference list" in capsys.readouterr().err
+
+    def test_terminated_prints_terminated_and_exits_143(self, monkeypatch, capsys):
+        # _Terminated (raised by the SIGTERM handler) must be caught
+        # ahead of the plain KeyboardInterrupt clause, since it's a
+        # subclass of it, and reported with its own distinct message and
+        # the conventional 128+SIGTERM exit code, not silently folded
+        # into the SIGINT/Ctrl+C case.
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+
+        def terminated(config, dataset):
+            raise cli._Terminated
+
+        monkeypatch.setattr(cli, "run_convert_cmd", terminated)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+        assert exc_info.value.code == 143
+        assert capsys.readouterr().err.strip() == "Terminated."
+
+
+class TestSigtermHandling:
+    """
+    SIGKILL of the main gdeltforge process left scrape/convert/filter's
+    own ProcessPoolExecutor workers running as orphans, since SIGKILL
+    can't be caught by anything and the workers keep pulling from the
+    shared task queue independently of whether their parent is still
+    alive. Two changes address this, installed as early as possible in
+    main(): a process group of its own (_isolate_process_group), so an
+    external caller can reliably kill the whole tree by killing the
+    *group* instead of one PID, and a real SIGTERM handler
+    (_install_sigterm_handler), so the polite request most process
+    managers send before escalating to SIGKILL now actually triggers the
+    same cancel-queued-work-immediately behavior Ctrl+C/SIGINT already
+    gets, rather than terminating instantly with no cleanup at all.
+    """
+
+    def test_terminated_is_a_keyboard_interrupt_subclass(self):
+        # scrape/convert/filter's own executor loops catch
+        # KeyboardInterrupt specifically; this is what lets a SIGTERM
+        # reach that same handling with no changes needed at any of
+        # those call sites.
+        assert issubclass(cli._Terminated, KeyboardInterrupt)
+
+    def test_handle_sigterm_raises_terminated(self):
+        with pytest.raises(cli._Terminated):
+            cli._handle_sigterm(signal.SIGTERM, None)
+
+    def test_install_sigterm_handler_wires_up_handle_sigterm(self):
+        original = signal.getsignal(signal.SIGTERM)
+        try:
+            cli._install_sigterm_handler()
+            assert signal.getsignal(signal.SIGTERM) is cli._handle_sigterm
+        finally:
+            signal.signal(signal.SIGTERM, original)
+
+    def test_isolate_process_group_calls_setsid_when_available(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(cli.os, "setsid", lambda: calls.append(1), raising=False)
+
+        cli._isolate_process_group()
+
+        assert calls == [1]
+
+    def test_isolate_process_group_swallows_os_error(self, monkeypatch):
+        # The common case: a caller's shell already made this process its
+        # own group leader (job control, most `&`-backgrounded jobs), so
+        # setsid() fails with EPERM. Not a problem: that property already
+        # holds either way, so this must not crash the CLI over it.
+        def already_a_leader():
+            raise OSError("Operation not permitted")
+
+        monkeypatch.setattr(cli.os, "setsid", already_a_leader, raising=False)
+
+        cli._isolate_process_group()  # must not raise
+
+    def test_isolate_process_group_is_a_noop_where_setsid_does_not_exist(self, monkeypatch):
+        # Windows: os.setsid doesn't exist at all, unlike a POSIX
+        # platform where it exists but might fail.
+        monkeypatch.delattr(cli.os, "setsid", raising=False)
+
+        cli._isolate_process_group()  # must not raise
 
 
 class TestCliReferenceDocsSync:
