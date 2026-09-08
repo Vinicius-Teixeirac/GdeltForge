@@ -1,4 +1,5 @@
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,20 @@ class TestLoadConfig:
 
         with pytest.raises(FileNotFoundError, match="not-a-real-file.yaml"):
             load_config()
+
+    def test_invalid_yaml_raises_a_crafted_error_naming_the_config_file(self):
+        # yaml.safe_load's own exception used to propagate unwrapped: a
+        # raw PyYAML message ("while parsing a flow sequence", "expected
+        # ',' or ']', but got '<stream end>'") that never says the
+        # problem is in the config file at all, unlike every other
+        # malformed-config case here (a missing file, an empty file, a
+        # directory instead of a file), which already gets a clear,
+        # crafted message naming the actual path.
+        bad = self.tmp_path / "bad.yaml"
+        bad.write_text("paths:\n  foo: [unclosed\n")
+
+        with pytest.raises(ValueError, match=re.escape(str(bad))):
+            load_config(str(bad))
 
     def test_default_path_is_used_when_present(self):
         # config/settings.yaml relative to cwd, still takes priority
