@@ -47,7 +47,7 @@ An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a path that turns out to 
 
 `columns.<dataset>` lists every column in that dataset's schema, in file order. It's used to name the otherwise-headerless columns when reading the raw CSVs, so it should match the official field list for that dataset unless you know you're working with a modified schema: [Events](https://www.gdeltproject.org/data/lookups/CSV.header.fieldids.xlsx) (the daily archive's 58-column schema; `events-15min`'s 61-column schema was instead verified directly against a real downloaded file, byte for byte, not this reference), [GKG 2.1](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook-V2.1.pdf), [GKG 1.0](http://data.gdeltproject.org/documentation/GDELT-Global_Knowledge_Graph_Codebook.pdf) (covers both `gkg-v1` and `gkg-v1-counts`).
 
-`columns_numeric.<dataset>` lists which of those columns should be coerced to numeric types (via `pd.to_numeric`, invalid values become `NaN`) rather than kept as strings.
+`columns_numeric.<dataset>` lists which of those columns should be coerced to numeric types (via polars' `cast(strict=False)`, to `Int64` or `Float64` depending on the column; a value that doesn't fit the target type becomes `null`) rather than kept as strings.
 
 GKG's own repeated/structured sub-fields (themes, persons, GCAM scores, `EventIds`, and similar list-valued columns, in both GKG 2.1 and GKG 1.0) are stored as their raw, still-delimited strings in the Parquet output. Parsing those into their own structured columns is a separate concern this version doesn't attempt.
 
