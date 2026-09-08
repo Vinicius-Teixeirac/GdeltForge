@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- A temp file orphaned by a killed or crashed `write_parquet_atomic`/`write_dataframe_atomic` call (a `sample`/`crossref` write, in practice) was never detected or cleaned up on a later run: the leftover-detection warning only ever checked the exact current-process PID-suffixed path, which a genuinely different, now-dead process's own leftover essentially never is. It now globs for any PID's leftover at the same destination and removes the ones whose process is confirmed no longer running, leaving a still-live PID's file (a genuinely concurrent writer) untouched. Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
