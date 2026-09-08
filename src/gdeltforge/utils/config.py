@@ -269,7 +269,12 @@ def load_config(config_path: str | None = None) -> dict:
         )
     if path.exists():
         with open(path) as f:
-            config = yaml.safe_load(f)
+            try:
+                config = yaml.safe_load(f)
+            except yaml.YAMLError as e:
+                raise ValueError(
+                    f"Config file at {path} contains invalid YAML: {e}"
+                ) from e
         if not config:
             raise ValueError(
                 f"Config file is empty: {path}. Copy config/settings.example.yaml as a "
