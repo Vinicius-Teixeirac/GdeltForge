@@ -1229,3 +1229,67 @@ class TestScanFileAgainstSchema:
 
         assert df["n"].dtype == pl.Float64
         assert df["n"].to_list() == [None]
+
+    def test_widening_int64_to_float64_at_the_exact_safe_boundary_succeeds(self, tmp_path):
+        # 2**53 itself, and its negative, are still exactly representable
+        # in Float64; only a magnitude strictly greater than this is
+        # unsafe. Pinning the boundary exactly, not just "some large
+        # value" and "some small value", so a future off-by-one in the
+        # comparison itself would be caught.
+        boundary = 2**53
+        pl.DataFrame({"GlobalEventID": [1], "n": [boundary]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+        ).collect()
+
+        assert df["n"].to_list() == [float(boundary)]
+
+    def test_widening_int64_to_float64_past_the_safe_boundary_raises(self, tmp_path):
+        # A real ID/count column hitting the same dtype drift QA-1/QA-4
+        # found for events' Actor2Geo_Type and GKG 2.1's V2.1DATE would
+        # silently lose precision if blindly widened, a worse outcome
+        # than the crash this reconciliation replaces: confirmed nothing
+        # in the real archive is currently large enough to trigger this
+        # (all currently-affected columns are small enums or 14-digit
+        # datetimes), but the check must still catch a future one for
+        # real, not rely on that staying true.
+        unsafe = 2**53 + 2  # + 2 rather than + 1: float64 rounds +1 to +2 anyway
+        pl.DataFrame({"GlobalEventID": [1], "n": [unsafe]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+
+        with pytest.raises(pl.exceptions.SchemaError, match=r"n.*too large.*precision"):
+            scan_file_against_schema(
+                tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+            ).collect()
+
+    def test_a_negative_value_past_the_safe_boundary_also_raises(self, tmp_path):
+        unsafe = -(2**53 + 2)
+        pl.DataFrame({"GlobalEventID": [1], "n": [unsafe]}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+
+        with pytest.raises(pl.exceptions.SchemaError, match="too large.*precision"):
+            scan_file_against_schema(
+                tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Float64()}
+            ).collect()
+
+    def test_widening_mixed_integer_widths_needs_no_precision_check(self, tmp_path):
+        # Int32 -> Int64 (the other widening this reconciliation performs)
+        # targets Int64, not Float64, so it never goes through the
+        # precision check at all; nothing Int32 can hold could trigger it
+        # anyway (its own max magnitude, ~2.1e9, is nowhere near the
+        # 2**53 boundary), but the widening itself must still work.
+        pl.DataFrame({"GlobalEventID": [1], "n": pl.Series([42], dtype=pl.Int32)}).write_parquet(
+            tmp_path / "a.parquet"
+        )
+
+        df = scan_file_against_schema(
+            tmp_path / "a.parquet", {"GlobalEventID": pl.Int64(), "n": pl.Int64()}
+        ).collect()
+
+        assert df["n"].dtype == pl.Int64
+        assert df["n"].to_list() == [42]
