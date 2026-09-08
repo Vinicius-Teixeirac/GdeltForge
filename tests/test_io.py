@@ -1,12 +1,17 @@
+import gc
 import json
 import logging
 import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import polars as pl
 import pytest
 
 from gdeltforge.utils.io import (
+    _pid_exists,
     _schema_from_json,
     _schema_to_json,
     clearer_dataset_errors,
@@ -423,6 +428,175 @@ class TestSchemaJson:
         result = _schema_from_json({"A": "concat"})
 
         assert result == {}
+
+
+class TestPidExists:
+    """
+    Used only to decide whether a leftover PID-suffixed temp file (see
+    TestOrphanedTempFileCleanup below) is safe to remove. Checked
+    directly here since getting this wrong in either direction is real:
+    a false "alive" leaves a genuine orphan on disk forever; a false
+    "dead" could delete a live, concurrent process's own in-progress
+    write.
+    """
+
+    def test_own_pid_is_alive(self):
+        assert _pid_exists(os.getpid())
+
+    def test_an_almost_certainly_nonexistent_pid_is_not_alive(self):
+        # PIDs are a bounded, kernel-assigned namespace on every real
+        # platform (Windows: typically < ~2^32 but practically always
+        # small; POSIX: PID_MAX_LIMIT is 2^22); this value is chosen far
+        # outside any range a real running process would ever hold.
+        assert not _pid_exists(2**31 - 1)
+
+    def test_a_real_child_process_is_alive_until_it_exits(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+        pid = proc.pid
+        try:
+            assert _pid_exists(pid)
+        finally:
+            proc.kill()
+            proc.wait(timeout=10)
+        # On Windows, a process stays queryable as long as any handle to
+        # it is still open, including the parent's own Popen object, a
+        # real OS semantic, not a bug in _pid_exists: the actual
+        # production caller (an unrelated, later gdeltforge invocation)
+        # never holds such a handle to a dead writer it didn't spawn.
+        # Dropping this process's own handle reproduces that condition.
+        del proc
+        gc.collect()
+        assert not _pid_exists(pid)
+
+
+class TestOrphanedTempFileCleanup:
+    """
+    write_parquet_atomic/write_dataframe_atomic's temp path is PID-
+    suffixed so two genuinely concurrent processes never collide on one
+    shared name (TestWriteParquetAtomic/TestWriteDataframeAtomic's own
+    leftover tests above cover that). That fix has a side effect: the
+    leftover-detection warning used to check only the exact current-PID
+    path, which a genuinely different, now-dead process's own leftover
+    essentially never is, so it accumulated on disk indefinitely with no
+    warning at any level. Found via a live comprehensive QA pass,
+    reproduced with a real SIGKILL mid-write.
+
+    The naive fix (glob any PID and delete unconditionally) would
+    introduce a worse bug than the one it closes: two processes writing
+    the same destination concurrently is exactly the scenario the PID
+    suffix exists to allow safely, and deleting a live sibling's own
+    in-progress temp file out from under it would silently corrupt that
+    write. _clean_orphaned_tmp_files only removes a match whose owning
+    PID is confirmed dead; a live PID (this process's own, or another
+    genuinely running one) is left untouched.
+    """
+
+    def test_a_different_dead_pids_leftover_is_detected_and_removed(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        monkeypatch.setattr("gdeltforge.utils.io._pid_exists", lambda pid: False)
+        out = tmp_path / "sample.parquet"
+        orphan = out.with_name(f"{out.name}.999999.tmp")
+        orphan.write_bytes(b"partial parquet bytes from a killed run, different pid")
+
+        with caplog.at_level(logging.WARNING):
+            write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1, 2, 3]}), out)
+
+        assert "leftover incomplete file" in caplog.text
+        assert "999999" in caplog.text
+        assert not orphan.exists()
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
+
+    def test_a_different_but_still_alive_pids_leftover_is_left_alone(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # The critical safety property: a live PID must never be treated
+        # as an orphan, since it could be a genuinely concurrent, healthy
+        # writer mid-write to this exact destination right now.
+        monkeypatch.setattr("gdeltforge.utils.io._pid_exists", lambda pid: True)
+        out = tmp_path / "sample.parquet"
+        active = out.with_name(f"{out.name}.999999.tmp")
+        active.write_bytes(b"a live sibling process's own in-progress write")
+
+        with caplog.at_level(logging.WARNING):
+            write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1, 2, 3]}), out)
+
+        assert "999999" not in caplog.text
+        assert active.exists()
+        assert active.read_bytes() == b"a live sibling process's own in-progress write"
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
+
+    def test_csv_export_gets_the_same_cleanup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gdeltforge.utils.io._pid_exists", lambda pid: False)
+        out = tmp_path / "sample.csv"
+        orphan = out.with_name(f"{out.name}.999999.tmp")
+        orphan.write_bytes(b"partial csv bytes from a killed run")
+
+        write_dataframe_atomic(pl.DataFrame({"GlobalEventID": [1, 2]}), out, export_format="csv")
+
+        assert not orphan.exists()
+        assert pl.read_csv(out)["GlobalEventID"].to_list() == [1, 2]
+
+    def test_a_non_matching_file_is_left_alone(self, tmp_path):
+        # Anything at the destination that doesn't match the <name>.<pid>.tmp
+        # shape at all (a stray unrelated file, or a name a caller happens
+        # to control) is never touched by this cleanup.
+        out = tmp_path / "sample.parquet"
+        unrelated = out.with_name(f"{out.name}.backup.tmp")
+        unrelated.write_bytes(b"not an orphaned write, just a similarly-named file")
+
+        write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1]}), out)
+
+        assert unrelated.exists()
+
+    def test_real_sigkill_mid_write_leaves_an_orphan_that_a_later_run_cleans_up(
+        self, tmp_path
+    ):
+        # The un-mocked, real-process version of the two tests above:
+        # a genuine SIGKILL mid-write leaves a real orphaned temp file,
+        # and a later, unrelated, fully successful run at the same
+        # destination detects and removes it.
+        script = tmp_path / "slow_writer.py"
+        script.write_text(
+            "import time\n"
+            "import polars as pl\n"
+            "from pathlib import Path\n"
+            "from gdeltforge.utils.io import write_parquet_atomic\n"
+            "_orig = pl.DataFrame.write_parquet\n"
+            "def slow(self, path, *a, **kw):\n"
+            "    Path(path).write_bytes(b'partial')\n"
+            "    time.sleep(10)\n"
+            "    return _orig(self, path, *a, **kw)\n"
+            "pl.DataFrame.write_parquet = slow\n"
+            "write_parquet_atomic(pl.DataFrame({'GlobalEventID': [1]}), 'out.parquet')\n"
+        )
+        proc = subprocess.Popen([sys.executable, str(script)], cwd=tmp_path)
+        try:
+            time.sleep(1.5)
+            proc.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
+            proc.wait(timeout=10)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        # See TestPidExists' identical note: a process stays queryable on
+        # Windows as long as any handle to it (including this test's own
+        # Popen object) is still open. A real, later, unrelated
+        # gdeltforge invocation never holds such a handle to begin with.
+        del proc
+        gc.collect()
+
+        orphans_after_kill = list(tmp_path.glob("out.parquet.*.tmp"))
+        assert len(orphans_after_kill) == 1, (
+            "expected one orphaned tmp file from the killed process"
+        )
+
+        write_parquet_atomic(pl.DataFrame({"GlobalEventID": [1, 2, 3]}), tmp_path / "out.parquet")
+
+        assert not orphans_after_kill[0].exists(), (
+            "the orphan should be cleaned up by the later run"
+        )
+        assert pl.read_parquet(tmp_path / "out.parquet")["GlobalEventID"].to_list() == [1, 2, 3]
 
 
 class TestReadParquetPath:

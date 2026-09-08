@@ -1,5 +1,7 @@
 import json
 import os
+import re
+import sys
 import zipfile
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -61,6 +63,101 @@ def _schema_from_json(data: dict[str, str]) -> dict[str, PolarsDataType]:
 
 def _schema_sidecar_path(csv_path: str | Path) -> Path:
     return Path(csv_path).with_name(Path(csv_path).name + ".schema.json")
+
+
+_ORPHAN_TMP_PAT = re.compile(r"^(?P<name>.+)\.(?P<pid>\d+)\.tmp$")
+
+
+def _pid_exists(pid: int) -> bool:
+    """
+    Best-effort check for whether a process with this PID is currently
+    alive, used only to decide whether a leftover PID-suffixed temp file
+    (see write_parquet_atomic/write_dataframe_atomic below) is safe to
+    remove. Its own writer being confirmed dead is what makes it safe:
+    a live PID might belong to a genuinely concurrent, healthy
+    invocation still mid-write to this same destination, exactly the
+    scenario the PID suffix itself exists to allow safely, and deleting
+    its in-progress temp file out from under it would reintroduce a
+    version of the same race the PID suffix was meant to close.
+
+    On POSIX, os.kill(pid, 0) is the standard, safe-by-definition way to
+    ask this without actually signaling anything. On Windows, os.kill's
+    own signal 0 is not a safe no-op the way POSIX's is: unlike POSIX,
+    where signal 0 is specifically defined as a pure existence/
+    permission probe, Windows' os.kill(pid, 0) calls TerminateProcess
+    with that same value, which can actually terminate a live process
+    rather than just check it. OpenProcess with a query-only access
+    right, released immediately without ever signaling the target, is
+    used there instead.
+
+    Every PID this function is ever asked about here belongs to a past
+    gdeltforge invocation launched by the same user account checking it
+    now, so the one real-world ambiguity this simple a check can't
+    resolve in general, a process that exists but isn't ours to query,
+    never actually arises in this specific use.
+    """
+    if pid == os.getpid():
+        return True
+    if sys.platform == "win32":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Exists but not ours to signal (a different user's process):
+        # still alive as far as this check is concerned.
+        return True
+    return True
+
+
+def _clean_orphaned_tmp_files(out: Path) -> None:
+    """
+    Finds every <out.name>.<pid>.tmp leftover at out's own destination,
+    from any PID, and removes the ones whose writer is confirmed dead.
+
+    write_parquet_atomic/write_dataframe_atomic's temp path is PID-
+    suffixed specifically so two genuinely concurrent processes never
+    collide on one shared name. That fix has a side effect on this same
+    leftover-detection idea: a process killed mid-write leaves a temp
+    file named with *that* process's own PID, essentially never this
+    one's, so a check against only the current process's exact path can
+    practically never find it again. Found via a live comprehensive QA
+    pass, reproduced with a real SIGKILL mid-write: the orphaned temp
+    file survives indefinitely, silently, through any number of later,
+    fully successful runs against the same destination.
+    """
+    for leftover in sorted(out.parent.glob(f"{out.name}.*.tmp")):
+        match = _ORPHAN_TMP_PAT.match(leftover.name)
+        if not match:
+            continue
+        pid = int(match.group("pid"))
+        if pid == os.getpid():
+            # A recycled PID landed on the exact path this call's own
+            # write is about to target: the write below overwrites it
+            # regardless, so this is purely informational, not something
+            # to unlink separately.
+            logger.warning(
+                f"Found a leftover incomplete file from a previous interrupted "
+                f"run: {leftover}. It will be overwritten."
+            )
+            continue
+        if _pid_exists(pid):
+            continue
+        logger.warning(
+            f"Found a leftover incomplete file from a previous interrupted "
+            f"run (PID {pid}, no longer running): {leftover}. Removing it."
+        )
+        leftover.unlink(missing_ok=True)
 
 
 def ensure_exists(path: str | Path, description: str) -> Path:
@@ -140,12 +237,7 @@ def write_parquet_atomic(df: pl.DataFrame, out: str | Path, **write_parquet_kwar
     # distinct PID, so this can never collide between two genuinely
     # concurrent writers the same fixed name did.
     tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
-
-    if tmp_path.exists():
-        logger.warning(
-            f"Found a leftover incomplete file from a previous interrupted "
-            f"run: {tmp_path}. It will be overwritten."
-        )
+    _clean_orphaned_tmp_files(out)
 
     try:
         df.write_parquet(tmp_path, **write_parquet_kwargs)
@@ -184,12 +276,7 @@ def write_dataframe_atomic(
     # fix: two concurrent gdeltforge invocations exporting to the same
     # --out path must never share one fixed temp name.
     tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
-
-    if tmp_path.exists():
-        logger.warning(
-            f"Found a leftover incomplete file from a previous interrupted "
-            f"run: {tmp_path}. It will be overwritten."
-        )
+    _clean_orphaned_tmp_files(out)
 
     # quote_style="non_numeric" (a caller-passed kwarg still overrides it):
     # protects a string column value containing a comma, newline, or quote
