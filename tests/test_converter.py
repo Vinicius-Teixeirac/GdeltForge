@@ -1,13 +1,16 @@
+import concurrent.futures
 import json
 import logging
 import subprocess
 import sys
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import polars as pl
 import pyarrow.parquet as pq
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.conversion.converter as converter_module
 from gdeltforge.conversion.converter import GDELTConverter, run_converter
@@ -873,6 +876,83 @@ class TestProcessAllFilesInterruptHandling:
             c.get("wait") is False and c.get("cancel_futures") is True
             for c in shutdown_calls
         )
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so replacing
+    it here is what lets a test observe the exact leak this guards
+    against, rather than only being able to see it as incidental stderr
+    noise a real terminal user would notice by eye."""
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """Simulates a second interrupt landing while tqdm's own close() is
+    running, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op). Scoped to
+    instances created while this patch is active, not global: see
+    samplers.py's own test_samplers.py::TestTqdmInterruptDoesNotLeakA
+    Traceback._patch_tqdm_close_to_raise_once for why an unscoped patch
+    (a bare shared flag) is a real test-isolation hazard, confirmed
+    against the full suite under this project's own pinned dependency
+    floor: a leftover tqdm instance from an unrelated, already-finished
+    test being garbage collected during this test's own window could
+    consume its one allowed raise."""
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestProcessAllFilesTqdmInterruptDoesNotLeakATraceback:
+    """process_all_files' executor loop shares the identical bare-"for x
+    in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full (see that class's own docstring for the real
+    mechanism): a KeyboardInterrupt landing while tqdm's own __iter__
+    generator is suspended mid-loop tears its frame down via garbage
+    collection instead of a normal return, with no legitimate way to
+    propagate a second exception raised during its implicit close()."""
+
+    def test_interrupt_during_future_result_does_not_leak_a_traceback(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = _make_config(tmp_path)
+        _write_flat_zip(tmp_path / "raw")
+
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def result_and_interrupt(self, *a, **kw):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(concurrent.futures.Future, "result", result_and_interrupt)
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                GDELTConverter(cfg).process_all_files()
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
 
 class TestConversionResumability:

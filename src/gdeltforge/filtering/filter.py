@@ -320,33 +320,40 @@ class GDELTFilter:
             }
 
             try:
-                for future in tqdm(
-                    as_completed(futures), total=len(futures), desc="Filtering parquet files"
-                ):
-                    parquet_path = futures[future]
-                    try:
-                        rows_before, rows_after = future.result()
-                        mark_done(parquet_path, self._config_fingerprint)
+                # Driven manually (with + explicit update()) rather than
+                # iterated directly (for x in tqdm(...)): see converter.py's
+                # process_all_files for the full mechanism this avoids (a
+                # bare "for x in tqdm(iterable):" builds a second, separate
+                # generator via tqdm's own __iter__, which leaks a stray
+                # KeyboardInterrupt traceback fragment if interrupted while
+                # suspended mid-loop).
+                with tqdm(total=len(futures), desc="Filtering parquet files") as pbar:
+                    for future in as_completed(futures):
+                        parquet_path = futures[future]
+                        try:
+                            rows_before, rows_after = future.result()
+                            mark_done(parquet_path, self._config_fingerprint)
 
-                        if self.delete_source:
-                            self._delete_source(parquet_path)
+                            if self.delete_source:
+                                self._delete_source(parquet_path)
 
-                        total_rows_before += rows_before
-                        total_rows_after  += rows_after
-                        files_processed   += 1
+                            total_rows_before += rows_before
+                            total_rows_after  += rows_after
+                            files_processed   += 1
 
-                        rate = (rows_after / rows_before * 100) if rows_before else 0
-                        # DEBUG, not INFO: unconditional, once per file, same
-                        # rationale as convert's equivalent per-file lines --
-                        # see run_filter's verbose docstring.
-                        logger.debug(
-                            f"{parquet_path.name}: "
-                            f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
-                        )
+                            rate = (rows_after / rows_before * 100) if rows_before else 0
+                            # DEBUG, not INFO: unconditional, once per file, same
+                            # rationale as convert's equivalent per-file lines --
+                            # see run_filter's verbose docstring.
+                            logger.debug(
+                                f"{parquet_path.name}: "
+                                f"{rows_before:,} -> {rows_after:,} rows ({rate:.1f}% kept)"
+                            )
 
-                    except Exception as e:
-                        files_failed += 1
-                        logger.error(f"Failed to filter {parquet_path.name}: {e}")
+                        except Exception as e:
+                            files_failed += 1
+                            logger.error(f"Failed to filter {parquet_path.name}: {e}")
+                        pbar.update(1)
             except KeyboardInterrupt:
                 # Same real gap as convert's identical loop (see
                 # converter.py's process_all_files for the full

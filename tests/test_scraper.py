@@ -1,9 +1,13 @@
+import concurrent.futures
 import hashlib
 import logging
+import sys
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
 import pytest
+from tqdm import tqdm
 
 import gdeltforge.scraping.scraper as scraper
 from gdeltforge.scraping.scraper import (
@@ -1064,6 +1068,88 @@ class TestDownloadGdeltFilesInterruptHandling:
             c.get("wait") is False and c.get("cancel_futures") is True
             for c in shutdown_calls
         )
+
+
+@contextmanager
+def _capture_unraisable_exceptions():
+    """sys.unraisablehook (Python >=3.8) is what CPython calls instead of
+    printing "Exception ignored in: ..." to stderr directly, so replacing
+    it here is what lets a test observe the exact leak this guards
+    against, rather than only being able to see it as incidental stderr
+    noise a real terminal user would notice by eye."""
+    events = []
+    original_hook = sys.unraisablehook
+    sys.unraisablehook = events.append
+    try:
+        yield events
+    finally:
+        sys.unraisablehook = original_hook
+
+
+def _patch_tqdm_close_to_raise_once(monkeypatch):
+    """Simulates a second interrupt landing while tqdm's own close() is
+    running, matching real tqdm's own close() being idempotent (a second
+    call after the first already succeeded is a no-op). Scoped to
+    instances created while this patch is active, not global: see
+    samplers.py's own test_samplers.py::TestTqdmInterruptDoesNotLeakA
+    Traceback._patch_tqdm_close_to_raise_once for why an unscoped patch
+    (a bare shared flag) is a real test-isolation hazard, confirmed
+    against the full suite under this project's own pinned dependency
+    floor: a leftover tqdm instance from an unrelated, already-finished
+    test being garbage collected during this test's own window could
+    consume its one allowed raise."""
+    real_init = tqdm.__init__
+    tracked_ids: set[int] = set()
+
+    def tracking_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        tracked_ids.add(id(self))
+
+    closed_once_ids: set[int] = set()
+
+    def close_raises_once(self):
+        if id(self) not in tracked_ids or id(self) in closed_once_ids:
+            return
+        closed_once_ids.add(id(self))
+        raise KeyboardInterrupt("second interrupt, during close")
+
+    monkeypatch.setattr(tqdm, "__init__", tracking_init)
+    monkeypatch.setattr(tqdm, "close", close_raises_once)
+
+
+class TestDownloadGdeltFilesTqdmInterruptDoesNotLeakATraceback:
+    """download_gdelt_files' executor loop shares the identical bare-"for
+    x in tqdm(iterable):" pattern samplers.py's own
+    TestTqdmInterruptDoesNotLeakATraceback class documents and guards
+    against in full (see that class's own docstring for the real
+    mechanism)."""
+
+    def test_interrupt_during_future_result_does_not_leak_a_traceback(
+        self, monkeypatch, tmp_path
+    ):
+        files = [GdeltFile(url="http://x/0.export.CSV.zip")]
+
+        def fake_download_one(file, download_dir, retries, timeout, session, force=False):
+            return "success", file.url.split("/")[-1]
+
+        monkeypatch.setattr(scraper, "_download_one", fake_download_one)
+        _patch_tqdm_close_to_raise_once(monkeypatch)
+
+        def result_and_interrupt(self, *a, **kw):
+            raise KeyboardInterrupt("first interrupt, mid-loop")
+
+        monkeypatch.setattr(concurrent.futures.Future, "result", result_and_interrupt)
+
+        config = {
+            "paths": {"downloaded_data_directory": str(tmp_path)},
+            "scraping": {"retries": 3, "timeout": 5, "max_workers": 2},
+        }
+
+        with _capture_unraisable_exceptions() as events:
+            with pytest.raises(KeyboardInterrupt):
+                download_gdelt_files(files, config)
+
+        assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
 
 class TestRunScrapingPipelineVerboseLogging:
