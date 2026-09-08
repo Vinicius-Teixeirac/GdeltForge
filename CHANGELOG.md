@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- Invalid YAML in a config file surfaced PyYAML's own raw parser traceback, not a clear, crafted message naming the config file, unlike every other malformed-config case `load_config` already handles (a missing file, an empty file, a directory, not a file). Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
