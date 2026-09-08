@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- A `columns_numeric` value that couldn't be parsed as numeric (an out-of-range integer, unparseable garbage, or a whitespace-padded numeric string) was silently coerced to null during `convert`, indistinguishable in both the output and the log from a field that was genuinely blank to begin with. `_read_csv` and `process_reduced_file` now warn, naming the column and how many new nulls appeared, whenever the cast actually introduces one. Found via a live comprehensive QA pass
+
 ## [0.9.0] - 2026-09-03
 
 ### Fixed
