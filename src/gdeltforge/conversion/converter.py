@@ -708,22 +708,37 @@ class GDELTConverter:
             }
 
             try:
-                for future in tqdm(
-                    as_completed(futures), total=len(futures),
-                    desc=f"Converting {unit.upper()} files", unit=unit,
-                ):
-                    source_path = Path(futures[future])
-                    try:
-                        outputs = future.result()
-                        all_outputs.extend(outputs)
-                        self._mark_done(source_path)
+                # Driven manually (with + explicit update()) rather than
+                # iterated directly (for x in tqdm(...)): a bare "for x
+                # in tqdm(iterable):" builds a second, separate generator
+                # via tqdm's own __iter__ under the hood, and a
+                # KeyboardInterrupt raised while it's suspended at that
+                # generator's own yield point (mid-loop, exactly where a
+                # real Ctrl+C lands) tears down its frame via garbage
+                # collection instead of a normal return, triggering its
+                # implicit close() with no legitimate way to propagate a
+                # second exception raised during it (see samplers.py's
+                # IndexedSampler.get_random_sample for the full
+                # mechanism, found first there). Iterating as_completed's
+                # real iterator directly and calling pbar.update() by
+                # hand avoids creating that second generator at all.
+                with tqdm(
+                    total=len(futures), desc=f"Converting {unit.upper()} files", unit=unit,
+                ) as pbar:
+                    for future in as_completed(futures):
+                        source_path = Path(futures[future])
+                        try:
+                            outputs = future.result()
+                            all_outputs.extend(outputs)
+                            self._mark_done(source_path)
 
-                        if self.delete_source:
-                            self._delete_source(source_path)
+                            if self.delete_source:
+                                self._delete_source(source_path)
 
-                    except Exception as e:
-                        logger.error(f"Failed to process {source_path.name}: {e}")
-                        failed.append(source_path.name)
+                        except Exception as e:
+                            logger.error(f"Failed to process {source_path.name}: {e}")
+                            failed.append(source_path.name)
+                        pbar.update(1)
             except KeyboardInterrupt:
                 # Every future was submitted up front, so the executor's
                 # own default __exit__ (shutdown(wait=True)) would drain

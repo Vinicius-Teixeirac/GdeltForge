@@ -941,29 +941,38 @@ def download_gdelt_files(
                 for file in files
             }
             try:
-                for future in tqdm(
-                    as_completed(futures), total=len(futures),
-                    desc="Downloading GDELT files", unit="file",
-                ):
-                    try:
-                        status, filename = future.result()
-                    except Exception as e:
-                        # Defense in depth against the same class of issue
-                        # _download_one's own retry loop now guards against:
-                        # one file's unexpected failure must not take the
-                        # whole batch down, matching process_all_files'
-                        # equivalent per-future try/except in converter.py.
-                        filename = futures[future].url.split("/")[-1]
-                        logger.error(f"Unexpected error downloading {filename}: {e}")
-                        failed.append(filename)
-                        continue
+                # Driven manually (with + explicit update()) rather than
+                # iterated directly (for x in tqdm(...)): see converter.py's
+                # process_all_files for the full mechanism this avoids (a
+                # bare "for x in tqdm(iterable):" builds a second, separate
+                # generator via tqdm's own __iter__, which leaks a stray
+                # KeyboardInterrupt traceback fragment if interrupted while
+                # suspended mid-loop).
+                with tqdm(
+                    total=len(futures), desc="Downloading GDELT files", unit="file",
+                ) as pbar:
+                    for future in as_completed(futures):
+                        try:
+                            status, filename = future.result()
+                        except Exception as e:
+                            # Defense in depth against the same class of issue
+                            # _download_one's own retry loop now guards against:
+                            # one file's unexpected failure must not take the
+                            # whole batch down, matching process_all_files'
+                            # equivalent per-future try/except in converter.py.
+                            filename = futures[future].url.split("/")[-1]
+                            logger.error(f"Unexpected error downloading {filename}: {e}")
+                            failed.append(filename)
+                            pbar.update(1)
+                            continue
 
-                    if status == "success":
-                        success += 1
-                    elif status == "skipped":
-                        skipped += 1
-                    else:
-                        failed.append(filename)
+                        if status == "success":
+                            success += 1
+                        elif status == "skipped":
+                            skipped += 1
+                        else:
+                            failed.append(filename)
+                        pbar.update(1)
             except KeyboardInterrupt:
                 # Every future was submitted up front, so the executor's
                 # own default __exit__ (shutdown(wait=True)) would drain
