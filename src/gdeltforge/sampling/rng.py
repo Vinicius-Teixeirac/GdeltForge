@@ -13,6 +13,17 @@ class ReproducibleRNG:
     and exposing commonly used operations: choice, multinomial, randint.
     """
     def __init__(self, seed: int | None):
+        # A concrete seed is kept on self even when the caller passed None:
+        # CalendarSampler.get_calendar_samples and FilteredSampler.
+        # get_stratified_sample each derive one independent child generator
+        # per group they see (see samplers._group_rng), and need a real
+        # int to derive from either way. Drawing one here when seed is
+        # None doesn't make that case any more reproducible than before:
+        # np.random.default_rng(None) below still seeds from OS entropy,
+        # this just captures the value it would otherwise have thrown away.
+        if seed is None:
+            seed = int(np.random.SeedSequence().generate_state(1)[0])
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
         logger.info(f"random seed set: {seed}")
 

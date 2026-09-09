@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import zlib
 from collections.abc import Callable
 from datetime import date
 from enum import Enum
@@ -20,7 +21,11 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
-from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
+from gdeltforge.scraping.scraper import (
+    filter_paths_by_date,
+    parse_file_date,
+    sort_paths_by_date,
+)
 from gdeltforge.utils.io import (
     clearer_dataset_errors,
     narrow_to_available_columns,
@@ -60,6 +65,27 @@ def _discover_dataset_files(
     )
     all_files = flat_files + hist_files
     all_files = filter_paths_by_date(all_files, start_date, end_date, date_parser=date_parser)
+
+    # Path.glob()/.rglob() enumerate a directory in whatever order the
+    # filesystem happens to hand entries back, not sorted by name or
+    # content: stable for a given directory across repeat calls in the
+    # same run (nothing on disk changed in between), but not a function
+    # of the files' own dates, so it can differ between two directories
+    # holding the identical logical rows split into a different number of
+    # files, or between filesystems (ext4's own hash-based directory
+    # order is a real example, confirmed to disagree with lexical name
+    # order). CalendarSampler/FilteredSampler feed this list straight
+    # into a single multi-file scan and then reservoir-sample it in
+    # whatever row order that scan reads it back in, so an
+    # unpredictable, layout-dependent file order here means the sampled
+    # rows depend on it too, defeating --seed's reproducibility contract
+    # the same way an unsorted group-visitation order already did (see
+    # _group_rng). Sorting chronologically, the same way IndexedSampler's
+    # own file discovery already does, makes the scan's row order a
+    # function of the files' encoded dates alone, invariant to how many
+    # files that same logical range happens to be split across or which
+    # filesystem it's sitting on. Found via a live comprehensive QA pass.
+    all_files = sort_paths_by_date(all_files, "asc", date_parser=date_parser)
 
     if not all_files:
         raise FileNotFoundError(
@@ -171,6 +197,49 @@ def _apply_reservoir_replacements(
     accepted = batch[source_pos]
     for col, arr in reservoir_cols.items():
         reservoir_cols[col] = _assign_column(arr, target_slots, accepted[col].to_numpy())
+
+
+def _group_rng(
+    seed: int, key: Any, cache: dict[Any, np.random.Generator]
+) -> np.random.Generator:
+    """
+    Returns key's own independent Generator, deriving and caching it on
+    first use from `seed`.
+
+    get_calendar_samples and get_stratified_sample each reservoir-sample
+    many groups (calendar periods, stratify values) at once from a single
+    streamed multi-file scan. Drawing every group's accept/reject numbers
+    from one shared Generator, in whichever order group_by happens to
+    visit groups batch by batch, makes the actual numbers a group's rows
+    receive depend on how the scan's physical batches happen to be cut,
+    which depends on how many files the same logical rows are split
+    across, not just on --seed: re-chunking the identical rows into a
+    different number of files shifts batch boundaries, which shifts which
+    group gets to consume from the shared stream when, changing the final
+    sample even though the seed didn't change. Found via a live
+    comprehensive QA pass, confirmed directly: the exact same logical
+    archive laid out as 3 files versus 7 files produced only 26/240
+    matching rows for calendar mode, 0/80 for stratified, under an
+    identical seed.
+
+    A dedicated generator per group closes this: each group's own
+    sequence of draws no longer competes with any other group's for a
+    shared stream's next output, so it comes out identical regardless of
+    how many batches the scan happens to split that group's rows across,
+    or what other groups' rows are interleaved with it along the way.
+    This is exactly the property IndexedSampler's single, group-free
+    reservoir already had (there's only ever one consumer of its shared
+    stream, so there's nothing for a different chunking to reorder).
+
+    zlib.crc32, not the builtin hash(): a str's hash() is randomized per
+    process (PYTHONHASHSEED) unless explicitly disabled, which would make
+    the derived stream, and therefore the sample, depend on the
+    interpreter's own hash seed instead of only --seed.
+    """
+    if key not in cache:
+        key_hash = zlib.crc32(str(key).encode("utf-8"))
+        cache[key] = np.random.default_rng([seed, key_hash])
+    return cache[key]
 
 
 def _reservoir_to_dataframe(
@@ -563,6 +632,7 @@ class CalendarSampler:
         reservoir_cols:   dict[Any, dict[str, np.ndarray]]   = {}
         reservoir_schema: dict[Any, dict[str, pl.DataType]]  = {}
         total_seen:       dict[Any, int]                     = {}
+        group_rngs:       dict[Any, np.random.Generator]     = {}
         n_unparseable = 0
 
         # Driven manually rather than iterated directly: see
@@ -594,21 +664,17 @@ class CalendarSampler:
                 # group, so this has to be explicit rather than assumed.
                 keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
 
-                # maintain_order=True, not False: the reservoir draws below pull
-                # sequentially from one shared RNG, once per (period, batch)
-                # combination, in whatever order this loop visits groups. A
-                # fixed --seed only fixes the sequence of numbers drawn, not
-                # which group's positions a given draw lands on; with
-                # maintain_order=False that assignment depended on polars' own
-                # unspecified group iteration order, so two runs with the same
-                # seed over the same data could still pick different rows
-                # (confirmed for real: ~25-30% GlobalEventID overlap between
-                # repeated runs). maintain_order=True visits groups in their
-                # first-appearance order within this batch, which is itself
-                # deterministic (the same file list, in the same sorted order,
-                # read in the same row order every run), making group
-                # visitation order, and therefore which draw lands where,
-                # reproducible under a fixed seed the way --seed documents.
+                # maintain_order=True, not False: each group now draws from
+                # its own dedicated _group_rng (see that function's own
+                # docstring for why), but that generator is only ever
+                # created and looked up by this loop in whatever order
+                # group_by hands groups back, and maintain_order=False left
+                # that order polars-internal and unspecified, varying
+                # between otherwise-identical runs. maintain_order=True
+                # visits groups in their first-appearance order within this
+                # batch, which is itself deterministic (the same file list,
+                # in the same sorted order, read in the same row order every
+                # run), keeping this loop's own behavior reproducible.
                 # Found via a live comprehensive QA pass.
                 for (period_key,), group_df in keyed_batch.group_by(
                     self._PERIOD_KEY, maintain_order=True
@@ -646,7 +712,9 @@ class CalendarSampler:
                     # Replacement phase: vectorized slot selection via Vitter's Algorithm R.
                     seen = total_seen[period_key]
                     positions  = np.arange(seen, seen + group_size)
-                    rand_slots = self.rng.rng.integers(0, positions + 1)
+                    rand_slots = _group_rng(
+                        self.rng.seed, period_key, group_rngs
+                    ).integers(0, positions + 1)
                     _apply_reservoir_replacements(
                         reservoir_cols[period_key], group_df, rand_slots, samples_per_period
                     )
@@ -1152,6 +1220,7 @@ class FilteredSampler:
         reservoir_cols:   dict[Any, dict[str, np.ndarray]]  = {}
         reservoir_schema: dict[Any, dict[str, pl.DataType]] = {}
         total_seen:       dict[Any, int]                    = {}
+        group_rngs:       dict[Any, np.random.Generator]    = {}
 
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why.
@@ -1172,9 +1241,7 @@ class FilteredSampler:
                     pl.col(stratify_col).fill_null("__NA__").alias(self._STRATIFY_GROUP_KEY)
                 )
                 # maintain_order=True: see get_calendar_samples' identical fix
-                # for why. The same shared-RNG-in-visitation-order reservoir
-                # draw applies here, so the same fixed-seed reproducibility gap
-                # applies too.
+                # and _group_rng's own docstring for why.
                 for (g,), group_df in keyed_batch.group_by(
                     self._STRATIFY_GROUP_KEY, maintain_order=True
                 ):
@@ -1212,7 +1279,9 @@ class FilteredSampler:
 
                     # Replacement phase: vectorized slot selection via Vitter's Algorithm R
                     positions  = np.arange(total_seen[g], total_seen[g] + group_size)
-                    rand_slots = self.rng.rng.integers(0, positions + 1)
+                    rand_slots = _group_rng(self.rng.seed, g, group_rngs).integers(
+                        0, positions + 1
+                    )
                     _apply_reservoir_replacements(
                         reservoir_cols[g], group_df, rand_slots, n_per_group
                     )
