@@ -269,6 +269,28 @@ class TestSortUrlsByDate:
         assert asc[-1].url == "http://x/unparseable.txt"
         assert desc[-1].url == "http://x/unparseable.txt"
 
+    def test_multiple_undated_files_sort_by_name_not_input_order(self):
+        # Regression coverage for a follow-up QA pass: every undated file
+        # used to share one identical sort key, so Python's stable sort
+        # just preserved whatever order the caller's own list already
+        # had them in, still filesystem-order-dependent for this shape
+        # of file layout. Deliberately fed in reverse-of-alphabetical
+        # input order, so a pass that just preserved input order (the
+        # pre-fix bug) would produce the wrong result here.
+        files = [
+            GdeltFile(url="http://x/part2.parquet"),
+            GdeltFile(url="http://x/part0.parquet"),
+            GdeltFile(url="http://x/part1.parquet"),
+        ]
+
+        ordered = sort_urls_by_date(files, "asc", date_parser=parse_file_date)
+
+        assert [f.url for f in ordered] == [
+            "http://x/part0.parquet",
+            "http://x/part1.parquet",
+            "http://x/part2.parquet",
+        ]
+
     def test_invalid_order_raises(self):
         with pytest.raises(ValueError, match="order must be one of"):
             sort_urls_by_date(self._files(), "sideways", date_parser=parse_file_date)
@@ -399,6 +421,19 @@ class TestSortPathsByDate:
 
         assert asc[-1] == "/data/README.txt"
         assert desc[-1] == "/data/README.txt"
+
+    def test_multiple_undated_files_sort_by_name_not_input_order(self):
+        # See TestSortUrlsByDate's identical test for why: a shared sort
+        # key for every undated path left their relative order dependent
+        # on the caller's own input order, still filesystem-order-
+        # dependent for a re-chunked layout named without an embedded
+        # date (part0.parquet/part1.parquet, not just a truly nameless
+        # file). Deliberately fed in reverse-of-alphabetical order.
+        paths = ["/data/part2.parquet", "/data/part0.parquet", "/data/part1.parquet"]
+
+        ordered = sort_paths_by_date(paths, "asc", date_parser=parse_file_date)
+
+        assert ordered == ["/data/part0.parquet", "/data/part1.parquet", "/data/part2.parquet"]
 
     def test_works_with_path_objects_not_just_strings(self):
         paths = [Path("/data/20200601.export.parquet"), Path("/data/20200101.export.parquet")]

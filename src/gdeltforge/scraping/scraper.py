@@ -677,7 +677,7 @@ def _date_sort_key(
     filename: str,
     date_parser: Callable[[str], tuple[date | None, date | None]],
     order: str,
-) -> tuple[bool, int]:
+) -> tuple[bool, int | str]:
     """
     Single ascending sort key that produces the right result for either
     order without a separate reverse=True: reverse=True would also flip
@@ -686,18 +686,39 @@ def _date_sort_key(
     which direction was requested, since there's nothing meaningful to
     rank it by either way.
 
-    (True, 0) for an undated file always sorts after any (False, ...)
+    (True, ...) for an undated file always sorts after any (False, ...)
     dated one. For a dated file, the ordinal is negated when order is
     "desc", so ascending sort on the whole key set produces descending
     date order among the dated files while leaving the undated ones
     pinned to the end.
+
+    An undated file's own secondary key is its filename, not a shared
+    constant: a shared (True, 0) key for every undated file left their
+    *relative* order to Python's stable sort, which just preserves
+    whatever order the caller's own input list already had them in.
+    _discover_dataset_files' own chronological sort exists specifically
+    to make CalendarSampler/FilteredSampler's read order a function of
+    the data, not of the filesystem's own directory-listing order; a
+    layout re-chunked with a generic, non-date-named convention (a
+    custom script or different tool's own part0.parquet/part1.parquet
+    naming, not just a literally nameless file) fell straight through to
+    that exact same filesystem-order dependency this sort exists to
+    remove, defeating --seed's cross-layout reproducibility for that
+    naming shape the same way the missing sort originally did for every
+    shape. Sorting undated files by name instead is deterministic
+    regardless of input order, and reconstructs the correct relative row
+    order for any convention where sequence position is already encoded
+    in the name (a zero-padded numeric suffix, in practice), the same
+    shape events-reduced's own part{chunk_idx}.parquet output already
+    uses. Found via a live comprehensive QA pass (a follow-up to the
+    initial fix above, not a new investigation).
     """
     if order not in _ORDERS:
         raise ValueError(f"order must be one of {_ORDERS}, got {order!r}")
 
     start, _ = date_parser(filename)
     if start is None:
-        return (True, 0)
+        return (True, filename)
 
     ordinal = start.toordinal()
     return (False, -ordinal if order == "desc" else ordinal)

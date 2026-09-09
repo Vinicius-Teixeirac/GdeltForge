@@ -891,6 +891,87 @@ class TestCalendarStratifiedCrossLayoutReproducibility:
         assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
 
 
+class TestCalendarStratifiedCrossLayoutReproducibilityUnparseableNames:
+    """Follow-up to TestCalendarStratifiedCrossLayoutReproducibility above,
+    for a real gap in that fix a later QA pass found: a re-chunked layout
+    named without an embedded date at all (a generic part0.parquet/
+    part1.parquet convention, the shape a custom script or a different
+    re-chunking tool would produce, not just a literally nameless file)
+    still broke reproducibility, since _date_sort_key used to give every
+    undated file the identical sort key, leaving their relative order to
+    fall back to the caller's own input order, i.e. back to filesystem
+    directory-listing order, the exact dependency the chronological sort
+    exists to remove. Same fixture shape as the class above, but named
+    partNN.parquet globally (not per-day), matching the QA report's own
+    reproduction exactly, zero-padded so plain alphabetical order matches
+    write order (see _date_sort_key's own docstring for why that matters)."""
+
+    @staticmethod
+    def _write_layout(folder, n_files: int, n_rows: int = 3_000):
+        folder.mkdir(parents=True, exist_ok=True)
+        days = [20200601 + (i % 3) for i in range(n_rows)]
+        quad = [1 + (i % 4) for i in range(n_rows)]
+        for part, idx in enumerate(np.array_split(np.arange(n_rows), n_files)):
+            pl.DataFrame({
+                "GlobalEventID": idx.tolist(),
+                "Day": [days[i] for i in idx],
+                "QuadClass": [quad[i] for i in idx],
+            }).write_parquet(folder / f"part{part:02d}.parquet")
+
+    @staticmethod
+    def _scramble_glob_order(monkeypatch):
+        # This filesystem's own glob() already happens to hand back
+        # alphabetically sorted order for these zero-padded names
+        # (confirmed directly), which is exactly the write order too, so
+        # the pre-fix bug (relative order among undated files falling
+        # back to whatever order the input list already had) would
+        # never actually manifest here without forcing a different
+        # order. Reversing whatever the real glob() returns forces a
+        # genuine mismatch between "input order" and "correct order" on
+        # any filesystem, the same way a real ext4 directory's own
+        # hash-based order could in production.
+        real_glob = Path.glob
+        monkeypatch.setattr(
+            Path, "glob", lambda self, pattern: iter(list(real_glob(self, pattern))[::-1])
+        )
+
+    def test_calendar_sample_is_identical_across_a_re_chunked_layout(
+        self, tmp_path, monkeypatch
+    ):
+        folder_a = tmp_path / "layout_3"
+        folder_b = tmp_path / "layout_7"
+        self._write_layout(folder_a, n_files=3)
+        self._write_layout(folder_b, n_files=7)
+        self._scramble_glob_order(monkeypatch)
+
+        a = CalendarSampler(str(folder_a), random_state=7).get_calendar_samples(
+            samples_per_period=15
+        )
+        b = CalendarSampler(str(folder_b), random_state=7).get_calendar_samples(
+            samples_per_period=15
+        )
+
+        assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
+
+    def test_stratified_sample_is_identical_across_a_re_chunked_layout(
+        self, tmp_path, monkeypatch
+    ):
+        folder_a = tmp_path / "layout_3"
+        folder_b = tmp_path / "layout_7"
+        self._write_layout(folder_a, n_files=3)
+        self._write_layout(folder_b, n_files=7)
+        self._scramble_glob_order(monkeypatch)
+
+        a = FilteredSampler(
+            str(folder_a), ["GlobalEventID", "Day", "QuadClass"], random_state=7
+        ).get_stratified_sample("QuadClass", n_per_group=20)
+        b = FilteredSampler(
+            str(folder_b), ["GlobalEventID", "Day", "QuadClass"], random_state=7
+        ).get_stratified_sample("QuadClass", n_per_group=20)
+
+        assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
+
+
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
         folder = tmp_path / "data"
