@@ -291,6 +291,26 @@ class TestSortUrlsByDate:
             "http://x/part2.parquet",
         ]
 
+    def test_multiple_files_sharing_one_date_sort_by_name_not_input_order(self):
+        # See TestSortPathsByDate's identical test for why: several
+        # dated files sharing the identical calendar day used to have no
+        # tiebreak beyond input order either, the same gap the test
+        # above already covers for undated files, caught for this shape
+        # by a real Linux CI run.
+        files = [
+            GdeltFile(url="http://x/20200601_part2.parquet"),
+            GdeltFile(url="http://x/20200601_part0.parquet"),
+            GdeltFile(url="http://x/20200601_part1.parquet"),
+        ]
+
+        ordered = sort_urls_by_date(files, "asc", date_parser=parse_file_date)
+
+        assert [f.url for f in ordered] == [
+            "http://x/20200601_part0.parquet",
+            "http://x/20200601_part1.parquet",
+            "http://x/20200601_part2.parquet",
+        ]
+
     def test_invalid_order_raises(self):
         with pytest.raises(ValueError, match="order must be one of"):
             sort_urls_by_date(self._files(), "sideways", date_parser=parse_file_date)
@@ -434,6 +454,31 @@ class TestSortPathsByDate:
         ordered = sort_paths_by_date(paths, "asc", date_parser=parse_file_date)
 
         assert ordered == ["/data/part0.parquet", "/data/part1.parquet", "/data/part2.parquet"]
+
+    def test_multiple_files_sharing_one_date_sort_by_name_not_input_order(self):
+        # A real, common shape the two tests above don't cover: several
+        # *dated* files that all parse to the identical calendar day (a
+        # multi-part-per-day re-chunking, or GKG 2.1/Mentions' own
+        # ~96-files-per-day cadence). These used to share one identical
+        # (False, ordinal) key with no further tiebreak, leaving their
+        # relative order dependent on input order the same way multiple
+        # undated files did before that was fixed; caught by a real
+        # Linux CI run, since this project's own dev machine's glob()
+        # happens to already return alphabetical order, masking it
+        # locally. Deliberately fed in reverse-of-alphabetical order.
+        paths = [
+            "/data/20200601_part2.parquet",
+            "/data/20200601_part0.parquet",
+            "/data/20200601_part1.parquet",
+        ]
+
+        ordered = sort_paths_by_date(paths, "asc", date_parser=parse_file_date)
+
+        assert ordered == [
+            "/data/20200601_part0.parquet",
+            "/data/20200601_part1.parquet",
+            "/data/20200601_part2.parquet",
+        ]
 
     def test_works_with_path_objects_not_just_strings(self):
         paths = [Path("/data/20200601.export.parquet"), Path("/data/20200101.export.parquet")]

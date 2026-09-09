@@ -834,10 +834,20 @@ class TestCalendarStratifiedCrossLayoutReproducibility:
     different number of part-files per day (1 vs 3), mirroring
     events-reduced's own real dayNNN_partN.parquet convention, so file
     count differs while each file's own name still parses to the
-    correct day (needed for TestDiscoverDatasetFilesSortsChronologically's
-    sort fix to place it correctly; a made-up, unparseable name would
-    fall back to glob order instead, which happens to already be sorted
-    on this filesystem and would defeat the point of this test)."""
+    correct day.
+
+    glob() is deliberately scrambled below: this fixture's own file
+    names already happen to sort alphabetically in write order on this
+    project's dev machine (confirmed directly), which would let a test
+    relying on that pass by filesystem accident rather than because the
+    chronological sort actually works, exactly what let a real gap slip
+    past this test on this machine while a real Linux CI run (whose
+    directory order does not coincidentally match alphabetical name
+    order) caught it: several files sharing one calendar day used to
+    have no tiebreak beyond glob's own input order, since
+    _date_sort_key's first fix only added a filename tiebreak for the
+    undated case. See _date_sort_key's own docstring for the full
+    mechanism and both fixes."""
 
     @staticmethod
     def _write_layout(folder, parts_per_day: int, rows_per_day: int = 1_000):
@@ -860,11 +870,21 @@ class TestCalendarStratifiedCrossLayoutReproducibility:
                     "QuadClass": qchunk.tolist(),
                 }).write_parquet(folder / f"{day}_part{part}.parquet")
 
-    def test_calendar_sample_is_identical_across_a_re_chunked_layout(self, tmp_path):
+    @staticmethod
+    def _scramble_glob_order(monkeypatch):
+        real_glob = Path.glob
+        monkeypatch.setattr(
+            Path, "glob", lambda self, pattern: iter(list(real_glob(self, pattern))[::-1])
+        )
+
+    def test_calendar_sample_is_identical_across_a_re_chunked_layout(
+        self, tmp_path, monkeypatch
+    ):
         folder_a = tmp_path / "layout_1part"
         folder_b = tmp_path / "layout_3part"
         self._write_layout(folder_a, parts_per_day=1)
         self._write_layout(folder_b, parts_per_day=3)
+        self._scramble_glob_order(monkeypatch)
 
         a = CalendarSampler(str(folder_a), random_state=7).get_calendar_samples(
             samples_per_period=15
@@ -875,11 +895,14 @@ class TestCalendarStratifiedCrossLayoutReproducibility:
 
         assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
 
-    def test_stratified_sample_is_identical_across_a_re_chunked_layout(self, tmp_path):
+    def test_stratified_sample_is_identical_across_a_re_chunked_layout(
+        self, tmp_path, monkeypatch
+    ):
         folder_a = tmp_path / "layout_1part"
         folder_b = tmp_path / "layout_3part"
         self._write_layout(folder_a, parts_per_day=1)
         self._write_layout(folder_b, parts_per_day=3)
+        self._scramble_glob_order(monkeypatch)
 
         a = FilteredSampler(
             str(folder_a), ["GlobalEventID", "Day", "QuadClass"], random_state=7

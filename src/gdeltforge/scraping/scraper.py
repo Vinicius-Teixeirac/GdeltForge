@@ -677,7 +677,7 @@ def _date_sort_key(
     filename: str,
     date_parser: Callable[[str], tuple[date | None, date | None]],
     order: str,
-) -> tuple[bool, int | str]:
+) -> tuple[bool, int, str]:
     """
     Single ascending sort key that produces the right result for either
     order without a separate reverse=True: reverse=True would also flip
@@ -692,36 +692,45 @@ def _date_sort_key(
     date order among the dated files while leaving the undated ones
     pinned to the end.
 
-    An undated file's own secondary key is its filename, not a shared
-    constant: a shared (True, 0) key for every undated file left their
-    *relative* order to Python's stable sort, which just preserves
-    whatever order the caller's own input list already had them in.
-    _discover_dataset_files' own chronological sort exists specifically
-    to make CalendarSampler/FilteredSampler's read order a function of
-    the data, not of the filesystem's own directory-listing order; a
-    layout re-chunked with a generic, non-date-named convention (a
-    custom script or different tool's own part0.parquet/part1.parquet
-    naming, not just a literally nameless file) fell straight through to
-    that exact same filesystem-order dependency this sort exists to
-    remove, defeating --seed's cross-layout reproducibility for that
-    naming shape the same way the missing sort originally did for every
-    shape. Sorting undated files by name instead is deterministic
-    regardless of input order, and reconstructs the correct relative row
-    order for any convention where sequence position is already encoded
-    in the name (a zero-padded numeric suffix, in practice), the same
-    shape events-reduced's own part{chunk_idx}.parquet output already
-    uses. Found via a live comprehensive QA pass (a follow-up to the
-    initial fix above, not a new investigation).
+    Every file's own third, final key is its filename, not a shared
+    constant: two files that land on the identical (is_undated,
+    ordinal) pair, either both undated or both dated to the exact same
+    day, used to leave their *relative* order to Python's stable sort,
+    which just preserves whatever order the caller's own input list
+    already had them in, i.e. the filesystem's own directory-listing
+    order. _discover_dataset_files' own chronological sort exists
+    specifically to make CalendarSampler/FilteredSampler's read order a
+    function of the data, not of that filesystem order; a real, common
+    layout defeats it two different ways: a re-chunked layout named
+    without an embedded date at all (a custom script or different
+    tool's own part0.parquet/part1.parquet naming) leaves every file
+    undated, and a dataset with several files sharing one calendar
+    period, GKG 2.1/Mentions' own ~96-files-per-day cadence or
+    events-reduced's own multi-part-per-year files being the two real
+    examples, leaves several files dated identically. A first fix only
+    added the filename tiebreak for the undated case; a live CI run
+    against a real Linux filesystem (whose directory order, unlike this
+    project's own dev machine, does not coincidentally match
+    alphabetical name order) caught that the identically-dated case was
+    still unfixed, exactly the same class of gap under a different
+    naming shape. Sorting by name third, always, closes both: the tie
+    only ever needs breaking among files that already share every
+    other rank, so this changes nothing for files that don't collide
+    on either axis, and reconstructs the correct relative row order for
+    any convention where sequence position is already encoded in the
+    name (a zero-padded numeric suffix, in practice). Found via a live
+    comprehensive QA pass and, for the identically-dated case, a real
+    CI failure.
     """
     if order not in _ORDERS:
         raise ValueError(f"order must be one of {_ORDERS}, got {order!r}")
 
     start, _ = date_parser(filename)
     if start is None:
-        return (True, filename)
+        return (True, 0, filename)
 
     ordinal = start.toordinal()
-    return (False, -ordinal if order == "desc" else ordinal)
+    return (False, -ordinal if order == "desc" else ordinal, filename)
 
 
 def sort_urls_by_date(
