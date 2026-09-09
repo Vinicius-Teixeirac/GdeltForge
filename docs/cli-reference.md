@@ -84,9 +84,9 @@ The date filter applies to all three file types the GDELT archive provides:
 | Monthly | `202003.zip` | month overlaps range |
 | Yearly | `2020.zip` | year overlaps range |
 
-Files already present in the download directory are skipped regardless of the date filter, so re-running `scrape` is safe and incremental.
+Files already present in the download directory are skipped regardless of the date filter, so re-running `scrape` is safe and incremental. A pre-existing file's checksum is not re-verified before it's counted as skipped: its integrity is assumed from its presence, not re-checked against GDELT's own MD5. `--force` re-downloads and re-verifies it if that assumption is ever in doubt (a stale or corrupted file left over from an interrupted earlier run, say). A corrupted file left in place this way is still caught reliably: `convert` fails clearly on a bad ZIP the moment it actually reads one.
 
-Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksum-verified against the MD5 GDELT publishes for each file: a mismatch is treated like a network failure and retried, so a corrupted or truncated download never silently ends up in the dataset. See [Configuration](configuration.md#scraping) for the `requests` vs `selenium` link-collection method and the full list of scraping settings.
+Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksum-verified against the MD5 GDELT publishes for each file: a mismatch is treated like a network failure and retried, so a corrupted or truncated download never silently ends up in the dataset. This applies to what's downloaded during the current run; see the skip note above for what a rerun assumes about a file it finds already present. See [Configuration](configuration.md#scraping) for the `requests` vs `selenium` link-collection method and the full list of scraping settings.
 
 `--quiet` raises the logger to WARNING, suppressing the setup and summary lines `scrape` otherwise always prints; mutually exclusive with `--verbose`.
 
