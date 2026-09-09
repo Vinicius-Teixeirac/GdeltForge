@@ -1095,13 +1095,23 @@ class TestRunFilterDatasetParameter:
         # the identical config).
         reduced_in = tmp_path / "reduced_in"
         reduced_out = tmp_path / "reduced_out"
+        # Distinct from reduced_in/reduced_out (never mkdir'd here) so a
+        # wrong-key resolution can't accidentally pass by reusing the
+        # flat paths; still under tmp_path, not a bare absolute string,
+        # since __init__ genuinely mkdir's the output one below and a
+        # real filesystem-root path (this test's own original shape)
+        # either silently creates a stray directory outside tmp_path on
+        # a permissive machine or raises PermissionError outright on one
+        # that isn't, confirmed for real once CI ran this far at all.
+        reduced_hist_in = tmp_path / "reduced_hist"
+        reduced_hist_out = tmp_path / "reduced_hist_out"
         reduced_in.mkdir()
         cfg = {
             "paths": {
                 "event_reduced_parquet_data_directory": str(reduced_in),
                 "event_reduced_filtered_data_directory": str(reduced_out),
-                "event_reduced_parquet_historical_directory": "/reduced_hist",
-                "event_reduced_filtered_historical_directory": "/reduced_hist_out",
+                "event_reduced_parquet_historical_directory": str(reduced_hist_in),
+                "event_reduced_filtered_historical_directory": str(reduced_hist_out),
                 "parquet_data_directory": str(reduced_in),
                 "filtered_data_directory": str(reduced_out),
             },
@@ -1119,8 +1129,8 @@ class TestRunFilterDatasetParameter:
         monkeypatch.setattr(GDELTFilter, "__init__", spy_init)
 
         run_filter(cfg, dataset="gdelt_event_reduced")
-        assert captured["historical_input_folder"] == "/reduced_hist"
-        assert captured["historical_output_folder"] == "/reduced_hist_out"
+        assert captured["historical_input_folder"] == str(reduced_hist_in)
+        assert captured["historical_output_folder"] == str(reduced_hist_out)
 
         run_filter(cfg, dataset="gdelt_event")
         assert captured["historical_input_folder"] is None
