@@ -34,6 +34,7 @@ This module provides:
 
 import glob
 import logging
+import multiprocessing
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -701,7 +702,25 @@ class GDELTConverter:
         # CSV names, own output parquet paths), so file-level parallelism
         # across processes is safe: this is CPU-bound (CSV parsing +
         # parquet writing), so ProcessPoolExecutor beats threads here.
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+        #
+        # mp_context is forced to spawn rather than left at the platform
+        # default: polars' own native thread pool (Rayon) doesn't survive
+        # fork() on Linux. A parent process that already used polars for
+        # anything before forking hands the child a copy of that thread
+        # pool's internal lock state with no thread left to ever release
+        # it, so the first polars call inside a forked worker hangs
+        # permanently. Found for real: this project's own test suite
+        # already uses polars dozens of times before its first real
+        # ProcessPoolExecutor call, hanging every CI run on Linux (fork
+        # by default) to its 6-hour job timeout, invisible locally on
+        # Windows, whose ProcessPoolExecutor always uses spawn already.
+        # spawn starts a genuinely fresh interpreter per worker with
+        # nothing inherited, the same mechanism Windows already relies on
+        # here.
+        with ProcessPoolExecutor(
+            max_workers=self.max_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
             futures = {
                 executor.submit(worker, source_file): source_file
                 for source_file in to_process
