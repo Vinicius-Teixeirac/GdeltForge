@@ -635,7 +635,20 @@ def run_codes_cmd(args: argparse.Namespace) -> None:
     entries = sorted(code_family.items())
     if args.search:
         term = args.search.lower()
-        entries = [
+        # An exact match against a code is unambiguous (each family is a
+        # plain code -> name dict, so a code can never repeat within it)
+        # and answers a different question than a substring search over
+        # names does: "what does this exact code mean," not "which codes
+        # or names mention this." Treating a raw code the same as a name
+        # fragment made a short code's own lookup noisy: --search IN
+        # against ActionGeo_CountryCode returned 48 entries (Indonesia,
+        # Finland, Argentina, ... anything with "in" in its name), not
+        # just India. A search term that isn't itself a valid code still
+        # falls through to the original substring-over-code-or-name
+        # behavior, unchanged, so a name search like --search korea keeps
+        # working exactly as before.
+        exact = [(code, name) for code, name in entries if code.lower() == term]
+        entries = exact or [
             (code, name) for code, name in entries
             if term in code.lower() or term in name.lower()
         ]
