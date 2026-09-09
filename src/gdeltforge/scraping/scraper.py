@@ -829,12 +829,27 @@ def _download_one(
     """
     filename = file.url.split("/")[-1]
     local_path = os.path.join(download_dir, filename)
-    tmp_path = local_path + ".tmp"
+    # PID-suffixed, matching write_parquet_atomic's own fix for the
+    # identical race: two concurrent scrape invocations downloading the
+    # same file both used to target this same fixed ".tmp" name, so
+    # whichever process's os.replace() below ran second found its own
+    # temp file already renamed away by the other, raising a raw
+    # "[Errno 2] No such file or directory" indistinguishable from a
+    # real transient failure. That consumed one of this loop's own
+    # retries, and enough concurrent processes racing on the same file
+    # could exhaust the retry budget outright, reporting a false failure
+    # for a file that a sibling process had in fact downloaded
+    # successfully. Found via a live comprehensive QA pass.
+    tmp_path = f"{local_path}.{os.getpid()}.tmp"
 
     if not force and os.path.exists(local_path):
         return "skipped", filename
 
     if os.path.exists(tmp_path):
+        # Only a recycled PID landing on the exact path this call's own
+        # download is about to target could produce this now, since
+        # tmp_path is unique per PID: purely informational, since the
+        # download below overwrites it regardless.
         logger.warning(
             f"Found a leftover incomplete download from a previous "
             f"interrupted run: {tmp_path}. Re-downloading."

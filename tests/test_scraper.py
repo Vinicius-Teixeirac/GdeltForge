@@ -810,12 +810,22 @@ class TestDownloadOne:
 
         assert status == "failed"
         assert not (tmp_path / filename).exists()
-        assert not (tmp_path / (filename + ".tmp")).exists()
+        assert not (tmp_path / f"{filename}.{scraper.os.getpid()}.tmp").exists()
 
-    def test_warns_and_replaces_leftover_tmp_from_interrupted_run(self, tmp_path, caplog):
+    def test_warns_and_replaces_leftover_tmp_from_interrupted_run(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        # The tmp name is PID-suffixed (see the concurrent-download fix
+        # this guards against below), so a "leftover" this run can
+        # actually recognize is scoped to its own PID: pinning
+        # os.getpid() is what makes this deterministic to set up, the
+        # same class of leftover a hard-killed process's own next run
+        # under OS PID reuse would otherwise reproduce.
+        monkeypatch.setattr(scraper.os, "getpid", lambda: 12345)
         content = b"hello gdelt"
         filename = "20200101.export.CSV.zip"
-        (tmp_path / (filename + ".tmp")).write_bytes(b"partial garbage from a killed run")
+        leftover = tmp_path / f"{filename}.12345.tmp"
+        leftover.write_bytes(b"partial garbage from a killed run")
         file = GdeltFile(url=f"http://x/{filename}", md5=None)
 
         with caplog.at_level(logging.WARNING):
@@ -827,7 +837,40 @@ class TestDownloadOne:
         assert status == "success"
         assert "leftover incomplete download" in caplog.text
         assert (tmp_path / filename).read_bytes() == content
-        assert not (tmp_path / (filename + ".tmp")).exists()
+        assert not leftover.exists()
+
+    def test_tmp_path_is_pid_suffixed(self, tmp_path, monkeypatch):
+        # Regression coverage for a real gap found via a live
+        # comprehensive QA pass: two concurrent scrape invocations
+        # downloading the same file both used to target a fixed
+        # "<filename>.tmp" temp path, so whichever process's os.replace()
+        # ran second found its own temp file already renamed away by the
+        # other, raising a raw "[Errno 2] No such file or directory"
+        # that consumed one of the retry loop's own attempts. A real, separate
+        # OS process always has a distinct PID, so PID-suffixing the temp
+        # path (confirmed here directly, not inferred from behavior) means
+        # two genuinely concurrent downloads of the same file can never
+        # collide on one shared name the way write_parquet_atomic's own
+        # identical fix already prevents for filter/convert's writes.
+        monkeypatch.setattr(scraper.os, "getpid", lambda: 12345)
+        captured = {}
+        real_replace = scraper.os.replace
+
+        def spy_replace(src, dst):
+            captured["src"] = src
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(scraper.os, "replace", spy_replace)
+        content = b"hello gdelt"
+        file = GdeltFile(url="http://x/20200101.export.CSV.zip", md5=None)
+
+        status, filename = _download_one(
+            file, str(tmp_path), retries=1, timeout=5,
+            session=FakeSession(content),  # pyright: ignore[reportArgumentType]
+        )
+
+        assert status == "success"
+        assert captured["src"] == str(tmp_path / f"{filename}.12345.tmp")
 
     def test_skips_already_downloaded_file(self, tmp_path):
         existing = tmp_path / "20200101.export.CSV.zip"
