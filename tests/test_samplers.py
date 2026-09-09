@@ -2,6 +2,7 @@ import logging
 import sys
 from contextlib import contextmanager
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -15,9 +16,11 @@ from gdeltforge.sampling.samplers import (
     _apply_reservoir_replacements,
     _assign_column,
     _dedup_last_write_per_slot,
+    _discover_dataset_files,
+    _group_rng,
     _reservoir_to_dataframe,
 )
-from gdeltforge.scraping.scraper import parse_gdelt_gkg_v1_file_date
+from gdeltforge.scraping.scraper import parse_file_date, parse_gdelt_gkg_v1_file_date
 
 # A small, hand-verifiable dataset covering equality, IN-list, range, and
 # AND/OR combinations. Every filter test below asserts an exact expected
@@ -700,6 +703,273 @@ class TestCalendarSamplerSeedReproducibility:
         )
 
         assert sorted(a["GlobalEventID"].to_list()) != sorted(b["GlobalEventID"].to_list())
+
+
+class TestGroupRng:
+    """Regression coverage for a real gap found via a live comprehensive
+    QA pass: get_calendar_samples/get_stratified_sample used to draw
+    every group's reservoir accept/reject numbers from one Generator
+    shared across every group, so the actual numbers a group's rows
+    received depended on what order other groups happened to be visited
+    in, which itself depended on the scan's own physical batch
+    composition, i.e. on how many files the same logical rows were split
+    across, not just on --seed (confirmed for real: the identical
+    archive laid out as 3 files versus 7 produced only 26/240 matching
+    rows for calendar mode, 0/80 for stratified, under an identical
+    seed). _group_rng gives each group its own independent, deterministic
+    stream instead, tested here directly rather than only through the
+    emergent behavior of a real multi-file scan."""
+
+    def test_same_key_and_seed_reproduce_the_same_draws(self):
+        rng1 = _group_rng(42, "20200601", {})
+        rng2 = _group_rng(42, "20200601", {})
+        assert rng1.integers(0, 10**9, size=20).tolist() == rng2.integers(
+            0, 10**9, size=20
+        ).tolist()
+
+    def test_a_keys_draws_are_unaffected_by_other_keys_sharing_its_cache(self):
+        # Key "X" draws first with nothing else in its cache.
+        cache_a: dict = {}
+        first_draw = _group_rng(1, "X", cache_a).integers(0, 10**9)
+
+        # Same seed and key, but a different key ("Y") consumes several
+        # draws on the shared cache first this time: "X"'s own first draw
+        # must come out identical regardless.
+        cache_b: dict = {}
+        _group_rng(1, "Y", cache_b).integers(0, 10**9, size=5)
+        second_draw = _group_rng(1, "X", cache_b).integers(0, 10**9)
+
+        assert first_draw == second_draw
+
+    def test_different_keys_get_decorrelated_streams(self):
+        cache: dict = {}
+        a = _group_rng(1, "20200601", cache).integers(0, 10**9, size=50)
+        b = _group_rng(1, "20200602", cache).integers(0, 10**9, size=50)
+        assert a.tolist() != b.tolist()
+
+    def test_caches_and_reuses_the_generator_for_the_same_key(self):
+        cache: dict = {}
+        first = _group_rng(1, "k", cache)
+        second = _group_rng(1, "k", cache)
+        assert first is second
+
+
+class TestDiscoverDatasetFilesSortsChronologically:
+    """Regression coverage for the other half of the same QA finding as
+    TestGroupRng: Path.glob()/.rglob() enumerate a directory in whatever
+    order the filesystem hands entries back, not sorted by name or by
+    the dates the filenames encode. CalendarSampler/FilteredSampler feed
+    the result straight into one multi-file scan and reservoir-sample it
+    in whatever row order that scan reads it back in, so an
+    unpredictable, filesystem-dependent file order broke --seed's
+    reproducibility contract the same way unordered group visitation
+    already did. Files below are named so alphabetical order directly
+    contradicts their encoded date, so this can't pass by accident of a
+    filesystem that just happens to hand back names in lexical order."""
+
+    @staticmethod
+    def _write_day(path, day: str):
+        pl.DataFrame({"GlobalEventID": [1], "Day": [int(day)]}).write_parquet(path)
+
+    def test_returns_flat_files_sorted_by_encoded_date_regardless_of_glob_order(
+        self, tmp_path, monkeypatch
+    ):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        p1 = folder / "20200101.parquet"
+        p2 = folder / "20200102.parquet"
+        p3 = folder / "20200103.parquet"
+        self._write_day(p1, "20200101")
+        self._write_day(p2, "20200102")
+        self._write_day(p3, "20200103")
+
+        # This filesystem's own glob() already happens to hand back
+        # sorted order for these names (confirmed directly), which would
+        # let this test pass by accident of that, not because
+        # _discover_dataset_files actually sorts. The scrambled order
+        # below is forced directly instead of relying on that.
+        scrambled = [p3, p1, p2]
+        monkeypatch.setattr(Path, "glob", lambda self, pattern: iter(scrambled))
+
+        files = _discover_dataset_files(folder, None, None, None, parse_file_date)
+
+        assert [f.name for f in files] == [
+            "20200101.parquet",
+            "20200102.parquet",
+            "20200103.parquet",
+        ]
+
+    def test_historical_files_are_interleaved_with_flat_ones_by_date(
+        self, tmp_path, monkeypatch
+    ):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        hist = tmp_path / "historical"
+        hist.mkdir()
+        flat = folder / "20200103.parquet"
+        historical = hist / "20200102.parquet"
+        self._write_day(flat, "20200103")
+        self._write_day(historical, "20200102")
+        self._write_day(folder / "20200101.parquet", "20200101")
+
+        monkeypatch.setattr(Path, "rglob", lambda self, pattern: iter([historical]))
+
+        files = _discover_dataset_files(folder, hist, None, None, parse_file_date)
+
+        assert [f.name for f in files] == [
+            "20200101.parquet",
+            "20200102.parquet",
+            "20200103.parquet",
+        ]
+
+
+class TestCalendarStratifiedCrossLayoutReproducibility:
+    """End-to-end coverage that the same --seed reproduces the same
+    sample for calendar/stratified sampling after the identical logical
+    rows get re-chunked into a different number of files, the actual
+    user-visible contract QA-8 found broken: the same real archive laid
+    out as 3 files versus 7 produced only 26/240 matching rows for
+    calendar mode, 0/80 for stratified, under an identical seed. Each
+    layout below re-chunks the same 3 real days' worth of rows into a
+    different number of part-files per day (1 vs 3), mirroring
+    events-reduced's own real dayNNN_partN.parquet convention, so file
+    count differs while each file's own name still parses to the
+    correct day (needed for TestDiscoverDatasetFilesSortsChronologically's
+    sort fix to place it correctly; a made-up, unparseable name would
+    fall back to glob order instead, which happens to already be sorted
+    on this filesystem and would defeat the point of this test)."""
+
+    @staticmethod
+    def _write_layout(folder, parts_per_day: int, rows_per_day: int = 1_000):
+        folder.mkdir(parents=True, exist_ok=True)
+        row_id = 0
+        for day in ("20200601", "20200602", "20200603"):
+            idx = np.arange(row_id, row_id + rows_per_day)
+            row_id += rows_per_day
+            quad = 1 + (idx % 4)
+            for part, (chunk, qchunk) in enumerate(
+                zip(
+                    np.array_split(idx, parts_per_day),
+                    np.array_split(quad, parts_per_day),
+                    strict=True,
+                )
+            ):
+                pl.DataFrame({
+                    "GlobalEventID": chunk.tolist(),
+                    "Day": [int(day)] * len(chunk),
+                    "QuadClass": qchunk.tolist(),
+                }).write_parquet(folder / f"{day}_part{part}.parquet")
+
+    def test_calendar_sample_is_identical_across_a_re_chunked_layout(self, tmp_path):
+        folder_a = tmp_path / "layout_1part"
+        folder_b = tmp_path / "layout_3part"
+        self._write_layout(folder_a, parts_per_day=1)
+        self._write_layout(folder_b, parts_per_day=3)
+
+        a = CalendarSampler(str(folder_a), random_state=7).get_calendar_samples(
+            samples_per_period=15
+        )
+        b = CalendarSampler(str(folder_b), random_state=7).get_calendar_samples(
+            samples_per_period=15
+        )
+
+        assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
+
+    def test_stratified_sample_is_identical_across_a_re_chunked_layout(self, tmp_path):
+        folder_a = tmp_path / "layout_1part"
+        folder_b = tmp_path / "layout_3part"
+        self._write_layout(folder_a, parts_per_day=1)
+        self._write_layout(folder_b, parts_per_day=3)
+
+        a = FilteredSampler(
+            str(folder_a), ["GlobalEventID", "Day", "QuadClass"], random_state=7
+        ).get_stratified_sample("QuadClass", n_per_group=20)
+        b = FilteredSampler(
+            str(folder_b), ["GlobalEventID", "Day", "QuadClass"], random_state=7
+        ).get_stratified_sample("QuadClass", n_per_group=20)
+
+        assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
+
+
+class TestCalendarStratifiedCrossLayoutReproducibilityUnparseableNames:
+    """Follow-up to TestCalendarStratifiedCrossLayoutReproducibility above,
+    for a real gap in that fix a later QA pass found: a re-chunked layout
+    named without an embedded date at all (a generic part0.parquet/
+    part1.parquet convention, the shape a custom script or a different
+    re-chunking tool would produce, not just a literally nameless file)
+    still broke reproducibility, since _date_sort_key used to give every
+    undated file the identical sort key, leaving their relative order to
+    fall back to the caller's own input order, i.e. back to filesystem
+    directory-listing order, the exact dependency the chronological sort
+    exists to remove. Same fixture shape as the class above, but named
+    partNN.parquet globally (not per-day), matching the QA report's own
+    reproduction exactly, zero-padded so plain alphabetical order matches
+    write order (see _date_sort_key's own docstring for why that matters)."""
+
+    @staticmethod
+    def _write_layout(folder, n_files: int, n_rows: int = 3_000):
+        folder.mkdir(parents=True, exist_ok=True)
+        days = [20200601 + (i % 3) for i in range(n_rows)]
+        quad = [1 + (i % 4) for i in range(n_rows)]
+        for part, idx in enumerate(np.array_split(np.arange(n_rows), n_files)):
+            pl.DataFrame({
+                "GlobalEventID": idx.tolist(),
+                "Day": [days[i] for i in idx],
+                "QuadClass": [quad[i] for i in idx],
+            }).write_parquet(folder / f"part{part:02d}.parquet")
+
+    @staticmethod
+    def _scramble_glob_order(monkeypatch):
+        # This filesystem's own glob() already happens to hand back
+        # alphabetically sorted order for these zero-padded names
+        # (confirmed directly), which is exactly the write order too, so
+        # the pre-fix bug (relative order among undated files falling
+        # back to whatever order the input list already had) would
+        # never actually manifest here without forcing a different
+        # order. Reversing whatever the real glob() returns forces a
+        # genuine mismatch between "input order" and "correct order" on
+        # any filesystem, the same way a real ext4 directory's own
+        # hash-based order could in production.
+        real_glob = Path.glob
+        monkeypatch.setattr(
+            Path, "glob", lambda self, pattern: iter(list(real_glob(self, pattern))[::-1])
+        )
+
+    def test_calendar_sample_is_identical_across_a_re_chunked_layout(
+        self, tmp_path, monkeypatch
+    ):
+        folder_a = tmp_path / "layout_3"
+        folder_b = tmp_path / "layout_7"
+        self._write_layout(folder_a, n_files=3)
+        self._write_layout(folder_b, n_files=7)
+        self._scramble_glob_order(monkeypatch)
+
+        a = CalendarSampler(str(folder_a), random_state=7).get_calendar_samples(
+            samples_per_period=15
+        )
+        b = CalendarSampler(str(folder_b), random_state=7).get_calendar_samples(
+            samples_per_period=15
+        )
+
+        assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
+
+    def test_stratified_sample_is_identical_across_a_re_chunked_layout(
+        self, tmp_path, monkeypatch
+    ):
+        folder_a = tmp_path / "layout_3"
+        folder_b = tmp_path / "layout_7"
+        self._write_layout(folder_a, n_files=3)
+        self._write_layout(folder_b, n_files=7)
+        self._scramble_glob_order(monkeypatch)
+
+        a = FilteredSampler(
+            str(folder_a), ["GlobalEventID", "Day", "QuadClass"], random_state=7
+        ).get_stratified_sample("QuadClass", n_per_group=20)
+        b = FilteredSampler(
+            str(folder_b), ["GlobalEventID", "Day", "QuadClass"], random_state=7
+        ).get_stratified_sample("QuadClass", n_per_group=20)
+
+        assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
 
 
 class TestFilteredSamplerValidation:

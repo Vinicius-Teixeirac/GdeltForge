@@ -221,6 +221,10 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
     This is deliberate, not a bug: a mode can't group or filter by a column it silently dropped from the scan. A column `--columns` drops for real is anything not covered by one of those cases above.
 
+!!! note "`--seed` across a re-chunked archive"
+
+    A rerun against the exact same files always reproduces the same sample, for every mode. Only `--mode indexed` also reproduces the same sample after the same logical rows get re-chunked into a different number of files; `calendar` and `stratified` sampling aren't guaranteed to at real archive scale. See [Limitations](limitations-and-roadmap.md#sampling) for the full explanation.
+
 ### Indexed sampling (uniform random)
 
 ```bash
