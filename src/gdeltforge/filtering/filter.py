@@ -57,6 +57,7 @@ Provides:
 
 import glob
 import logging
+import multiprocessing
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -316,11 +317,24 @@ class GDELTFilter:
         files_failed      = 0
 
         # Each file is filtered independently (its own read, own output
-        # path), so file-level parallelism across processes is safe --
+        # path), so file-level parallelism across processes is safe:
         # this is CPU-bound (predicate evaluation + parquet write), so
         # ProcessPoolExecutor beats threads here, matching GDELTConverter's
         # identical reasoning for process_all_files.
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+        #
+        # mp_context is forced to spawn rather than left at the platform
+        # default: see converter.py's own _process_files for the full
+        # mechanism (polars' native thread pool doesn't survive fork() on
+        # Linux, hanging the first polars call inside a forked worker
+        # permanently once the parent has already used polars for
+        # anything, exactly what a real run here always has by this
+        # point). spawn starts a genuinely fresh interpreter per worker
+        # with nothing inherited, the same mechanism Windows' own
+        # ProcessPoolExecutor already relies on by default.
+        with ProcessPoolExecutor(
+            max_workers=self.max_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
             futures = {
                 executor.submit(
                     self.filter_single_file,
