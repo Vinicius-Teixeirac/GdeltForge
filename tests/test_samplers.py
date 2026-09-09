@@ -719,6 +719,31 @@ class TestFilteredSamplerValidation:
         with pytest.raises(ValueError):
             FilteredSampler(str(folder), GDELT_COLUMNS, filter_dict={"NotAColumn": 1})
 
+    def test_columns_and_filter_both_reject_a_field_events_15min_only_declares(
+        self, tmp_path
+    ):
+        """Pins docs/filtered-sampling.md's own note: against --dataset
+        events' declared 58-column schema (GDELT_COLUMNS here, none of
+        which is ActionGeo_ADM2Code), --mode filtered's --columns and
+        --filter both reject it at construction, before any file is
+        scanned, unlike --mode indexed/calendar's own --columns (see
+        TestCalendarSampler's identical-shaped
+        test_calendar_sampler_narrows_an_explicit_columns_request, which
+        warns and drops instead, since those two modes have no declared
+        schema to validate against at all)."""
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset(folder)
+
+        with pytest.raises(ValueError, match="Invalid columns"):
+            FilteredSampler(str(folder), GDELT_COLUMNS, columns={"ActionGeo_ADM2Code"})
+
+        with pytest.raises(ValueError, match="Invalid filter column"):
+            FilteredSampler(
+                str(folder), GDELT_COLUMNS,
+                filter_dict={"ActionGeo_ADM2Code": {"op": "gt", "value": "0"}},
+            )
+
     def test_a_corrupt_parquet_file_raises_a_clear_error_not_a_bare_arrow_one(
         self, tmp_path
     ):
