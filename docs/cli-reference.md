@@ -396,16 +396,36 @@ List every code for a column:
 gdeltforge codes ActionGeo_CountryCode
 ```
 
-Search within a column by code or name (case-insensitive substring match):
+Search within a column by name (case-insensitive substring match):
 
 ```bash
 gdeltforge codes ActionGeo_CountryCode --search korea
 ```
 
+Look up exactly what a code means:
+
+```bash
+gdeltforge codes ActionGeo_CountryCode --search IN
+```
+
+```
+  IN  India
+
+1 code(s).
+```
+
+A search term that exactly matches a code (case-insensitive) is treated as
+that lookup and returns only that one entry, even though the code also
+happens to be a substring of several unrelated names (`Indonesia`,
+`Finland`, `Argentina`, ...): a raw code on its own is a "what does this
+mean" question, not a fuzzy search, and every code in a family is unique.
+A search term that isn't itself a valid code falls back to the substring
+match above.
+
 | Flag | Description |
 |------|-------------|
 | `column` | Positional, optional. A CAMEO/FIPS-coded column, e.g. `ActionGeo_CountryCode` |
-| `--search TERM` | Filter results to codes or names containing this substring |
+| `--search TERM` | An exact match (case-insensitive) against a code returns only that code; otherwise, filters results to codes or names containing this substring |
 
 ## Full pipeline examples
 

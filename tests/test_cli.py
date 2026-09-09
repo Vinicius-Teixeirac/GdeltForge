@@ -1667,6 +1667,40 @@ class TestRunCodesCmd:
         assert "Korea, South" in out
         assert "United States" not in out
 
+    def test_search_by_exact_code_returns_only_that_one_entry(self, capsys):
+        # A raw code searched on its own is a lookup ("what is IN?"), not a
+        # substring search: falling through to the old code-or-name
+        # substring match here returned 48 entries (Indonesia, Finland,
+        # Argentina, ... anything with "in" in its own name), not just the
+        # one country IN itself actually names.
+        cli.run_codes_cmd(argparse.Namespace(column="ActionGeo_CountryCode", search="IN"))
+
+        out = capsys.readouterr().out
+        assert "India" in out
+        assert "Indonesia" not in out
+        assert "Finland" not in out
+        assert "Argentina" not in out
+        assert "1 code(s)." in out
+
+    def test_search_by_exact_code_is_case_insensitive(self, capsys):
+        cli.run_codes_cmd(argparse.Namespace(column="ActionGeo_CountryCode", search="in"))
+
+        out = capsys.readouterr().out
+        assert "India" in out
+        assert "1 code(s)." in out
+
+    def test_search_falls_back_to_substring_when_not_an_exact_code(self, capsys):
+        # "korea" isn't itself a valid code for this column, so this must
+        # still fall through to the original code-or-name substring
+        # behavior rather than reporting no matches.
+        cli.run_codes_cmd(
+            argparse.Namespace(column="ActionGeo_CountryCode", search="korea")
+        )
+
+        out = capsys.readouterr().out
+        assert "Korea, North" in out
+        assert "Korea, South" in out
+
     def test_unknown_column_raises(self):
         with pytest.raises(ValueError, match="no CAMEO code reference list"):
             cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))
