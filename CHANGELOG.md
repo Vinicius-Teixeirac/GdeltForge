@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - README.md's CLI section stated unqualified that `python main.py <command>` "is kept as a backward-compatible equivalent," read right after the README's own primary `pip install gdeltforge` instructions. The shim only exists in a source checkout; it's genuinely absent from the PyPI wheel (confirmed directly: no `main.py` anywhere in an installed venv, `python main.py --help` fails with `FileNotFoundError`). `docs/getting-started.md` already carried the correct qualifier; README.md and `docs/cli-reference.md` did not. Both now state the same scope. Found via a live comprehensive QA pass.
+- `gdeltforge --help`'s own description still read "a data pipeline for the GDELT Events Database," confirmed directly by running `--help`. A 2026-09-03 fix (c4ecd4b) dropped this same string's "GDELT 2.0" qualifier for overstating scope, and updated pyproject.toml, mkdocs.yml, and README.md to the dataset-agnostic wording those files use today, but left `build_parser`'s own description holding the narrower half of the original claim: GdeltForge also forges GKG 1.0, GKG 1.0 Counts, and Mentions, not just Events. `build_parser` now uses the same wording as pyproject.toml's own description. Found via a live comprehensive QA pass.
 
 ## [0.9.0] - 2026-09-09
 

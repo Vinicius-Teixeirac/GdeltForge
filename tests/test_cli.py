@@ -66,6 +66,36 @@ class TestDatasetFlag:
             parser.parse_args(["convert", "--dataset", "not-a-real-dataset"])
 
 
+class TestTopLevelDescriptionScope:
+    def test_help_description_does_not_claim_events_only_scope(self):
+        # build_parser's own description previously read "a data pipeline
+        # for the GDELT Events Database", left behind when a 2026-09-03
+        # fix (c4ecd4b) dropped this same string's "GDELT 2.0" qualifier
+        # for the identical reason: GdeltForge also forges GKG 1.0, GKG
+        # 1.0 Counts, and Mentions, not just Events, so describing the
+        # whole pipeline as Events-only overstates its scope exactly the
+        # way the 2.0 qualifier did. pyproject.toml's own description,
+        # already fixed in that same commit, is the canonical wording;
+        # build_parser's should say the same thing, not something already
+        # narrower than what it replaced.
+        parser = cli.build_parser()
+        description = parser.description
+        assert description is not None
+        assert "Events Database" not in description
+        assert "GDELT" in description
+
+    def test_help_description_matches_pyproject_wording(self):
+        pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+        pyproject_text = pyproject_path.read_text(encoding="utf-8")
+        match = re.search(r'^description = "(.+)"$', pyproject_text, re.MULTILINE)
+        assert match, "pyproject.toml has no top-level description field"
+
+        parser = cli.build_parser()
+        description = parser.description
+        assert description is not None
+        assert match.group(1) in description
+
+
 class TestExportFormatFlag:
     def test_defaults_to_parquet(self):
         parser = cli.build_parser()
