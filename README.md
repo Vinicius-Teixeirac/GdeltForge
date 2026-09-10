@@ -12,6 +12,7 @@
   <a href="https://pypi.org/project/gdeltforge/"><img src="https://img.shields.io/pypi/v/gdeltforge?labelColor=33415C&color=E8912A" alt="PyPI"></a>
   <a href="https://pypi.org/project/gdeltforge/"><img src="https://img.shields.io/pypi/pyversions/gdeltforge?labelColor=33415C&color=6C7C9E" alt="Python versions"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Vinicius-Teixeirac/GdeltForge?labelColor=33415C&color=6C7C9E" alt="License: Apache 2.0"></a>
+  <a href="https://colab.research.google.com/github/Vinicius-Teixeirac/GdeltForge/blob/main/getting-started.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 </p>
 
 <p align="center">
