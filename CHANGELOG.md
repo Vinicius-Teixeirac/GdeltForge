@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `getting-started.ipynb` gains a "Run in Colab" badge as its first cell, linking to `colab.research.google.com/github/Vinicius-Teixeirac/GdeltForge/blob/main/getting-started.ipynb`, so opening the notebook from GitHub (or a promo post linking it) offers a one-click path into a live, no-install Colab session running the real notebook already committed to `main`.
+
 ### Fixed
 - README.md's CLI section stated unqualified that `python main.py <command>` "is kept as a backward-compatible equivalent," read right after the README's own primary `pip install gdeltforge` instructions. The shim only exists in a source checkout; it's genuinely absent from the PyPI wheel (confirmed directly: no `main.py` anywhere in an installed venv, `python main.py --help` fails with `FileNotFoundError`). `docs/getting-started.md` already carried the correct qualifier; README.md and `docs/cli-reference.md` did not. Both now state the same scope. Found via a live comprehensive QA pass.
 
