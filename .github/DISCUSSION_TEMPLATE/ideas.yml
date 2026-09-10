@@ -1,0 +1,30 @@
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a rough idea, not yet scoped into a specific request. Once it's
+        concrete enough to act on, it can graduate into a
+        [feature request issue](https://github.com/Vinicius-Teixeirac/GdeltForge/issues/new/choose).
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What's the idea?
+      description: |
+        What would this let you do that you can't do today? Example:
+
+        > It'd be useful if `sample` could ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Why does this matter to you?
+      description: The real use case behind it, not just the feature itself.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

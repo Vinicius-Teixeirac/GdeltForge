@@ -6,3 +6,9 @@ contact_links:
   - name: Documentation
     url: https://vinicius-teixeirac.github.io/GdeltForge/
     about: Check the docs site before filing, your question might already be answered there.
+  - name: Question / not sure it's a bug yet
+    url: https://github.com/Vinicius-Teixeirac/GdeltForge/discussions/new?category=q-a
+    about: Not sure if it's a real bug, or just want help with configuration? Ask in Discussions instead; it can always become an issue once it's confirmed.
+  - name: Idea that isn't scoped into a concrete request yet
+    url: https://github.com/Vinicius-Teixeirac/GdeltForge/discussions/new?category=ideas
+    about: Have a rough idea rather than a specific feature request? Start it as a Discussion first.

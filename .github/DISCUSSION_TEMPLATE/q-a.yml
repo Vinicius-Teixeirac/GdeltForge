@@ -1,0 +1,39 @@
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Not sure if this is a bug yet? That's exactly what Q&A is for.
+        If it turns out to be one, it can move to an [issue](https://github.com/Vinicius-Teixeirac/GdeltForge/issues/new/choose)
+        once it's confirmed and reproducible.
+
+        Check the [docs site](https://vinicius-teixeirac.github.io/GdeltForge/) and the
+        [CHANGELOG](https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/CHANGELOG.md)
+        first, your question might already be answered there.
+
+  - type: input
+    id: version
+    attributes:
+      label: GdeltForge version
+      description: Output of `pip show gdeltforge`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: What you're trying to accomplish, and what's not working the way you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried so far?
+      description: Commands run, config used, output seen.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context

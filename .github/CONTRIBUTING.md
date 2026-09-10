@@ -59,6 +59,20 @@ Beyond what the tools catch, prefer clarity and small, focused functions over cl
 
 Use the issue templates (Bug Report / Feature Request) when opening an issue on GitHub: they ask for the details that are usually needed to act on a report (GdeltForge version, Python version, config relevant to the issue, steps to reproduce).
 
+## Issues vs. Discussions
+
+Both live on GitHub; which one to use depends on whether the thing you have is already concrete and actionable:
+
+- **Open an issue** for a confirmed bug (something GdeltForge is doing that's genuinely wrong) or a feature request specific enough to act on directly. An issue should be closeable: fixed, implemented, or explicitly declined.
+- **Open a [Discussion](https://github.com/Vinicius-Teixeirac/GdeltForge/discussions) instead** for anything more open-ended:
+  - **Q&A**: "how do I configure X" or "is this behavior expected", when you're not yet sure it's a bug.
+  - **Ideas**: a feature you'd want but haven't scoped into a specific request yet; a good idea here can graduate into an issue once it's concrete.
+  - **Show and tell**: something you built with GdeltForge output, a config you're proud of, an interesting sample.
+  - **General**: anything else GdeltForge-adjacent that doesn't fit the above.
+  - **Announcements**: maintainer-only, for release notes and project-wide updates.
+
+An unclear bug report is welcome to start as a Q&A discussion first; it can always move to an issue once it's confirmed and reproducible, which keeps the issue tracker itself focused on things with a real, trackable next action.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under this project's [Apache License 2.0](../LICENSE).
