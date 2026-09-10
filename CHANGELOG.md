@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- README.md's CLI section stated unqualified that `python main.py <command>` "is kept as a backward-compatible equivalent," read right after the README's own primary `pip install gdeltforge` instructions. The shim only exists in a source checkout; it's genuinely absent from the PyPI wheel (confirmed directly: no `main.py` anywhere in an installed venv, `python main.py --help` fails with `FileNotFoundError`). `docs/getting-started.md` already carried the correct qualifier; README.md and `docs/cli-reference.md` did not. Both now state the same scope. Found via a live comprehensive QA pass.
+
 ## [0.9.0] - 2026-09-09
 
 ### Fixed

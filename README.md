@@ -256,7 +256,7 @@ Run pipeline stages using the installed console script:
 gdeltforge <command> [options]
 ```
 
-`python main.py <command> [options]` is kept as a backward-compatible equivalent, so existing scripts keep working unchanged.
+`python main.py <command> [options]` is kept as a backward-compatible equivalent, so existing scripts keep working unchanged. This alias only exists in a source checkout, not in the PyPI package installed above; `gdeltforge` itself always works either way.
 
 | Command | Description |
 |---------|-------------|

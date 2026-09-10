@@ -4,7 +4,7 @@
 gdeltforge <command> [options]
 ```
 
-The CLI intentionally does not chain stages automatically: you run each one explicitly to maintain full control. `python main.py <command>` is kept as a backward-compatible alias.
+The CLI intentionally does not chain stages automatically: you run each one explicitly to maintain full control. `python main.py <command>` is kept as a backward-compatible alias, present only in a source checkout, not in the PyPI package; `gdeltforge` itself always works either way.
 
 | Command | Description |
 |---------|-------------|
