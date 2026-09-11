@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.9.1] - 2026-09-11
 
 ### Added
 - `getting-started.ipynb` gains a "Run in Colab" badge as its first cell, linking to `colab.research.google.com/github/Vinicius-Teixeirac/GdeltForge/blob/main/getting-started.ipynb`, so opening the notebook from GitHub (or a promo post linking it) offers a one-click path into a live, no-install Colab session running the real notebook already committed to `main`.
