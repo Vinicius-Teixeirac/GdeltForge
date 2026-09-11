@@ -78,6 +78,7 @@ Provides:
     - crossref_events_gkg_auto
 """
 
+import warnings
 from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import Path
@@ -677,13 +678,27 @@ def crossref_events_gkg_v1(
                     # entry (e.g. a trailing comma splitting "5," into
                     # ["5", ""]) isn't affected by this filter at all and
                     # explodes normally either way.
-                    exploded = (
-                        sub_batch
-                        .filter(pl.col("_matched_event_id").list.len() > 0)
-                        .explode("_matched_event_id")
-                        .with_columns(pl.col("_matched_event_id").str.strip_chars())
-                        .filter(pl.col("_matched_event_id").is_in(event_id_set))
-                    )
+                    #
+                    # explode() itself still warns that its default will
+                    # change in Polars 2.0 regardless of whether any empty
+                    # list actually reaches it: the warning fires on the API
+                    # surface, not on the data. The filter just above already
+                    # guarantees no empty list survives to be exploded, so
+                    # the pending default change has nothing left to affect
+                    # here; the warning is suppressed at exactly this call,
+                    # not project-wide, since passing empty_as_null explicitly
+                    # would drop support for the declared polars floor above.
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore", message=r".*empty_as_null.*", category=DeprecationWarning,
+                        )
+                        exploded = (
+                            sub_batch
+                            .filter(pl.col("_matched_event_id").list.len() > 0)
+                            .explode("_matched_event_id")
+                            .with_columns(pl.col("_matched_event_id").str.strip_chars())
+                            .filter(pl.col("_matched_event_id").is_in(event_id_set))
+                        )
 
                     if exploded.is_empty():
                         continue
