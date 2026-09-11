@@ -81,6 +81,7 @@ nav:
   - Data semantics:
       - Crossref Join Semantics: crossref-join-semantics.md
       - Column Redundancy: column-redundancy.md
+      - Known Absent Files: known-absent-files.md
   - Project:
       - Architecture: architecture.md
       - Limitations & Roadmap: limitations-and-roadmap.md

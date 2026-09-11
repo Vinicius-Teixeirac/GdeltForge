@@ -246,6 +246,22 @@ class TestRunScrapeCmd:
         with pytest.raises(RuntimeError, match="1 failed download"):
             cli.run_scrape_cmd({}, args)
 
+    def test_failure_message_points_at_known_absent_files_doc(self, monkeypatch):
+        # A file that fails consistently may be a real GDELT-side gap, not
+        # a bug here (see docs/known-absent-files.md); the failure message
+        # should say so rather than leaving that to be rediscovered.
+        monkeypatch.setattr(
+            cli, "run_scraping_pipeline",
+            lambda config, start_date, end_date, dataset, order="asc", verbose=False,
+            quiet=False, force=False, dry_run=False: {
+                "success": 2, "skipped": 0, "failed": ["20200101.export.CSV.zip"],
+            },
+        )
+        args = self._args()
+
+        with pytest.raises(RuntimeError, match="docs/known-absent-files.md"):
+            cli.run_scrape_cmd({}, args)
+
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
@@ -362,6 +378,24 @@ class TestRunConvertCmd:
         args = self._args()
 
         with pytest.raises(RuntimeError, match="1 failed file"):
+            cli.run_convert_cmd({}, args)
+
+    def test_failure_message_points_at_known_absent_files_doc(self, monkeypatch):
+        # A source file that's empty or never really hosted by GDELT fails
+        # conversion the same way a genuine bug would; the failure message
+        # should point at docs/known-absent-files.md rather than leaving
+        # that distinction to be rediscovered.
+        monkeypatch.setattr(
+            cli, "run_converter",
+            lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
+            verbose=False, quiet=False, force=False, dry_run=False,
+            recover_unzipped=False: (
+                ["a.parquet"], ["bad.zip"]
+            ),
+        )
+        args = self._args()
+
+        with pytest.raises(RuntimeError, match="docs/known-absent-files.md"):
             cli.run_convert_cmd({}, args)
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):

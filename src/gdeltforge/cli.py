@@ -312,7 +312,9 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     failed = result["failed"]
     if failed:
         raise RuntimeError(
-            f"Scraping finished with {len(failed)} failed download(s): {', '.join(failed)}"
+            f"Scraping finished with {len(failed)} failed download(s): {', '.join(failed)}. "
+            "A file that fails consistently (not just on a retry) may be a real gap on "
+            "GDELT's own side, not a bug here: see docs/known-absent-files.md."
         )
 
 
@@ -331,7 +333,10 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
 
     if failed:
         raise RuntimeError(
-            f"Conversion finished with {len(failed)} failed file(s): {', '.join(failed)}"
+            f"Conversion finished with {len(failed)} failed file(s): {', '.join(failed)}. "
+            "A source file that's empty or was never really hosted by GDELT will fail "
+            "conversion the same way a genuine bug would: see docs/known-absent-files.md "
+            "before assuming this is a gdeltforge problem."
         )
 
 
