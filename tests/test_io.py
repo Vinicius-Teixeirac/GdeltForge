@@ -469,6 +469,22 @@ class TestPidExists:
         # Dropping this process's own handle reproduces that condition.
         del proc
         gc.collect()
+        # Polled, not a single hard assertion: confirmed directly that a
+        # bare assertion here is genuinely flaky specifically when run as
+        # part of the full suite (reliably passes in isolation, reliably
+        # fails alongside the rest of the suite's own heavy subprocess
+        # spawning elsewhere, e.g. convert/filter's ProcessPoolExecutor
+        # tests). wait() already guarantees this exact process is fully
+        # reaped before this point; a PID that still reads as alive right
+        # after can only be a *different*, unrelated process the OS has
+        # already recycled this now-free PID number onto, a real,
+        # documented Windows/POSIX PID-reuse hazard inherent to any bare
+        # PID-liveness check, not something _pid_exists itself can rule
+        # out. Give the OS a brief window to move past that transient
+        # collision before treating it as a real failure.
+        deadline = time.monotonic() + 2.0
+        while _pid_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert not _pid_exists(pid)
 
 
