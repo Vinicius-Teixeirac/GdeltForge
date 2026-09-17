@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.10.0] - 2026-09-17
 
 ### Added
 - `sample --mode indexed --replace` samples with replacement: duplicate rows are now possible, and `n` may exceed the dataset's total row count. Off by default, so existing `indexed` invocations are unaffected.
