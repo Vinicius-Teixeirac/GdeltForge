@@ -1606,7 +1606,7 @@ class TestFilteredSamplerWithReplacement:
 
         assert df["GlobalEventID"].n_unique() == 10
 
-    def test_counting_pass_never_uses_a_bare_non_streaming_collect(
+    def test_counting_pass_streams_through_batches_not_a_separate_scan(
         self, tmp_path, monkeypatch
     ):
         """
@@ -1620,10 +1620,18 @@ class TestFilteredSamplerWithReplacement:
         aborted the whole process with a Rust-level allocator failure
         instead of raising a catchable Python error, confirmed by an
         independent QA pass against the published 0.10.0rc2 package. The
-        counting pass now goes through _batches like everything else;
-        monkeypatching plain LazyFrame.collect to blow up here catches a
-        regression back to the bare-collect version directly, rather
-        than only at real-archive scale.
+        counting pass now goes through _batches like everything else.
+
+        Spies on _batches' own call count rather than monkeypatching
+        polars' own LazyFrame.collect: at this project's declared polars
+        floor (polars>=1.34), collect_batches is itself implemented
+        internally via a background-thread call into plain .collect(),
+        confirmed directly (a bare .collect()-forbidding monkeypatch
+        broke the legitimate streaming path too, at that floor version,
+        and only that version, in CI's own min-deps job). Counting calls
+        to this class's own _batches method is a stable way to confirm
+        the counting pass reuses it, regardless of what collect_batches
+        happens to be built on inside any given polars release.
         """
         folder = tmp_path / "data"
         folder.mkdir()
@@ -1631,21 +1639,28 @@ class TestFilteredSamplerWithReplacement:
             "GlobalEventID": range(15), "QuadClass": [1] * 15,
         }).write_parquet(folder / "a.parquet")
 
-        def forbidden_collect(self, *args, **kwargs):
-            raise AssertionError(
-                "the with-replacement counting pass called LazyFrame.collect() "
-                "directly instead of streaming through _batches/collect_batches"
-            )
-
-        monkeypatch.setattr(pl.LazyFrame, "collect", forbidden_collect)
-
         sampler = FilteredSampler(
             str(folder), ["GlobalEventID", "QuadClass"],
             filter_dict={"QuadClass": 1}, random_state=1,
         )
+
+        call_count = 0
+        original_batches = sampler._batches
+
+        def counting_batches(needed_columns):
+            nonlocal call_count
+            call_count += 1
+            yield from original_batches(needed_columns)
+
+        monkeypatch.setattr(sampler, "_batches", counting_batches)
+
         df = sampler.get_random_sample(20, replace=True)
 
         assert len(df) == 20
+        # Two streamed scans: the counting pass and the gather pass. A
+        # regression back to a separate, bare-collect counting scan
+        # would only ever call _batches once (the gather pass).
+        assert call_count == 2
 
     def test_replace_true_allows_n_greater_than_filtered_row_count(self, tmp_path):
         folder = tmp_path / "data"
