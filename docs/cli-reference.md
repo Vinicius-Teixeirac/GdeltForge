@@ -323,7 +323,7 @@ gdeltforge sample \
 
 This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
 
-Alongside `stratified.parquet`, this also writes `stratified.parquet.strata.json`, recording each `QuadClass` value's true row count in the (USA-filtered) archive, independent of `--n-per-group`. Calendar sampling writes the equivalent `<out>.strata.json` keyed by period instead. Either sidecar is the `N_h` a caller needs to post-stratification-reweight the equal-allocation sample back toward the population; see [Filtered Sampling](filtered-sampling.md) and [Limitations](limitations-and-roadmap.md#sampling). Writing it is best-effort: a failure (a read-only output directory) logs a warning rather than failing the sample.
+Alongside `stratified.parquet`, this also writes `stratified.parquet.strata.json`, recording each `QuadClass` value's true row count in the (USA-filtered) archive, independent of `--n-per-group`. Calendar sampling writes the equivalent `<out>.strata.json` keyed by period instead. Either sidecar is the `N_h` a caller needs to post-stratification-reweight the equal-allocation sample back toward the population; see [Filtered Sampling](filtered-sampling.md) and [Limitations](limitations-and-roadmap.md#representativeness). Writing it is best-effort: a failure (a read-only output directory) logs a warning rather than failing the sample.
 
 ## `gdeltforge crossref`
 

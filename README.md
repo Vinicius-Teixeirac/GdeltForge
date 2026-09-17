@@ -580,7 +580,7 @@ gdeltforge sample --dataset events --mode indexed -n 10000 --start-date 2020-01-
 
 ### Further Examples
 
-The complete filtered-sampling syntax reference and a full set of runnable recipes are in the documentation: see [Filtered Sampling](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/) and [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/).
+The complete filtered-sampling syntax reference and a full set of runnable recipes are in the documentation: see [Filtered Sampling](https://vinicius-teixeirac.github.io/GdeltForge/filtered-sampling/) and [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/). For which classical sampling algorithm each mode actually runs, see [Sampling Theory](https://vinicius-teixeirac.github.io/GdeltForge/sampling-theory/).
 
 ## Logging System
 

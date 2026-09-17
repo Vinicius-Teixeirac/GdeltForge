@@ -75,6 +75,7 @@ nav:
   - Getting Started: getting-started.md
   - Concepts:
       - Architecture: architecture.md
+      - Sampling Theory: sampling-theory.md
       - Comparison to Other Tools: comparison.md
   - Guides:
       - Recipes: recipes.md
