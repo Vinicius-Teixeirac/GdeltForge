@@ -235,10 +235,20 @@ def _group_rng(
     process (PYTHONHASHSEED) unless explicitly disabled, which would make
     the derived stream, and therefore the sample, depend on the
     interpreter's own hash seed instead of only --seed.
+
+    [key_hash, seed], not [seed, key_hash]: NumPy's own parallel-RNG
+    guidance for this exact ad hoc, hand-built-stream pattern (as opposed
+    to Generator.spawn()) is to place the varying id before the fixed
+    root seed, since spawn() itself appends its own counter after the
+    seed, so prepending here avoids a possible collision if this were
+    ever mixed with spawn()-derived streams. Both orders carry the same
+    independence guarantee today, so this is a best-practice alignment,
+    not a correctness fix, but it does change which rows a given --seed
+    picks for calendar/stratified sampling; see CHANGELOG.md.
     """
     if key not in cache:
         key_hash = zlib.crc32(str(key).encode("utf-8"))
-        cache[key] = np.random.default_rng([seed, key_hash])
+        cache[key] = np.random.default_rng([key_hash, seed])
     return cache[key]
 
 
@@ -411,8 +421,15 @@ class IndexedSampler:
             f"{self.index.total_rows:,} total rows."
         )
 
-    def get_random_sample(self, n: int) -> pl.DataFrame:
-        """Sample n rows uniformly across all parquet files."""
+    def get_random_sample(self, n: int, replace: bool = False) -> pl.DataFrame:
+        """
+        Sample n rows uniformly across all parquet files.
+
+        replace=True draws with replacement (duplicate rows are possible,
+        and n may exceed the dataset's total row count): a true simple
+        random sample with replacement, cheap here because the population
+        size is known upfront via FileIndex.total_rows. Off by default.
+        """
         # n==0 and n<0 used to reach self.rng.choice below unchecked: 0
         # produced an empty per-file split, so no chunk was ever appended
         # to sampled and pl.concat raised a raw "cannot concat empty
@@ -425,10 +442,10 @@ class IndexedSampler:
             raise ValueError(f"n must be non-negative, got {n}")
         if n == 0:
             return pl.DataFrame()
-        if n > self.index.total_rows:
+        if n > self.index.total_rows and not replace:
             raise ValueError("Requested sample size > total available rows")
 
-        random_indices = self.rng.choice(self.index.total_rows, n, replace=False)
+        random_indices = self.rng.choice(self.index.total_rows, n, replace=replace)
         logger.info(f"Sampling {n} rows across {len(self.index.files)} files")
 
         indices_by_file = self.index.group_indices_by_file(random_indices)
@@ -554,6 +571,12 @@ class CalendarSampler:
         self.end_date = end_date
         self.date_parser = date_parser
         self.rng = ReproducibleRNG(random_state)
+
+        # Populated by get_calendar_samples with each period's true row
+        # count in the archive, independent of samples_per_period; None
+        # until a call actually runs, so "never ran" is distinguishable
+        # from "ran and every period happened to be empty."
+        self.period_row_counts_: dict[str, int] | None = None
 
     def _batches(self, needed_columns: list[str] | None):
         with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
@@ -737,6 +760,14 @@ class CalendarSampler:
             if chunks and g not in reservoirs:
                 reservoirs[g] = pl.concat(chunks)
 
+        # total_seen already carries each period's true row count in the
+        # archive, tracked purely to drive Algorithm R's own replacement
+        # probability; captured here too so a caller can recover it for
+        # post-stratification reweighting (samples_per_period draws the
+        # same count per period regardless of the period's real size, see
+        # docs/limitations-and-roadmap.md#representativeness).
+        self.period_row_counts_ = dict(total_seen)
+
         if not reservoirs:
             return pl.DataFrame()
 
@@ -794,6 +825,12 @@ class FilteredSampler:
         self.start_date  = start_date
         self.end_date    = end_date
         self.date_parser = date_parser
+
+        # Populated by get_stratified_sample with each stratum's true row
+        # count in the (filtered) archive, independent of n_per_group;
+        # None until a call actually runs, mirroring CalendarSampler's own
+        # period_row_counts_.
+        self.stratum_row_counts_: dict[Any, int] | None = None
 
         self._validate_columns()
         self._validate_filter_dict()
@@ -1109,7 +1146,16 @@ class FilteredSampler:
         return pl.concat(frames)
 
     # ---------- reservoir sampling for random sample ----------
-    def get_random_sample(self, n: int) -> pl.DataFrame:
+    def get_random_sample(self, n: int, replace: bool = False) -> pl.DataFrame:
+        """
+        Sample n filtered rows. replace=True draws with replacement, via a
+        two-pass count-then-gather scan (see
+        _get_random_sample_with_replacement): Algorithm R's own
+        shared-accept-probability trick (used below when replace=False)
+        doesn't generalize to independent with-replacement draws, so this
+        needs a known total row count upfront the way replace=False here
+        never does.
+        """
         # Same reasoning as IndexedSampler.get_random_sample's identical
         # check: a negative n used to reach the reservoir machinery below
         # unchecked, same as 0, producing a nonsensical but "successful"
@@ -1121,6 +1167,10 @@ class FilteredSampler:
             return pl.DataFrame()
 
         needed = self._needed_columns()
+
+        if replace:
+            return self._get_random_sample_with_replacement(n, needed)
+
         fill_chunks: list[pl.DataFrame] = []
         filled    = 0
         reservoir_cols: dict[str, np.ndarray] | None = None
@@ -1191,6 +1241,74 @@ class FilteredSampler:
 
         keep_cols = [c for c in self._gdelt_columns_ordered if c in reservoir.columns]
         return reservoir.select(keep_cols)
+
+    # ---------- with-replacement sampling (two-pass) ----------
+    def _get_random_sample_with_replacement(
+        self, n: int, needed: list[str]
+    ) -> pl.DataFrame:
+        """
+        Two-pass with-replacement sampling of the filtered stream.
+
+        Algorithm R's shared accept-probability trick gives every row one
+        shot at one of n reservoir slots in O(1) amortized work, which is
+        exactly what without-replacement sampling needs but not what
+        independent with-replacement draws are: n i.i.d. draws would each
+        need their own per-row accept test, O(n) work per row instead of
+        O(1). IndexedSampler sidesteps this by knowing the population size
+        upfront (FileIndex.total_rows); this does the filtered-stream
+        equivalent by paying for that upfront count with a first pass.
+
+        Pass 1 counts the filtered rows (filter columns only; no output
+        columns are read or materialized). Pass 2 draws n indices in
+        [0, count) with replacement, sorts them, and streams the filtered
+        rows a second time, gathering whichever (possibly repeated)
+        positions land in each batch. The two passes see the same filter
+        over the same file list, so they see the same row count; a
+        mismatch (the underlying files changed between passes) is
+        detected rather than silently returning a short or wrong sample.
+        """
+        with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
+            lf = self._dataset()
+            expr = self._build_expression(self.filter_dict)
+            if expr is not None:
+                lf = lf.filter(expr)
+            count = lf.select(pl.len()).collect().item()
+
+        if count == 0:
+            return pl.DataFrame()
+
+        targets = np.sort(self.rng.choice(count, n, replace=True))
+
+        frames: list[pl.DataFrame] = []
+        pos = 0
+        with tqdm(total=None, desc="Sampling (random, with replacement)") as pbar:
+            for df_batch in self._batches(needed):
+                batch_size = len(df_batch)
+                if batch_size == 0:
+                    pbar.update(1)
+                    continue
+
+                lo = np.searchsorted(targets, pos, side="left")
+                hi = np.searchsorted(targets, pos + batch_size, side="left")
+                if hi > lo:
+                    frames.append(df_batch[targets[lo:hi] - pos])
+
+                pos += batch_size
+                pbar.update(1)
+
+        if pos != count:
+            raise RuntimeError(
+                f"Filtered row count changed between the counting pass "
+                f"({count}) and the sampling pass ({pos}); the underlying "
+                f"data changed mid-sample. Rerun."
+            )
+
+        if not frames:
+            return pl.DataFrame()
+
+        sample = pl.concat(frames)
+        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
+        return sample.select(keep_cols)
 
     # ---------- stratified reservoir sampling ----------
     # A dedicated grouping-key column, added and dropped inside the loop
@@ -1297,6 +1415,14 @@ class FilteredSampler:
         for g, chunks in fill_chunks.items():
             if chunks and g not in reservoirs:
                 reservoirs[g] = pl.concat(chunks)
+
+        # total_seen already carries each stratum's true row count in the
+        # (filtered) archive, tracked purely to drive Algorithm R's own
+        # replacement probability; captured here too so a caller can
+        # recover it for post-stratification reweighting (n_per_group
+        # draws the same count per stratum regardless of the stratum's
+        # real size, see docs/limitations-and-roadmap.md#representativeness).
+        self.stratum_row_counts_ = dict(total_seen)
 
         if not reservoirs:
             return pl.DataFrame()

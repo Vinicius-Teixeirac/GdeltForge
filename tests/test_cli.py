@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 import signal
 import sys
@@ -732,13 +733,14 @@ class TestRunSamplingCmdSource:
                 captured["historical_folder"] = historical_folder
                 captured["columns"] = columns
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source=source, n=10, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -777,7 +779,7 @@ class TestRunSamplingCmdSource:
             ):
                 captured["historical_folder"] = historical_folder
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
@@ -786,6 +788,7 @@ class TestRunSamplingCmdSource:
         config["converter"] = {"partitioning": None}
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -814,7 +817,7 @@ class TestRunSamplingCmdSource:
             ):
                 captured["historical_folder"] = historical_folder
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"Date": [19790101]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
@@ -830,6 +833,7 @@ class TestRunSamplingCmdSource:
         }
         args = argparse.Namespace(
             dataset="events-reduced", mode="indexed", source="converted", n=10, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -855,13 +859,14 @@ class TestRunSamplingCmdSource:
             ):
                 captured["columns"] = columns
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
             export_format="parquet", start_date=None, end_date=None,
         )
@@ -887,6 +892,8 @@ class TestRunSamplingCmdSource:
             ):
                 captured["date_column"] = date_column
 
+            period_row_counts_ = None
+
             def get_calendar_samples(self, samples_per_period):
                 return pl.DataFrame({"Date": [19790101]})
 
@@ -902,6 +909,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events-reduced", mode="calendar", source="converted",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=None,
             export_format="parquet", start_date=None, end_date=None,
         )
@@ -923,6 +931,8 @@ class TestRunSamplingCmdSource:
             ):
                 captured["columns"] = columns
 
+            period_row_counts_ = None
+
             def get_calendar_samples(self, samples_per_period):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
@@ -931,6 +941,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="filtered",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
             export_format="parquet", start_date=None, end_date=None,
         )
@@ -952,13 +963,14 @@ class TestRunSamplingCmdSource:
             ):
                 pass
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1, 2], "QuadClass": [1, 3]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="csv",
             start_date=None, end_date=None,
         )
@@ -970,6 +982,268 @@ class TestRunSamplingCmdSource:
         result = pl.read_csv(out_csv)
         assert result["GlobalEventID"].to_list() == [1, 2]
         assert result["QuadClass"].to_list() == [1, 3]
+
+
+class TestRunSamplingCmdReplace:
+    """--replace reaches IndexedSampler/FilteredSampler.get_random_sample
+    and is rejected outside indexed/non-stratified-filtered modes, since
+    calendar and stratified sampling don't implement it (see the roadmap
+    entry in docs/limitations-and-roadmap.md)."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    def test_replace_flag_reaches_indexed_sampler(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                pass
+
+            def get_random_sample(self, n, replace=False):
+                captured["replace"] = replace
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        args = argparse.Namespace(
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=True, stratify=None,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["replace"] is True
+
+    def test_replace_flag_reaches_filtered_sampler(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n, replace=False):
+                captured["replace"] = replace
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        args = argparse.Namespace(
+            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            replace=True, filter='{"QuadClass": [1]}', stratify=None, n_per_group=None,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["replace"] is True
+
+    def test_replace_rejected_for_calendar_mode(self, tmp_path):
+        args = argparse.Namespace(
+            dataset="events", mode="calendar", source="filtered",
+            per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            replace=True, stratify=None,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        with pytest.raises(ValueError, match="--replace is only supported"):
+            cli.run_sampling_cmd(self._config(), args)
+
+    def test_replace_rejected_alongside_stratify(self, tmp_path):
+        args = argparse.Namespace(
+            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            replace=True, filter=None, stratify="QuadClass", n_per_group=50,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        with pytest.raises(ValueError, match="--replace is only supported"):
+            cli.run_sampling_cmd(self._config(), args)
+
+    def test_replace_false_never_reaches_the_stratify_check(self, tmp_path, monkeypatch):
+        # args.stratify is only read once args.replace is truthy (short-
+        # circuited); a plain indexed Namespace that never sets .stratify
+        # at all (as most hand-built fixtures in this file don't) must
+        # still work when replace=False, the default.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeIndexedSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        args = argparse.Namespace(
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=False,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        assert not hasattr(args, "stratify")
+
+        cli.run_sampling_cmd(self._config(), args)
+
+
+class TestStrataSidecar:
+    """<out>.strata.json, written after calendar/stratified sampling from
+    period_row_counts_/stratum_row_counts_, the true per-group row counts
+    a caller needs to post-stratification-reweight an equal-allocation
+    sample (see docs/limitations-and-roadmap.md#representativeness)."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "filtered_data_directory": "/filtered",
+                "filtered_historical_directory": "/filtered_hist",
+            },
+            "columns": {"gdelt_event": ["GlobalEventID"]},
+        }
+
+    def test_calendar_sidecar_written_with_correct_counts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeCalendarSampler:
+            period_row_counts_ = {"20200101": 7, "20200102": 3}
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_calendar_samples(self, samples_per_period):
+                return pl.DataFrame({"Day": [20200101]})
+
+        monkeypatch.setattr(cli, "CalendarSampler", FakeCalendarSampler)
+
+        out = tmp_path / "o.parquet"
+        args = argparse.Namespace(
+            dataset="events", mode="calendar", source="filtered",
+            per_day=None, per_period=2, period=None, date_column=None, seed=42,
+            replace=False, stratify=None,
+            out=str(out), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        sidecar = tmp_path / "o.parquet.strata.json"
+        assert sidecar.exists()
+        payload = json.loads(sidecar.read_text())
+        assert payload == {
+            "group_by": "Day",
+            "counts": {"20200101": 7, "20200102": 3},
+        }
+
+    def test_stratified_sidecar_written_with_correct_counts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeFilteredSampler:
+            stratum_row_counts_ = {"1": 10, "2": 30}
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        out = tmp_path / "o.parquet"
+        args = argparse.Namespace(
+            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            replace=False, filter=None, stratify="QuadClass", n_per_group=4,
+            out=str(out), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        sidecar = tmp_path / "o.parquet.strata.json"
+        assert sidecar.exists()
+        payload = json.loads(sidecar.read_text())
+        assert payload == {"group_by": "QuadClass", "counts": {"1": 10, "2": 30}}
+
+    def test_no_sidecar_for_indexed_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeIndexedSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        out = tmp_path / "o.parquet"
+        args = argparse.Namespace(
+            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=False,
+            out=str(out), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert not (tmp_path / "o.parquet.strata.json").exists()
+
+    def test_sidecar_write_failure_degrades_without_failing_the_sample(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeCalendarSampler:
+            period_row_counts_ = {"20200101": 7}
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_calendar_samples(self, samples_per_period):
+                return pl.DataFrame({"Day": [20200101]})
+
+        monkeypatch.setattr(cli, "CalendarSampler", FakeCalendarSampler)
+
+        real_write_text = Path.write_text
+
+        def failing_write_text(self, *a, **kw):
+            if self.name.endswith(".strata.json"):
+                raise OSError("disk full")
+            return real_write_text(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+        out = tmp_path / "o.parquet"
+        args = argparse.Namespace(
+            dataset="events", mode="calendar", source="filtered",
+            per_day=None, per_period=2, period=None, date_column=None, seed=42,
+            replace=False, stratify=None,
+            out=str(out), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_sampling_cmd(self._config(), args)
+
+        assert not (tmp_path / "o.parquet.strata.json").exists()
+        assert any("Could not write strata sidecar" in r.message for r in caplog.records)
 
 
 class TestRunSamplingCmdDateFiltering:
@@ -992,6 +1266,7 @@ class TestRunSamplingCmdDateFiltering:
     def _args(**overrides):
         defaults = dict(
             dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            replace=False,
             out="o.parquet", columns=None, export_format="parquet",
             filter=None, stratify=None, n_per_group=None,
             start_date=None, end_date=None,
@@ -1012,7 +1287,7 @@ class TestRunSamplingCmdDateFiltering:
                 captured["start_date"] = start_date
                 captured["end_date"] = end_date
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
@@ -1054,7 +1329,7 @@ class TestRunSamplingCmdDateFiltering:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
@@ -1078,7 +1353,7 @@ class TestRunSamplingCmdDateFiltering:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
@@ -1099,7 +1374,7 @@ class TestRunSamplingCmdDateFiltering:
             def __init__(self, *args, **kwargs):
                 pass
 
-            def get_random_sample(self, n):
+            def get_random_sample(self, n, replace=False):
                 return pl.DataFrame({"GlobalEventID": [1]})
 
         monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
@@ -1136,6 +1411,7 @@ class TestRunSamplingCmdStratifyWithoutFilter:
     def _args(**overrides):
         defaults = dict(
             dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            replace=False,
             out="o.parquet", columns=None, export_format="parquet",
             filter=None, stratify=None, n_per_group=None,
             start_date=None, end_date=None,
@@ -1151,6 +1427,8 @@ class TestRunSamplingCmdStratifyWithoutFilter:
         class FakeFilteredSampler:
             def __init__(self, *args, filter_dict=None, **kwargs):
                 captured["filter_dict"] = filter_dict
+
+            stratum_row_counts_ = None
 
             def get_stratified_sample(self, column, n_per_group):
                 return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
@@ -1186,6 +1464,8 @@ class TestRunSamplingCmdStratifyWithoutFilter:
         class FakeFilteredSampler:
             def __init__(self, *args, filter_dict=None, **kwargs):
                 captured["filter_dict"] = filter_dict
+
+            stratum_row_counts_ = None
 
             def get_stratified_sample(self, column, n_per_group):
                 return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
@@ -1239,6 +1519,8 @@ class TestStratifyWithoutFilterThroughRealArgparse:
             def __init__(self, *args, filter_dict=None, **kwargs):
                 captured["filter_dict"] = filter_dict
 
+            stratum_row_counts_ = None
+
             def get_stratified_sample(self, column, n_per_group):
                 return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
 
@@ -1277,6 +1559,8 @@ class TestStratifyWithoutFilterThroughRealArgparse:
         class FakeFilteredSampler:
             def __init__(self, *args, filter_dict=None, **kwargs):
                 captured["filter_dict"] = filter_dict
+
+            stratum_row_counts_ = None
 
             def get_stratified_sample(self, column, n_per_group):
                 return pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})

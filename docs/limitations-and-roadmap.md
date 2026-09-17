@@ -37,5 +37,6 @@ CI (tests, docs build, publish) runs on Linux only. The package installs and run
 - [ ] CLI pipelines (e.g., `gdeltforge run all`)
 - [ ] GPU-aware sampling (cuDF / RAPIDS)
 - [ ] More advanced sampling techniques
+- [ ] `--replace` for `--mode calendar` and `--mode filtered --stratify`. `--mode indexed` and non-stratified `--mode filtered` already support it (see [CLI Reference](cli-reference.md#gdeltforge-sample)); the reservoir-based calendar and stratified modes reservoir-sample many groups off one shared accept-probability trick that doesn't generalize to independent with-replacement draws without a materially different, more expensive algorithm (an O(n)-per-row accept test, or n independent per-group counting passes), so it's tracked here rather than bolted on
 
 Shipped work previously tracked here now lives in [CHANGELOG.md](https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/CHANGELOG.md); the numbers behind past decisions (compression codec, dtype narrowing, column pruning) live in [Configuration](configuration.md#capacity-planning-real-measured-numbers).

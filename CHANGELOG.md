@@ -4,6 +4,16 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- `sample --mode indexed --replace` samples with replacement: duplicate rows are now possible, and `n` may exceed the dataset's total row count. Off by default, so existing `indexed` invocations are unaffected.
+- `sample --mode filtered --replace` (without `--stratify`) samples with replacement from the filtered rows, via a two-pass count-then-gather scan: the filtered row count is read once, `n` positions are drawn with replacement against that count, and a second streamed pass gathers exactly those positions. `--replace` is rejected for `--mode calendar`/`daily` and for `--stratify`; both would need a materially different, more expensive algorithm than the single shared-accept-probability reservoir sampling those modes use today (tracked in the roadmap).
+- `CalendarSampler.period_row_counts_` and `FilteredSampler.stratum_row_counts_`: populated after `get_calendar_samples`/`get_stratified_sample` with each period's/stratum's true row count in the archive, independent of how many rows `--per-period`/`--n-per-group` actually drew. `sample --mode calendar` and `--mode filtered --stratify` now also write a `<out>.strata.json` sidecar carrying these counts, the number needed to post-stratification-reweight an equal-allocation sample back toward the population (see `docs/limitations-and-roadmap.md#representativeness`). Best-effort: a write failure degrades to a logged warning rather than failing the sample.
+
+### Changed
+- **Breaking**: `_group_rng`'s per-group RNG stream is now derived as `[key_hash, seed]` rather than `[seed, key_hash]`, matching NumPy's own documented convention for hand-built parallel streams (the varying id goes before the fixed root seed, so it can't collide with `Generator.spawn()`'s own counter, which is appended after the seed). Both orders carry the same independence guarantee, but the two derivations produce different draws: the same `--seed` now picks different rows than before this change for `--mode calendar` and `--mode filtered --stratify`. `--mode indexed` is unaffected; it never used `_group_rng`.
+
 ## [0.9.1] - 2026-09-11
 
 ### Added

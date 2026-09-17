@@ -177,6 +177,10 @@ gdeltforge sample \
     --n-per-group 500
 ```
 
+!!! note "Strata sidecar"
+
+    Every stratified run also writes `<out>.strata.json`, recording each stratify value's true row count in the filtered archive regardless of `--n-per-group`. Reweight each group by `true_count / n_per_group` before computing a population-level statistic off a stratified sample; see [CLI Reference](cli-reference.md#gdeltforge-sample) and [Limitations](limitations-and-roadmap.md#sampling).
+
 ## Quick reference
 
 | Filter type | Example JSON | Meaning |
