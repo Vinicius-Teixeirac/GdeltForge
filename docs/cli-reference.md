@@ -196,6 +196,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 | `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
 | `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
+| `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
 | `--per-period N` | calendar | Rows per calendar period (default 10) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
@@ -235,6 +236,12 @@ gdeltforge sample --dataset events --mode indexed -n 10000 --seed 123 --out samp
 ```
 
 Samples 10,000 rows uniformly across the entire dataset.
+
+```bash
+gdeltforge sample --dataset events --mode indexed -n 10000 --replace --out bootstrap.parquet
+```
+
+Samples 10,000 rows with replacement: duplicates are possible, and `n` can exceed the dataset's total row count. This is a true simple random sample with replacement, since `--mode indexed` already knows the exact population size upfront; useful for a bootstrap-style draw, not just a plain SRS.
 
 ### Calendar sampling (N rows per period)
 
@@ -290,6 +297,8 @@ gdeltforge sample \
 
 Filters support nested `AND`/`OR` blocks; see the example pipelines below for an `OR` example across multiple columns.
 
+`--replace` also works here (without `--stratify`): `gdeltforge sample --dataset events --mode filtered --filter '{"QuadClass": [1, 2]}' -n 5000 --replace` samples the filtered rows with replacement. Unlike `indexed`, the filtered row count isn't known upfront, so this runs a first counting pass (filter columns only, no rows materialized) before drawing `n` positions with replacement and streaming the filtered rows a second time to gather them; expect roughly double the I/O of the same call without `--replace`.
+
 !!! warning "Two country-code schemes, easy to mix up"
 
     GDELT has two distinct country-code schemes: `Actor1CountryCode`/`Actor2CountryCode` use 3-letter CAMEO codes (`USA`), while `ActionGeo_CountryCode`, `Actor1Geo_CountryCode`, and `Actor2Geo_CountryCode` use 2-letter FIPS 10-4 codes (`US`). A value that doesn't match the right scheme for its column logs a warning rather than failing outright (FIPS 10-4 was retired in 2008 and can lag newer countries), but it also means the filter silently matches nothing. Run [`gdeltforge codes`](#gdeltforge-codes) to check.
@@ -309,6 +318,8 @@ gdeltforge sample \
 ```
 
 This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
+
+Alongside `stratified.parquet`, this also writes `stratified.parquet.strata.json`, recording each `QuadClass` value's true row count in the (USA-filtered) archive, independent of `--n-per-group`. Calendar sampling writes the equivalent `<out>.strata.json` keyed by period instead. Either sidecar is the `N_h` a caller needs to post-stratification-reweight the equal-allocation sample back toward the population; see [Filtered Sampling](filtered-sampling.md) and [Limitations](limitations-and-roadmap.md#sampling). Writing it is best-effort: a failure (a read-only output directory) logs a warning rather than failing the sample.
 
 ## `gdeltforge crossref`
 

@@ -296,6 +296,27 @@ def _write_sample_output(df, out: Path, export_format: str) -> None:
         write_dataframe_atomic(df, out, export_format=export_format)
 
 
+def _write_strata_sidecar(out: Path, group_by: str, counts: dict) -> None:
+    """
+    Best-effort <out>.strata.json sidecar recording each period's/
+    stratum's TRUE row count in the archive, alongside a calendar or
+    stratified sample: --per-period/--n-per-group draws the same count
+    per group regardless of the group's real size (see
+    docs/limitations-and-roadmap.md#representativeness), so this is the
+    N_h a caller needs to post-stratification-reweight the sample back
+    toward the population. Mirrors utils/io.py's own CSV schema sidecar:
+    a write failure (read-only directory, full disk) degrades to a
+    logged warning rather than failing an otherwise-successful sample.
+    """
+    sidecar = out.with_name(out.name + ".strata.json")
+    try:
+        sidecar.write_text(
+            json.dumps({"group_by": group_by, "counts": counts}, indent=2)
+        )
+    except OSError as e:
+        logger.warning(f"Could not write strata sidecar {sidecar}: {e}")
+
+
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
     start_date, end_date = _parse_date_range(args)
@@ -373,6 +394,22 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             "narrower than expected from either alone usually means the other is also active."
         )
 
+    # --replace only makes sense against a known, or newly-counted, total
+    # row count: --mode indexed already has one (FileIndex.total_rows),
+    # and plain --mode filtered gets one via a first counting pass (see
+    # FilteredSampler._get_random_sample_with_replacement). --mode
+    # calendar/daily and --stratify reservoir-sample many groups off one
+    # shared accept-probability trick that doesn't generalize to
+    # independent with-replacement draws without a materially different,
+    # more expensive algorithm; not implemented yet (tracked in the
+    # roadmap), so rejected here rather than silently ignored.
+    if args.replace and (args.mode in ("calendar", "daily") or args.stratify):
+        raise ValueError(
+            "--replace is only supported for --mode indexed and --mode filtered "
+            "(without --stratify); calendar and stratified with-replacement "
+            "sampling aren't implemented yet."
+        )
+
     source_key, historical_key = (
         ("filtered_data_directory", "filtered_historical_directory")
         if args.source == "filtered"
@@ -403,7 +440,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
             date_parser=date_parser,
         )
-        df = sampler.get_random_sample(args.n)
+        df = sampler.get_random_sample(args.n, replace=args.replace)
         _write_sample_output(df, out, args.export_format)
         logger.info(f"Saved indexed sample ({len(df)} rows) -> {out}")
         return
@@ -447,6 +484,8 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         )
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period)
         _write_sample_output(df, out, args.export_format)
+        if sampler.period_row_counts_:
+            _write_strata_sidecar(out, date_column, sampler.period_row_counts_)
         logger.info(f"Saved calendar sample ({len(df)} rows, period={period}) -> {out}")
         return
 
@@ -491,12 +530,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 raise ValueError("--n-per-group is required when --stratify is set")
             df = sampler.get_stratified_sample(args.stratify, args.n_per_group)
             _write_sample_output(df, out, args.export_format)
+            if sampler.stratum_row_counts_:
+                _write_strata_sidecar(out, args.stratify, sampler.stratum_row_counts_)
             logger.info(
                 f"Saved stratified sample ({len(df)} rows) "
                 f"stratified by '{args.stratify}' ({args.n_per_group} per group) -> {out}"
             )
         else:
-            df = sampler.get_random_sample(args.n)
+            df = sampler.get_random_sample(args.n, replace=args.replace)
             _write_sample_output(df, out, args.export_format)
             logger.info(
                 f"Saved filtered sample ({len(df)} rows) "
@@ -908,6 +949,12 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "-n", type=int, default=1000,
         help="Number of rows to sample"
+    )
+    sample.add_argument(
+        "--replace", action="store_true",
+        help="Sample with replacement (indexed and non-stratified filtered "
+             "modes only); allows duplicate rows and n greater than the "
+             "total row count. Off by default"
     )
     sample.add_argument(
         "--seed", type=int, default=42,

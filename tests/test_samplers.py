@@ -1,5 +1,6 @@
 import logging
 import sys
+import zlib
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -118,6 +119,55 @@ class TestIndexedSampler:
         s2 = IndexedSampler(str(folder), random_state=7).get_random_sample(10)
 
         assert sorted(s1["GlobalEventID"]) == sorted(s2["GlobalEventID"])
+
+    def test_replace_false_is_still_the_default(self, tmp_path):
+        # Calling with no replace argument at all must behave exactly like
+        # replace=False always has: no duplicates, n > total_rows still
+        # rejected. A regression here would mean the new keyword silently
+        # changed the existing, documented default.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(5)
+
+        assert df["GlobalEventID"].n_unique() == 5
+        with pytest.raises(ValueError):
+            sampler.get_random_sample(10)
+
+    def test_replace_true_allows_n_greater_than_total_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(20, replace=True)
+
+        assert len(df) == 20
+        assert set(df["GlobalEventID"].to_list()) <= set(range(5))
+
+    def test_replace_true_produces_duplicates(self, tmp_path):
+        # Pigeonhole: 20 draws with replacement from only 5 rows guarantees
+        # at least one repeat.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        sampler = IndexedSampler(str(folder), random_state=1)
+        df = sampler.get_random_sample(20, replace=True)
+
+        assert df["GlobalEventID"].n_unique() < 20
+
+    def test_replace_true_reproducible_with_same_seed(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": range(5)}).write_parquet(folder / "a.parquet")
+
+        s1 = IndexedSampler(str(folder), random_state=7).get_random_sample(20, replace=True)
+        s2 = IndexedSampler(str(folder), random_state=7).get_random_sample(20, replace=True)
+
+        assert s1["GlobalEventID"].to_list() == s2["GlobalEventID"].to_list()
 
     def test_no_files_raises(self, tmp_path):
         folder = tmp_path / "empty"
@@ -334,6 +384,36 @@ class TestCalendarSampler:
         counts = _size_by_group(df, "Day")
         assert counts[20200101] == 2
         assert counts[20200102] == 2
+
+    def test_period_row_counts_is_none_before_any_call(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]}).write_parquet(
+            folder / "a.parquet"
+        )
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+
+        assert sampler.period_row_counts_ is None
+
+    def test_period_row_counts_matches_true_totals_regardless_of_per_period_cap(
+        self, tmp_path
+    ):
+        # samples_per_period caps what gets SAMPLED, not what gets COUNTED:
+        # period_row_counts_ must reflect each period's real row count in
+        # the archive (7 and 3 here) even though only 2 rows per period
+        # are actually drawn into the returned DataFrame.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(10),
+            "Day": [20200101] * 7 + [20200102] * 3,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = CalendarSampler(str(folder), random_state=1)
+        sampler.get_calendar_samples(samples_per_period=2)
+
+        assert sampler.period_row_counts_ == {"20200101": 7, "20200102": 3}
 
     def test_takes_all_rows_when_fewer_than_requested(self, tmp_path):
         folder = tmp_path / "data"
@@ -752,6 +832,21 @@ class TestGroupRng:
         first = _group_rng(1, "k", cache)
         second = _group_rng(1, "k", cache)
         assert first is second
+
+    def test_varying_key_is_mixed_before_the_fixed_seed(self):
+        # Pins down the actual seed-array order rather than just an
+        # independence property: NumPy's own parallel-RNG guidance for
+        # this hand-built-stream pattern is to place the varying id before
+        # the fixed root seed ([key_hash, seed], not [seed, key_hash]), so
+        # a future refactor can't silently flip it back without this test
+        # catching it.
+        seed, key = 7, "20200601"
+        key_hash = zlib.crc32(str(key).encode("utf-8"))
+        expected = np.random.default_rng([key_hash, seed]).integers(0, 10**9, size=10)
+
+        actual = _group_rng(seed, key, {}).integers(0, 10**9, size=10)
+
+        assert actual.tolist() == expected.tolist()
 
 
 class TestDiscoverDatasetFilesSortsChronologically:
@@ -1492,6 +1587,101 @@ class TestFilteredSamplerReservoirSampling:
         assert set(df["GlobalEventID"]).issubset(set(range(5)))
 
 
+class TestFilteredSamplerWithReplacement:
+    """get_random_sample(replace=True): two-pass count-then-gather
+    sampling, the filtered-stream equivalent of IndexedSampler's own
+    replace=True (see _get_random_sample_with_replacement's own
+    docstring for why this needs a separate algorithm from the default
+    reservoir path rather than a flag on it)."""
+
+    def test_replace_false_is_still_the_default(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(15), "QuadClass": [1] * 15,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_random_sample(10)
+
+        assert df["GlobalEventID"].n_unique() == 10
+
+    def test_replace_true_allows_n_greater_than_filtered_row_count(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(5), "QuadClass": [1] * 5,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_random_sample(20, replace=True)
+
+        assert len(df) == 20
+        assert set(df["GlobalEventID"].to_list()) <= set(range(5))
+
+    def test_replace_true_produces_duplicates(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(5), "QuadClass": [1] * 5,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        df = sampler.get_random_sample(20, replace=True)
+
+        assert df["GlobalEventID"].n_unique() < 20
+
+    def test_replace_true_only_draws_from_the_filtered_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(20),
+            "QuadClass": [1 if i < 5 else 2 for i in range(20)],
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass"],
+            filter_dict={"QuadClass": 1}, random_state=1,
+        )
+        df = sampler.get_random_sample(50, replace=True)
+
+        assert len(df) == 50
+        assert (df["QuadClass"] == 1).all()
+        assert set(df["GlobalEventID"].to_list()) <= set(range(5))
+
+    def test_replace_true_reproducible_with_same_seed(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(5), "QuadClass": [1] * 5,
+        }).write_parquet(folder / "a.parquet")
+
+        cols = ["GlobalEventID", "QuadClass"]
+        s1 = FilteredSampler(str(folder), cols, random_state=7).get_random_sample(
+            20, replace=True
+        )
+        s2 = FilteredSampler(str(folder), cols, random_state=7).get_random_sample(
+            20, replace=True
+        )
+
+        assert s1["GlobalEventID"].to_list() == s2["GlobalEventID"].to_list()
+
+    def test_replace_true_with_no_matching_rows_is_a_clean_empty_success(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(5), "QuadClass": [1] * 5,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass"],
+            filter_dict={"QuadClass": 99}, random_state=1,
+        )
+        df = sampler.get_random_sample(10, replace=True)
+
+        assert len(df) == 0
+
+
 class TestDedupLastWritePerSlot:
     """
     True sequential Algorithm R applies draws in position order, so when
@@ -1767,6 +1957,39 @@ class TestStratifiedSampling:
         counts = _size_by_group(df, "QuadClass")
         assert all(v == 4 for v in counts.values())
         assert len(df) == 16
+
+    def test_stratum_row_counts_is_none_before_any_call(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(
+            folder / "a.parquet"
+        )
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+
+        assert sampler.stratum_row_counts_ is None
+
+    def test_stratum_row_counts_matches_true_group_totals_regardless_of_n_per_group(
+        self, tmp_path
+    ):
+        # n_per_group caps what gets SAMPLED, not what gets COUNTED:
+        # stratum_row_counts_ must reflect each QuadClass value's real row
+        # count (10 and 30 here) even though only 4 rows per group are
+        # actually drawn into the returned DataFrame.
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(40),
+            "QuadClass": [1] * 10 + [2] * 30,
+        }).write_parquet(folder / "a.parquet")
+
+        sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
+        sampler.get_stratified_sample("QuadClass", n_per_group=4)
+
+        # The internal grouping key is the stratify column coerced to a
+        # string (fill_null("__NA__") on a numeric column forces that),
+        # even though the sampled rows' own QuadClass values stay numeric.
+        assert sampler.stratum_row_counts_ == {"1": 10, "2": 30}
 
     def test_takes_all_when_group_smaller_than_requested(self, tmp_path):
         folder = tmp_path / "data"
