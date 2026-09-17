@@ -66,22 +66,24 @@ markdown_extensions:
   - toc:
       permalink: true
 
-# Grouped nav: "get it running" first, then reference, then the deeper
-# semantics pages that used to sit flat in a list of eleven.
+# Nav follows a fixed reading order: run it (Getting Started), understand
+# it (Concepts), do something with it (Guides), look something up
+# (Reference), know its edges (Project). A page's URL never depends on
+# this list, so regrouping it doesn't break any external link.
 nav:
   - Home: index.md
-  - Start here:
-      - Getting Started: getting-started.md
-      - Recipes: recipes.md
+  - Getting Started: getting-started.md
+  - Concepts:
+      - Architecture: architecture.md
       - Comparison to Other Tools: comparison.md
+  - Guides:
+      - Recipes: recipes.md
   - Reference:
       - CLI Reference: cli-reference.md
       - Configuration: configuration.md
       - Filtered Sampling: filtered-sampling.md
-  - Data semantics:
       - Crossref Join Semantics: crossref-join-semantics.md
       - Column Redundancy: column-redundancy.md
       - Known Absent Files: known-absent-files.md
   - Project:
-      - Architecture: architecture.md
       - Limitations & Roadmap: limitations-and-roadmap.md
