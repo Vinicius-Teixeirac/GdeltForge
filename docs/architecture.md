@@ -26,7 +26,7 @@ The same stages run independently per dataset (`--dataset events`, `gkg-v2`, `me
 Each stage consumes the previous stage's output, which gives you:
 
 - incremental execution (re-run only the stage you need)
-- streaming-friendly operations (batched/chunked reads, not full loads)
+- per-file, worker-pool processing, so no single process ever holds the whole archive in memory at once; the largest single-file source (`events-reduced`) and the `filtered`/`stratified` sampling modes go further still, reading even one file in row batches rather than all at once
 - memory-efficient processing on datasets much larger than RAM
 - simple debugging (inspect intermediate Parquet at any point)
 - reusable intermediate data (multiple sampling runs off one filtered dataset)

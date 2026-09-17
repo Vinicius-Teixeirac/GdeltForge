@@ -569,12 +569,12 @@ gdeltforge sample --dataset events --mode indexed -n 10000
 
 ```bash
 gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge convert --dataset events
-gdeltforge filter --dataset events
-gdeltforge sample --dataset events --mode indexed -n 10000
+gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge filter --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge sample --dataset events --mode indexed -n 10000 --start-date 2020-01-01 --end-date 2023-12-31
 ```
 
-The date flags apply only to `scrape`. The subsequent stages operate on whatever files are already on disk.
+`scrape`, `convert`, `filter`, and `sample` each accept `--start-date`/`--end-date` independently. `scrape` narrows the remote listing it discovers files from; the later stages narrow which already-on-disk files they read, so repeating the same range keeps the whole pipeline focused on that window instead of processing every file already on disk once `scrape` is done.
 
 </details>
 

@@ -184,11 +184,15 @@ matched row:
 | 2020-01-01 | 301,097 | 100.00% |
 | 2026-07-31 | 313,640 | 100.00% |
 
-Since `V2SOURCECOMMONNAME` is already pruned from GKG 2.1's output (see
-above), this isn't live duplication on disk today. Noted for anyone
-considering adding `MentionSourceName` to `crossref`'s Mentions payload
-columns: don't, it would only duplicate `GKG_V2SOURCECOMMONNAME`, which
-already flows through the crossref join by default.
+Since `V2SOURCECOMMONNAME` is already pruned from GKG 2.1's output under
+this project's shipped default `output_columns` (see above), it doesn't
+reach `crossref`'s output as `GKG_V2SOURCECOMMONNAME` either, so this
+isn't live duplication on disk today. Noted for anyone considering
+adding `MentionSourceName` to `crossref`'s Mentions payload columns
+anyway: it carries the same value, so if your own `output_columns`
+configuration restores `V2SOURCECOMMONNAME`, adding `MentionSourceName`
+on top of it would reintroduce the exact duplication this project
+prunes by default.
 
 ## Checked, and not redundant
 

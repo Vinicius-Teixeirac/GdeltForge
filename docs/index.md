@@ -17,8 +17,8 @@ hide:
         <a class="gf-btn" href="https://github.com/Vinicius-Teixeirac/GdeltForge">GitHub</a>
       </div>
       <div class="gf-facts">
-        <span><b>542M+</b> rows indexed</span>
-        <span><b>1979</b>-present</span>
+        <span><b>5</b>-stage pipeline</span>
+        <span><b>7</b> GDELT datasets</span>
         <span><b>Apache-2.0</b></span>
       </div>
     </div>
@@ -49,7 +49,7 @@ hide:
 <div class="gf-section">
   <p class="gf-eyebrow">What you get</p>
   <div class="gf-grid gf-grid--3">
-    <div class="gf-card"><img src="assets/brand/icons/icon-global.svg" alt=""><h3>The whole archive</h3><p>The 1979 historical backfill through today, not the last three months the API allows.</p></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-global.svg" alt=""><h3>The whole archive</h3><p>Events back to 1979, GKG 1.0 since 2013, GKG 2.1 and Mentions since 2015 &mdash; the full history, not the last three months the API allows.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-store.svg" alt=""><h3>Columnar storage</h3><p>Parquet throughout, with optional Hive partitioning for yearly and monthly historical dumps.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-pipeline.svg" alt=""><h3>Transparent lineage</h3><p>Every stage explicit and independently testable. Nothing runs automagically.</p></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-dataset.svg" alt=""><h3>Seven datasets</h3><p>Events (daily, native 15-minute granularity, and the 1979-2013 historical dump), GKG 2.1, legacy GKG 1.0 (plus its separate Counts file), and Mentions, each through the same stages.</p></div>
@@ -68,7 +68,7 @@ hide:
     </div>
     <div class="gf-card">
       <h3>Why it matters</h3>
-      <p>Every mode is seeded, so the same command reproduces the same sample. All of them stream over an archive far larger than RAM in a single pass, on one machine, with no cluster or warehouse. See <a href="filtered-sampling/">Filtered Sampling</a> for the full syntax.</p>
+      <p>Every mode is seeded, so the same command reproduces the same sample against a fixed file layout; only <code>indexed</code> mode is guaranteed to stay reproducible if the archive later gets re-chunked into a different number of files (see <a href="limitations-and-roadmap/#sampling">Limitations</a>). All modes stream over an archive far larger than RAM in a single pass, on one machine, with no cluster or warehouse. See <a href="filtered-sampling/">Filtered Sampling</a> for the full syntax.</p>
     </div>
   </div>
 </div>

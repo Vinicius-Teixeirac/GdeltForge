@@ -144,6 +144,9 @@ gdeltforge filter --dataset events
 
 Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
 
+!!! note "This `filter` isn't `sample`'s `--filter`"
+    The `filter` command and `sample`'s [`--filter` flag](#gdeltforge-sample) share a name but do unrelated jobs. This command is a pipeline stage: it drops rows with missing values, using a fixed set of columns from `settings.yaml`, and writes its output back to disk for every later stage to read. `sample --filter` is a one-off row selector: it takes an ad hoc JSON condition on the command line and only affects that sample's output, not anything stored on disk.
+
 | Flag | Description |
 |------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (required; see [`--dataset`](#-dataset) below) |
@@ -473,13 +476,13 @@ Every one of these runs the four stages in order; only the last line differs.
 
 ??? example "Date-restricted pipeline"
 
-    The date flags apply only to `scrape`; later stages operate on whatever files are already on disk.
+    `scrape`, `convert`, `filter`, `sample`, and `crossref` each accept `--start-date`/`--end-date` independently. `scrape` narrows the remote listing it discovers files from; the later stages narrow which already-on-disk files they read. Passing the same range at every stage keeps the whole pipeline focused on that window, rather than scraping a narrow range and then having `convert`/`filter`/`sample` process every file already sitting on disk, including ones from outside it.
 
     ```bash
     gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
-    gdeltforge convert --dataset events
-    gdeltforge filter --dataset events
-    gdeltforge sample --dataset events --mode indexed -n 10000
+    gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+    gdeltforge filter --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+    gdeltforge sample --dataset events --mode indexed -n 10000 --start-date 2020-01-01 --end-date 2023-12-31
     ```
 
 ??? example "Bash one-liner"

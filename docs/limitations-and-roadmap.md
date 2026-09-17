@@ -26,6 +26,10 @@ Supported modes: indexed random, calendar, and filtered; filtered mode also supp
 
 `gdeltforge crossref` cannot be run against `--dataset events-reduced` samples at all: see [Configuration](configuration.md#output_columns-and-crossref-four-columns-you-cant-prune-away) for why.
 
+## Platform
+
+CI (tests, docs build, publish) runs on Linux only. The package installs and runs on Windows and macOS too. Windows-specific bugs have surfaced there before (a `MAX_PATH` path-length failure, differences in how a killed process tree is reaped) and were found and fixed through manual testing rather than an automated job, so a change that only breaks on Windows or macOS can land without CI catching it. One feature degrades gracefully rather than failing outright: `gdeltforge` making itself its own process group leader for reliable whole-tree signal handling (see [CLI Reference](cli-reference.md)) is a POSIX-only call, skipped as a no-op on Windows, where `taskkill /F /T /PID <pid>` is the documented equivalent instead.
+
 ## Roadmap
 
 - [ ] Docker image, for running the pipeline without a local Python/uv setup

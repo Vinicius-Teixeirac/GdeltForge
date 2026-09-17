@@ -522,7 +522,7 @@ converter:
   # Optional, per dataset: restricts CSV parsing to just these columns
   # instead of every column the dataset defines (see columns.<dataset>
   # above). names is still the full column list, matching each raw
-  # position on files with no header row, but pandas only allocates and
+  # position on files with no header row, but polars only allocates and
   # decodes the columns listed here. Worth doing for GKG 2.1 in particular:
   # most of its columns are free-text fields (quotations, all-names, GCAM,
   # extras XML, image/video embeds) a themes/tone/persons/orgs crossref
@@ -574,7 +574,7 @@ converter:
 # One list per dataset (matching columns: / columns_numeric: above).
 filter:
   # Concurrent filter worker processes, same tradeoffs as converter.max_workers
-  # above: CPU-bound (per-batch pandas dropna + parquet write), so this
+  # above: CPU-bound (per-file polars null drop + parquet write), so this
   # defaults to the machine's core count. Lower it if filtering competes
   # with other work, or if you've had to lower converter.max_workers for
   # the same reason.
