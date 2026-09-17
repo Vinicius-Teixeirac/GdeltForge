@@ -177,9 +177,11 @@ gdeltforge sample \
     --n-per-group 500
 ```
 
-!!! note "Strata sidecar"
+!!! warning "Stratified output is not representative of the natural class distribution"
 
-    Every stratified run also writes `<out>.strata.json`, recording each stratify value's true row count in the filtered archive regardless of `--n-per-group`. Reweight each group by `true_count / n_per_group` before computing a population-level statistic off a stratified sample; see [CLI Reference](cli-reference.md#gdeltforge-sample) and [Limitations](limitations-and-roadmap.md#sampling).
+    `--stratify` draws the same `--n-per-group` count from every distinct value of the stratify column, on purpose, so the result is class-balanced regardless of how common each class actually is in the archive. That's the right shape for a model training set that needs coverage of a rare class, not a population-level estimate: computing an unweighted rate off a stratified sample (e.g. "what fraction of US events are QuadClass 4") reads back the sampling ratio you chose, not the real one. Use `--mode filtered` without `--stratify` (or `--mode indexed`) when the goal is an estimate of the natural distribution instead. See [Limitations](limitations-and-roadmap.md#representativeness) for the full picture across all three sampling modes.
+
+    Every stratified run also writes `<out>.strata.json`, recording each stratify value's true row count in the filtered archive regardless of `--n-per-group`. That's the number an unweighted rate above is missing: reweight each group by `true_count / n_per_group` before computing a population-level statistic, and the equal-allocation bias washes out.
 
 ## Quick reference
 
