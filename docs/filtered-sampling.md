@@ -177,6 +177,10 @@ gdeltforge sample \
     --n-per-group 500
 ```
 
+!!! warning "Stratified output is not representative of the natural class distribution"
+
+    `--stratify` draws the same `--n-per-group` count from every distinct value of the stratify column, on purpose, so the result is class-balanced regardless of how common each class actually is in the archive. That's the right shape for a model training set that needs coverage of a rare class, not a population-level estimate: computing an unweighted rate off a stratified sample (e.g. "what fraction of US events are QuadClass 4") reads back the sampling ratio you chose, not the real one. Use `--mode filtered` without `--stratify` (or `--mode indexed`) when the goal is an estimate of the natural distribution instead. See [Limitations](limitations-and-roadmap.md#representativeness) for the full picture across all three sampling modes.
+
 ## Quick reference
 
 | Filter type | Example JSON | Meaning |

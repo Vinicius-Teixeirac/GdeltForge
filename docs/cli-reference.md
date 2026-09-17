@@ -254,6 +254,10 @@ gdeltforge sample --dataset gkg-v2 --mode calendar --period month --per-period 5
 
     `--period day` groups strictly by the grouping column's own `YYYYMMDD` value, not by which file a row came from. GDELT's own event-date misdating means a single day's file can legitimately carry `Day` values spanning a decade (a wire report referencing a much older date, a source article with a malformed or placeholder date), so the number of distinct periods a run actually produces can be far larger than "one per file downloaded" suggests. This is a real property of the underlying data, not a bug in the grouping itself.
 
+!!! warning "Equal allocation, not proportional"
+
+    `--per-period` draws the same count from every period regardless of how many rows that period actually has. A quiet day and a busy day both contribute `--per-period` rows, so the pooled sample deliberately does not reproduce the archive's real day-to-day volume: an unweighted statistic computed on the output (an overall rate, a class share) is biased toward low-volume periods relative to the true archive. This is what makes calendar sampling useful for even temporal coverage; it's also why it isn't a drop-in for `--mode indexed` when the goal is a population-representative estimate rather than coverage. See [Limitations](limitations-and-roadmap.md#representativeness).
+
 ### Filtered sampling (JSON filters)
 
 5,000 events whose `QuadClass` is in `{1, 2}`:

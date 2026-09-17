@@ -63,12 +63,12 @@ hide:
   <div class="gf-grid gf-grid--2">
     <div class="gf-modes">
       <div class="gf-mode"><b>indexed</b><span>Uniform random across the whole archive.</span></div>
-      <div class="gf-mode"><b>calendar</b><span>N rows per period (day, month, or year), evenly across the archive.</span></div>
+      <div class="gf-mode"><b>calendar</b><span>Equal N rows per period (day, month, or year), for even temporal coverage &mdash; not proportional to each period's real volume.</span></div>
       <div class="gf-mode"><b>filtered</b><span>JSON column filters, pushed down before sampling; also supports a stratified sub-mode (fixed N per group, balanced classes regardless of the natural distribution).</span></div>
     </div>
     <div class="gf-card">
       <h3>Why it matters</h3>
-      <p>Every mode is seeded, so the same command reproduces the same sample against a fixed file layout; only <code>indexed</code> mode is guaranteed to stay reproducible if the archive later gets re-chunked into a different number of files (see <a href="limitations-and-roadmap/#sampling">Limitations</a>). All modes stream over an archive far larger than RAM in a single pass, on one machine, with no cluster or warehouse. See <a href="filtered-sampling/">Filtered Sampling</a> for the full syntax.</p>
+      <p>Every mode is seeded, so the same command reproduces the same sample against a fixed file layout; only <code>indexed</code> mode is guaranteed to stay reproducible if the archive later gets re-chunked into a different number of files (see <a href="limitations-and-roadmap/#sampling">Limitations</a>). Reproducible isn't the same guarantee as representative: <code>indexed</code> is a true random sample of the archive, while <code>calendar</code> and stratified <code>filtered</code> trade population-level representativeness for even coverage on purpose (see <a href="limitations-and-roadmap/#representativeness">Representativeness</a>). All modes stream over an archive far larger than RAM in a single pass, on one machine, with no cluster or warehouse. See <a href="filtered-sampling/">Filtered Sampling</a> for the full syntax.</p>
     </div>
   </div>
 </div>
