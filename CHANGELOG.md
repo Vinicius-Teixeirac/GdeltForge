@@ -18,6 +18,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - `sample --mode calendar`/`--mode filtered --stratify` wrote no `<out>.strata.json` sidecar, and logged no warning, when a run legitimately matched zero periods or strata (an entirely excluded date range, a `--filter` matching nothing): the write was gated on the counts dict being non-empty rather than on whether the sampler had actually run, so a real, empty result and "nothing to write" looked identical. Gated on `is not None` instead; a legitimate empty result now writes an accurate, empty `{"group_by": ..., "counts": {}}` sidecar, matching the "best-effort, always attempt" behavior documented for it. Found by independent QA against the published 0.10.0rc1.
+- `sample --mode filtered --replace` could abort the whole process with a Rust-level allocator failure, not a catchable Python error, against a real multi-thousand-file archive: `_get_random_sample_with_replacement`'s row-count pass ran a plain `lf.select(pl.len()).collect()` directly on the reconciled multi-file union `_dataset()` builds, the one scan in this class not driven through `collect_batches`' own streamed batching. The counting pass now streams through `_batches` like every other scan in this class; confirmed against a real 2,192-file, six-year slice of the Events archive spanning the documented `Actor2Geo_Type` dtype boundary, where it previously failed. Found by independent QA against the published 0.10.0rc2.
 
 ## [0.9.1] - 2026-09-11
 

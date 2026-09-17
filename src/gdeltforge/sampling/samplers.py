@@ -1258,21 +1258,36 @@ class FilteredSampler:
         upfront (FileIndex.total_rows); this does the filtered-stream
         equivalent by paying for that upfront count with a first pass.
 
-        Pass 1 counts the filtered rows (filter columns only; no output
-        columns are read or materialized). Pass 2 draws n indices in
-        [0, count) with replacement, sorts them, and streams the filtered
-        rows a second time, gathering whichever (possibly repeated)
-        positions land in each batch. The two passes see the same filter
-        over the same file list, so they see the same row count; a
-        mismatch (the underlying files changed between passes) is
-        detected rather than silently returning a short or wrong sample.
+        Pass 1 counts the filtered rows (filter columns only, or a single
+        arbitrary column when there's no filter at all; no output columns
+        are read or materialized). Pass 2 draws n indices in [0, count)
+        with replacement, sorts them, and streams the filtered rows a
+        second time, gathering whichever (possibly repeated) positions
+        land in each batch. The two passes see the same filter over the
+        same file list, so they see the same row count; a mismatch (the
+        underlying files changed between passes) is detected rather than
+        silently returning a short or wrong sample.
+
+        Pass 1 drives its scan through self._batches, the same streamed,
+        batched path every other scan in this class already uses (get_
+        random_sample's own without-replacement reservoir loop, filter_
+        dataset, get_stratified_sample), rather than a plain lf.collect()
+        on the reconciled multi-file union self._dataset() builds. A bare
+        .collect() there is not just slower: against this project's own
+        documented real-archive shape (thousands of files spanning
+        decades, reconciled to a common schema across per-file dtype
+        drift), it can abort the whole process with a Rust-level
+        allocator failure instead of raising a catchable Python error,
+        confirmed directly by an independent QA pass against the
+        published 0.10.0rc2 package. collect_batches never materializes
+        more than one batch's worth of the reconciled plan at a time, the
+        same property that already lets every other method in this class
+        run against an archive far larger than RAM.
         """
-        with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            lf = self._dataset()
-            expr = self._build_expression(self.filter_dict)
-            if expr is not None:
-                lf = lf.filter(expr)
-            count = lf.select(pl.len()).collect().item()
+        count_cols = list(self._filter_columns(self.filter_dict)) or [
+            self._gdelt_columns_ordered[0]
+        ]
+        count = sum(len(batch) for batch in self._batches(count_cols))
 
         if count == 0:
             return pl.DataFrame()

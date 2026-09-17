@@ -1606,6 +1606,47 @@ class TestFilteredSamplerWithReplacement:
 
         assert df["GlobalEventID"].n_unique() == 10
 
+    def test_counting_pass_never_uses_a_bare_non_streaming_collect(
+        self, tmp_path, monkeypatch
+    ):
+        """
+        Regression coverage for a real crash: the counting pass used to
+        run lf.select(pl.len()).collect() directly on self._dataset()'s
+        reconciled multi-file union, a plain, non-streaming collect
+        distinct from every other scan in this class (which all drive
+        through _batches' own lf.collect_batches(...)). Against this
+        project's own documented real-archive shape (thousands of files
+        spanning decades, reconciled across per-file dtype drift), that
+        aborted the whole process with a Rust-level allocator failure
+        instead of raising a catchable Python error, confirmed by an
+        independent QA pass against the published 0.10.0rc2 package. The
+        counting pass now goes through _batches like everything else;
+        monkeypatching plain LazyFrame.collect to blow up here catches a
+        regression back to the bare-collect version directly, rather
+        than only at real-archive scale.
+        """
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(15), "QuadClass": [1] * 15,
+        }).write_parquet(folder / "a.parquet")
+
+        def forbidden_collect(self, *args, **kwargs):
+            raise AssertionError(
+                "the with-replacement counting pass called LazyFrame.collect() "
+                "directly instead of streaming through _batches/collect_batches"
+            )
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", forbidden_collect)
+
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass"],
+            filter_dict={"QuadClass": 1}, random_state=1,
+        )
+        df = sampler.get_random_sample(20, replace=True)
+
+        assert len(df) == 20
+
     def test_replace_true_allows_n_greater_than_filtered_row_count(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
