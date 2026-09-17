@@ -1180,6 +1180,75 @@ class TestStrataSidecar:
         payload = json.loads(sidecar.read_text())
         assert payload == {"group_by": "QuadClass", "counts": {"1": 10, "2": 30}}
 
+    def test_calendar_sidecar_still_written_when_zero_periods_matched(
+        self, tmp_path, monkeypatch
+    ):
+        # A real run that legitimately matches zero periods (e.g. a date
+        # range excluding every row) still sets period_row_counts_ to {},
+        # not None. The sidecar should still be written, an accurate
+        # empty one, not silently skipped: "best-effort" means "always
+        # attempt, tolerate failure," not "skip when there's nothing to
+        # say." QA finding, confirmed against the published 0.10.0rc1.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeCalendarSampler:
+            period_row_counts_ = {}
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_calendar_samples(self, samples_per_period):
+                return pl.DataFrame()
+
+        monkeypatch.setattr(cli, "CalendarSampler", FakeCalendarSampler)
+
+        out = tmp_path / "o.parquet"
+        args = argparse.Namespace(
+            dataset="events", mode="calendar", source="filtered",
+            per_day=None, per_period=2, period=None, date_column=None, seed=42,
+            replace=False, stratify=None,
+            out=str(out), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        sidecar = tmp_path / "o.parquet.strata.json"
+        assert sidecar.exists()
+        assert json.loads(sidecar.read_text()) == {"group_by": "Day", "counts": {}}
+
+    def test_stratified_sidecar_still_written_when_zero_strata_matched(
+        self, tmp_path, monkeypatch
+    ):
+        # Same reasoning as the calendar case above, for a --filter that
+        # legitimately matches nothing.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeFilteredSampler:
+            stratum_row_counts_ = {}
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_stratified_sample(self, column, n_per_group):
+                return pl.DataFrame()
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        out = tmp_path / "o.parquet"
+        args = argparse.Namespace(
+            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            replace=False, filter=None, stratify="QuadClass", n_per_group=4,
+            out=str(out), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(self._config(), args)
+
+        sidecar = tmp_path / "o.parquet.strata.json"
+        assert sidecar.exists()
+        assert json.loads(sidecar.read_text()) == {"group_by": "QuadClass", "counts": {}}
+
     def test_no_sidecar_for_indexed_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)

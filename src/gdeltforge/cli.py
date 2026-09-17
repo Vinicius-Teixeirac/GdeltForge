@@ -484,7 +484,13 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         )
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period)
         _write_sample_output(df, out, args.export_format)
-        if sampler.period_row_counts_:
+        # is not None, not truthiness: a real run that legitimately matched
+        # zero periods (e.g. a date range excluding every row) still sets
+        # period_row_counts_ to {}, and the sidecar should still be written
+        # (an accurate, empty one) for that case, matching "best-effort,
+        # always attempt" rather than silently skipping it. None only means
+        # the sampler never actually ran, which can't happen here.
+        if sampler.period_row_counts_ is not None:
             _write_strata_sidecar(out, date_column, sampler.period_row_counts_)
         logger.info(f"Saved calendar sample ({len(df)} rows, period={period}) -> {out}")
         return
@@ -530,7 +536,11 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 raise ValueError("--n-per-group is required when --stratify is set")
             df = sampler.get_stratified_sample(args.stratify, args.n_per_group)
             _write_sample_output(df, out, args.export_format)
-            if sampler.stratum_row_counts_:
+            # is not None: see the identical reasoning on the calendar
+            # branch above. A --filter that legitimately matches nothing
+            # still sets stratum_row_counts_ to {}, and the sidecar should
+            # still be written for that case.
+            if sampler.stratum_row_counts_ is not None:
                 _write_strata_sidecar(out, args.stratify, sampler.stratum_row_counts_)
             logger.info(
                 f"Saved stratified sample ({len(df)} rows) "

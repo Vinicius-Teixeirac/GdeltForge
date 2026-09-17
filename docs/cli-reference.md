@@ -227,7 +227,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 
 !!! note "`--seed` across a re-chunked archive"
 
-    A rerun against the exact same files always reproduces the same sample, for every mode. Only `--mode indexed` also reproduces the same sample after the same logical rows get re-chunked into a different number of files; `calendar` and `stratified` sampling aren't guaranteed to at real archive scale. See [Limitations](limitations-and-roadmap.md#sampling) for the full explanation.
+    A rerun against the exact same files always reproduces the same sample, for every mode. Only `--mode indexed` also reproduces the same sample after the same logical rows get re-chunked into a different number of files; `calendar` and `stratified` sampling aren't guaranteed to at real archive scale. See [Limitations](limitations-and-roadmap.md#sampling) for the full explanation, including a note on `calendar`/`stratified` reproducibility across the 0.10.0 upgrade specifically.
 
 ### Indexed sampling (uniform random)
 
