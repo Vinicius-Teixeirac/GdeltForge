@@ -59,6 +59,22 @@ def dataset_is_always_historical(dataset: str) -> bool:
     return dataset in _ALWAYS_HISTORICAL_DATASETS
 
 
+# The three datasets discovered from GDELT's 15-minute gdeltv2 master file
+# list (see scraper.py's _GDELT_V2_SUFFIXES): the only ones where a single
+# calendar day is routinely split across ~96 separate files, which is what
+# `aggregate` (concatenating a period's worth of them into one larger file)
+# and `sample --source aggregated` exist to address. Every other dataset
+# already publishes at day-or-coarser granularity, so there's no many-
+# small-files problem for aggregation to solve for it.
+_AGGREGATION_ELIGIBLE_DATASETS = frozenset({
+    "gdelt_gkg_v2", "gdelt_mentions", "gdelt_event_15min",
+})
+
+
+def dataset_is_aggregation_eligible(dataset: str) -> bool:
+    return dataset in _AGGREGATION_ELIGIBLE_DATASETS
+
+
 def dataset_path_key(dataset: str, base_key: str) -> str:
     """
     Map a dataset name and a base paths.* key (e.g. "downloaded_data_directory")

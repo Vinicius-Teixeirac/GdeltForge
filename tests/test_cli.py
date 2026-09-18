@@ -702,6 +702,155 @@ class TestRunFilterCmd:
         assert captured == {"dry_run": True}
 
 
+class TestRunAggregateCmd:
+    @staticmethod
+    def _args(**overrides):
+        defaults = dict(
+            dataset="gkg-v2", period="day", source="filtered",
+            start_date=None, end_date=None, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_raises_when_aggregation_failed(self, monkeypatch):
+        monkeypatch.setattr(
+            cli, "run_aggregator",
+            lambda config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (8, 2),
+        )
+        args = self._args()
+
+        with pytest.raises(RuntimeError, match="2 failed period"):
+            cli.run_aggregate_cmd({}, args)
+
+    def test_no_raise_when_nothing_failed(self, monkeypatch):
+        monkeypatch.setattr(
+            cli, "run_aggregator",
+            lambda config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (10, 0),
+        )
+        args = self._args()
+
+        cli.run_aggregate_cmd({}, args)  # should not raise
+
+    def test_dataset_period_and_source_are_forwarded(self, monkeypatch):
+        captured = {}
+
+        def fake_run_aggregator(
+            config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+        ):
+            captured["dataset"] = dataset
+            captured["period"] = period
+            captured["source"] = source
+            return 0, 0
+
+        monkeypatch.setattr(cli, "run_aggregator", fake_run_aggregator)
+        args = self._args(dataset="mentions", period="month", source="converted")
+
+        cli.run_aggregate_cmd({}, args)
+
+        assert captured == {
+            "dataset": "gdelt_mentions", "period": "month", "source": "converted",
+        }
+
+    def test_date_strings_are_parsed_and_passed_through(self, monkeypatch):
+        captured = {}
+
+        def fake_run_aggregator(
+            config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+        ):
+            captured["start_date"] = start_date
+            captured["end_date"] = end_date
+            return 0, 0
+
+        monkeypatch.setattr(cli, "run_aggregator", fake_run_aggregator)
+        args = self._args(start_date="2020-01-01", end_date="2020-12-31")
+
+        cli.run_aggregate_cmd({}, args)
+
+        assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
+
+    def test_start_after_end_is_rejected(self):
+        args = self._args(start_date="2020-12-31", end_date="2020-01-01")
+
+        with pytest.raises(ValueError, match="must not be after"):
+            cli.run_aggregate_cmd({}, args)
+
+    def test_delete_source_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_aggregator",
+            lambda config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (
+                captured.update(delete_source=delete_source) or (0, 0)
+            ),
+        )
+        args = self._args(delete_source=True)
+
+        cli.run_aggregate_cmd({}, args)
+
+        assert captured == {"delete_source": True}
+
+    def test_force_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_aggregator",
+            lambda config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (
+                captured.update(force=force) or (0, 0)
+            ),
+        )
+        args = self._args(force=True)
+
+        cli.run_aggregate_cmd({}, args)
+
+        assert captured == {"force": True}
+
+    def test_dry_run_is_forwarded(self, monkeypatch):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "run_aggregator",
+            lambda config, dataset, period, source, start_date, end_date, order="asc",
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (
+                captured.update(dry_run=dry_run) or (0, 0)
+            ),
+        )
+        args = self._args(dry_run=True)
+
+        cli.run_aggregate_cmd({}, args)
+
+        assert captured == {"dry_run": True}
+
+
+class TestAggregateArgparseWiring:
+    """--dataset is restricted to the three aggregation-eligible datasets
+    at the argparse level itself, unlike scrape/convert/filter/sample's
+    own full _DATASET_CHOICES."""
+
+    def test_dataset_choices_are_restricted_to_the_three_eligible_datasets(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["aggregate", "--dataset", "gkg-v2"])
+        assert args.dataset == "gkg-v2"
+
+    def test_an_ineligible_dataset_is_rejected_by_argparse(self):
+        parser = cli.build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["aggregate", "--dataset", "events"])
+
+    def test_period_defaults_to_day(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["aggregate", "--dataset", "gkg-v2"])
+        assert args.period == "day"
+
+    def test_source_defaults_to_filtered(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["aggregate", "--dataset", "gkg-v2"])
+        assert args.source == "filtered"
+
+
 class TestRunSamplingCmdSource:
     """--source picks which config path the sampler reads from, without
     changing the sampling logic itself. Real sampler classes are stubbed
@@ -758,6 +907,91 @@ class TestRunSamplingCmdSource:
     def test_source_converted_uses_parquet_directory(self, tmp_path, monkeypatch):
         captured = self._run(tmp_path, monkeypatch, source="converted")
         assert captured["folder_path"] == "/converted"
+
+    def test_source_aggregated_uses_the_period_specific_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                captured["folder_path"] = folder_path
+                captured["historical_folder"] = historical_folder
+                captured["date_parser"] = date_parser
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        config = {
+            "paths": {
+                "gkg_v2_aggregated_day_data_directory": "/aggregated_day",
+                "gkg_v2_aggregated_month_data_directory": "/aggregated_month",
+            },
+            "columns": {"gdelt_gkg_v2": ["GlobalEventID"]},
+        }
+        args = argparse.Namespace(
+            dataset="gkg-v2", mode="indexed", source="aggregated", period=None,
+            n=10, seed=42, replace=False,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(config, args)
+
+        assert captured["folder_path"] == "/aggregated_day"
+        assert captured["historical_folder"] is None
+        # Aggregated output is named plainly (20200101.parquet), the
+        # generic YYYYMMDD convention, not gkg-v2's own 15-minute
+        # gdeltv2 filename shape date_parser_for(dataset) would expect.
+        assert captured["date_parser"] is cli.parse_file_date
+
+    def test_source_aggregated_period_selects_the_right_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(
+                self, folder_path, historical_folder, random_state, columns=None,
+                start_date=None, end_date=None, date_parser=None,
+            ):
+                captured["folder_path"] = folder_path
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+
+        config = {
+            "paths": {
+                "gkg_v2_aggregated_day_data_directory": "/aggregated_day",
+                "gkg_v2_aggregated_month_data_directory": "/aggregated_month",
+            },
+            "columns": {"gdelt_gkg_v2": ["GlobalEventID"]},
+        }
+        args = argparse.Namespace(
+            dataset="gkg-v2", mode="indexed", source="aggregated", period="month",
+            n=10, seed=42, replace=False,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        cli.run_sampling_cmd(config, args)
+
+        assert captured["folder_path"] == "/aggregated_month"
+
+    def test_source_aggregated_rejects_an_ineligible_dataset(self, tmp_path, monkeypatch):
+        args = argparse.Namespace(
+            dataset="events", mode="indexed", source="aggregated", period=None,
+            n=10, seed=42, replace=False,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None,
+        )
+        with pytest.raises(ValueError, match="aggregated.*isn't available"):
+            cli.run_sampling_cmd(self._config(), args)
 
     def test_explicit_null_partitioning_is_treated_as_disabled_not_a_crash(
         self, tmp_path, monkeypatch
