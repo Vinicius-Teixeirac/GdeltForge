@@ -382,16 +382,28 @@ paths:
   gkg_v2_unzipped_data_directory: "./data/gkg_v2/csv"
   gkg_v2_parquet_data_directory: "./data/gkg_v2/parquet"
   gkg_v2_filtered_data_directory: "./data/gkg_v2/filtered"
+  # Only used by `gdeltforge aggregate`/`sample --source aggregated`: see
+  # docs/configuration.md#aggregation. gkg-v2/mentions/events-15min are
+  # the only datasets with a many-small-files problem to solve.
+  gkg_v2_aggregated_day_data_directory: "./data/gkg_v2/aggregated_day"
+  gkg_v2_aggregated_month_data_directory: "./data/gkg_v2/aggregated_month"
+  gkg_v2_aggregated_year_data_directory: "./data/gkg_v2/aggregated_year"
 
   mentions_downloaded_data_directory: "./data/mentions/raw"
   mentions_unzipped_data_directory: "./data/mentions/csv"
   mentions_parquet_data_directory: "./data/mentions/parquet"
   mentions_filtered_data_directory: "./data/mentions/filtered"
+  mentions_aggregated_day_data_directory: "./data/mentions/aggregated_day"
+  mentions_aggregated_month_data_directory: "./data/mentions/aggregated_month"
+  mentions_aggregated_year_data_directory: "./data/mentions/aggregated_year"
 
   event_15min_downloaded_data_directory: "./data/events_15min/raw"
   event_15min_unzipped_data_directory: "./data/events_15min/csv"
   event_15min_parquet_data_directory: "./data/events_15min/parquet"
   event_15min_filtered_data_directory: "./data/events_15min/filtered"
+  event_15min_aggregated_day_data_directory: "./data/events_15min/aggregated_day"
+  event_15min_aggregated_month_data_directory: "./data/events_15min/aggregated_month"
+  event_15min_aggregated_year_data_directory: "./data/events_15min/aggregated_year"
 
   # events-reduced is the one dataset whose historical directory is
   # populated unconditionally, regardless of converter.partitioning.enabled
@@ -457,3 +469,10 @@ filter:
     gdelt_mentions: []
     gdelt_gkg_v1: []
     gdelt_gkg_v1_counts: []
+
+# Only relevant for gkg-v2/mentions/events-15min (see paths above);
+# concatenates a period's worth of their ~96-files/day cadence into one
+# larger file per day/month/year. null max_workers = os.cpu_count(), same
+# as converter/filter above.
+aggregation:
+  max_workers: null

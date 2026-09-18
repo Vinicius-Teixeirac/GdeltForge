@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from gdeltforge import __version__
+from gdeltforge.aggregation.aggregator import run_aggregator
 from gdeltforge.conversion.converter import run_converter
 from gdeltforge.crossref.crossref import (
     crossref_events_gkg_auto,
@@ -25,9 +26,10 @@ from gdeltforge.sampling.samplers import (
 )
 
 # Pipeline stages
-from gdeltforge.scraping.scraper import date_parser_for, run_scraping_pipeline
+from gdeltforge.scraping.scraper import date_parser_for, parse_file_date, run_scraping_pipeline
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
 from gdeltforge.utils.config import (
+    dataset_is_aggregation_eligible,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
@@ -182,6 +184,14 @@ _DATASET_CLI_TO_CONFIG = {
     "mentions": "gdelt_mentions",
 }
 
+# aggregate's own --dataset choices: only the three datasets discovered
+# from GDELT's 15-minute gdeltv2 master file list (see
+# dataset_is_aggregation_eligible), restricted at the argparse level
+# rather than accepting every _DATASET_CHOICES value and rejecting the
+# rest at runtime, so passing e.g. --dataset events fails with argparse's
+# own standard "invalid choice" message immediately.
+_AGGREGATION_DATASET_CHOICES = ["gkg-v2", "mentions", "events-15min"]
+
 # Each dataset's own real date column for `sample --mode calendar`'s
 # default --date-column: Day for Events (both cadences share the same
 # 8-digit YYYYMMDD column), Date for GKG 1.0 (same shape, different
@@ -253,11 +263,12 @@ def _apply_verbosity(args: argparse.Namespace) -> None:
     Applies --verbose/--quiet to this module's own logger (gdeltforge.cli),
     not just the stage module's. Without this, "Starting X stage..."/"X
     completed." (logged from here, not from scraper.py/converter.py/
-    filter.py) would leak through under --quiet, and --quiet's own
-    "suppress even the default setup/summary lines" promise would be a
-    lie for exactly those two lines. Only called from the three commands
-    that actually define these flags (scrape/convert/filter); getattr's
-    default keeps it a no-op for any caller whose args lacks them.
+    filter.py/aggregation.py) would leak through under --quiet, and
+    --quiet's own "suppress even the default setup/summary lines" promise
+    would be a lie for exactly those two lines. Only called from the four
+    commands that actually define these flags (scrape/convert/filter/
+    aggregate); getattr's default keeps it a no-op for any caller whose
+    args lacks them.
     """
     if getattr(args, "verbose", False):
         logger.setLevel(logging.DEBUG)
@@ -381,6 +392,27 @@ def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
 
+def run_aggregate_cmd(config: dict, args: argparse.Namespace) -> None:
+    _apply_verbosity(args)
+    start_date, end_date = _parse_date_range(args)
+
+    dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
+    logger.info("Starting aggregation stage...")
+    periods_processed, periods_failed = run_aggregator(
+        config, dataset=dataset, period=args.period, source=args.source,
+        start_date=start_date, end_date=end_date, order=args.order,
+        delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
+        force=args.force, dry_run=args.dry_run,
+    )
+    logger.info("Aggregation completed.")
+
+    if periods_failed:
+        raise RuntimeError(
+            f"Aggregation finished with {periods_failed} failed period(s) out of "
+            f"{periods_processed + periods_failed}."
+        )
+
+
 def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     start_date, end_date = _parse_date_range(args)
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
@@ -410,21 +442,47 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             "sampling aren't implemented yet."
         )
 
-    source_key, historical_key = (
-        ("filtered_data_directory", "filtered_historical_directory")
-        if args.source == "filtered"
-        else ("parquet_data_directory", "parquet_historical_directory")
-    )
-    source_key = dataset_path_key(dataset, source_key)
-    historical_key = dataset_path_key(dataset, historical_key)
-    source_folder = ensure_exists(config["paths"][source_key], source_key)
+    if args.source == "aggregated":
+        # --period picks which of the three aggregated directories to
+        # read (default "day", same as calendar mode's own default),
+        # doing double duty with its existing calendar-mode meaning:
+        # `--mode calendar --period month --source aggregated` reads the
+        # month-aggregated files AND groups by month, which line up
+        # naturally rather than conflicting.
+        if not dataset_is_aggregation_eligible(dataset):
+            raise ValueError(
+                f"--source aggregated isn't available for --dataset {args.dataset}: "
+                f"only gkg-v2/mentions/events-15min publish at 15-minute cadence, the "
+                f"many-small-files problem aggregation solves. Run `gdeltforge "
+                f"aggregate --dataset {args.dataset} ...` first if you haven't."
+            )
+        period = getattr(args, "period", None) or "day"
+        source_key = dataset_path_key(dataset, f"aggregated_{period}_data_directory")
+        source_folder = ensure_exists(config["paths"][source_key], source_key)
+        hist_folder = None
+        # Aggregated output files are named plainly (20200101.parquet /
+        # 202001.parquet / 2020.parquet), the same convention Events' own
+        # historical yearly/monthly archive already uses, not the 15-
+        # minute gdeltv2 filename shape date_parser (date_parser_for(
+        # dataset), resolved above) expects. parse_file_date reads that
+        # generic form directly.
+        date_parser = parse_file_date
+    else:
+        source_key, historical_key = (
+            ("filtered_data_directory", "filtered_historical_directory")
+            if args.source == "filtered"
+            else ("parquet_data_directory", "parquet_historical_directory")
+        )
+        source_key = dataset_path_key(dataset, source_key)
+        historical_key = dataset_path_key(dataset, historical_key)
+        source_folder = ensure_exists(config["paths"][source_key], source_key)
+        hist_folder = _historical_folder(config, historical_key, dataset)
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
 
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    hist_folder = _historical_folder(config, historical_key, dataset)
     columns = set(args.columns) if args.columns else None
 
     # -----------------------------
@@ -929,6 +987,94 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ----------------------------------------------------
+    # aggregate
+    # ----------------------------------------------------
+    aggregate = subparsers.add_parser(
+        "aggregate",
+        help="Concatenate a period's worth of 15-minute-cadence files into "
+             "one larger file per day/month/year"
+    )
+    aggregate.add_argument(
+        "--dataset",
+        choices=_AGGREGATION_DATASET_CHOICES,
+        required=True,
+        help="Which 15-minute-cadence GDELT dataset to aggregate (required). Only "
+             "gkg-v2/mentions/events-15min publish at 15-minute granularity; every "
+             "other dataset already publishes at day-or-coarser granularity, so "
+             "there's no many-small-files problem for this to solve"
+    )
+    aggregate.add_argument(
+        "--period",
+        choices=["day", "month", "year"],
+        default="day",
+        help="Granularity to concatenate into (default: 'day', matching "
+             "`sample --mode calendar`'s own default)"
+    )
+    aggregate.add_argument(
+        "--source",
+        choices=["filtered", "converted"],
+        default="filtered",
+        help="Which stage's output to aggregate from: 'filtered' (default, "
+             "after the filter command) or 'converted' (raw parquet, before "
+             "filtering). Recorded as part of this run's resumability "
+             "fingerprint, so switching source for an already-aggregated "
+             "period reprocesses and overwrites it rather than mixing the two"
+    )
+    aggregate.add_argument(
+        "--start-date",
+        metavar="YYYY-MM-DD",
+        help="Only aggregate periods whose source files' period starts on or "
+             "after this date",
+    )
+    aggregate.add_argument(
+        "--end-date",
+        metavar="YYYY-MM-DD",
+        help="Only aggregate periods whose source files' period ends on or "
+             "before this date",
+    )
+    aggregate.add_argument(
+        "--order",
+        choices=["asc", "desc"],
+        default="asc",
+        help="Processing order: asc (oldest period first, the default) or desc "
+             "(newest first). Only controls which periods are submitted to the "
+             "worker pool first, not real completion order under concurrency"
+    )
+    aggregate.add_argument(
+        "--delete-source",
+        action="store_true",
+        help="Delete each contributing source file once its period's aggregated "
+             "output is written and confirmed done. Off by default: the safe "
+             "default keeps the aggregated output in its own separate directory "
+             "alongside the untouched 15-minute source files"
+    )
+    aggregate_verbosity = aggregate.add_mutually_exclusive_group()
+    aggregate_verbosity.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show per-period aggregation detail instead of just the progress "
+             "bar and summary. Off by default"
+    )
+    aggregate_verbosity.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress even the default setup/summary lines, leaving only "
+             "warnings and errors. Off by default"
+    )
+    aggregate.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess periods already marked done instead of skipping them, "
+             "overwriting their aggregated output. Off by default"
+    )
+    aggregate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report how many periods would be aggregated without aggregating "
+             "anything. Off by default"
+    )
+
+    # ----------------------------------------------------
     # sample
     # ----------------------------------------------------
     sample = subparsers.add_parser(
@@ -950,11 +1096,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sample.add_argument(
         "--source",
-        choices=["filtered", "converted"],
+        choices=["filtered", "converted", "aggregated"],
         default="filtered",
         help="Which stage's output to sample from: 'filtered' (default, "
-             "after the filter command) or 'converted' (raw parquet, "
-             "before filtering)"
+             "after the filter command), 'converted' (raw parquet, "
+             "before filtering), or 'aggregated' (after `gdeltforge "
+             "aggregate`; --dataset must be gkg-v2/mentions/events-15min, "
+             "and --period picks which of its day/month/year directories "
+             "to read, default 'day')"
     )
     sample.add_argument(
         "-n", type=int, default=1000,
@@ -982,8 +1131,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--period",
         choices=["day", "month", "year"],
         default=None,
-        help="Calendar period to group by (calendar mode only, default 'day'). "
-             "Not accepted alongside the deprecated --mode daily"
+        help="Two independent uses, default 'day' for both: in --mode calendar, "
+             "the calendar period to group by (not accepted alongside the "
+             "deprecated --mode daily); with --source aggregated, which of the "
+             "day/month/year aggregated directories to read, for any --mode. "
+             "The two combine naturally when both apply, e.g. --mode calendar "
+             "--period month --source aggregated reads the month-aggregated "
+             "files and groups by month"
     )
     sample.add_argument(
         "--date-column",
@@ -1195,6 +1349,9 @@ def main() -> None:
 
         elif args.command == "filter":
             run_filter_cmd(config, args)
+
+        elif args.command == "aggregate":
+            run_aggregate_cmd(config, args)
 
         elif args.command == "sample":
             run_sampling_cmd(config, args)

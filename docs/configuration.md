@@ -229,6 +229,35 @@ For a sample that genuinely spans both eras, `--gkg-version auto` (`crossref_eve
 
 Dropping one of the columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `filter` and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. `filter` now warns proactively instead, at the point where `output_columns` is configured, if it detects a dataset's join key isn't in the kept column list, so you find out before those later steps run rather than after.
 
+## `aggregation`
+
+| Key | Default | Description |
+|-----|---------|--------------|
+| `max_workers` | `null` | Worker processes for aggregation, one period (day/month/year) per worker. `null` uses `os.cpu_count()`, same tradeoffs as `converter.max_workers`/`filter.max_workers` |
+| `compression.<dataset>` | `zstd` | Parquet codec for aggregated output. Unset defaults to `zstd`, same reasoning as `converter.compression`/`filter.compression` |
+
+`gdeltforge aggregate` concatenates a period's worth of GKG 2.1/Mentions/`events-15min` files (the three datasets discovered from GDELT's 15-minute `gdeltv2` master file list; see `dataset_is_aggregation_eligible`) into one larger file per day, month, or year, so `sample` reads far fewer, larger files instead of the ~96 files/day these datasets publish at. Pure concatenation: every row from every contributing file lands in the aggregated output unchanged, no deduplication or rollup math, and the total bytes a full-archive scan reads doesn't shrink; this addresses per-file overhead (footer reads, scan scheduling), not data volume. See "Capacity planning" below for the real numbers this was measured against.
+
+### `paths` for aggregation
+
+Three new base keys per eligible dataset, `dataset_path_key`-prefixed the same way every other path is, only ever populated for `gdelt_gkg_v2`/`gdelt_mentions`/`gdelt_event_15min`:
+
+| Base key | Purpose |
+|-----|---------|
+| `aggregated_day_data_directory` | Day-granularity aggregated output |
+| `aggregated_month_data_directory` | Month-granularity aggregated output |
+| `aggregated_year_data_directory` | Year-granularity aggregated output |
+
+`aggregate --source {converted,filtered}` (default `filtered`, matching `sample`'s own default) picks which upstream directory to build the aggregate *from*; the result always writes to the one canonical directory per period above, regardless of which source built it. Re-running `aggregate` with a different `--source` for an already-aggregated period is detected (`source` is part of the resumability fingerprint below) and overwrites it rather than silently mixing the two, so there's no need for a separate directory per source the way `filtered_historical_directory`/`parquet_historical_directory` need one each for Events.
+
+Aggregated output files are named plainly by the period they cover (`20200101.parquet`, `202001.parquet`, `2020.parquet`), the same convention Events' own historical yearly/monthly archive already uses. This is deliberate: it means the existing generic `parse_file_date` (not the 15-minute `parse_gdeltv2_file_date` these datasets' *source* files use) reads them back with no code changes, so `sample --source aggregated`'s own `--start-date`/`--end-date` narrowing and file ordering reuse the identical machinery every other stage already has.
+
+### Resumability
+
+Unlike `convert`/`filter`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output, so the marker sits next to each aggregated OUTPUT file instead, fingerprinted on `compression`, `source`, `delete_source`, and the sorted set of contributing source filenames. That last part matters specifically here: a period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists. `--force` bypasses the check entirely, same as `convert`/`filter`.
+
+`--delete-source` (off by default) deletes each contributing source file once its period's aggregated output is confirmed written, matching `convert`'s/`filter`'s own flag of the same name; the safe default keeps the aggregated output in its own separate directory alongside the untouched source files, mirroring how `events-reduced` got its own directory rather than overwriting `events`.
+
 ## Capacity planning: real measured numbers
 
 Everything below was measured against real GDELT data (not synthetic benchmarks), on GKG 2.1, since it's the dataset these knobs matter most for: mostly free-text fields, and 15-minute-interval files means a multi-year pull is hundreds of thousands of files. Treat these as a starting point for sizing your own pull, not a guarantee: your mix of news volume, disk, and CPU will shift the numbers.
@@ -295,6 +324,25 @@ Roughly a 2x day-to-day spread, GKG 2.1's raw size tracks news volume as much as
 That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned one (~220-380 GB): raw zip and unpruned-`snappy` Parquet both hold the full, unpruned content, just under different codecs, while pruning is a `convert`-time decision the raw archive never sees. `convert --delete-source` (see [CLI Reference](cli-reference.md#gdeltforge-convert)) removes each zip once its parquet output is confirmed written, the real lever to avoid holding both footprints on disk at once; `filter --delete-source` does the same for the converted parquet once its filtered output exists. Neither is on by default, and combined with any column-pruning or row-filtering setting, whatever that dropped can't be recovered later without redoing an earlier stage.
 
 **`events-15min`** is a much lighter pull than GKG 2.1 at the same file count: a live master-file-list check counted 396,086 `.export.CSV.zip` files (2015-02-18 to present, same window as GKG 2.1/Mentions), totaling ~39.7 GB, ~100 KB/file average. File count, not raw size, dominates the cost here (~81x the daily `events` archive's file count for the same date range): Events rows are compact structured data, not GKG's free text, so the per-file and total-size story looks much closer to Mentions' ~67 GB than to GKG 2.1's multi-TB footprint.
+
+### Aggregation: what `gdeltforge aggregate` actually buys, measured
+
+The motivation for `aggregate` was "drastically reduce I/O and memory" for sampling against GKG 2.1/Mentions/`events-15min`'s ~96-files/day cadence. Measured directly (no GKG 2.1/Mentions/`events-15min` data was locally available to benchmark against; this uses `IndexedSampler`'s `FileIndex` and `scan_dataset_reconciled`, the actual mechanisms this feature targets, against a real 1,920-file/32.7GB slice of this project's own `events` archive as a file-count-scaling proxy):
+
+| Files | Data | Rows | `FileIndex` build | Full scan+count |
+|-------|------|------|--------------------|------------------|
+| 96 | 7.36 GB | 164.1M | 0.136s | 0.275s |
+| 384 | 11.77 GB | 239.7M | 0.492s | 2.076s |
+| 960 | 18.66 GB | 324.8M | 1.161s | 6.049s |
+| 1,920 | 32.70 GB | 506.9M | 2.186s | 11.427s |
+
+`FileIndex` build time is ~1.1-1.4ms per file and roughly *independent of file size*: 16x more files cost ~16x more time, while bytes only grew 4.4x over the same range. That's a direct confirmation that this cost is dominated by file count (opening every footer), not bytes moved, exactly the mechanism aggregation targets.
+
+Extrapolating that per-file cost (not measured directly on GKG 2.1 itself) to the real full-archive file count this page already measured above (395,788 `gdelt_gkg_v2` files): `FileIndex` construction alone would cost roughly **8 minutes**, paid on every single `sample --mode indexed` invocation, since it's never cached across runs. Aggregating to daily (~4,123 files at the ~96-files/day cadence) cuts that to roughly **5 seconds**; to monthly (~135 files), roughly **0.2 seconds**.
+
+**Honest scope of the benefit:** the win above is dramatic for anything whose cost is file-*count*-dominated, above all `IndexedSampler`'s `FileIndex` build. It's real but more modest for a full-archive scan (`calendar`/`filtered` modes): once total bytes moved dominates wall-clock (the `scan+count` column above grows faster than file count alone once file count is already in the hundreds, per-file schema/scheduling overhead stacking on top of raw transfer time), aggregation removes that per-file overhead but can't reduce the bytes themselves, since it's concatenation, not compression or pruning; the docs' own ~220GB-2.9TB GKG 2.1 footprint doesn't shrink.
+
+The "memory" half of the original motivation is **not** supported by sampling-side evidence: `FileIndex`, `scan_dataset_reconciled`, and every sampler already stream (`collect_batches`, lazy scans) regardless of file count, true today independent of aggregation. The real memory risk this investigation surfaced sits on the aggregation step's *own* write path instead: concatenating many large source files eagerly (a plain per-file `read_parquet` + `concat` + `write_parquet`) reproduced a real Rust-level allocator abort on a multi-GB group, not a catchable Python exception, the same failure mode `FilteredSampler._get_random_sample_with_replacement`'s own docstring already documents for a bare `.collect()` over a large multi-file plan. `aggregate`'s own implementation avoids this by streaming through `scan_dataset_reconciled(...).sink_parquet(...)` instead (see `utils.io.sink_parquet_atomic`), never materializing a period's full concatenated rows in memory at once.
 
 ### Dtype narrowing: where it does and doesn't pay off
 

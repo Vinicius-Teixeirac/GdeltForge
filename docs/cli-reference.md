@@ -11,6 +11,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 | `scrape`  | Download raw GDELT data (ZIP -> CSV) |
 | `convert` | Convert downloaded CSV files to Parquet |
 | `filter`  | Apply row-column filtering to Parquet files |
+| `aggregate` | Concatenate a period's worth of 15-minute-cadence files into one larger file per day/month/year |
 | `sample`  | Efficient, reproducible sampling |
 | `crossref` | Enrich a sampled Events output with GKG (themes, tone, people, organizations) |
 | `codes`   | Look up valid CAMEO/FIPS codes for filter values |
@@ -19,6 +20,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
   <a class="gf-card gf-card--link" href="#gdeltforge-scrape"><h3>scrape →</h3><p>Download the raw archive, checksum-verified.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-convert"><h3>convert →</h3><p>CSV to Parquet, optionally Hive-partitioned.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-filter"><h3>filter →</h3><p>Drop rows missing your configured columns.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-aggregate"><h3>aggregate →</h3><p>Fold 15-minute files into day/month/year files.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-sample"><h3>sample →</h3><p>Indexed, calendar, filtered, plus a stratified sub-mode.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-crossref"><h3>crossref →</h3><p>Join a sample back onto GKG.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-codes"><h3>codes →</h3><p>Look up CAMEO/FIPS values offline.</p></a>
@@ -172,6 +174,35 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 `--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already filtered under the current configuration. `--dry-run` reports how many files would be filtered, honoring `--force`'s effect on that count, without processing anything.
 
+## `gdeltforge aggregate`
+
+```bash
+gdeltforge aggregate --dataset gkg-v2 --period day
+```
+
+GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDELT's 15-minute `gdeltv2` master file list, so a single calendar day is routinely split across ~96 separate files. `aggregate` concatenates a period's worth of them (day, month, or year) into one larger file, so `sample` (and `IndexedSampler`'s `FileIndex` in particular, which opens every file's footer to build its global row index) reads far fewer, larger files instead. Pure concatenation, not a statistical rollup: every row from every contributing file lands in the aggregated output unchanged, no deduplication or summing, and the total bytes a full-archive scan reads doesn't shrink; this fixes per-file overhead, not data volume. See [Configuration](configuration.md#aggregation) for the real measured numbers behind this.
+
+| Flag | Description |
+|------|-------------|
+| `--dataset {gkg-v2,mentions,events-15min}` | Which 15-minute-cadence GDELT dataset to aggregate (required). Every other dataset already publishes at day-or-coarser granularity, so there's nothing for this to solve there |
+| `--period {day,month,year}` | Granularity to concatenate into (default `day`, matching `sample --mode calendar`'s own default) |
+| `--source {filtered,converted}` | Which stage's output to aggregate from (default `filtered`). Recorded as part of this run's resumability fingerprint, so switching source for an already-aggregated period reprocesses and overwrites it rather than mixing the two |
+| `--start-date YYYY-MM-DD` | Only aggregate periods whose source files' period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only aggregate periods whose source files' period ends on or before this date |
+| `--order {asc,desc}` | Processing order: `asc` (oldest period first, the default) or `desc` (newest first) |
+| `--delete-source` | Delete each contributing source file once its period's aggregated output is written and confirmed done. Off by default: the safe default keeps the aggregated output in its own separate directory alongside the untouched source files |
+| `--verbose` | Show per-period aggregation detail instead of just the progress bar and summary. Off by default |
+| `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
+| `-q` | Shorthand for `--quiet` |
+| `--force` | Reprocess periods already marked done instead of skipping them, overwriting their aggregated output. Off by default |
+| `--dry-run` | Report how many periods would be aggregated without aggregating anything. Off by default |
+
+Unlike `convert`/`filter`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
+
+`--order`, `--verbose`/`--quiet`, `--force`, and `--dry-run` all match `convert`'s/`filter`'s own identically-named flags exactly, including the worker-pool interrupt handling (Ctrl+C/SIGTERM cancel not-yet-started periods immediately rather than draining the whole batch).
+
+Read the aggregated output back with `sample --source aggregated --period day` (see [`gdeltforge sample`](#gdeltforge-sample) below); `--dataset` there must be one of the same three eligible datasets.
+
 ## `--dataset`
 
 `scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there's no default, so every invocation of these four commands names its dataset explicitly. This was a deliberate breaking change (see the changelog): with two Events-flavored choices now available, a silent default risked someone meaning to opt into the finer, slower one falling back to the daily archive instead with no error.
@@ -188,19 +219,19 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 
 ![The three sampling modes, indexed, calendar and filtered, plus stratified as filtered's own optional sub-mode](assets/sampling-modes.svg)
 
-All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping.
+All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping, or `--source aggregated` to read `gdeltforge aggregate`'s output instead (`--dataset` must be one of the three 15-minute-cadence datasets `aggregate` supports: gkg-v2/mentions/events-15min).
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
 | `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
-| `--source {filtered,converted}` | all | Which stage's output to read from (default `filtered`) |
+| `--source {filtered,converted,aggregated}` | all | Which stage's output to read from (default `filtered`). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
 | `--per-period N` | calendar | Rows per calendar period (default 10) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
-| `--period {day,month,year}` | calendar | Calendar period to group by (default `day`); rejected alongside the deprecated `--mode daily` |
+| `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
 | `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for events-reduced/gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
 | `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
 | `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
@@ -324,6 +355,15 @@ gdeltforge sample \
 This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
 
 Alongside `stratified.parquet`, this also writes `stratified.parquet.strata.json`, recording each `QuadClass` value's true row count in the (USA-filtered) archive, independent of `--n-per-group`. Calendar sampling writes the equivalent `<out>.strata.json` keyed by period instead. Either sidecar is the `N_h` a caller needs to post-stratification-reweight the equal-allocation sample back toward the population; see [Filtered Sampling](filtered-sampling.md) and [Limitations](limitations-and-roadmap.md#representativeness). Writing it is best-effort: a failure (a read-only output directory) logs a warning rather than failing the sample.
+
+### Sampling from aggregated files
+
+```bash
+gdeltforge aggregate --dataset gkg-v2 --period day
+gdeltforge sample --dataset gkg-v2 --mode indexed --source aggregated --period day -n 10000
+```
+
+Reads from `gdeltforge aggregate`'s output directory instead of `filtered_data_directory`/`parquet_data_directory`; every mode works the same way against it. `--period` picks which of the day/month/year aggregated directories to read, independent of `--source filtered`/`converted`'s own choice of which directory `aggregate` itself read from when building the aggregated files.
 
 ## `gdeltforge crossref`
 

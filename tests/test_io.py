@@ -25,6 +25,7 @@ from gdeltforge.utils.io import (
     reconcile_parquet_schema,
     scan_dataset_reconciled,
     scan_file_against_schema,
+    sink_parquet_atomic,
     warn_if_delete_source_drops_recoverable_data,
     write_dataframe_atomic,
     write_parquet_atomic,
@@ -94,6 +95,70 @@ class TestWriteParquetAtomic:
 
         assert not out.exists()
         assert not (tmp_path / "sample.parquet.tmp").exists()
+
+
+class TestSinkParquetAtomic:
+    """The streaming (LazyFrame.sink_parquet) equivalent of
+    write_parquet_atomic, for aggregation.py, which concatenates many
+    source files into one output that can run to several GB: see its own
+    docstring for why an eager write_parquet_atomic call isn't safe there."""
+
+    def test_writes_file_and_leaves_no_tmp_behind(self, tmp_path):
+        out = tmp_path / "sample.parquet"
+        src = tmp_path / "src.parquet"
+        pl.DataFrame({"GlobalEventID": [1, 2, 3]}).write_parquet(src)
+
+        sink_parquet_atomic(pl.scan_parquet(src), out)
+
+        assert out.exists()
+        assert pl.read_parquet(out)["GlobalEventID"].to_list() == [1, 2, 3]
+        assert not (tmp_path / "sample.parquet.tmp").exists()
+
+    def test_extra_kwargs_are_passed_through_to_sink_parquet(self, tmp_path, monkeypatch):
+        out = tmp_path / "sample.parquet"
+        src = tmp_path / "src.parquet"
+        pl.DataFrame({"a": [1]}).write_parquet(src)
+        captured = {}
+
+        real_sink_parquet = pl.LazyFrame.sink_parquet
+
+        def spy(self, path, **kwargs):
+            captured.update(kwargs)
+            return real_sink_parquet(self, path, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "sink_parquet", spy)
+
+        sink_parquet_atomic(pl.scan_parquet(src), out, compression="snappy")
+
+        assert captured == {"compression": "snappy"}
+
+    def test_cleans_up_tmp_and_reraises_on_write_failure(self, tmp_path, monkeypatch):
+        out = tmp_path / "sample.parquet"
+        src = tmp_path / "src.parquet"
+        pl.DataFrame({"a": [1]}).write_parquet(src)
+
+        def boom(self, path, *args, **kwargs):
+            Path(path).write_bytes(b"partial write before failure")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pl.LazyFrame, "sink_parquet", boom)
+
+        with pytest.raises(OSError):
+            sink_parquet_atomic(pl.scan_parquet(src), out)
+
+        assert not out.exists()
+        assert not (tmp_path / "sample.parquet.tmp").exists()
+
+    def test_concatenates_multiple_source_files(self, tmp_path):
+        out = tmp_path / "combined.parquet"
+        src_a = tmp_path / "a.parquet"
+        src_b = tmp_path / "b.parquet"
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(src_a)
+        pl.DataFrame({"GlobalEventID": [3]}).write_parquet(src_b)
+
+        sink_parquet_atomic(pl.scan_parquet([src_a, src_b]), out)
+
+        assert sorted(pl.read_parquet(out)["GlobalEventID"].to_list()) == [1, 2, 3]
 
 
 class TestWriteDataframeAtomic:

@@ -247,6 +247,39 @@ def write_parquet_atomic(df: pl.DataFrame, out: str | Path, **write_parquet_kwar
         raise
 
 
+def sink_parquet_atomic(lf: pl.LazyFrame, out: str | Path, **sink_parquet_kwargs) -> None:
+    """
+    Stream a LazyFrame to Parquet via a temp file plus an atomic rename,
+    the same tmp-then-rename guarantee write_parquet_atomic gives an
+    already-materialized DataFrame, but through polars' own streaming
+    sink_parquet instead of write_parquet.
+
+    This exists for aggregation.py, which concatenates many source files
+    (a day/month/year's worth of GKG 2.1/Mentions/events-15min files)
+    into one output file that can run to several GB or more. Collecting
+    that union into memory first and calling write_parquet_atomic risks
+    the same Rust-level allocator abort samplers.py's own FilteredSampler.
+    _get_random_sample_with_replacement docstring already documents for a
+    bare .collect() over a large multi-file plan ("memory allocation of
+    N bytes failed", not a catchable Python exception): reproduced
+    directly while designing aggregation.py. sink_parquet streams the
+    whole plan straight to disk instead, the same property that already
+    keeps every sampler in this codebase memory-safe regardless of file
+    count.
+    """
+    out = Path(out)
+    # PID-suffixed, same reasoning as write_parquet_atomic's identical fix.
+    tmp_path = out.with_name(f"{out.name}.{os.getpid()}.tmp")
+    _clean_orphaned_tmp_files(out)
+
+    try:
+        lf.sink_parquet(tmp_path, **sink_parquet_kwargs)
+        os.replace(tmp_path, out)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 _EXPORT_FORMATS = ("parquet", "csv")
 
 

@@ -8,6 +8,7 @@ import yaml
 import gdeltforge.utils.config as config_module
 from gdeltforge.utils.config import (
     CONFIG_ENV_VAR,
+    dataset_is_aggregation_eligible,
     dataset_path_key,
     get_dict,
     load_config,
@@ -37,6 +38,19 @@ class TestDatasetPathKey:
     def test_unknown_dataset_raises(self):
         with pytest.raises(ValueError, match="Unknown dataset"):
             dataset_path_key("not_a_real_dataset", "downloaded_data_directory")
+
+
+class TestDatasetIsAggregationEligible:
+    def test_the_three_15_minute_datasets_are_eligible(self):
+        assert dataset_is_aggregation_eligible("gdelt_gkg_v2") is True
+        assert dataset_is_aggregation_eligible("gdelt_mentions") is True
+        assert dataset_is_aggregation_eligible("gdelt_event_15min") is True
+
+    def test_day_or_coarser_datasets_are_not_eligible(self):
+        assert dataset_is_aggregation_eligible("gdelt_event") is False
+        assert dataset_is_aggregation_eligible("gdelt_event_reduced") is False
+        assert dataset_is_aggregation_eligible("gdelt_gkg_v1") is False
+        assert dataset_is_aggregation_eligible("gdelt_gkg_v1_counts") is False
 
 
 class TestGetDict:
@@ -265,6 +279,7 @@ class TestLoadConfig:
 
         assert set(config) == {
             "columns", "columns_numeric", "paths", "scraping", "converter", "filter",
+            "aggregation",
         }
         assert any("built-in default" in r.message for r in caplog.records)
 
@@ -399,6 +414,7 @@ class TestLoadConfig:
 
         assert set(config) == {
             "columns", "columns_numeric", "paths", "scraping", "converter", "filter",
+            "aggregation",
         }
         assert any(
             "in memory only" in r.message and "read-only filesystem" in r.message

@@ -425,10 +425,23 @@ paths:
   gkg_v2_parquet_data_directory: "./path_example/gkg_v2/parquet"
   gkg_v2_filtered_data_directory: "./path_example/gkg_v2/filtered"
 
+  # Only used by `gdeltforge aggregate`/`sample --source aggregated`
+  # (see the aggregation: section below): one directory per granularity,
+  # always written to regardless of which of --source
+  # converted/filtered `aggregate` itself read from when building it.
+  # GKG 2.1/Mentions/events-15min are the only datasets with a many-
+  # small-files problem to solve; no other dataset gets these keys.
+  gkg_v2_aggregated_day_data_directory: "./path_example/gkg_v2/aggregated_day"
+  gkg_v2_aggregated_month_data_directory: "./path_example/gkg_v2/aggregated_month"
+  gkg_v2_aggregated_year_data_directory: "./path_example/gkg_v2/aggregated_year"
+
   mentions_downloaded_data_directory: "./path_example/mentions/raw"
   mentions_unzipped_data_directory: "./path_example/mentions/csv"
   mentions_parquet_data_directory: "./path_example/mentions/parquet"
   mentions_filtered_data_directory: "./path_example/mentions/filtered"
+  mentions_aggregated_day_data_directory: "./path_example/mentions/aggregated_day"
+  mentions_aggregated_month_data_directory: "./path_example/mentions/aggregated_month"
+  mentions_aggregated_year_data_directory: "./path_example/mentions/aggregated_year"
 
   # Events at native GDELT 2.0 granularity (--dataset events-15min): same
   # 15-minute cadence as GKG 2.1/Mentions above, so the same reasoning
@@ -441,6 +454,9 @@ paths:
   event_15min_unzipped_data_directory: "./path_example/events_15min/csv"
   event_15min_parquet_data_directory: "./path_example/events_15min/parquet"
   event_15min_filtered_data_directory: "./path_example/events_15min/filtered"
+  event_15min_aggregated_day_data_directory: "./path_example/events_15min/aggregated_day"
+  event_15min_aggregated_month_data_directory: "./path_example/events_15min/aggregated_month"
+  event_15min_aggregated_year_data_directory: "./path_example/events_15min/aggregated_year"
 
   # events-reduced is the one dataset whose historical directory is
   # populated unconditionally, regardless of converter.partitioning.enabled
@@ -679,3 +695,21 @@ filter:
     gdelt_event: # example
       - Actor1Geo_Lat
       - Actor1Geo_Long
+
+# Only relevant for gkg-v2/mentions/events-15min (see paths above):
+# concatenates a period's worth of their ~96-files/day 15-minute cadence
+# into one larger file per day/month/year, so `sample` reads far fewer,
+# larger files. Pure concatenation, not a statistical rollup: every row
+# from every contributing file lands in the output unchanged. See
+# docs/configuration.md#aggregation for the real measured numbers this
+# was built against.
+aggregation:
+  # Worker processes for aggregation, one period per worker. null (the
+  # default) uses os.cpu_count(), same tradeoffs as converter.max_workers/
+  # filter.max_workers above.
+  max_workers: null
+
+  # Write codec per dataset, same setting and same zstd default as
+  # converter.compression/filter.compression above.
+  compression:
+    gdelt_gkg_v2: snappy # example override away from the zstd default
