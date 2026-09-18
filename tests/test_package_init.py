@@ -3,6 +3,9 @@ Import-time side effects of the top-level gdeltforge package itself,
 as opposed to any one stage module.
 """
 
+import subprocess
+import sys
+
 import tqdm
 
 import gdeltforge  # pyright: ignore[reportUnusedImport]  # noqa: F401
@@ -42,3 +45,23 @@ class TestTqdmMonitorThreadIsDisabled:
             bar.update(1)
 
         assert tqdm.tqdm.monitor is None
+
+
+class TestModuleExecution:
+    """
+    `python -m gdeltforge` needs a real __main__.py; a package with none
+    fails with "No module named gdeltforge.__main__" before ever reaching
+    cli.main, regardless of how correct cli.py itself is. A genuine
+    subprocess is the only way to exercise this: it's the -m flag's own
+    module-lookup behavior under test, not anything reachable by
+    importing gdeltforge.__main__ directly.
+    """
+
+    def test_dash_m_reaches_the_real_cli(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "gdeltforge", "--version"],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "gdeltforge" in result.stdout

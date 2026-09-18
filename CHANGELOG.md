@@ -12,6 +12,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - New `paths.*` base keys, `aggregated_day_data_directory`/`aggregated_month_data_directory`/`aggregated_year_data_directory`, `dataset_path_key`-prefixed the same way every other path is. Only `gdelt_gkg_v2`/`gdelt_mentions`/`gdelt_event_15min` ever populate them. A new `aggregation` config section (`max_workers`, `compression.<dataset>`) mirrors `converter`/`filter`'s own shape.
 - `gdeltforge.utils.io.sink_parquet_atomic`, the streaming (`LazyFrame.sink_parquet`) equivalent of `write_parquet_atomic`, for `aggregate`'s own per-period write. An eager `read_parquet` + `concat` + `write_parquet` over many large source files risks the same Rust-level allocator abort `FilteredSampler._get_random_sample_with_replacement`'s own docstring already documents for a bare `.collect()` over a large multi-file plan, reproduced directly against a real multi-GB group while building this. `sink_parquet_atomic` streams the whole plan straight to disk, the same property that already keeps every sampler in this codebase memory-safe regardless of file count.
 
+### Fixed
+- `python -m gdeltforge` failed with `No module named gdeltforge.__main__`, since the package shipped no `__main__.py`; the installed `gdeltforge` console script itself was unaffected. Added `src/gdeltforge/__main__.py`, delegating to the same `cli.main` the console script already uses. Found during QA on the `v0.11.0rc1` release candidate.
+
 ## [0.10.0] - 2026-09-17
 
 ### Added
