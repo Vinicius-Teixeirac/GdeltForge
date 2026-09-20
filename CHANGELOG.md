@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.11.0] - 2026-09-20
 
 ### Added
 - `gdeltforge aggregate`, a new pipeline stage for GKG 2.1, Mentions, and `events-15min`: the three datasets discovered from GDELT's 15-minute `gdeltv2` master file list, where a single calendar day is routinely split across ~96 separate files. `aggregate --dataset {gkg-v2,mentions,events-15min} --period {day,month,year}` concatenates a period's worth of them into one larger file. `sample` then reads far fewer, larger files for the same archive. Pure concatenation, not a statistical rollup: every row from every contributing file lands in the aggregated output unchanged, no deduplication or summing. `--source {filtered,converted}` (default `filtered`) picks which upstream directory to build from. `--delete-source` optionally removes the contributing 15-minute files once their period's output is confirmed written; it is off by default, so the aggregated output lives in its own directory alongside the untouched source files. Resumable the same way `convert`/`filter` already are, with one difference: the `.done` marker sits on the aggregated output file, not a source file, since many source files feed one output here. It is fingerprinted on `compression`/`source`/`delete_source` plus the sorted set of contributing source filenames. A period whose source files later change, a backfilled 15-minute file for instance, is reprocessed on the next run: the stale fingerprint no longer matches.
