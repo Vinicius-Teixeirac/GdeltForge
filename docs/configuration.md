@@ -258,6 +258,43 @@ Unlike `convert`/`filter`, whose `.done` marker is keyed one-per-source-file, ag
 
 `--delete-source` (off by default) deletes each contributing source file once its period's aggregated output is confirmed written, matching `convert`'s/`filter`'s own flag of the same name; the safe default keeps the aggregated output in its own separate directory alongside the untouched source files, mirroring how `events-reduced` got its own directory rather than overwriting `events`.
 
+## `io`
+
+| Key | Default | Description |
+|-----|---------|--------------|
+| `max_concurrent_reads` | `null` | How many files one `filter`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
+
+`max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:
+
+- **`filter`, `aggregate`**: each worker reads one file at a time, so the worker count is capped to `max_concurrent_reads`. The startup log line shows the resulting count.
+- **`sample`, `crossref`**: these read many files through one multi-file scan in a single process, so polars' own concurrent file scans (`POLARS_MAX_CONCURRENT_SCANS`, one per core by default) are capped to it.
+- **`convert`**: not capped. Its reads are one zip per worker, and its CPU work needs the workers; see "Network storage" below for what to tune there.
+
+A `POLARS_MAX_CONCURRENT_SCANS` you export yourself takes precedence over this setting.
+
+### Network storage (NFS, SMB, shared HDD arrays)
+
+Leave `max_concurrent_reads` at `null` on a local SSD: it serves many requests in parallel, and the other defaults on this page are sized for it. On network storage, and on any disk shared with other users, the opposite holds. Past a handful of reads in flight, throughput stops growing, every request waits in a longer queue, and everyone else using the same storage slows down too, your own later jobs included. A shared NFS server saturated at about 4 reads in flight in real measurements, while the defaults allow one per core, 32 on a 32-core server.
+
+A measured starting point for that kind of storage:
+
+```yaml
+io:
+  max_concurrent_reads: 4             # filter/aggregate: 4 workers; sample/crossref: 4 scans
+
+converter:
+  max_workers: 8                      # and any max_workers_by_dataset override
+
+paths:
+  # Extract CSVs to a local disk, not next to the zips on the share.
+  unzipped_data_directory: "/tmp/gdelt_csv"
+  gkg_v2_unzipped_data_directory: "/tmp/gdelt_csv"   # one per dataset you convert
+```
+
+- **`convert`** extracts each zip's CSV to `unzipped_data_directory`, reads it back, then deletes it. On a network share that is a full write plus a full read of every CSV across the network, which measured 2.5 to 3x slower than extracting to local disk at every worker count. Point it at local disk with room for `max_workers` extracted CSVs at once (tens of MB each for GKG 2.1, up to a few hundred MB for a daily Events file), and leave `keep_unzipped` off unless that disk can hold them all.
+- **Going below 4 bought nothing measurable** for `aggregate`: 2 concurrent reads kept the same idle-level response time as 4 (about 10 ms), at about 60% of the throughput. Lower it only if the storage's response time says so (next point).
+- **Watch the storage, not the CPU**: on Linux, `nfsiostat 5 <mountpoint>` shows the average round-trip time per read. If it climbs well above the idle figure while gdeltforge runs, lower `max_concurrent_reads`.
+
 ## Capacity planning: real measured numbers
 
 Everything below was measured against real GDELT data (not synthetic benchmarks), on GKG 2.1, since it's the dataset these knobs matter most for: mostly free-text fields, and 15-minute-interval files means a multi-year pull is hundreds of thousands of files. Treat these as a starting point for sizing your own pull, not a guarantee: your mix of news volume, disk, and CPU will shift the numbers.

@@ -1084,6 +1084,49 @@ class TestRunFilterDatasetParameter:
 
         assert captured["max_workers"] == 3
 
+    def test_passes_io_max_concurrent_reads_through_to_the_filterer(self, tmp_path, monkeypatch):
+        cfg, events_in, _ = self._config(tmp_path)
+        cfg["io"] = {"max_concurrent_reads": 2}
+        pl.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).write_parquet(events_in / "a.parquet")
+
+        captured = {}
+        real_init = GDELTFilter.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(GDELTFilter, "__init__", spy_init)
+
+        run_filter(cfg)
+
+        assert captured["max_concurrent_reads"] == 2
+
+    def test_max_concurrent_reads_caps_the_worker_count(self, tmp_path, monkeypatch):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        for name in ("a", "b", "c"):
+            pl.DataFrame({"GlobalEventID": [1]}).write_parquet(in_dir / f"{name}.parquet")
+
+        plans = []
+        real_plan_workers = filter_module.plan_workers
+
+        def recording_plan_workers(*args, **kwargs):
+            plan = real_plan_workers(*args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(filter_module, "plan_workers", recording_plan_workers)
+        filterer = GDELTFilter(
+            str(in_dir), str(tmp_path / "out"), columns_to_check=[],
+            max_workers=4, max_concurrent_reads=2,
+        )
+        filterer.filter_all_files()
+
+        assert plans[0].workers == 2
+
     def test_events_reduced_resolves_historical_folders_regardless_of_partitioning(
         self, tmp_path, monkeypatch
     ):

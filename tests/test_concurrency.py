@@ -9,6 +9,7 @@ from gdeltforge.utils.concurrency import (
     POLARS_MAX_THREADS,
     WorkerPlan,
     plan_workers,
+    polars_scan_limit,
     polars_worker_env,
 )
 
@@ -40,6 +41,17 @@ class TestPlanWorkers:
 
     def test_zero_tasks_still_plans_one_worker(self):
         assert plan_workers(None, 0, cpu_count=8).workers == 1
+
+    def test_max_concurrent_reads_caps_workers(self):
+        # Each filter/aggregate worker reads one file at a time, so a cap
+        # on concurrent reads is a cap on workers; the freed cores go to
+        # the remaining workers' polars threads.
+        assert plan_workers(None, 100, max_concurrent_reads=4, cpu_count=32) == WorkerPlan(
+            workers=4, polars_threads=8
+        )
+
+    def test_max_concurrent_reads_above_the_worker_count_changes_nothing(self):
+        assert plan_workers(2, 100, max_concurrent_reads=4, cpu_count=32).workers == 2
 
     def test_scans_per_worker_passes_through(self):
         assert plan_workers(4, 100, scans_per_worker=1, cpu_count=32).concurrent_scans == 1
@@ -99,3 +111,21 @@ class TestPolarsWorkerEnv:
             env_value, pool_size = executor.submit(_report_polars_threads).result()
         assert env_value == "2"
         assert pool_size == 2
+
+
+class TestPolarsScanLimit:
+    def test_sets_and_restores(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+        with polars_scan_limit(4):
+            assert os.environ[POLARS_MAX_CONCURRENT_SCANS] == "4"
+        assert POLARS_MAX_CONCURRENT_SCANS not in os.environ
+
+    def test_none_leaves_polars_default(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+        with polars_scan_limit(None):
+            assert POLARS_MAX_CONCURRENT_SCANS not in os.environ
+
+    def test_keeps_a_value_the_user_exported(self, monkeypatch):
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, "2")
+        with polars_scan_limit(4):
+            assert os.environ[POLARS_MAX_CONCURRENT_SCANS] == "2"
