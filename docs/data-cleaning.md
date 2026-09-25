@@ -44,6 +44,7 @@ question, it belongs to sampling.
 | **Steps run in one fixed order** | No configuration can produce an order-dependent result by accident |
 | **Every step declares whether it's lossy** | A lossy step leaves the cleaned output unable to tell what the converted input held, which matters for deciding whether the converted copy can go |
 | **Derived columns only add, and are off by default** | Adding a column never discards anything, so the step is never lossy; storing them costs width in every file, and which ones are useful depends on the analysis |
+| **No option to store code columns as categoricals** | Measured on real Events files, it gains nothing and costs read time (see [below](#not-included-categorical-storage)) |
 | **Normalization is available but off by default** | Whitespace padding is common in GDELT's 2013 files and breaks code lookups, but fixing it rewrites GDELT's values without keeping them, which the defaults never do |
 | **`--delete-source` refuses a lossy step added in 0.12.0** (errata, normalize) unless `allow_lossy_delete_source: true` | Deleting the converted copy removes the only way back to what a lossy step discarded, so that combination has to be chosen deliberately. The original three steps (`columns_to_check`, `output_columns`, `float32_columns`) keep their long-standing warning, since existing setups rely on them to fit disk |
 | **Every cleaned file says it's cleaned** | A cleaned file must never pass for GDELT's own data. Each one carries a `gdeltforge:clean` entry in its Parquet metadata; `clean` warns when its input already carries it, and `sample`/`aggregate`/`crossref` warn when a `--source converted` directory does |
@@ -258,6 +259,25 @@ With `output_columns` set, list the derived columns there too
 labels are worth storing depends on the analysis. Labels are also tied to
 the code tables of the gdeltforge version that wrote them; the code column
 itself stays authoritative.
+
+## Not included: categorical storage
+
+Storing the CAMEO-coded columns as polars `Categorical` was proposed as a
+size reduction and measured on four real Events files (22 coded columns,
+zstd), before building it:
+
+| File | Rows | String | Categorical | Full read, String | Full read, Categorical |
+|---|---|---|---|---|---|
+| 2016-03-15 daily | 239,103 | 12.04 MB | 12.04 MB | 31 ms | 36 ms |
+| 2020-01-02 daily | 123,425 | 6.09 MB | 6.09 MB | 28 ms | 36 ms |
+| 2024-06-10 daily | 126,477 | 6.16 MB | 6.16 MB | 30 ms | 39 ms |
+| 2008-06 monthly | 1,209,784 | 43.87 MB | 43.87 MB | 93 ms | 117 ms |
+
+The files are the same size to the byte: Parquet already stores repeated
+strings as a dictionary, which is all a categorical adds on disk. Reading
+is 15 to 30% slower, since polars rebuilds the category mapping. If
+categoricals help an analysis in memory, cast after reading
+(`pl.col(...).cast(pl.Categorical)`); the files don't need to change.
 
 ## Measuring before cleaning
 
