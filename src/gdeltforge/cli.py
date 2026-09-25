@@ -38,6 +38,7 @@ from gdeltforge.utils.config import (
 from gdeltforge.utils.io import (
     ensure_exists,
     read_parquet_path,
+    warn_if_folder_holds_cleaned_files,
     write_dataframe_atomic,
     write_parquet_atomic,
 )
@@ -495,6 +496,8 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         source_key = dataset_path_key(dataset, source_key)
         historical_key = dataset_path_key(dataset, historical_key)
         source_folder = ensure_exists(config["paths"][source_key], source_key)
+        if args.source == "converted":
+            warn_if_folder_holds_cleaned_files(source_folder, "sample --source converted", logger)
         hist_folder = _historical_folder(config, historical_key, dataset)
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
@@ -643,6 +646,13 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     source_key = (
         "cleaned_data_directory" if args.source == "cleaned" else "parquet_data_directory"
     )
+    if args.source == "converted":
+        for joined in ("gdelt_gkg_v1", "gdelt_gkg_v1_counts", "gdelt_mentions", "gdelt_gkg_v2"):
+            folder = config["paths"].get(dataset_path_key(joined, source_key))
+            if folder and Path(folder).is_dir():
+                warn_if_folder_holds_cleaned_files(
+                    folder, f"crossref --source converted ({joined})", logger
+                )
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
     out.parent.mkdir(parents=True, exist_ok=True)

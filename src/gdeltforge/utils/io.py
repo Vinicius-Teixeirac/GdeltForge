@@ -280,6 +280,57 @@ def sink_parquet_atomic(lf: pl.LazyFrame, out: str | Path, **sink_parquet_kwargs
         raise
 
 
+# Parquet key/value metadata written into every file the clean stage
+# produces (see cleaning/cleaner.py): the gdeltforge version, the steps and
+# their settings, and the source file, so a cleaned file can never pass for
+# GDELT's own data.
+CLEAN_MARKER_KEY = "gdeltforge:clean"
+
+
+def cleaned_marker(path: str | Path) -> dict | None:
+    """The clean stage's marker in this Parquet file's metadata, or None
+    for a file the stage didn't write (including an unreadable one: this
+    is a best-effort check, never a reason to fail a run)."""
+    try:
+        raw = pl.read_parquet_metadata(path).get(CLEAN_MARKER_KEY)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}
+
+
+def warn_if_cleaned_files(files: list[Path], where: str, logger, sample_size: int = 3) -> bool:
+    """
+    Warn when files expected to hold GDELT's own data (converted output, or
+    the clean stage's input) carry the clean stage's marker. Checks the
+    first, middle and last of `files` (sample_size of them), since reading
+    every footer of a full archive would cost real time for a warning.
+    Returns whether it warned.
+    """
+    if not files:
+        return False
+    picks = sorted({0, len(files) // 2, len(files) - 1})[:sample_size]
+    marked = [files[i].name for i in picks if cleaned_marker(files[i]) is not None]
+    if marked:
+        logger.warning(
+            f"{where}: {', '.join(marked)} carr{'ies' if len(marked) == 1 else 'y'} the "
+            f"clean stage's marker, so this directory holds cleaned data, not GDELT's "
+            f"own. Check paths.parquet_data_directory and paths.cleaned_data_directory "
+            f"point at different directories."
+        )
+    return bool(marked)
+
+
+def warn_if_folder_holds_cleaned_files(folder: str | Path, where: str, logger) -> bool:
+    """warn_if_cleaned_files over a directory's own top-level *.parquet
+    files, for a caller that reads a converted directory by path."""
+    return warn_if_cleaned_files(sorted(Path(folder).glob("*.parquet")), where, logger)
+
+
 _EXPORT_FORMATS = ("parquet", "csv")
 
 
@@ -479,7 +530,15 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     if not p.is_dir():
         return pl.read_parquet(p)
 
-    files = sorted(p.rglob("*.parquet"))
+    # A path component starting with "_" or "." marks metadata, not data,
+    # the same Hadoop/Spark/Parquet convention (_SUCCESS, _metadata) this
+    # function already relies on for dot-files: the clean stage keeps its
+    # run audits in <cleaned_data_directory>/_clean_runs/, which a
+    # recursive glob would otherwise read as rows.
+    files = sorted(
+        f for f in p.rglob("*.parquet")
+        if not any(part.startswith(("_", ".")) for part in f.relative_to(p).parts)
+    )
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):

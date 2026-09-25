@@ -164,6 +164,8 @@ The data-quality stage: drops rows with missing values in the columns defined un
 
 The stage refuses to start if `cleaned_data_directory` (or `cleaned_historical_directory`) is a converted-data directory or sits inside one. Cleaned files there would sit beside the converted files they came from: the next run would clean its own output again, and every reader of the converted directory would count those rows twice. The converted directory stays the copy to return to.
 
+Each run writes an audit to `<cleaned_data_directory>/_clean_runs/`, one row per cleaned file (rows in and out, unrecognized codes per coded column), and every cleaned file carries a `gdeltforge:clean` metadata entry naming its steps and source; see [Data Cleaning](data-cleaning.md#the-run-audit).
+
 `--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get cleaned, not the rows within them: the null check itself is a concern unrelated to date.
 
 Already-cleaned files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#clean) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.

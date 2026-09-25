@@ -53,12 +53,14 @@ Provides:
 """
 
 import glob
+import json
 import logging
 import multiprocessing
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import date
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -71,6 +73,7 @@ import polars as pl
 from polars._typing import ParquetCompression
 from tqdm import tqdm
 
+from gdeltforge import __version__
 from gdeltforge.cleaning.steps import (
     NarrowFloat32,
     ProjectColumns,
@@ -79,6 +82,7 @@ from gdeltforge.cleaning.steps import (
     ordered,
 )
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
+from gdeltforge.sampling import cameo_codes
 from gdeltforge.scraping.scraper import (
     date_parser_for,
     filter_paths_by_date,
@@ -92,15 +96,34 @@ from gdeltforge.utils.config import (
     validate_max_workers,
 )
 from gdeltforge.utils.io import (
+    CLEAN_MARKER_KEY,
     config_fingerprint,
     delete_done_marker,
     is_marked_done,
     mark_done,
+    warn_if_cleaned_files,
     warn_if_delete_source_drops_recoverable_data,
+    write_parquet_atomic,
 )
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+AUDIT_DIRECTORY = "_clean_runs"
+
+
+@dataclass
+class FileReport:
+    """What cleaning one file did, for the run audit. `unrecognized` counts,
+    per CAMEO-coded column in the output, the non-null values that aren't
+    in the bundled code tables."""
+
+    source: str
+    output: str
+    rows_in: int
+    rows_out: int
+    unrecognized: dict[str, int] = field(default_factory=dict)
 
 
 class GDELTCleaner:
@@ -245,6 +268,19 @@ class GDELTCleaner:
         if self.float32_columns:
             steps.append(NarrowFloat32(tuple(self.float32_columns)))
         self.steps: list[Step] = ordered(steps)
+        # Written into every cleaned file's Parquet metadata (plus the
+        # source file's name, per file), so a cleaned file can never pass
+        # for GDELT's own data: see utils.io.warn_if_cleaned_files.
+        self._marker = {
+            "gdeltforge": __version__,
+            "fingerprint": self._config_fingerprint,
+            "compression": self.compression,
+            "steps": [
+                {"step": st.name, "lossy": st.lossy,
+                 **{k: list(v) if isinstance(v, tuple) else v for k, v in asdict(st).items()}}
+                for st in self.steps
+            ],
+        }
 
         self._refuse_output_inside_input()
 
@@ -297,6 +333,10 @@ class GDELTCleaner:
             )
             return 0, 0
 
+        warn_if_cleaned_files(
+            [p for p, _ in all_files], "clean's input directory", logger
+        )
+
         to_process = []
         for parquet_path, is_historical in all_files:
             if not self.force and is_marked_done(parquet_path, self._config_fingerprint):
@@ -331,6 +371,9 @@ class GDELTCleaner:
         total_rows_after  = 0
         files_processed   = 0
         files_failed      = 0
+        reports: list[FileReport] = []
+        failed_files: list[str] = []
+        started_at = datetime.now(timezone.utc)
 
         # Each file is filtered independently (its own read, own output
         # path), so file-level parallelism across processes is safe:
@@ -353,7 +396,7 @@ class GDELTCleaner:
         ) as executor:
             futures = {
                 executor.submit(
-                    self.clean_single_file,
+                    self._clean_file,
                     parquet_path,
                     self._output_path_for(parquet_path, is_historical),
                 ): parquet_path
@@ -372,8 +415,10 @@ class GDELTCleaner:
                     for future in as_completed(futures):
                         parquet_path = futures[future]
                         try:
-                            rows_before, rows_after = future.result()
+                            report = future.result()
+                            rows_before, rows_after = report.rows_in, report.rows_out
                             mark_done(parquet_path, self._config_fingerprint)
+                            reports.append(report)
 
                             if self.delete_source:
                                 self._delete_source(parquet_path)
@@ -393,6 +438,7 @@ class GDELTCleaner:
 
                         except Exception as e:
                             files_failed += 1
+                            failed_files.append(parquet_path.name)
                             logger.error(f"Failed to clean {parquet_path.name}: {e}")
                         pbar.update(1)
             except KeyboardInterrupt:
@@ -428,6 +474,7 @@ class GDELTCleaner:
             logger.info(f"Overall retention rate: {retention:.2f}%")
             logger.info(f"Total rows removed: {dropped:,}")
 
+        self._write_audit(reports, failed_files, started_at)
         return files_processed, files_failed
 
     # ======================================================================
@@ -439,8 +486,17 @@ class GDELTCleaner:
         parquet_path: str | Path,
         output_path: Path | None = None,
     ) -> tuple[int, int]:
+        """Clean one file; return (rows_before, rows_after). See _clean_file."""
+        report = self._clean_file(parquet_path, output_path)
+        return report.rows_in, report.rows_out
+
+    def _clean_file(
+        self,
+        parquet_path: str | Path,
+        output_path: Path | None = None,
+    ) -> FileReport:
         """
-        Clean a single parquet file and return (rows_before, rows_after).
+        Clean a single parquet file and report what cleaning did.
         Built as a single lazy chain (scan, the steps in STEP_ORDER, sink) rather
         than a hand-rolled batch loop: polars' own streaming engine is
         what keeps peak RAM bounded here, and sink_parquet writes through
@@ -475,7 +531,7 @@ class GDELTCleaner:
 
         if rows_before == 0:
             logger.warning(f"Empty parquet file skipped: {file_path.name}")
-            return 0, 0
+            return FileReport(file_path.name, "", 0, 0)
 
         # The steps, in STEP_ORDER (see steps.py). Planned lazily here, so
         # a step that can't run on this file (RequireColumns with none of
@@ -499,13 +555,22 @@ class GDELTCleaner:
         # point of scanning rather than collecting above.
         tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.tmp")
 
-        # A separate pass over only the columns the row-dropping steps
-        # read (projection pushdown), since sink_parquet streams to disk
-        # without handing back a row count.
-        rows_after = lf.select(pl.len()).collect().item()
+        # One pass for the row count and the audit's unrecognized-code
+        # counts, reading only the columns those need (projection
+        # pushdown), since sink_parquet streams to disk without handing
+        # back any count.
+        unrecognized_exprs = self._unrecognized_code_exprs(lf)
+        counts = lf.select(
+            pl.len().alias("__rows_out"), *unrecognized_exprs
+        ).collect().row(0, named=True)
+        rows_after = counts.pop("__rows_out")
 
         try:
-            lf.sink_parquet(tmp_path, compression=cast(ParquetCompression, self.compression))
+            lf.sink_parquet(
+                tmp_path,
+                compression=cast(ParquetCompression, self.compression),
+                metadata={CLEAN_MARKER_KEY: json.dumps({**self._marker, "source": file_path.name})},
+            )
             os.replace(tmp_path, output_path)
         except Exception:
             if tmp_path.exists():
@@ -515,7 +580,79 @@ class GDELTCleaner:
         self._remove_legacy_output(output_path)
 
         logger.debug(f"Saved cleaned file -> {output_path}")
-        return rows_before, rows_after
+        return FileReport(
+            source=file_path.name,
+            output=output_path.name,
+            rows_in=rows_before,
+            rows_out=rows_after,
+            unrecognized={k: v for k, v in counts.items() if v},
+        )
+
+    @staticmethod
+    def _unrecognized_code_exprs(lf: pl.LazyFrame) -> list[pl.Expr]:
+        """
+        For every CAMEO-coded string column in the output, an expression
+        counting non-null values missing from the bundled code tables
+        (case-insensitively, as cameo_codes.is_recognized_code compares).
+        """
+        schema = lf.collect_schema()
+        exprs = []
+        for column in schema.names():
+            family = cameo_codes.code_family_for_column(column)
+            if family is None or schema[column] != pl.String:
+                continue
+            known = [code.upper() for code in family]
+            exprs.append(
+                (pl.col(column).is_not_null() & ~pl.col(column).str.to_uppercase().is_in(known))
+                .sum()
+                .alias(column)
+            )
+        return exprs
+
+    def _write_audit(
+        self, reports: list[FileReport], failed: list[str], started_at: datetime
+    ) -> Path | None:
+        """
+        Write this run's audit to <output_folder>/_clean_runs/<UTC start>.parquet:
+        one row per cleaned file (source, output, rows in and out, and one
+        `unrecognized.<column>` count per coded column), with the run's
+        settings, timing and failed files in the file's metadata. One file
+        per run, never per data file: per-file sidecars would recreate the
+        many-small-files problem. The leading underscore keeps it out of
+        every reader of the cleaned directory.
+        """
+        if not reports and not failed:
+            return None
+        rows = [
+            {
+                "source": r.source, "output": r.output,
+                "rows_in": r.rows_in, "rows_out": r.rows_out,
+                **{f"unrecognized.{k}": v for k, v in r.unrecognized.items()},
+            }
+            for r in reports
+        ]
+        df = pl.from_dicts(rows, infer_schema_length=None) if rows else pl.DataFrame(
+            schema={"source": pl.String, "output": pl.String,
+                    "rows_in": pl.Int64, "rows_out": pl.Int64}
+        )
+        unrecognized_cols = [c for c in df.columns if c.startswith("unrecognized.")]
+        if unrecognized_cols:
+            df = df.with_columns(pl.col(unrecognized_cols).fill_null(0))
+        path = self.output_folder / AUDIT_DIRECTORY / f"{started_at:%Y%m%dT%H%M%SZ}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        run = {
+            **self._marker,
+            "started": started_at.isoformat(),
+            "finished": datetime.now(timezone.utc).isoformat(),
+            "failed": failed,
+        }
+        write_parquet_atomic(df, path, metadata={CLEAN_MARKER_KEY + "-run": json.dumps(run)})
+        for column in unrecognized_cols:
+            total = int(df[column].sum())
+            if total:
+                logger.info(f"Unrecognized codes in {column.split('.', 1)[1]}: {total:,}")
+        logger.info(f"Run audit written to {path}")
+        return path
 
     # ======================================================================
     # VALIDATION

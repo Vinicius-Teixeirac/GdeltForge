@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import logging
 import os
 import sys
@@ -1658,3 +1659,86 @@ class TestRefusesToWriteIntoItsInput:
 
     def test_sibling_directories_are_fine(self, tmp_path):
         GDELTCleaner(str(tmp_path / "parquet"), str(tmp_path / "cleaned"), columns_to_check=[])
+
+
+class TestCleanedFileMarker:
+    def test_every_cleaned_file_says_it_is_cleaned(self, tmp_path):
+        from gdeltforge.utils.io import cleaned_marker
+
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Code": ["USA"]}).write_parquet(
+            in_dir / "20200101.parquet"
+        )
+        GDELTCleaner(
+            str(in_dir), str(tmp_path / "out"), columns_to_check=["Actor1Code"]
+        ).clean_all_files()
+
+        marker = cleaned_marker(tmp_path / "out" / "20200101_cleaned.parquet")
+        assert marker is not None
+        assert marker["source"] == "20200101.parquet"
+        assert marker["steps"] == [
+            {"step": "require", "lossy": True, "columns": ["Actor1Code"]}
+        ]
+        # The converted input carries no marker.
+        assert cleaned_marker(in_dir / "20200101.parquet") is None
+
+    def test_input_that_is_already_cleaned_is_warned_about(self, tmp_path, caplog):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [1]}).write_parquet(in_dir / "20200101.parquet")
+        GDELTCleaner(str(in_dir), str(tmp_path / "out"), columns_to_check=[]).clean_all_files()
+
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "out"), str(tmp_path / "again"), columns_to_check=[]
+            ).clean_all_files()
+        assert any("carries the clean stage's marker" in r.message for r in caplog.records)
+
+
+class TestRunAudit:
+    def _run(self, tmp_path, **kwargs):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3],
+            "EventRootCode": ["01", "99", None],
+            "Actor1Code": ["USA", "USA", None],
+        }).write_parquet(in_dir / "20200101.parquet")
+        out = tmp_path / "out"
+        GDELTCleaner(
+            str(in_dir), str(out), columns_to_check=["Actor1Code"], **kwargs
+        ).clean_all_files()
+        return out
+
+    def test_one_audit_file_per_run_with_one_row_per_file(self, tmp_path):
+        out = self._run(tmp_path)
+        audits = list((out / "_clean_runs").glob("*.parquet"))
+        assert len(audits) == 1
+        audit = pl.read_parquet(audits[0])
+        assert audit.select("source", "output", "rows_in", "rows_out").rows() == [
+            ("20200101.parquet", "20200101_cleaned.parquet", 3, 2)
+        ]
+
+    def test_counts_unrecognized_codes_per_coded_column(self, tmp_path):
+        # "99" isn't a CAMEO event root; the null is not counted.
+        out = self._run(tmp_path)
+        audit = pl.read_parquet(next((out / "_clean_runs").glob("*.parquet")))
+        assert audit["unrecognized.EventRootCode"].to_list() == [1]
+
+    def test_run_settings_are_in_the_audit_metadata(self, tmp_path):
+        out = self._run(tmp_path)
+        meta = pl.read_parquet_metadata(next((out / "_clean_runs").glob("*.parquet")))
+        run = json.loads(meta["gdeltforge:clean-run"])
+        assert run["failed"] == []
+        assert run["steps"][0]["step"] == "require"
+
+    def test_dry_run_writes_no_audit(self, tmp_path):
+        out = self._run(tmp_path, dry_run=True)
+        assert not (out / "_clean_runs").exists()
+
+    def test_audit_is_never_read_as_data(self, tmp_path):
+        from gdeltforge.utils.io import read_parquet_path
+
+        out = self._run(tmp_path)
+        assert read_parquet_path(out).height == 2
