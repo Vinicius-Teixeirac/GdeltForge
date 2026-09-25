@@ -589,6 +589,23 @@ class CalendarSampler:
                 lf = lf.select(needed_columns)
             yield from lf.collect_batches(chunk_size=64_000)
 
+    def _warn_before_1979(self, n_rows: int) -> None:
+        """
+        Rows dated before 1979 form calendar periods of their own, each
+        drawing a full quota. In GDELT's archive they are the events GDELT
+        dated 1920 instead of 2020 (added 2019-12-31 to 2020-01-05), whose
+        real days then come out nearly empty. The clean stage repairs them
+        by default; data read with --source converted, or cleaned before
+        0.12, still has them.
+        """
+        logger.warning(
+            f"{n_rows:,} row(s) have a {self.date_column} before 1979, GDELT's first "
+            f"year, and are sampled as periods of their own. In GDELT's archive these "
+            f"are events it dated 1920 instead of 2020 (added 2019-12-31 to "
+            f"2020-01-05). Run `gdeltforge clean` (errata.date_1920 repairs them by "
+            f"default) and sample --source cleaned; see docs/data-cleaning.md."
+        )
+
     def get_calendar_samples(self, samples_per_period: int = 10) -> pl.DataFrame:
         # A negative value used to reach the reservoir machinery below
         # unchecked, same as 0, producing a nonsensical but "successful"
@@ -657,6 +674,7 @@ class CalendarSampler:
         total_seen:       dict[Any, int]                     = {}
         group_rngs:       dict[Any, np.random.Generator]     = {}
         n_unparseable = 0
+        n_before_1979 = 0
 
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why a
@@ -686,6 +704,11 @@ class CalendarSampler:
                 # groupby's dropna=True default, keeps a null key as its own
                 # group, so this has to be explicit rather than assumed.
                 keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
+                # GDELT's data starts in 1979. An earlier period is almost
+                # always its 1920-for-2020 error (see _warn_before_1979).
+                n_before_1979 += int(
+                    (keyed_batch[self._PERIOD_KEY].str.slice(0, 4) < "1979").sum()
+                )
 
                 # maintain_order=True, not False: each group now draws from
                 # its own dedicated _group_rng (see that function's own
@@ -751,6 +774,8 @@ class CalendarSampler:
                 f"{n_unparseable} row(s) with an unparseable {self.date_column} "
                 f"were dropped from calendar sampling."
             )
+        if n_before_1979:
+            self._warn_before_1979(n_before_1979)
 
         reservoirs: dict[Any, pl.DataFrame] = {
             g: _reservoir_to_dataframe(cols, reservoir_schema[g])

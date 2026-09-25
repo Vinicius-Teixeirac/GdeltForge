@@ -103,7 +103,9 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   repair is exact, and `DATEADDED` confirms every repaired row.
 - **Without it**: calendar sampling treats 1920-01-01 to 01-06 as six real
   days, each drawing its full quota, while the real 2020-01-01 to 01-05
-  come out almost empty.
+  come out almost empty. `sample --mode calendar` warns whenever it meets
+  dates before 1979 (for example with `--source converted`), naming the
+  count and this repair; the rows are still sampled.
 
 ### `event_markers`: rows that aren't CAMEO events
 
