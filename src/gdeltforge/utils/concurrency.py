@@ -2,7 +2,8 @@
 concurrency.py
 
 Sizes the polars thread pools inside convert/filter/aggregate's worker
-processes.
+processes, and bounds how many files one command reads at once
+(io.max_concurrent_reads).
 
 Every worker is a separately spawned interpreter, and polars sizes its
 own pools to the whole machine by default in each one of them: compute
@@ -19,6 +20,8 @@ Provides:
       and each worker's polars thread and file-read budget
     - polars_worker_env: apply a WorkerPlan to the worker processes a
       ProcessPoolExecutor spawns inside it
+    - polars_scan_limit: bound concurrent file reads for polars work
+      running in this process (sample, crossref)
 """
 
 from __future__ import annotations
@@ -65,6 +68,7 @@ def plan_workers(
     max_workers: int | None,
     n_tasks: int,
     scans_per_worker: int | None = None,
+    max_concurrent_reads: int | None = None,
     cpu_count: int | None = None,
 ) -> WorkerPlan:
     """
@@ -72,8 +76,10 @@ def plan_workers(
 
     max_workers None means one worker per core, the same default
     ProcessPoolExecutor applies on its own. The worker count never
-    exceeds n_tasks: a pool never runs more processes than it has tasks
-    for.
+    exceeds n_tasks (a pool never runs more processes than it has tasks
+    for), nor max_concurrent_reads when that is set: every filter/
+    aggregate worker reads its own input file, so capping how many files
+    the command reads at once means capping workers.
 
     Each worker then gets ceil(cores / workers) polars threads, so the
     whole pool lands near one thread per core. Rounding up keeps a few
@@ -87,6 +93,8 @@ def plan_workers(
     cores = cpu_count or os.cpu_count() or 1
     workers = max_workers if max_workers is not None else cores
     workers = min(workers, max(1, n_tasks))
+    if max_concurrent_reads is not None:
+        workers = min(workers, max_concurrent_reads)
     return WorkerPlan(
         workers=workers,
         polars_threads=max(1, math.ceil(cores / workers)),
@@ -135,4 +143,17 @@ def polars_worker_env(plan: WorkerPlan) -> Generator[None, None, None]:
         POLARS_MAX_THREADS: plan.polars_threads,
         POLARS_MAX_CONCURRENT_SCANS: plan.concurrent_scans,
     }):
+        yield
+
+
+@contextmanager
+def polars_scan_limit(max_concurrent_reads: int | None) -> Generator[None, None, None]:
+    """
+    Bound concurrent file reads for polars work running in this process
+    (sample, crossref), which reads many files through one multi-file
+    scan. polars reads POLARS_MAX_CONCURRENT_SCANS again at every query,
+    so, unlike POLARS_MAX_THREADS, setting it here takes effect at once.
+    None leaves polars' own default of one file per core.
+    """
+    with _env_overrides({POLARS_MAX_CONCURRENT_SCANS: max_concurrent_reads}):
         yield

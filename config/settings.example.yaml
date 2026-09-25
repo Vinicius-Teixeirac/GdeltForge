@@ -715,3 +715,20 @@ aggregation:
   # converter.compression/filter.compression above.
   compression:
     gdelt_gkg_v2: snappy # example override away from the zstd default
+
+# Storage-side concurrency, separate from the CPU-side max_workers above.
+io:
+  # How many files one filter/aggregate/sample/crossref command may read
+  # at once. filter/aggregate cap their worker count to it (each worker
+  # reads one file at a time); sample/crossref cap polars' own concurrent
+  # file scans to it. null (the default) means no cap beyond the worker
+  # counts above, the right choice for local SSDs.
+  #
+  # Set it when the data lives on network storage (NFS, SMB) or a shared
+  # HDD array: those slow down for everyone under many concurrent
+  # readers, without reading any faster. 4 kept a shared NFS server's
+  # response time at its idle level in real measurements, at 70-90% of
+  # the best throughput any setting reached; see
+  # docs/configuration.md#io. convert is not capped by this: tune its
+  # own max_workers and unzipped_data_directory instead (same page).
+  max_concurrent_reads: null

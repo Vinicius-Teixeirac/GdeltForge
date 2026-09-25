@@ -144,7 +144,7 @@ See [Configuration](configuration.md#hive-partitioning-for-historical-data) for 
 gdeltforge filter --dataset events
 ```
 
-Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
+Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores). On network storage, `io.max_concurrent_reads` caps that pool further; see [Configuration](configuration.md#io).
 
 !!! note "This `filter` isn't `sample`'s `--filter`"
     The `filter` command and `sample`'s [`--filter` flag](#gdeltforge-sample) share a name but do unrelated jobs. This command is a pipeline stage: it drops rows with missing values, using a fixed set of columns from `settings.yaml`, and writes its output back to disk for every later stage to read. `sample --filter` is a one-off row selector: it takes an ad hoc JSON condition on the command line and only affects that sample's output, not anything stored on disk.
@@ -180,7 +180,7 @@ By default `filter` shows the same setup line, progress bar, and end-of-run summ
 gdeltforge aggregate --dataset gkg-v2 --period day
 ```
 
-GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDELT's 15-minute `gdeltv2` master file list, so a single calendar day is routinely split across ~96 separate files. `aggregate` concatenates a period's worth of them (day, month, or year) into one larger file, so `sample` (and `IndexedSampler`'s `FileIndex` in particular, which opens every file's footer to build its global row index) reads far fewer, larger files instead. Pure concatenation, not a statistical rollup: every row from every contributing file lands in the aggregated output unchanged, no deduplication or summing, and the total bytes a full-archive scan reads doesn't shrink; this fixes per-file overhead, not data volume. See [Configuration](configuration.md#aggregation) for the real measured numbers behind this.
+GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDELT's 15-minute `gdeltv2` master file list, so a single calendar day is routinely split across ~96 separate files. `aggregate` concatenates a period's worth of them (day, month, or year) into one larger file, so `sample` (and `IndexedSampler`'s `FileIndex` in particular, which opens every file's footer to build its global row index) reads far fewer, larger files instead. Pure concatenation, not a statistical rollup: every row from every contributing file lands in the aggregated output unchanged, no deduplication or summing, and the total bytes a full-archive scan reads doesn't shrink; this fixes per-file overhead, not data volume. See [Configuration](configuration.md#aggregation) for the real measured numbers behind this. Periods run across a pool of worker processes (`aggregation.max_workers`, capped by `io.max_concurrent_reads` when set), each reading one source file at a time.
 
 | Flag | Description |
 |------|-------------|

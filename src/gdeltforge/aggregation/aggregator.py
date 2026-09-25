@@ -52,6 +52,7 @@ from gdeltforge.utils.config import (
     dataset_is_aggregation_eligible,
     dataset_path_key,
     get_dict,
+    resolve_max_concurrent_reads,
     validate_max_workers,
 )
 from gdeltforge.utils.io import (
@@ -93,6 +94,7 @@ class GDELTAggregator:
         period: str = "day",
         source: str = "filtered",
         max_workers: int | None = None,
+        max_concurrent_reads: int | None = None,
         compression: str = "zstd",
         start_date: date | None = None,
         end_date: date | None = None,
@@ -116,6 +118,13 @@ class GDELTAggregator:
         # whichever of converted/filtered the caller resolved.
         self.source = source
         self.max_workers = validate_max_workers(max_workers, "aggregation.max_workers")
+        # io.max_concurrent_reads: each worker reads one source file at a
+        # time, so this caps the worker count further, for storage that
+        # slows down under many concurrent readers (see
+        # docs/configuration.md#io).
+        self.max_concurrent_reads = validate_max_workers(
+            max_concurrent_reads, "io.max_concurrent_reads"
+        )
         # zstd default, matching converter.compression/filter.compression:
         # no measured downside on real GDELT data, see docs/configuration.md.
         self.compression = compression
@@ -259,7 +268,10 @@ class GDELTAggregator:
         # Events data, 3 workers over 3 months: 1 file at a time, ~5s and
         # 2.5 GB; 2 at a time, the same ~5s and 4.0 GB; 4 at a time, over
         # 6 GB before it was killed. polars' default reads one per core.
-        worker_plan = plan_workers(self.max_workers, len(plan), scans_per_worker=1)
+        worker_plan = plan_workers(
+            self.max_workers, len(plan), scans_per_worker=1,
+            max_concurrent_reads=self.max_concurrent_reads,
+        )
         logger.info(f"Aggregating {len(plan)} {self.period}(s) using {worker_plan.describe()}...")
 
         periods_processed = 0
@@ -436,6 +448,7 @@ def run_aggregator(
         period=period,
         source=source,
         max_workers=agg_cfg.get("max_workers"),
+        max_concurrent_reads=resolve_max_concurrent_reads(config),
         compression=compression,
         start_date=start_date,
         end_date=end_date,
