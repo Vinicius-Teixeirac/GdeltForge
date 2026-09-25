@@ -626,6 +626,13 @@ clean:
       trim_strings: false   # strip leading/trailing whitespace
       blank_to_null: false  # " " -> null, before the null check
 
+  # Optional added columns, off by default; nothing is replaced. With
+  # output_columns set, list the derived columns there too.
+  derive:
+    gdelt_event: # example
+      event_date: false  # EventDate: a real date parsed from Day
+      labels: []         # e.g. [EventRootCode, ActionGeo_CountryCode] -> <column>_Label
+
   # --delete-source removes the converted copy. It refuses to run while a
   # lossy errata or normalize step is on (event_markers: drop, date_1920
   # without keep_original, or a normalize switch) unless this is true.

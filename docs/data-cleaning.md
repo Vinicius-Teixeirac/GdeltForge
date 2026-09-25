@@ -43,6 +43,7 @@ question, it belongs to sampling.
 | **Known GDELT errors are repaired by default, and the defaults lose nothing** | Nearly everyone needs these repairs and almost nobody knows the errors exist. Each rule is exact, backed by evidence from the full archive, and can be switched off. The defaults keep GDELT's own values beside every repaired one and keep rows they flag, so a default run never discards anything GDELT published |
 | **Steps run in one fixed order** | No configuration can produce an order-dependent result by accident |
 | **Every step declares whether it's lossy** | A lossy step leaves the cleaned output unable to tell what the converted input held, which matters for deciding whether the converted copy can go |
+| **Derived columns only add, and are off by default** | Adding a column never discards anything, so the step is never lossy; storing them costs width in every file, and which ones are useful depends on the analysis |
 | **Normalization is available but off by default** | Whitespace padding is common in GDELT's 2013 files and breaks code lookups, but fixing it rewrites GDELT's values without keeping them, which the defaults never do |
 | **`--delete-source` refuses a lossy step added in 0.12.0** (errata, normalize) unless `allow_lossy_delete_source: true` | Deleting the converted copy removes the only way back to what a lossy step discarded, so that combination has to be chosen deliberately. The original three steps (`columns_to_check`, `output_columns`, `float32_columns`) keep their long-standing warning, since existing setups rely on them to fit disk |
 | **Every cleaned file says it's cleaned** | A cleaned file must never pass for GDELT's own data. Each one carries a `gdeltforge:clean` entry in its Parquet metadata; `clean` warns when its input already carries it, and `sample`/`aggregate`/`crossref` warn when a `--source converted` directory does |
@@ -59,12 +60,14 @@ Each file passes through the configured steps in this order:
 | 1 | errata | `errata.<dataset>` | Repairs known GDELT errors ([below](#errata-known-gdelt-errors)) | No, with the default settings |
 | 2 | normalize | `normalize.<dataset>` | Trims whitespace, turns blank strings into null ([below](#normalize-whitespace)); off by default | Yes: GDELT's own spelling |
 | 3 | require | `columns_to_check` | Drops rows with a null in any listed column | Yes: the rows |
-| 4 | project | `output_columns` | Keeps only the listed columns | Yes: the other columns |
-| 5 | narrow | `float32_columns` | Stores the listed float columns as float32 | Yes: GDELT floats carry up to 15 significant figures, float32 about 7 |
+| 4 | derive | `derive.<dataset>` | Adds a real event date and code labels ([below](#derive-added-columns)); off by default | No: only adds columns |
+| 5 | project | `output_columns` | Keeps only the listed columns | Yes: the other columns |
+| 6 | narrow | `float32_columns` | Stores the listed float columns as float32 | Yes: GDELT floats carry up to 15 significant figures, float32 about 7 |
 
 Errata come first so every later step sees corrected values, and
 normalization comes before the null check so a blank value counts as
-missing there.
+missing there. Derived columns come after both, so they're built from
+repaired values, and before projection, so `output_columns` can keep them.
 
 Then the file is written with the configured `compression` (zstd by default,
 lossless) as `<stem>_cleaned.parquet`, through a temporary file and a rename,
@@ -173,7 +176,7 @@ one row per cleaned file:
 |---|---|
 | `source`, `output` | The converted file and the cleaned file |
 | `rows_in`, `rows_out` | Rows before and after the steps |
-| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped` |
+| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped`, `derive.event_date_invalid` |
 | `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output |
 
 The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
@@ -222,6 +225,39 @@ clean:
 The run audit counts `normalize.trimmed` and `normalize.blank_to_null`.
 Both switches are lossy, so `--delete-source` refuses them unless
 `allow_lossy_delete_source: true`.
+
+## Derive: added columns
+
+Optional, per dataset, under `clean.derive.<dataset>`, off by default. A
+derived column is added next to the columns it comes from; nothing is
+replaced, so the step is never lossy.
+
+- **`event_date: true`** adds `EventDate`, a real date parsed from `Day`
+  (`YYYYMMDD`), after errata, so the 1920 repair is in it. The run audit
+  counts `derive.event_date_invalid`: `Day` values present but not a real
+  date.
+- **`labels: [<column>, ...]`** adds `<column>_Label` for each listed
+  CAMEO-coded column: the code's name from the bundled code tables (the
+  ones [`gdeltforge codes`](cli-reference.md#gdeltforge-codes) shows),
+  matched regardless of case. A code the tables don't know gets null, and
+  the run audit's `unrecognized.<column>` counts those. Listing a column
+  that isn't CAMEO-coded fails the run up front.
+
+```yaml
+clean:
+  derive:
+    gdelt_event:
+      event_date: true
+      labels: [EventRootCode, ActionGeo_CountryCode]
+```
+
+With `output_columns` set, list the derived columns there too
+(`EventDate`, `EventRootCode_Label`); projection keeps only what's listed.
+
+**Why off by default**: they make every cleaned file wider, and which
+labels are worth storing depends on the analysis. Labels are also tied to
+the code tables of the gdeltforge version that wrote them; the code column
+itself stays authoritative.
 
 ## Measuring before cleaning
 

@@ -59,7 +59,7 @@ import multiprocessing
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -77,6 +77,7 @@ from gdeltforge import __version__
 from gdeltforge.cleaning.steps import (
     ERRATA_VERSION,
     Date1920Repair,
+    DeriveColumns,
     EventMarkers,
     FileContext,
     NarrowFloat32,
@@ -141,6 +142,7 @@ class FileReport:
 _ERRATA_KEYS = ("date_1920", "event_markers", "keep_original")
 _EVENT_MARKER_MODES = ("keep", "drop")
 _NORMALIZE_KEYS = ("trim_strings", "blank_to_null")
+_DERIVE_KEYS = ("event_date", "labels")
 
 
 class GDELTCleaner:
@@ -178,6 +180,7 @@ class GDELTCleaner:
         dry_run: bool = False,
         errata: dict | None = None,
         normalize: dict | None = None,
+        derive: dict | None = None,
         allow_lossy_delete_source: bool = False,
         report: bool = False,
     ):
@@ -282,6 +285,8 @@ class GDELTCleaner:
         # Optional whitespace normalization (clean.normalize.<dataset>),
         # off by default: it changes GDELT's values without keeping them.
         self.normalize = self._validated_flags(normalize, _NORMALIZE_KEYS, "clean.normalize")
+        # Optional derived columns (clean.derive.<dataset>), off by default.
+        self.derive = self._validated_derive(derive)
         # With --dry-run: read every file in scope and report what each
         # step would change, instead of only counting files.
         self.report = report
@@ -303,6 +308,8 @@ class GDELTCleaner:
             fingerprint_fields["errata_version"] = ERRATA_VERSION
         if any(self.normalize.values()):
             fingerprint_fields["normalize"] = json.dumps(self.normalize, sort_keys=True)
+        if self.derive.get("event_date") or self.derive.get("labels"):
+            fingerprint_fields["derive"] = json.dumps(self.derive, sort_keys=True)
         self._config_fingerprint = config_fingerprint(**fingerprint_fields)
 
         # The stage's steps, built once from the settings above and applied
@@ -317,6 +324,17 @@ class GDELTCleaner:
                 trim=self.normalize.get("trim_strings", False),
                 blank_to_null=self.normalize.get("blank_to_null", False),
             ))
+        if self.derive.get("event_date") or self.derive.get("labels"):
+            label_maps = []
+            for column in self.derive.get("labels", []):
+                family = cameo_codes.code_family_for_column(column) or {}
+                label_maps.append(
+                    (column, tuple((code.upper(), label) for code, label in family.items()))
+                )
+            steps.append(DeriveColumns(
+                event_date=self.derive.get("event_date", False),
+                label_maps=tuple(label_maps),
+            ))
         if self.output_columns is not None:
             steps.append(ProjectColumns(tuple(self.output_columns)))
         if self.float32_columns:
@@ -330,8 +348,7 @@ class GDELTCleaner:
             "fingerprint": self._config_fingerprint,
             "compression": self.compression,
             "steps": [
-                {"step": st.name, "lossy": st.lossy,
-                 **{k: list(v) if isinstance(v, tuple) else v for k, v in asdict(st).items()}}
+                {"step": st.name, "lossy": st.lossy, **st.settings()}
                 for st in self.steps
             ],
         }
@@ -904,6 +921,32 @@ class GDELTCleaner:
         return settings
 
     @staticmethod
+    def _validated_derive(derive: dict | None) -> dict:
+        """clean.derive.<dataset>: event_date true/false, labels a list of
+        CAMEO-coded columns (see `gdeltforge codes`), checked up front."""
+        derive = dict(derive or {})
+        unknown = sorted(set(derive) - set(_DERIVE_KEYS))
+        if unknown:
+            raise ValueError(
+                f"clean.derive: unknown setting(s) {unknown}; known: {list(_DERIVE_KEYS)}"
+            )
+        if "event_date" in derive and not isinstance(derive["event_date"], bool):
+            raise ValueError(
+                f"clean.derive.event_date must be true or false, got {derive['event_date']!r}"
+            )
+        labels = derive.get("labels") or []
+        if not isinstance(labels, list) or not all(isinstance(c, str) for c in labels):
+            raise ValueError(f"clean.derive.labels must be a list of column names, got {labels!r}")
+        uncoded = [c for c in labels if cameo_codes.code_family_for_column(c) is None]
+        if uncoded:
+            raise ValueError(
+                f"clean.derive.labels: {uncoded} aren't CAMEO-coded columns; "
+                f"`gdeltforge codes` lists the ones that are."
+            )
+        derive["labels"] = labels
+        return derive
+
+    @staticmethod
     def _describe(step: Step) -> str:
         if isinstance(step, EventMarkers):
             return "errata.event_markers: drop"
@@ -1059,6 +1102,7 @@ def run_cleaner(
     float32_columns = get_dict(config["clean"], "float32_columns").get(dataset)
     errata = get_dict(get_dict(config["clean"], "errata"), dataset)
     normalize = get_dict(get_dict(config["clean"], "normalize"), dataset)
+    derive = get_dict(get_dict(config["clean"], "derive"), dataset)
     allow_lossy_delete_source = bool(config["clean"].get("allow_lossy_delete_source", False))
     warn_if_output_columns_drops_join_key(logger, "clean", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(
@@ -1098,6 +1142,7 @@ def run_cleaner(
         dry_run=dry_run,
         errata=errata,
         normalize=normalize,
+        derive=derive,
         allow_lossy_delete_source=allow_lossy_delete_source,
         report=report,
     )
