@@ -1629,3 +1629,32 @@ class TestDeprecatedModule:
             old = importlib.import_module("gdeltforge.filtering.filter")
         assert issubclass(old.GDELTFilter, GDELTCleaner)
         assert old.run_filter is run_cleaner
+
+
+class TestRefusesToWriteIntoItsInput:
+    """Safeguard: cleaned output must never land beside the converted files
+    it came from."""
+
+    def test_same_directory_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="would write into its own input"):
+            GDELTCleaner(str(tmp_path), str(tmp_path), columns_to_check=[])
+
+    def test_directory_inside_the_input_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="would write into its own input"):
+            GDELTCleaner(str(tmp_path), str(tmp_path / "cleaned"), columns_to_check=[])
+
+    def test_historical_output_inside_flat_input_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="would write into its own input"):
+            GDELTCleaner(
+                str(tmp_path / "parquet"), str(tmp_path / "cleaned"), columns_to_check=[],
+                historical_input_folder=str(tmp_path / "hist"),
+                historical_output_folder=str(tmp_path / "parquet" / "hist_cleaned"),
+            )
+
+    def test_nothing_is_created_before_refusing(self, tmp_path):
+        with pytest.raises(ValueError):
+            GDELTCleaner(str(tmp_path), str(tmp_path / "cleaned"), columns_to_check=[])
+        assert not (tmp_path / "cleaned").exists()
+
+    def test_sibling_directories_are_fine(self, tmp_path):
+        GDELTCleaner(str(tmp_path / "parquet"), str(tmp_path / "cleaned"), columns_to_check=[])

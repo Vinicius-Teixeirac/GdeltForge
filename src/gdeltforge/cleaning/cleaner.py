@@ -230,6 +230,8 @@ class GDELTCleaner:
             compression=self.compression,
         )
 
+        self._refuse_output_inside_input()
+
         self.output_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Clean output folder ensured: {self.output_folder}")
 
@@ -651,6 +653,36 @@ class GDELTCleaner:
             / relative.parent
             / f"{parquet_path.stem}_cleaned.parquet"
         )
+
+    def _refuse_output_inside_input(self) -> None:
+        """
+        Raise before any work if an output directory is an input directory
+        or sits inside one (flat and historical, in every combination).
+        Cleaned files written there would sit beside the converted files
+        they came from: every later run of this stage would pick its own
+        output back up as input, and every reader globbing the converted
+        directory would count those rows twice. The converted directory is
+        the copy to return to (docs/data-cleaning.md), so it must never
+        receive cleaned output.
+        """
+        inputs = [self.input_folder, self.historical_input_folder]
+        outputs = [self.output_folder, self.historical_output_folder]
+        for out in outputs:
+            if out is None:
+                continue
+            out_resolved = out.resolve()
+            for inp in inputs:
+                if inp is None:
+                    continue
+                inp_resolved = inp.resolve()
+                if out_resolved == inp_resolved or inp_resolved in out_resolved.parents:
+                    raise ValueError(
+                        f"The clean stage would write into its own input: output "
+                        f"directory {out} is, or sits inside, input directory {inp}. "
+                        f"Point paths.cleaned_data_directory (and "
+                        f"cleaned_historical_directory) at a directory of their own, "
+                        f"outside parquet_data_directory and parquet_historical_directory."
+                    )
 
     @staticmethod
     def _remove_legacy_output(output_path: Path) -> None:
