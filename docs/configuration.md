@@ -274,7 +274,7 @@ A `POLARS_MAX_CONCURRENT_SCANS` you export yourself takes precedence over this s
 
 ### Network storage (NFS, SMB, shared HDD arrays)
 
-Leave `max_concurrent_reads` at `null` on a local SSD: it serves many requests in parallel, and the other defaults on this page are sized for it. On network storage, and on any disk shared with other users, the opposite holds. Past a handful of reads in flight, throughput stops growing, every request waits in a longer queue, and everyone else using the same storage slows down too, your own later jobs included. A shared NFS server saturated at about 4 reads in flight in real measurements, while the defaults allow one per core, 32 on a 32-core server.
+Leave `max_concurrent_reads` at `null` on a local SSD: it serves many requests in parallel, and the other defaults on this page are sized for it. On network storage, and on any disk shared with other users, the opposite holds. Past a handful of reads in flight, throughput stops growing, every request waits in a longer queue, and everyone else using the same storage slows down too, your own later jobs included. A shared NFS server saturated at about 4 reads in flight in real measurements, while the defaults allow one per core, 32 on a 32-core server. The full measurements, including the incident that prompted them, are in [Storage Concurrency Benchmark](storage-concurrency-benchmark.md).
 
 A measured starting point for that kind of storage:
 
@@ -364,7 +364,7 @@ That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned
 
 ### Worker pools and polars threads
 
-`max_workers` caps worker *processes*. Each worker is a separately spawned interpreter, and polars sizes its own thread pools to the whole machine in every one of them: compute threads, async I/O threads, and the number of files a multi-file scan reads at once all default to the core count. Left alone, N workers on a C-core machine carry roughly N x 2C threads (a 32-worker `filter` on a 32-core server peaked at 4,391 threads), and each worker's memory grows with its own pool size.
+`max_workers` caps worker *processes*. Each worker is a separately spawned interpreter, and polars sizes its own thread pools to the whole machine in every one of them: compute threads, async I/O threads, and the number of files a multi-file scan reads at once all default to the core count. Left alone, N workers on a C-core machine carry roughly N x 2C threads (a 32-worker `filter` on a 32-core server peaked at 4,391 threads), and each worker's memory grows with its own pool size. For how these pools behave on network storage, see [Storage Concurrency Benchmark](storage-concurrency-benchmark.md).
 
 `convert`, `filter`, and `aggregate` therefore give each worker `ceil(cores / workers)` polars threads, via `POLARS_MAX_THREADS` set in the worker's environment before it starts, so the whole pool lands near one thread per core. The worker count itself also never exceeds the number of files or periods to process. The startup log line reports both numbers, e.g. `using 4 worker process(es), 5 polars thread(s) each`. A `POLARS_MAX_THREADS` you export yourself is left untouched.
 
