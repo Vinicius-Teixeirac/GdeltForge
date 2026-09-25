@@ -48,7 +48,7 @@ _DATASET_PATH_PREFIXES = {
 # converter.partitioning.enabled, alongside its own flat daily files),
 # gdelt_event_reduced has no per-day source files at all, it's one static
 # file, and Year (derived from its own Date column, not present in the
-# raw file) is its only meaningful partition key. filter/sample must
+# raw file) is its only meaningful partition key. clean/sample must
 # resolve this dataset's historical directory unconditionally, independent
 # of the global converter.partitioning.enabled toggle, which only controls
 # Events' own opt-in split.
@@ -94,7 +94,7 @@ def dataset_path_key(dataset: str, base_key: str) -> str:
 
 def validate_max_workers(value: int | None, label: str) -> int | None:
     """
-    Check a resolved converter.max_workers/filter.max_workers value
+    Check a resolved converter.max_workers/clean.max_workers value
     before it's ever logged or handed to ProcessPoolExecutor.
 
     None means "let ProcessPoolExecutor pick os.cpu_count() on its own",
@@ -106,7 +106,7 @@ def validate_max_workers(value: int | None, label: str) -> int | None:
     count for the same run: max_workers: 0 is falsy in Python, so a
     "config_value or cpu_count()"-style fallback silently took the same
     branch a genuinely unset value would, logging the real CPU count
-    convert/filter would use, e.g. 32, one line before ProcessPoolExecutor
+    convert/clean would use, e.g. 32, one line before ProcessPoolExecutor
     raised its own "max_workers must be greater than 0" against the
     original, still-0 value. Checking explicitly here, before either the
     log line or the executor ever see the value, makes 0 (and any other
@@ -127,13 +127,13 @@ def get_dict(section: dict, key: str) -> dict:
     default only applies when key is missing entirely; every optional,
     dict-valued config subsection this guards (converter.output_columns,
     converter.compression, converter.max_workers_by_dataset,
-    converter.partitioning, filter.output_columns, filter.float32_columns,
-    filter.compression) is routinely left blank while a user is still
+    converter.partitioning, clean.output_columns, clean.float32_columns,
+    clean.compression) is routinely left blank while a user is still
     filling the config in, and YAML parses that as None, not {}. Every
     caller immediately chains a second .get(...) onto the result, which
     crashes with "'NoneType' object has no attribute 'get'" the instant
     that happens -- found in a real production log, once for the section
-    a converter:/filter: line mid-edit produces (see
+    a converter:/clean: line mid-edit produces (see
     _normalize_top_level_sections above), and independently again here,
     one level deeper, for the same reason on a subsection instead of a
     top-level section.
@@ -148,7 +148,7 @@ def _normalize_top_level_sections(config: dict) -> dict:
     under it (e.g. `converter:` immediately followed by the next key, or
     an explicit `converter: null`) parses to None, not {}. Every
     downstream `config["converter"].get(...)`-style call (scraper.py,
-    converter.py, filter.py, cli.py) assumes a dict, so touching such a
+    converter.py, cleaner.py, cli.py) assumes a dict, so touching such a
     section used to crash with a bare "'NoneType' object has no attribute
     'get'", with no mention of which section or file was at fault.
     Replacing a None-valued top-level key with {} here makes every one of
@@ -157,6 +157,65 @@ def _normalize_top_level_sections(config: dict) -> dict:
     actually means.
     """
     return {key: ({} if value is None else value) for key, value in config.items()}
+
+
+# Pre-0.12 names of the clean stage, when it was called `filter`: the
+# top-level config section and the path keys' base names. Translated on
+# load with a warning, so an existing settings.yaml keeps working through
+# the 0.12.x series.
+_DEPRECATED_SECTION_NAMES = {"filter": "clean"}
+_DEPRECATED_PATH_SUFFIXES = {
+    "filtered_data_directory": "cleaned_data_directory",
+    "filtered_historical_directory": "cleaned_historical_directory",
+}
+
+
+def _migrate_deprecated_names(config: dict, source: Path) -> dict:
+    """
+    Translate the clean stage's pre-0.12 config names to the current ones:
+    the `filter:` section to `clean:`, and every `*filtered_data_directory`/
+    `*filtered_historical_directory` path key (dataset-prefixed ones
+    included) to its `*cleaned_*` equivalent. Each translation logs a
+    deprecation warning naming the file. A config that sets both the old
+    and the new name for the same thing is ambiguous and raises, naming
+    both, since silently preferring either could point the stage at the
+    wrong directory.
+    """
+    migrated = dict(config)
+    for old, new in _DEPRECATED_SECTION_NAMES.items():
+        if old not in migrated:
+            continue
+        if new in migrated:
+            raise ValueError(
+                f"{source} sets both `{old}:` and `{new}:`. `{old}:` is the pre-0.12 "
+                f"name of `{new}:`; keep only `{new}:`."
+            )
+        migrated[new] = migrated.pop(old)
+        logger.warning(
+            f"{source}: the `{old}:` section is deprecated, read as `{new}:`. "
+            f"Rename it; the old name will stop working in a future release."
+        )
+
+    paths = migrated.get("paths")
+    if isinstance(paths, dict):
+        paths = dict(paths)
+        for key in list(paths):
+            for old_suffix, new_suffix in _DEPRECATED_PATH_SUFFIXES.items():
+                if not key.endswith(old_suffix):
+                    continue
+                new_key = key[: -len(old_suffix)] + new_suffix
+                if new_key in paths:
+                    raise ValueError(
+                        f"{source} sets both paths.{key} and paths.{new_key}. "
+                        f"paths.{key} is the pre-0.12 name; keep only paths.{new_key}."
+                    )
+                paths[new_key] = paths.pop(key)
+                logger.warning(
+                    f"{source}: paths.{key} is deprecated, read as paths.{new_key}. "
+                    f"Rename it; the old name will stop working in a future release."
+                )
+        migrated["paths"] = paths
+    return migrated
 
 
 def _bundled_default_dict() -> dict:
@@ -179,9 +238,9 @@ def _deep_merge_defaults(config: dict, defaults: dict) -> dict:
     only needs to specify what it actually wants to change.
 
     A real user config that omits a whole section entirely (columns,
-    columns_numeric) or a nested one (filter.columns_to_check,
+    columns_numeric) or a nested one (clean.columns_to_check,
     converter.output_columns, a specific dataset under paths) used to crash
-    deep inside converter.py/filter.py/cli.py with a bare KeyError naming
+    deep inside converter.py/cleaner.py/cli.py with a bare KeyError naming
     just the missing key: every one of those reads its section with a
     direct config["..."][...] access, not .get(), on the assumption the
     section is always present the way the bundled default always has it.
@@ -296,7 +355,7 @@ def load_config(config_path: str | None = None) -> dict:
                 f"Config file is empty: {path}. Copy config/settings.example.yaml as a "
                 f"starting point, or see docs/configuration.md."
             )
-        config = _normalize_top_level_sections(config)
+        config = _migrate_deprecated_names(_normalize_top_level_sections(config), path)
         return _deep_merge_defaults(config, _bundled_default_dict())
 
     if not explicit:

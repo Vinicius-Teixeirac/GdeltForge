@@ -11,8 +11,8 @@ import pyarrow.parquet as pq
 import pytest
 from tqdm import tqdm
 
-import gdeltforge.filtering.filter as filter_module
-from gdeltforge.filtering.filter import GDELTFilter, run_filter
+import gdeltforge.cleaning.cleaner as cleaner_module
+from gdeltforge.cleaning.cleaner import GDELTCleaner, run_cleaner
 
 
 def _write_parquet(path, data):
@@ -21,11 +21,11 @@ def _write_parquet(path, data):
 
 class TestMaxWorkersConfig:
     def test_defaults_to_none_so_executor_uses_cpu_count(self, tmp_path):
-        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        filt = GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
         assert filt.max_workers is None
 
     def test_explicit_value_is_respected(self, tmp_path):
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=2
         )
         assert filt.max_workers == 2
@@ -42,13 +42,13 @@ class TestMaxWorkersConfig:
         # original, still-0 value. Checked eagerly here now, before
         # either ever sees it.
         with pytest.raises(ValueError, match="must be greater than 0"):
-            GDELTFilter(
+            GDELTCleaner(
                 str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=0
             )
 
     def test_negative_value_raises_the_same_way_as_zero(self, tmp_path):
         with pytest.raises(ValueError, match="must be greater than 0"):
-            GDELTFilter(
+            GDELTCleaner(
                 str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"], max_workers=-1
             )
 
@@ -64,9 +64,9 @@ class TestFilterSingleFile:
             "QuadClass": [1, 2, None, 4],
         })
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["Actor1Name", "QuadClass"])
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        rows_before, rows_after = filt.filter_single_file(src, out_path)
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["Actor1Name", "QuadClass"])
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        rows_before, rows_after = filt.clean_single_file(src, out_path)
 
         assert rows_before == 4
         assert rows_after == 2  # rows 2 and 3 each have one NaN in a checked column
@@ -80,8 +80,8 @@ class TestFilterSingleFile:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, None]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass", "DoesNotExist"])
-        rows_before, rows_after = filt.filter_single_file(src, tmp_path / "out" / "o.parquet")
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass", "DoesNotExist"])
+        rows_before, rows_after = filt.clean_single_file(src, tmp_path / "out" / "o.parquet")
 
         # Only QuadClass (the column that actually exists) is enforced.
         assert rows_before == 2
@@ -103,9 +103,9 @@ class TestFilterSingleFile:
             "Actor1Name": ["A", None, "C"],
         })
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        rows_before, rows_after = filt.filter_single_file(src, out_path)
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), [])
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        rows_before, rows_after = filt.clean_single_file(src, out_path)
 
         assert (rows_before, rows_after) == (3, 3)
         assert out_path.exists()
@@ -123,18 +123,18 @@ class TestFilterSingleFile:
         # successfully, at 100% retention, with no output written; a
         # caller working only from the returned counts (as filter_all_
         # files does) had no way to tell that apart from a genuine,
-        # correctly-checked file. It now raises, so filter_all_files
+        # correctly-checked file. It now raises, so clean_all_files
         # counts this file as failed rather than processed.
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
-        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
 
         with pytest.raises(ValueError, match="none of the configured columns_to_check"):
-            filt.filter_single_file(src, out_path)
+            filt.clean_single_file(src, out_path)
 
         assert not out_path.exists()
 
@@ -144,8 +144,8 @@ class TestFilterSingleFile:
         src = input_dir / "empty.parquet"
         _write_parquet(src, {"GlobalEventID": pl.Series([], dtype=pl.Int64)})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["GlobalEventID"])
-        rows_before, rows_after = filt.filter_single_file(src, tmp_path / "out" / "o.parquet")
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["GlobalEventID"])
+        rows_before, rows_after = filt.clean_single_file(src, tmp_path / "out" / "o.parquet")
 
         assert (rows_before, rows_after) == (0, 0)
 
@@ -159,8 +159,8 @@ class TestFilterAllFiles:
             input_dir / "b.parquet", {"GlobalEventID": [3, 4, 5], "QuadClass": [1, 2, 3]}
         )
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        processed, failed = filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        processed, failed = filt.clean_all_files()
 
         assert processed == 2
         assert failed == 0
@@ -168,7 +168,7 @@ class TestFilterAllFiles:
     def test_empty_columns_to_check_still_writes_every_file(self, tmp_path):
         # Batch-level version of TestFilterSingleFile's equivalent test:
         # the real regression was the summary claiming every file
-        # "processed successfully" while filter_single_file quietly wrote
+        # "processed successfully" while clean_single_file quietly wrote
         # nothing, so this checks actual files on disk, not just the
         # returned counts.
         input_dir = tmp_path / "in"
@@ -176,30 +176,30 @@ class TestFilterAllFiles:
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2]})
         _write_parquet(input_dir / "b.parquet", {"GlobalEventID": [3, 4, 5]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
-        processed, failed = filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), [])
+        processed, failed = filt.clean_all_files()
 
         assert (processed, failed) == (2, 0)
         out_dir = tmp_path / "out"
-        assert (out_dir / "a_filtered.parquet").exists()
-        assert (out_dir / "b_filtered.parquet").exists()
-        assert len(pl.read_parquet(out_dir / "a_filtered.parquet")) == 2
-        assert len(pl.read_parquet(out_dir / "b_filtered.parquet")) == 3
+        assert (out_dir / "a_cleaned.parquet").exists()
+        assert (out_dir / "b_cleaned.parquet").exists()
+        assert len(pl.read_parquet(out_dir / "a_cleaned.parquet")) == 2
+        assert len(pl.read_parquet(out_dir / "b_cleaned.parquet")) == 3
 
     def test_counts_a_corrupt_file_as_failed(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         (input_dir / "bad.parquet").write_bytes(b"not a real parquet file")
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        processed, failed = filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        processed, failed = filt.clean_all_files()
 
         assert processed == 0
         assert failed == 1
 
     def test_counts_an_all_invalid_columns_to_check_file_as_failed(self, tmp_path):
         # Batch-level version of TestFilterSingleFile's equivalent test:
-        # this used to be indistinguishable, at the filter_all_files
+        # this used to be indistinguishable, at the clean_all_files
         # level, from a file that was genuinely and correctly filtered,
         # counted under "processed" at 100% retention with a 0 exit code
         # despite the ERROR logged for it.
@@ -207,11 +207,11 @@ class TestFilterAllFiles:
         input_dir.mkdir()
         _write_parquet(input_dir / "data.parquet", {"GlobalEventID": [1, 2]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
-        processed, failed = filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["DoesNotExist"])
+        processed, failed = filt.clean_all_files()
 
         assert (processed, failed) == (0, 1)
-        assert not (tmp_path / "out" / "data_filtered.parquet").exists()
+        assert not (tmp_path / "out" / "data_cleaned.parquet").exists()
 
     def test_one_corrupt_file_does_not_abort_the_others(self, tmp_path):
         # Now that files run across a worker pool (see TestMaxWorkersConfig),
@@ -225,11 +225,11 @@ class TestFilterAllFiles:
         )
         (input_dir / "bad.parquet").write_bytes(b"not a real parquet file")
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"], max_workers=2)
-        processed, failed = filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"], max_workers=2)
+        processed, failed = filt.clean_all_files()
 
         assert (processed, failed) == (1, 1)
-        out = pl.read_parquet(tmp_path / "out" / "good_filtered.parquet")
+        out = pl.read_parquet(tmp_path / "out" / "good_cleaned.parquet")
         assert out["GlobalEventID"].to_list() == [1]
 
     def test_preserves_historical_directory_structure(self, tmp_path):
@@ -242,19 +242,19 @@ class TestFilterAllFiles:
         part_dir.mkdir()
         _write_parquet(part_dir / "1979.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(flat_in), str(tmp_path / "flat_out"), ["QuadClass"],
             historical_input_folder=str(hist_in),
             historical_output_folder=str(tmp_path / "hist_out"),
         )
-        processed, failed = filt.filter_all_files()
+        processed, failed = filt.clean_all_files()
 
         assert (processed, failed) == (1, 0)
-        assert (tmp_path / "hist_out" / "Year=1979" / "1979_filtered.parquet").exists()
+        assert (tmp_path / "hist_out" / "Year=1979" / "1979_cleaned.parquet").exists()
 
 
 class TestFilterAllFilesInterruptHandling:
-    """filter_all_files' own version of convert's identical regression
+    """clean_all_files' own version of convert's identical regression
     coverage (test_converter.py's TestProcessAllFilesInterruptHandling):
     every future is submitted up front, so the executor's own default
     __exit__ (shutdown(wait=True)) would drain every one of them,
@@ -271,7 +271,7 @@ class TestFilterAllFilesInterruptHandling:
         for i in range(3):
             _write_parquet(input_dir / f"{i}.parquet", {"GlobalEventID": [1, 2]})
 
-        real_as_completed = filter_module.as_completed
+        real_as_completed = cleaner_module.as_completed
 
         def interrupting_as_completed(fs, *a, **kw):
             for i, f in enumerate(real_as_completed(fs, *a, **kw)):
@@ -279,21 +279,21 @@ class TestFilterAllFilesInterruptHandling:
                     raise KeyboardInterrupt()
                 yield f
 
-        monkeypatch.setattr(filter_module, "as_completed", interrupting_as_completed)
+        monkeypatch.setattr(cleaner_module, "as_completed", interrupting_as_completed)
 
         shutdown_calls = []
-        original_shutdown = filter_module.ProcessPoolExecutor.shutdown
+        original_shutdown = cleaner_module.ProcessPoolExecutor.shutdown
 
         def spying_shutdown(self, *a, **kw):
             shutdown_calls.append(kw)
             return original_shutdown(self, *a, **kw)
 
-        monkeypatch.setattr(filter_module.ProcessPoolExecutor, "shutdown", spying_shutdown)
+        monkeypatch.setattr(cleaner_module.ProcessPoolExecutor, "shutdown", spying_shutdown)
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), [])
 
         with pytest.raises(KeyboardInterrupt):
-            filt.filter_all_files()
+            filt.clean_all_files()
 
         assert any(
             c.get("wait") is False and c.get("cancel_futures") is True
@@ -349,7 +349,7 @@ def _patch_tqdm_close_to_raise_once(monkeypatch):
 
 
 class TestFilterAllFilesTqdmInterruptDoesNotLeakATraceback:
-    """filter_all_files' executor loop shares the identical bare-"for x
+    """clean_all_files' executor loop shares the identical bare-"for x
     in tqdm(iterable):" pattern samplers.py's own
     TestTqdmInterruptDoesNotLeakATraceback class documents and guards
     against in full (see that class's own docstring for the real
@@ -369,11 +369,11 @@ class TestFilterAllFilesTqdmInterruptDoesNotLeakATraceback:
 
         monkeypatch.setattr(concurrent.futures.Future, "result", result_and_interrupt)
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), [])
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), [])
 
         with _capture_unraisable_exceptions() as events:
             with pytest.raises(KeyboardInterrupt):
-                filt.filter_all_files()
+                filt.clean_all_files()
 
         assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
@@ -392,19 +392,19 @@ class TestFilterResumability:
         input_dir.mkdir()
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, None]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        filt.clean_all_files()
 
         # get_logger sets an explicit INFO level on this module's own
         # named logger at import time, so a bare caplog.at_level("DEBUG")
         # (root-only) never reaches it; the logger name must be given
         # explicitly to actually lower its effective level.
-        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-            processed, failed = filt.filter_all_files()
+        with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+            processed, failed = filt.clean_all_files()
 
         assert (processed, failed) == (0, 0)
         assert any(
-            "Skipping already filtered" in r.message and "a.parquet" in r.message
+            "Skipping already cleaned" in r.message and "a.parquet" in r.message
             for r in caplog.records
         )
 
@@ -416,17 +416,17 @@ class TestFilterResumability:
             {"GlobalEventID": [1, 2, 3], "QuadClass": [1, None, 3], "Actor1Name": [None, "B", "C"]},
         )
 
-        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
-        out_path = tmp_path / "out" / "a_filtered.parquet"
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).clean_all_files()
+        out_path = tmp_path / "out" / "a_cleaned.parquet"
         # QuadClass alone: only row 2 (index 1) has a NaN there.
         assert sorted(pl.read_parquet(out_path)["GlobalEventID"].to_list()) == [1, 3]
 
         # Rerun with a different columns_to_check must not be skipped by
         # the marker left above, and must actually re-filter by the new
         # criteria rather than leaving the stale QuadClass-only output.
-        processed, failed = GDELTFilter(
+        processed, failed = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["Actor1Name"]
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert (processed, failed) == (1, 0)
         assert sorted(pl.read_parquet(out_path)["GlobalEventID"].to_list()) == [2, 3]
@@ -438,15 +438,15 @@ class TestFilterResumability:
             input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]}
         )
 
-        GDELTFilter(
+        GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"], output_columns=["GlobalEventID"]
-        ).filter_all_files()
-        out_path = tmp_path / "out" / "a_filtered.parquet"
+        ).clean_all_files()
+        out_path = tmp_path / "out" / "a_cleaned.parquet"
         assert list(pl.read_parquet(out_path).columns) == ["GlobalEventID"]
 
-        processed, failed = GDELTFilter(
+        processed, failed = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"], output_columns=None
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert (processed, failed) == (1, 0)
         assert list(pl.read_parquet(out_path).columns) == ["GlobalEventID", "QuadClass"]
@@ -460,25 +460,25 @@ class TestFilterResumability:
             input_dir / "a.parquet", {"GlobalEventID": [1], "A": [1], "B": [1]}
         )
 
-        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["A", "B"]).filter_all_files()
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["A", "B"]).clean_all_files()
 
-        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-            processed, failed = GDELTFilter(
+        with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+            processed, failed = GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), ["B", "A"]
-            ).filter_all_files()
+            ).clean_all_files()
 
         assert (processed, failed) == (0, 0)
-        assert any("Skipping already filtered" in r.message for r in caplog.records)
+        assert any("Skipping already cleaned" in r.message for r in caplog.records)
 
     def test_a_file_that_still_errors_is_not_marked_done(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
         (input_dir / "bad.parquet").write_bytes(b"not a real parquet file")
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        filt.clean_all_files()
 
-        assert not filter_module.is_marked_done(
+        assert not cleaner_module.is_marked_done(
             input_dir / "bad.parquet", filt._config_fingerprint
         )
 
@@ -495,7 +495,7 @@ class TestDeleteSource:
         src = input_dir / "a.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2]})
 
-        GDELTFilter(str(input_dir), str(tmp_path / "out"), []).filter_all_files()
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), []).clean_all_files()
 
         assert src.exists()
 
@@ -505,18 +505,18 @@ class TestDeleteSource:
         src = input_dir / "a.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2]})
 
-        processed, failed = GDELTFilter(
+        processed, failed = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), [], delete_source=True
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert (processed, failed) == (1, 0)
         assert not src.exists()
-        assert (tmp_path / "out" / "a_filtered.parquet").exists()
+        assert (tmp_path / "out" / "a_cleaned.parquet").exists()
 
     def test_also_deletes_the_source_s_own_done_marker(self, tmp_path):
         # The marker sits next to the source parquet, not the filtered
         # output; once the source is gone it gates nothing
-        # (filter_all_files' own glob can never find a deleted file
+        # (clean_all_files' own glob can never find a deleted file
         # again), so leaving it behind is just an orphaned file
         # --delete-source's whole point was to avoid accumulating.
         input_dir = tmp_path / "in"
@@ -525,9 +525,9 @@ class TestDeleteSource:
         _write_parquet(src, {"GlobalEventID": [1, 2]})
         marker_path = src.with_name(src.name + ".done")
 
-        GDELTFilter(
+        GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), [], delete_source=True
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert not marker_path.exists()
 
@@ -537,9 +537,9 @@ class TestDeleteSource:
         bad = input_dir / "bad.parquet"
         bad.write_bytes(b"not a real parquet file")
 
-        processed, failed = GDELTFilter(
+        processed, failed = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), [], delete_source=True
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert (processed, failed) == (0, 1)
         assert bad.exists()
@@ -563,9 +563,9 @@ class TestDeleteSource:
         monkeypatch.setattr(Path, "unlink", selective_unlink)
 
         with caplog.at_level("WARNING"):
-            processed, failed = GDELTFilter(
+            processed, failed = GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), [], delete_source=True
-            ).filter_all_files()
+            ).clean_all_files()
 
         assert (processed, failed) == (1, 0)
         assert src.exists()
@@ -577,7 +577,7 @@ class TestDeleteSource:
 
 class TestForce:
     """force (CLI: --force) bypasses the is_marked_done check in
-    filter_all_files, so a file already marked done is reprocessed and
+    clean_all_files, so a file already marked done is reprocessed and
     its filtered output overwritten instead of skipped. Off by default."""
 
     def test_off_by_default_a_done_file_is_skipped(self, tmp_path):
@@ -585,10 +585,10 @@ class TestForce:
         input_dir.mkdir()
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
-        processed, failed = GDELTFilter(
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).clean_all_files()
+        processed, failed = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"]
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert (processed, failed) == (0, 0)
 
@@ -598,10 +598,10 @@ class TestForce:
         src = input_dir / "a.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
-        processed, failed = GDELTFilter(
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).clean_all_files()
+        processed, failed = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"], force=True
-        ).filter_all_files()
+        ).clean_all_files()
 
         assert (processed, failed) == (1, 0)
         assert src.exists()  # force alone does not imply delete_source
@@ -617,11 +617,11 @@ class TestDryRun:
         input_dir.mkdir()
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True)
-        processed, failed = filt.filter_all_files()
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True)
+        processed, failed = filt.clean_all_files()
 
         assert (processed, failed) == (0, 0)
-        assert not filter_module.is_marked_done(
+        assert not cleaner_module.is_marked_done(
             input_dir / "a.parquet", filt._config_fingerprint
         )
         assert not (tmp_path / "out").exists() or list((tmp_path / "out").glob("*.parquet")) == []
@@ -631,13 +631,13 @@ class TestDryRun:
         input_dir.mkdir()
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        with caplog.at_level("INFO", logger="gdeltforge.filtering.filter"):
-            GDELTFilter(
+        with caplog.at_level("INFO", logger="gdeltforge.cleaning.cleaner"):
+            GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True
-            ).filter_all_files()
+            ).clean_all_files()
 
         assert any(
-            "[dry run] Would filter 1 flat file(s)" in r.message for r in caplog.records
+            "[dry run] Would clean 1 flat file(s)" in r.message for r in caplog.records
         )
 
     def test_dry_run_sees_force_s_effect_on_the_skip_list(self, tmp_path, caplog):
@@ -648,23 +648,23 @@ class TestDryRun:
         input_dir.mkdir()
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).filter_all_files()
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).clean_all_files()
 
-        with caplog.at_level("INFO", logger="gdeltforge.filtering.filter"):
-            processed, failed = GDELTFilter(
+        with caplog.at_level("INFO", logger="gdeltforge.cleaning.cleaner"):
+            processed, failed = GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True
-            ).filter_all_files()
+            ).clean_all_files()
         assert (processed, failed) == (0, 0)
-        assert any("Nothing to filter" in r.message for r in caplog.records)
+        assert any("Nothing to clean" in r.message for r in caplog.records)
 
         caplog.clear()
-        with caplog.at_level("INFO", logger="gdeltforge.filtering.filter"):
-            GDELTFilter(
+        with caplog.at_level("INFO", logger="gdeltforge.cleaning.cleaner"):
+            GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), ["QuadClass"], force=True, dry_run=True
-            ).filter_all_files()
+            ).clean_all_files()
 
         assert any(
-            "[dry run] Would filter 1 flat file(s)" in r.message for r in caplog.records
+            "[dry run] Would clean 1 flat file(s)" in r.message for r in caplog.records
         )
 
 
@@ -687,10 +687,10 @@ class TestOrder:
         input_dir = tmp_path / "in"
         self._write_three_flat_files(input_dir)
 
-        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-            GDELTFilter(
+        with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+            GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), ["QuadClass"], dry_run=True
-            ).filter_all_files()
+            ).clean_all_files()
 
         would_filter = [
             r.message for r in caplog.records if r.message.startswith("[dry run]   ")
@@ -705,11 +705,11 @@ class TestOrder:
         input_dir = tmp_path / "in"
         self._write_three_flat_files(input_dir)
 
-        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-            GDELTFilter(
+        with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+            GDELTCleaner(
                 str(input_dir), str(tmp_path / "out"), ["QuadClass"],
                 order="desc", dry_run=True,
-            ).filter_all_files()
+            ).clean_all_files()
 
         would_filter = [
             r.message for r in caplog.records if r.message.startswith("[dry run]   ")
@@ -735,13 +735,13 @@ class TestOrder:
             flat_in / "20200101.export.parquet", {"GlobalEventID": [1], "QuadClass": [1]}
         )
 
-        with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-            GDELTFilter(
+        with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+            GDELTCleaner(
                 str(flat_in), str(tmp_path / "flat_out"), ["QuadClass"],
                 historical_input_folder=str(hist_in),
                 historical_output_folder=str(tmp_path / "hist_out"),
                 order="desc", dry_run=True,
-            ).filter_all_files()
+            ).clean_all_files()
 
         would_filter = [
             r.message for r in caplog.records if r.message.startswith("[dry run]   ")
@@ -751,7 +751,7 @@ class TestOrder:
 
 class TestOutputColumns:
     def test_defaults_to_none_and_keeps_every_column(self, tmp_path):
-        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        filt = GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
         assert filt.output_columns is None
 
     def test_projects_to_the_configured_subset(self, tmp_path):
@@ -764,12 +764,12 @@ class TestOutputColumns:
             "QuadClass": [1, 2],
         })
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             output_columns=["GlobalEventID", "QuadClass"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID", "QuadClass"]
@@ -788,13 +788,13 @@ class TestOutputColumns:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             output_columns=["GlobalEventID", "DoesNotExist"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
         with caplog.at_level("WARNING"):
-            filt.filter_single_file(src, out_path)
+            filt.clean_single_file(src, out_path)
 
         result = pl.read_parquet(out_path)
         assert list(result.columns) == ["GlobalEventID"]
@@ -809,13 +809,13 @@ class TestOutputColumns:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             output_columns=["GlobalEventID", "QuadClass"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
         with caplog.at_level("WARNING"):
-            filt.filter_single_file(src, out_path)
+            filt.clean_single_file(src, out_path)
 
         assert not any("output_columns" in r.message for r in caplog.records)
 
@@ -831,12 +831,12 @@ class TestOutputColumns:
             "QuadClass": [1, 2, 3],
         })
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["Actor1Name"],
             output_columns=["GlobalEventID", "QuadClass"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        rows_before, rows_after = filt.filter_single_file(src, out_path)
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        rows_before, rows_after = filt.clean_single_file(src, out_path)
 
         assert (rows_before, rows_after) == (3, 2)
         result = pl.read_parquet(out_path)
@@ -849,7 +849,7 @@ class TestCompressionConfig:
         # zstd became the default 2026-08-07: measured ~30% smaller than
         # snappy on real GDELT data at comparable or faster write speed,
         # and it's lossless, so there's no accuracy tradeoff to weigh.
-        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        filt = GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
         assert filt.compression == "zstd"
 
     def test_default_codec_is_used_on_write(self, tmp_path):
@@ -858,9 +858,9 @@ class TestCompressionConfig:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         metadata = pq.ParquetFile(out_path).metadata
         codec = metadata.row_group(0).column(0).compression
@@ -872,11 +872,11 @@ class TestCompressionConfig:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"], compression="snappy",
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         metadata = pq.ParquetFile(out_path).metadata
         codec = metadata.row_group(0).column(0).compression
@@ -885,7 +885,7 @@ class TestCompressionConfig:
 
 class TestFloat32Columns:
     def test_defaults_to_none_and_keeps_float64(self, tmp_path):
-        filt = GDELTFilter(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
+        filt = GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
         assert filt.float32_columns is None
 
     def test_configured_columns_are_narrowed_to_float32(self, tmp_path):
@@ -901,12 +901,12 @@ class TestFloat32Columns:
             "AvgTone": [0.0284010224368077, -1.234567891234],
         })
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             float32_columns=["AvgTone"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         schema = pq.ParquetFile(out_path).schema_arrow
         assert schema.field("AvgTone").type == pa.float32()
@@ -928,13 +928,13 @@ class TestFloat32Columns:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1], "QuadClass": [1]})
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             float32_columns=["DoesNotExist"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
         # Must not raise even though the configured column isn't present.
-        filt.filter_single_file(src, out_path)
+        filt.clean_single_file(src, out_path)
         assert out_path.exists()
 
     def test_a_configured_non_float_column_is_skipped_not_fatal(self, tmp_path):
@@ -946,12 +946,12 @@ class TestFloat32Columns:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1], "QuadClass": [1]})
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             float32_columns=["QuadClass"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         schema = pq.ParquetFile(out_path).schema_arrow
         assert schema.field("QuadClass").type == pa.int64()
@@ -968,13 +968,13 @@ class TestFloat32Columns:
             "AvgTone": [0.0284010224368077],
         })
 
-        filt = GDELTFilter(
+        filt = GDELTCleaner(
             str(input_dir), str(tmp_path / "out"), ["QuadClass"],
             output_columns=["GlobalEventID", "AvgTone"],
             float32_columns=["AvgTone"],
         )
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         schema = pq.ParquetFile(out_path).schema_arrow
         assert list(schema.names) == ["GlobalEventID", "AvgTone"]
@@ -987,7 +987,7 @@ class TestValidateColumns:
         input_dir.mkdir()
         _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1], "QuadClass": [1]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass", "Nope"])
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass", "Nope"])
         result = filt.validate_columns()
 
         assert result["existing_columns"] == ["QuadClass"]
@@ -997,14 +997,14 @@ class TestValidateColumns:
         input_dir = tmp_path / "in"
         input_dir.mkdir()
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
         result = filt.validate_columns()
 
         assert "error" in result
 
 
 class TestRunFilterDatasetParameter:
-    """run_filter (not GDELTFilter itself, which is already dataset-agnostic)
+    """run_cleaner (not GDELTCleaner itself, which is already dataset-agnostic)
     is what resolves dataset-specific paths.* and filter.columns_to_check
     keys; this end-to-end coverage is what's new here, constructor-level
     resolution alone can't prove the right directory gets read/written or
@@ -1019,11 +1019,11 @@ class TestRunFilterDatasetParameter:
         return {
             "paths": {
                 "parquet_data_directory": str(events_in),
-                "filtered_data_directory": str(events_out),
+                "cleaned_data_directory": str(events_out),
                 "gkg_v2_parquet_data_directory": str(gkg_in),
-                "gkg_v2_filtered_data_directory": str(gkg_out),
+                "gkg_v2_cleaned_data_directory": str(gkg_out),
             },
-            "filter": {
+            "clean": {
                 "columns_to_check": {
                     "gdelt_event": ["Actor1Name"],
                     "gdelt_gkg_v2": ["V2DOCUMENTIDENTIFIER"],
@@ -1038,16 +1038,16 @@ class TestRunFilterDatasetParameter:
             "GlobalEventID": [1, 2], "Actor1Name": ["A", None],
         }).write_parquet(events_in / "a.parquet")
 
-        processed, failed = run_filter(cfg)
+        processed, failed = run_cleaner(cfg)
 
         assert (processed, failed) == (1, 0)
-        out = pl.read_parquet(cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet")
+        out = pl.read_parquet(cfg["paths"]["cleaned_data_directory"] + "/a_cleaned.parquet")
         assert out["GlobalEventID"].to_list() == [1]
 
     def test_non_events_dataset_reads_its_own_directory_and_check_list(self, tmp_path):
         # Actor1Name (gdelt_event's own check column) doesn't exist on the
-        # GKG side at all; if run_filter ever fell back to gdelt_event's
-        # columns_to_check by mistake, GDELTFilter's "missing columns are
+        # GKG side at all; if run_cleaner ever fell back to gdelt_event's
+        # columns_to_check by mistake, GDELTCleaner's "missing columns are
         # skipped, not fatal" behavior would silently pass both rows
         # through unfiltered instead of enforcing V2DOCUMENTIDENTIFIER, so
         # a wrong dataset resolution here would show up as len(out) == 2.
@@ -1057,30 +1057,30 @@ class TestRunFilterDatasetParameter:
             "V2DOCUMENTIDENTIFIER": ["http://a.com", None],
         }).write_parquet(gkg_in / "a.parquet")
 
-        processed, failed = run_filter(cfg, dataset="gdelt_gkg_v2")
+        processed, failed = run_cleaner(cfg, dataset="gdelt_gkg_v2")
 
         assert (processed, failed) == (1, 0)
-        out_dir = cfg["paths"]["gkg_v2_filtered_data_directory"]
-        out = pl.read_parquet(out_dir + "/a_filtered.parquet")
+        out_dir = cfg["paths"]["gkg_v2_cleaned_data_directory"]
+        out = pl.read_parquet(out_dir + "/a_cleaned.parquet")
         assert out["GKGRECORDID"].to_list() == ["r1"]
 
     def test_passes_max_workers_through_to_the_filterer(self, tmp_path, monkeypatch):
         cfg, events_in, _ = self._config(tmp_path)
-        cfg["filter"]["max_workers"] = 3
+        cfg["clean"]["max_workers"] = 3
         pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
         ).write_parquet(events_in / "a.parquet")
 
         captured = {}
-        real_init = GDELTFilter.__init__
+        real_init = GDELTCleaner.__init__
 
         def spy_init(self, *args, **kwargs):
             captured.update(kwargs)
             real_init(self, *args, **kwargs)
 
-        monkeypatch.setattr(GDELTFilter, "__init__", spy_init)
+        monkeypatch.setattr(GDELTCleaner, "__init__", spy_init)
 
-        run_filter(cfg)
+        run_cleaner(cfg)
 
         assert captured["max_workers"] == 3
 
@@ -1109,42 +1109,42 @@ class TestRunFilterDatasetParameter:
         cfg = {
             "paths": {
                 "event_reduced_parquet_data_directory": str(reduced_in),
-                "event_reduced_filtered_data_directory": str(reduced_out),
+                "event_reduced_cleaned_data_directory": str(reduced_out),
                 "event_reduced_parquet_historical_directory": str(reduced_hist_in),
-                "event_reduced_filtered_historical_directory": str(reduced_hist_out),
+                "event_reduced_cleaned_historical_directory": str(reduced_hist_out),
                 "parquet_data_directory": str(reduced_in),
-                "filtered_data_directory": str(reduced_out),
+                "cleaned_data_directory": str(reduced_out),
             },
-            "filter": {"columns_to_check": {"gdelt_event_reduced": [], "gdelt_event": []}},
+            "clean": {"columns_to_check": {"gdelt_event_reduced": [], "gdelt_event": []}},
             "converter": {"partitioning": {"enabled": False}},
         }
 
         captured = {}
-        real_init = GDELTFilter.__init__
+        real_init = GDELTCleaner.__init__
 
         def spy_init(self, *args, **kwargs):
             captured.update(kwargs)
             real_init(self, *args, **kwargs)
 
-        monkeypatch.setattr(GDELTFilter, "__init__", spy_init)
+        monkeypatch.setattr(GDELTCleaner, "__init__", spy_init)
 
-        run_filter(cfg, dataset="gdelt_event_reduced")
+        run_cleaner(cfg, dataset="gdelt_event_reduced")
         assert captured["historical_input_folder"] == str(reduced_hist_in)
         assert captured["historical_output_folder"] == str(reduced_hist_out)
 
-        run_filter(cfg, dataset="gdelt_event")
+        run_cleaner(cfg, dataset="gdelt_event")
         assert captured["historical_input_folder"] is None
         assert captured["historical_output_folder"] is None
 
     def test_missing_max_workers_key_defaults_to_none(self, tmp_path):
-        # config["filter"] historically had no max_workers key at all
-        # (pre-dating this feature); run_filter must not KeyError on it.
+        # config["clean"] historically had no max_workers key at all
+        # (pre-dating this feature); run_cleaner must not KeyError on it.
         cfg, events_in, _ = self._config(tmp_path)
         pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
         ).write_parquet(events_in / "a.parquet")
 
-        processed, failed = run_filter(cfg)
+        processed, failed = run_cleaner(cfg)
 
         assert (processed, failed) == (1, 0)
 
@@ -1159,10 +1159,10 @@ class TestRunFilterDatasetParameter:
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
         ).write_parquet(events_in / "a.parquet")
 
-        processed, failed = run_filter(cfg)
+        processed, failed = run_cleaner(cfg)
 
         assert (processed, failed) == (1, 0)
-        out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        out_path = cfg["paths"]["cleaned_data_directory"] + "/a_cleaned.parquet"
         out = pl.read_parquet(out_path)
         assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
@@ -1177,17 +1177,17 @@ class TestRunFilterDatasetParameter:
         # crash with "'NoneType' object has no attribute 'get'" instead
         # of falling through to the same defaults as a missing key.
         cfg, events_in, _ = self._config(tmp_path)
-        cfg["filter"]["output_columns"] = None
-        cfg["filter"]["compression"] = None
-        cfg["filter"]["float32_columns"] = None
+        cfg["clean"]["output_columns"] = None
+        cfg["clean"]["compression"] = None
+        cfg["clean"]["float32_columns"] = None
         pl.DataFrame(
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
         ).write_parquet(events_in / "a.parquet")
 
-        processed, failed = run_filter(cfg)
+        processed, failed = run_cleaner(cfg)
 
         assert (processed, failed) == (1, 0)
-        out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        out_path = cfg["paths"]["cleaned_data_directory"] + "/a_cleaned.parquet"
         out = pl.read_parquet(out_path)
         assert list(out.columns) == ["GlobalEventID", "Actor1Name"]
         codec = pq.ParquetFile(out_path).metadata.row_group(0).column(0).compression
@@ -1199,15 +1199,15 @@ class TestRunFilterDatasetParameter:
         # not iterable" on the very first file instead of behaving like
         # the documented, deliberate [] no-op.
         cfg, events_in, _ = self._config(tmp_path)
-        cfg["filter"]["columns_to_check"]["gdelt_event"] = None
+        cfg["clean"]["columns_to_check"]["gdelt_event"] = None
         pl.DataFrame(
             {"GlobalEventID": [1, 2], "Actor1Name": ["A", None]}
         ).write_parquet(events_in / "a.parquet")
 
-        processed, failed = run_filter(cfg)
+        processed, failed = run_cleaner(cfg)
 
         assert (processed, failed) == (1, 0)
-        out_path = cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+        out_path = cfg["paths"]["cleaned_data_directory"] + "/a_cleaned.parquet"
         out = pl.read_parquet(out_path)
         assert len(out) == 2
 
@@ -1221,26 +1221,26 @@ class TestRunFilterDatasetParameter:
             {"GlobalEventID": [1], "Actor1Name": ["A"]}
         ).write_parquet(events_in / "a.parquet")
 
-        processed, failed = run_filter(cfg)
+        processed, failed = run_cleaner(cfg)
 
         assert (processed, failed) == (1, 0)
 
     def test_output_columns_and_compression_are_resolved_per_dataset(self, tmp_path):
         cfg, _, gkg_in = self._config(tmp_path)
-        cfg["filter"]["output_columns"] = {
+        cfg["clean"]["output_columns"] = {
             "gdelt_gkg_v2": ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"],
         }
-        cfg["filter"]["compression"] = {"gdelt_gkg_v2": "zstd"}
+        cfg["clean"]["compression"] = {"gdelt_gkg_v2": "zstd"}
         pl.DataFrame({
             "GKGRECORDID": ["r1", "r2"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com", "http://b.com"],
             "V2GCAM": ["unused", "unused"],
         }).write_parquet(gkg_in / "a.parquet")
 
-        processed, failed = run_filter(cfg, dataset="gdelt_gkg_v2")
+        processed, failed = run_cleaner(cfg, dataset="gdelt_gkg_v2")
 
         assert (processed, failed) == (1, 0)
-        out_path = Path(cfg["paths"]["gkg_v2_filtered_data_directory"]) / "a_filtered.parquet"
+        out_path = Path(cfg["paths"]["gkg_v2_cleaned_data_directory"]) / "a_cleaned.parquet"
         out = pl.read_parquet(out_path)
         assert list(out.columns) == ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"]
 
@@ -1249,7 +1249,7 @@ class TestRunFilterDatasetParameter:
 
     def test_float32_columns_is_resolved_per_dataset(self, tmp_path):
         cfg, events_in, gkg_in = self._config(tmp_path)
-        cfg["filter"]["float32_columns"] = {"gdelt_gkg_v2": ["Tone"]}
+        cfg["clean"]["float32_columns"] = {"gdelt_gkg_v2": ["Tone"]}
         pl.DataFrame({
             "GKGRECORDID": ["r1"],
             "V2DOCUMENTIDENTIFIER": ["http://a.com"],
@@ -1261,18 +1261,18 @@ class TestRunFilterDatasetParameter:
 
         # events_in has no float32_columns entry configured for it, so it
         # must be unaffected by gdelt_gkg_v2's setting.
-        processed_events, _ = run_filter(cfg)
-        processed_gkg, failed_gkg = run_filter(cfg, dataset="gdelt_gkg_v2")
+        processed_events, _ = run_cleaner(cfg)
+        processed_gkg, failed_gkg = run_cleaner(cfg, dataset="gdelt_gkg_v2")
 
         assert (processed_events, processed_gkg, failed_gkg) == (1, 1, 0)
 
         events_schema = pq.ParquetFile(
-            cfg["paths"]["filtered_data_directory"] + "/a_filtered.parquet"
+            cfg["paths"]["cleaned_data_directory"] + "/a_cleaned.parquet"
         ).schema_arrow
         assert events_schema.field("GoldsteinScale").type != pa.float32()
 
         gkg_schema = pq.ParquetFile(
-            Path(cfg["paths"]["gkg_v2_filtered_data_directory"]) / "a_filtered.parquet"
+            Path(cfg["paths"]["gkg_v2_cleaned_data_directory"]) / "a_cleaned.parquet"
         ).schema_arrow
         assert gkg_schema.field("Tone").type == pa.float32()
 
@@ -1280,13 +1280,13 @@ class TestRunFilterDatasetParameter:
 class TestCrossrefJoinKeyWarning:
     """output_columns makes it easy to prune a dataset's crossref join
     key by accident (see gdeltforge.crossref.crossref.REQUIRED_JOIN_COLUMNS);
-    run_filter should warn about it at filter time rather than let the
+    run_cleaner should warn about it at filter time rather than let the
     failure surface only when `crossref` is run later, possibly after an
     expensive sample pass in between."""
 
     def test_warns_when_output_columns_omits_the_join_key(self, tmp_path, caplog):
         cfg, _, gkg_in = TestRunFilterDatasetParameter._config(tmp_path)
-        cfg["filter"]["output_columns"] = {
+        cfg["clean"]["output_columns"] = {
             # Missing V2DOCUMENTIDENTIFIER, gdelt_gkg_v2's join key.
             "gdelt_gkg_v2": ["GKGRECORDID"],
         }
@@ -1296,7 +1296,7 @@ class TestCrossrefJoinKeyWarning:
         }).write_parquet(gkg_in / "a.parquet")
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, dataset="gdelt_gkg_v2")
+            run_cleaner(cfg, dataset="gdelt_gkg_v2")
 
         assert any(
             "V2DOCUMENTIDENTIFIER" in r.message and "crossref" in r.message
@@ -1305,7 +1305,7 @@ class TestCrossrefJoinKeyWarning:
 
     def test_no_warning_when_the_join_key_is_kept(self, tmp_path, caplog):
         cfg, _, gkg_in = TestRunFilterDatasetParameter._config(tmp_path)
-        cfg["filter"]["output_columns"] = {
+        cfg["clean"]["output_columns"] = {
             "gdelt_gkg_v2": ["GKGRECORDID", "V2DOCUMENTIDENTIFIER"],
         }
         pl.DataFrame({
@@ -1314,7 +1314,7 @@ class TestCrossrefJoinKeyWarning:
         }).write_parquet(gkg_in / "a.parquet")
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, dataset="gdelt_gkg_v2")
+            run_cleaner(cfg, dataset="gdelt_gkg_v2")
 
         assert not any("crossref" in r.message for r in caplog.records)
 
@@ -1328,7 +1328,7 @@ class TestCrossrefJoinKeyWarning:
         }).write_parquet(gkg_in / "a.parquet")
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, dataset="gdelt_gkg_v2")
+            run_cleaner(cfg, dataset="gdelt_gkg_v2")
 
         assert not any("crossref" in r.message for r in caplog.records)
 
@@ -1349,7 +1349,7 @@ class TestRunFilterWarnsAboutDeleteSource:
         )
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, delete_source=True)
+            run_cleaner(cfg, delete_source=True)
 
         assert any(
             "delete_source" in r.message and "columns_to_check" in r.message
@@ -1363,41 +1363,41 @@ class TestRunFilterWarnsAboutDeleteSource:
         )
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, delete_source=False)
+            run_cleaner(cfg, delete_source=False)
 
         assert not any("delete_source" in r.message for r in caplog.records)
 
     def test_no_warning_when_nothing_narrows_the_output(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
-        cfg["filter"]["columns_to_check"]["gdelt_event"] = []
+        cfg["clean"]["columns_to_check"]["gdelt_event"] = []
         pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, delete_source=True)
+            run_cleaner(cfg, delete_source=True)
 
         assert not any("delete_source" in r.message for r in caplog.records)
 
 
 class TestVerboseLogging:
     """--verbose raises this module's own logger to DEBUG, revealing the
-    per-file "{name}: rows -> rows"/"Skipping already filtered" lines
+    per-file "{name}: rows -> rows"/"Skipping already cleaned" lines
     that are DEBUG-level (invisible) by default. logger.setLevel is a
     real, process-wide mutation on a singleton (logging.getLogger caches
     by name), so every test here restores INFO afterward regardless of
     outcome, rather than leaking state into whichever test runs next."""
 
     def test_off_by_default_logger_level_is_unchanged(self, tmp_path):
-        filter_module.logger.setLevel(logging.INFO)
+        cleaner_module.logger.setLevel(logging.INFO)
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
         pl.DataFrame({"GlobalEventID": [1], "Actor1Name": ["A"]}).write_parquet(
             events_in / "a.parquet"
         )
 
-        run_filter(cfg)
+        run_cleaner(cfg)
 
-        assert filter_module.logger.level == logging.INFO
+        assert cleaner_module.logger.level == logging.INFO
 
     def test_verbose_lowers_the_logger_to_debug(self, tmp_path):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
@@ -1405,10 +1405,10 @@ class TestVerboseLogging:
             events_in / "a.parquet"
         )
         try:
-            run_filter(cfg, verbose=True)
-            assert filter_module.logger.level == logging.DEBUG
+            run_cleaner(cfg, verbose=True)
+            assert cleaner_module.logger.level == logging.DEBUG
         finally:
-            filter_module.logger.setLevel(logging.INFO)
+            cleaner_module.logger.setLevel(logging.INFO)
 
     def test_verbose_reveals_the_per_file_row_count_line(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
@@ -1416,11 +1416,11 @@ class TestVerboseLogging:
             events_in / "a.parquet"
         )
         try:
-            with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-                run_filter(cfg, verbose=True)
+            with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+                run_cleaner(cfg, verbose=True)
             assert any("a.parquet" in r.message and "rows" in r.message for r in caplog.records)
         finally:
-            filter_module.logger.setLevel(logging.INFO)
+            cleaner_module.logger.setLevel(logging.INFO)
 
     def test_warns_for_gkg_v1_counts_too(self, tmp_path, caplog):
         # gdelt_gkg_v1_counts is a real, distinct crossref target (the
@@ -1428,16 +1428,16 @@ class TestVerboseLogging:
         # REQUIRED_JOIN_COLUMNS, not just an alias of gdelt_gkg_v1.
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
         cfg["paths"]["gkg_v1_counts_parquet_data_directory"] = str(events_in)
-        cfg["paths"]["gkg_v1_counts_filtered_data_directory"] = str(tmp_path / "out")
-        cfg["filter"]["columns_to_check"]["gdelt_gkg_v1_counts"] = ["Date"]
+        cfg["paths"]["gkg_v1_counts_cleaned_data_directory"] = str(tmp_path / "out")
+        cfg["clean"]["columns_to_check"]["gdelt_gkg_v1_counts"] = ["Date"]
         # Missing EventIds, gdelt_gkg_v1_counts' join key.
-        cfg["filter"]["output_columns"] = {"gdelt_gkg_v1_counts": ["Date"]}
+        cfg["clean"]["output_columns"] = {"gdelt_gkg_v1_counts": ["Date"]}
         pl.DataFrame({"Date": [20130401], "EventIds": ["1,2"]}).write_parquet(
             events_in / "a.parquet"
         )
 
         with caplog.at_level("WARNING"):
-            run_filter(cfg, dataset="gdelt_gkg_v1_counts")
+            run_cleaner(cfg, dataset="gdelt_gkg_v1_counts")
 
         assert any(
             "EventIds" in r.message and "crossref" in r.message for r in caplog.records
@@ -1446,7 +1446,7 @@ class TestVerboseLogging:
 
 class TestQuietLogging:
     """--quiet raises this module's own logger to WARNING, suppressing
-    the setup/summary lines run_filter otherwise always logs at INFO.
+    the setup/summary lines run_cleaner otherwise always logs at INFO.
     Mutually exclusive with --verbose at the CLI; this module doesn't
     enforce that itself, so it isn't re-tested here."""
 
@@ -1456,10 +1456,10 @@ class TestQuietLogging:
             events_in / "a.parquet"
         )
         try:
-            run_filter(cfg, quiet=True)
-            assert filter_module.logger.level == logging.WARNING
+            run_cleaner(cfg, quiet=True)
+            assert cleaner_module.logger.level == logging.WARNING
         finally:
-            filter_module.logger.setLevel(logging.INFO)
+            cleaner_module.logger.setLevel(logging.INFO)
 
     def test_quiet_suppresses_the_summary_line(self, tmp_path, caplog):
         cfg, events_in, _ = TestRunFilterDatasetParameter._config(tmp_path)
@@ -1467,16 +1467,16 @@ class TestQuietLogging:
             events_in / "a.parquet"
         )
         try:
-            with caplog.at_level("DEBUG", logger="gdeltforge.filtering.filter"):
-                run_filter(cfg, quiet=True)
-            assert not any("FILTERING SUMMARY" in r.message for r in caplog.records)
+            with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+                run_cleaner(cfg, quiet=True)
+            assert not any("CLEANING SUMMARY" in r.message for r in caplog.records)
         finally:
-            filter_module.logger.setLevel(logging.INFO)
+            cleaner_module.logger.setLevel(logging.INFO)
 
 
 class TestFilterSingleFileAtomicity:
-    """filter_single_file used to write straight to output_path via a
-    streaming ParquetWriter. Now that filter_all_files runs files across a
+    """clean_single_file used to write straight to output_path via a
+    streaming ParquetWriter. Now that clean_all_files runs files across a
     worker pool (TestMaxWorkersConfig), a killed worker is a real,
     reachable failure mode, not just a hypothetical: a truncated file
     left at output_path would be silently picked up by anything reading
@@ -1485,7 +1485,7 @@ class TestFilterSingleFileAtomicity:
     pattern already used for converter output."""
 
     def test_leaves_no_file_on_write_failure(self, tmp_path, monkeypatch):
-        # PID-pinned: filter_single_file's own staging name is now PID-
+        # PID-pinned: clean_single_file's own staging name is now PID-
         # suffixed (the fix for two concurrent filter runs sharing one
         # output path), so the leftover-tmp check below has to know the
         # exact name to look for.
@@ -1500,11 +1500,11 @@ class TestFilterSingleFileAtomicity:
 
         monkeypatch.setattr(pl.LazyFrame, "sink_parquet", boom)
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        out_path = tmp_path / "out" / "data_filtered.parquet"
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
 
         with pytest.raises(OSError):
-            filt.filter_single_file(src, out_path)
+            filt.clean_single_file(src, out_path)
 
         assert not out_path.exists()
         assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
@@ -1516,9 +1516,9 @@ class TestFilterSingleFileAtomicity:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
 
-        filt = GDELTFilter(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
-        out_path = tmp_path / "out" / "data_filtered.parquet"
-        filt.filter_single_file(src, out_path)
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        out_path = tmp_path / "out" / "data_cleaned.parquet"
+        filt.clean_single_file(src, out_path)
 
         assert out_path.exists()
         assert not out_path.with_name(f"{out_path.name}.12345.tmp").exists()
@@ -1527,10 +1527,10 @@ class TestFilterSingleFileAtomicity:
 
 class TestFilterSingleFileConcurrentInvocations:
     """
-    filter_single_file used to build its own fixed ".tmp" suffix inline
+    clean_single_file used to build its own fixed ".tmp" suffix inline
     (tmp_path = output_path.with_name(output_path.name + ".tmp")),
     unlike utils.io.write_parquet_atomic's already-fixed equivalent. Two
-    concurrent GDELTFilter instances filtering the same source file into
+    concurrent GDELTCleaner instances filtering the same source file into
     the same output path raced on that shared name: whichever process's
     os.replace() ran second found its own tmp file already renamed away
     by the other, raising a raw FileNotFoundError and counting an
@@ -1538,7 +1538,7 @@ class TestFilterSingleFileConcurrentInvocations:
     `gdeltforge filter --dataset events --force` runs, one launched
     before realizing the first was still going).
 
-    filter_single_file streams through lf.sink_parquet rather than
+    clean_single_file streams through lf.sink_parquet rather than
     materializing a DataFrame first, specifically to keep peak memory
     bounded for a large file, so it can't route through
     write_parquet_atomic (which writes an already-collected DataFrame)
@@ -1570,10 +1570,10 @@ class TestFilterSingleFileConcurrentInvocations:
         src = input_dir / "data.parquet"
         _write_parquet(src, {"GlobalEventID": [1, 2, 3, 4], "QuadClass": [1, 2, 3, 4]})
         out_dir = tmp_path / "out"
-        out_path = out_dir / "data_filtered.parquet"
+        out_path = out_dir / "data_cleaned.parquet"
 
-        filt_a = GDELTFilter(str(input_dir), str(out_dir), ["QuadClass"])
-        filt_b = GDELTFilter(str(input_dir), str(out_dir), ["QuadClass"])
+        filt_a = GDELTCleaner(str(input_dir), str(out_dir), ["QuadClass"])
+        filt_b = GDELTCleaner(str(input_dir), str(out_dir), ["QuadClass"])
 
         pids = iter([111, 222, 333, 444])
         monkeypatch.setattr(os, "getpid", lambda: next(pids))
@@ -1585,7 +1585,7 @@ class TestFilterSingleFileConcurrentInvocations:
             result = real_sink_parquet(self, path, *args, **kwargs)
             if not state["ran_b"]:
                 state["ran_b"] = True
-                filt_b.filter_single_file(src, out_path)
+                filt_b.clean_single_file(src, out_path)
             return result
 
         monkeypatch.setattr(pl.LazyFrame, "sink_parquet", sink_parquet_then_run_b)
@@ -1593,7 +1593,39 @@ class TestFilterSingleFileConcurrentInvocations:
         # Must not raise: under the bug, B's completed rename (using the
         # same shared tmp name A just wrote to) leaves nothing at A's own
         # tmp path by the time A's own os.replace() runs.
-        filt_a.filter_single_file(src, out_path)
+        filt_a.clean_single_file(src, out_path)
 
         assert out_path.exists()
         assert len(pl.read_parquet(out_path)) == 4
+
+
+class TestLegacyOutputRemoval:
+    def test_pre_012_output_of_the_same_source_is_replaced(self, tmp_path):
+        # Before 0.12 the stage wrote <stem>_filtered.parquet; leaving it next
+        # to the new <stem>_cleaned.parquet would double that day's rows for
+        # every reader that globs *.parquet.
+        in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+        in_dir.mkdir()
+        out_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(in_dir / "20200101.parquet")
+        pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(out_dir / "20200101_filtered.parquet")
+        pl.DataFrame({"GlobalEventID": [9]}).write_parquet(out_dir / "20200102_filtered.parquet")
+
+        GDELTCleaner(str(in_dir), str(out_dir), columns_to_check=[]).clean_all_files()
+
+        assert (out_dir / "20200101_cleaned.parquet").exists()
+        assert not (out_dir / "20200101_filtered.parquet").exists()
+        # A legacy file whose source wasn't cleaned in this run is left alone.
+        assert (out_dir / "20200102_filtered.parquet").exists()
+
+
+class TestDeprecatedModule:
+    def test_old_import_path_warns_and_still_works(self, tmp_path):
+        import importlib
+        import sys as _sys
+
+        _sys.modules.pop("gdeltforge.filtering.filter", None)
+        with pytest.warns(DeprecationWarning, match="gdeltforge.filtering.filter is deprecated"):
+            old = importlib.import_module("gdeltforge.filtering.filter")
+        assert issubclass(old.GDELTFilter, GDELTCleaner)
+        assert old.run_filter is run_cleaner

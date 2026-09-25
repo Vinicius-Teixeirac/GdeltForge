@@ -10,7 +10,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 |---------|-------------|
 | `scrape`  | Download raw GDELT data (ZIP -> CSV) |
 | `convert` | Convert downloaded CSV files to Parquet |
-| `filter`  | Apply row-column filtering to Parquet files |
+| `clean`   | Clean converted Parquet: the data-quality stage (formerly `filter`) |
 | `aggregate` | Concatenate a period's worth of 15-minute-cadence files into one larger file per day/month/year |
 | `sample`  | Efficient, reproducible sampling |
 | `crossref` | Enrich a sampled Events output with GKG (themes, tone, people, organizations) |
@@ -19,7 +19,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 <div class="gf-grid gf-grid--3">
   <a class="gf-card gf-card--link" href="#gdeltforge-scrape"><h3>scrape →</h3><p>Download the raw archive, checksum-verified.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-convert"><h3>convert →</h3><p>CSV to Parquet, optionally Hive-partitioned.</p></a>
-  <a class="gf-card gf-card--link" href="#gdeltforge-filter"><h3>filter →</h3><p>Drop rows missing your configured columns.</p></a>
+  <a class="gf-card gf-card--link" href="#gdeltforge-clean"><h3>clean →</h3><p>Drop unusable rows and shape the output.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-aggregate"><h3>aggregate →</h3><p>Fold 15-minute files into day/month/year files.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-sample"><h3>sample →</h3><p>Indexed, calendar, filtered, plus a stratified sub-mode.</p></a>
   <a class="gf-card gf-card--link" href="#gdeltforge-crossref"><h3>crossref →</h3><p>Join a sample back onto GKG.</p></a>
@@ -28,9 +28,9 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 
 !!! info "Exit codes"
 
-    `scrape`, `convert`, and `filter` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
+    `scrape`, `convert`, and `clean` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
 
-    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130. A `scrape`/`convert`/`filter` run backed by a worker pool cancels every not-yet-started file immediately on either signal, rather than draining the whole remaining queue first; the handful of files already in flight are still allowed to finish. A plain `kill` (SIGTERM, no `-9`) behaves the same way, printing `Terminated.` and exiting with status 143, since that's what most process managers (systemd, Docker, Kubernetes) send by convention before escalating.
+    Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130. A `scrape`/`convert`/`clean` run backed by a worker pool cancels every not-yet-started file immediately on either signal, rather than draining the whole remaining queue first; the handful of files already in flight are still allowed to finish. A plain `kill` (SIGTERM, no `-9`) behaves the same way, printing `Terminated.` and exiting with status 143, since that's what most process managers (systemd, Docker, Kubernetes) send by convention before escalating.
 
     `gdeltforge` makes itself its own process group leader on POSIX at startup, so `kill -KILL -$(pgid)` (or `pkill -KILL -g $PGID`) reliably stops the whole run, worker processes included, in one shot. A bare `kill -9 <pid>` targeting only the main process cannot be caught by anything, including this: its already-dispatched workers keep running to completion, orphaned, since SIGKILL never reaches them at all. On Windows, the equivalent whole-tree stop is `taskkill /F /T /PID <pid>`.
 
@@ -94,7 +94,7 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 
 `--force` re-downloads a file even when one with the same name is already present, overwriting it. `--dry-run` reports how many files would be downloaded versus skipped, honoring `--force`'s effect on that count, without making any network request.
 
-`--order` picks which files are submitted to the download pool first: `asc` (the default) matches `convert`/`filter`/`sample`/`crossref`'s own existing file order, so an interrupted scrape leaves a contiguous prefix of history those stages can already process cleanly; `desc` prioritizes the most recent files, useful when the goal is current data rather than a full backfill. It only controls submission order, not real completion order: downloads run concurrently, so a later-submitted small file can still finish before an earlier-submitted large one.
+`--order` picks which files are submitted to the download pool first: `asc` (the default) matches `convert`/`clean`/`sample`/`crossref`'s own existing file order, so an interrupted scrape leaves a contiguous prefix of history those stages can already process cleanly; `desc` prioritizes the most recent files, useful when the goal is current data rather than a full backfill. It only controls submission order, not real completion order: downloads run concurrently, so a later-submitted small file can still finish before an earlier-submitted large one.
 
 ## `gdeltforge convert`
 
@@ -138,41 +138,41 @@ By default `convert` shows a setup line, a progress bar, and an end-of-run summa
 
 See [Configuration](configuration.md#hive-partitioning-for-historical-data) for the optional Hive-partitioning feature for pre-2013 yearly/monthly source files.
 
-## `gdeltforge filter`
+## `gdeltforge clean`
 
 ```bash
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 ```
 
-Drops rows with missing values in the columns defined under `filter.columns_to_check.<dataset>` in `settings.yaml`. Each file is filtered independently, so filtering runs across a pool of worker processes too (`filter.max_workers`; `null`, the default, uses all available CPU cores).
+The data-quality stage: drops rows with missing values in the columns defined under `clean.columns_to_check.<dataset>` in `settings.yaml`, then shapes each file's output (`output_columns`, `float32_columns`, `compression`) and writes it to `cleaned_data_directory`. Each file is cleaned independently, so cleaning runs across a pool of worker processes too (`clean.max_workers`; `null`, the default, uses all available CPU cores). It decides whether a row is usable at all; which rows are relevant to a research question is decided at sampling time, with `sample --mode filtered --filter`.
 
-!!! note "This `filter` isn't `sample`'s `--filter`"
-    The `filter` command and `sample`'s [`--filter` flag](#gdeltforge-sample) share a name but do unrelated jobs. This command is a pipeline stage: it drops rows with missing values, using a fixed set of columns from `settings.yaml`, and writes its output back to disk for every later stage to read. `sample --filter` is a one-off row selector: it takes an ad hoc JSON condition on the command line and only affects that sample's output, not anything stored on disk.
+!!! note "Renamed from `filter` in 0.12.0"
+    Before 0.12.0 this stage was `gdeltforge filter`, and its name collided with `sample`'s unrelated `--filter` option. The old names keep working through the 0.12.x series, each with a deprecation warning: the `gdeltforge filter` command, the `filter:` config section, the `*filtered_data_directory`/`*filtered_historical_directory` path keys, and `--source filtered` in `sample`/`aggregate`/`crossref`. Output files are now named `<stem>_cleaned.parquet`; cleaning a file removes the same source's pre-0.12 `<stem>_filtered.parquet` from the output directory, so a directory never holds both copies of the same day.
 
 | Flag | Description |
 |------|-------------|
-| `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to filter (required; see [`--dataset`](#-dataset) below) |
-| `--start-date YYYY-MM-DD` | Only filter files whose period starts on or after this date |
-| `--end-date YYYY-MM-DD` | Only filter files whose period ends on or before this date |
+| `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to clean (required; see [`--dataset`](#-dataset) below) |
+| `--start-date YYYY-MM-DD` | Only clean files whose period starts on or after this date |
+| `--end-date YYYY-MM-DD` | Only clean files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
-| `--delete-source` | Delete each source (unfiltered, converted) parquet once its filtered output is written and confirmed done. Off by default |
-| `--verbose` | Show per-file filter detail (rows kept per file, which are skipped as already done) instead of just the progress bar and summary. Off by default |
+| `--delete-source` | Delete each source (converted) parquet once its cleaned output is written and confirmed done. Off by default |
+| `--verbose` | Show per-file clean detail (rows kept per file, which are skipped as already done) instead of just the progress bar and summary. Off by default |
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
-| `--force` | Reprocess files already marked done instead of skipping them, overwriting their filtered output. Off by default |
-| `--dry-run` | Report how many files would be filtered without filtering anything. Off by default |
+| `--force` | Reprocess files already marked done instead of skipping them, overwriting their cleaned output. Off by default |
+| `--dry-run` | Report how many files would be cleaned without cleaning anything. Off by default |
 
-`--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get filtered, not the rows within them: filtering itself drops rows with missing values, a concern unrelated to date.
+`--start-date`/`--end-date` narrow which already-converted Parquet files get read. This restricts which *files* get cleaned, not the rows within them: the null check itself is a concern unrelated to date.
 
-Already-filtered files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#filter) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
+Already-cleaned files are skipped on a rerun too, tracked the same way as `convert`'s marker; see [Configuration](configuration.md#clean) for which settings (`columns_to_check`, `output_columns`, `float32_columns`, `compression`) invalidate it.
 
 `--order` picks which files are submitted to the worker pool first, same meaning as `convert`'s own `--order`. When Hive-partitioned historical data is configured, flat and historical files are ordered together as one sequence, not each sorted independently and concatenated, so `desc` genuinely surfaces the single newest file across both first rather than just the newest of whichever group happens to be listed first.
 
-`--delete-source` reclaims the converted parquet's disk space once its filtered output is confirmed written, so a full historical pull doesn't need to hold both copies at once. Never deletes on a failed filter, and never runs ahead of the `.done` marker. Two real costs worth knowing before turning it on: combined with `columns_to_check`/`output_columns`/`float32_columns`, whatever those narrowed away can't be recovered later without re-converting from the raw ZIP (a warning fires once at the start of a run configured that way), and it also removes the option to later `sample --source converted` against the unfiltered data.
+`--delete-source` reclaims the converted parquet's disk space once its cleaned output is confirmed written, so a full historical pull doesn't need to hold both copies at once. Never deletes on a failed file, and never runs ahead of the `.done` marker. Two real costs worth knowing before turning it on: combined with `columns_to_check`/`output_columns`/`float32_columns`, whatever those narrowed away can't be recovered later without re-converting from the raw ZIP (a warning fires once at the start of a run configured that way), and it also removes the option to later `sample --source converted` against the uncleaned data.
 
-By default `filter` shows the same setup line, progress bar, and end-of-run summary shape as `convert`/`scrape`. Its per-file line is quieter than `convert`'s (one line per file instead of two), but at `gkg-v2`/`mentions` scale it's still hundreds of thousands of lines; `--verbose` restores it, same reasoning as `convert`'s own flag. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
+By default `clean` shows the same setup line, progress bar, and end-of-run summary shape as `convert`/`scrape`. Its per-file line is quieter than `convert`'s (one line per file instead of two), but at `gkg-v2`/`mentions` scale it's still hundreds of thousands of lines; `--verbose` restores it, same reasoning as `convert`'s own flag. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
 
-`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already filtered under the current configuration. `--dry-run` reports how many files would be filtered, honoring `--force`'s effect on that count, without processing anything.
+`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything.
 
 ## `gdeltforge aggregate`
 
@@ -186,7 +186,7 @@ GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDEL
 |------|-------------|
 | `--dataset {gkg-v2,mentions,events-15min}` | Which 15-minute-cadence GDELT dataset to aggregate (required). Every other dataset already publishes at day-or-coarser granularity, so there's nothing for this to solve there |
 | `--period {day,month,year}` | Granularity to concatenate into (default `day`, matching `sample --mode calendar`'s own default) |
-| `--source {filtered,converted}` | Which stage's output to aggregate from (default `filtered`). Recorded as part of this run's resumability fingerprint, so switching source for an already-aggregated period reprocesses and overwrites it rather than mixing the two |
+| `--source {cleaned,converted,filtered}` | Which stage's output to aggregate from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). Recorded as part of this run's resumability fingerprint, so switching source for an already-aggregated period reprocesses and overwrites it rather than mixing the two |
 | `--start-date YYYY-MM-DD` | Only aggregate periods whose source files' period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only aggregate periods whose source files' period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest period first, the default) or `desc` (newest first) |
@@ -197,15 +197,15 @@ GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDEL
 | `--force` | Reprocess periods already marked done instead of skipping them, overwriting their aggregated output. Off by default |
 | `--dry-run` | Report how many periods would be aggregated without aggregating anything. Off by default |
 
-Unlike `convert`/`filter`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
+Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
 
-`--order`, `--verbose`/`--quiet`, `--force`, and `--dry-run` all match `convert`'s/`filter`'s own identically-named flags exactly, including the worker-pool interrupt handling (Ctrl+C/SIGTERM cancel not-yet-started periods immediately rather than draining the whole batch).
+`--order`, `--verbose`/`--quiet`, `--force`, and `--dry-run` all match `convert`'s/`clean`'s own identically-named flags exactly, including the worker-pool interrupt handling (Ctrl+C/SIGTERM cancel not-yet-started periods immediately rather than draining the whole batch).
 
 Read the aggregated output back with `sample --source aggregated --period day` (see [`gdeltforge sample`](#gdeltforge-sample) below); `--dataset` there must be one of the same three eligible datasets.
 
 ## `--dataset`
 
-`scrape`, `convert`, `filter`, and `sample` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there's no default, so every invocation of these four commands names its dataset explicitly. This was a deliberate breaking change (see the changelog): with two Events-flavored choices now available, a silent default risked someone meaning to opt into the finer, slower one falling back to the daily archive instead with no error.
+`scrape`, `convert`, `clean`, and `sample` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there's no default, so every invocation of these four commands names its dataset explicitly. This was a deliberate breaking change (see the changelog): with two Events-flavored choices now available, a silent default risked someone meaning to opt into the finer, slower one falling back to the daily archive instead with no error.
 
 - `events`: the daily/monthly/yearly Events archive. Not real-time (updates once a day), but far smaller and faster than `events-15min` for the same date range.
 - `events-15min`: Events at native GDELT 2.0 granularity, discovered from the same 15-minute master file list as `gkg-v2`/`mentions`, not the daily archive's directory listing. Genuinely a different, richer schema, not just finer granularity: 61 columns against the daily archive's 58, with an `ADM2Code` field added to each of the three geo blocks (`Actor1Geo`/`Actor2Geo`/`ActionGeo`) that the older, GDELT-1.0-compatible daily format doesn't carry. Opt-in and much slower in practice: real measurement puts the full 2015-present archive at 396,086 files (~81x the daily archive's file count for the same span) and ~40 GB total. File count, not raw size, is what dominates the cost here, since Events rows are compact structured data rather than GKG's free text. Reach for this only when you need intraday freshness or the extra geo precision; `events` is the right default-shaped choice otherwise.
@@ -219,13 +219,13 @@ Read the aggregated output back with `sample --source aggregated --period day` (
 
 ![The three sampling modes, indexed, calendar and filtered, plus stratified as filtered's own optional sub-mode](assets/sampling-modes.svg)
 
-All sampling modes read from the filtered directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `filter` stage's NaN-dropping, or `--source aggregated` to read `gdeltforge aggregate`'s output instead (`--dataset` must be one of the three 15-minute-cadence datasets `aggregate` supports: gkg-v2/mentions/events-15min).
+All sampling modes read from the cleaned directory by default; pass `--source converted` to sample from raw converted Parquet instead, before the `clean` stage's NaN-dropping, or `--source aggregated` to read `gdeltforge aggregate`'s output instead (`--dataset` must be one of the three 15-minute-cadence datasets `aggregate` supports: gkg-v2/mentions/events-15min).
 
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
 | `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
-| `--source {filtered,converted,aggregated}` | all | Which stage's output to read from (default `filtered`). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
+| `--source {cleaned,converted,aggregated,filtered}` | all | Which stage's output to read from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
@@ -242,7 +242,7 @@ All sampling modes read from the filtered directory by default; pass `--source c
 | `--out PATH` | all | Output parquet file (default `sample.parquet`) |
 | `--export-format {parquet,csv}` | all | Output file format. `csv` rewrites `--out`'s extension to `.csv`. Off (`parquet`) by default |
 
-`--start-date`/`--end-date` narrow which files each mode reads before it does anything else, the same file-level date filter `scrape`/`convert`/`filter`/`crossref` already apply (reusing `filter_paths_by_date`). In `filtered` mode this stacks with `--filter`'s own row-level predicate pushdown rather than replacing it: the date range prunes which files even get opened, `--filter` then narrows rows within whatever remains. Setting both together logs a warning, since a result narrower than either constraint alone implied is otherwise easy to misread as a bug.
+`--start-date`/`--end-date` narrow which files each mode reads before it does anything else, the same file-level date filter `scrape`/`convert`/`clean`/`crossref` already apply (reusing `filter_paths_by_date`). In `filtered` mode this stacks with `--filter`'s own row-level predicate pushdown rather than replacing it: the date range prunes which files even get opened, `--filter` then narrows rows within whatever remains. Setting both together logs a warning, since a result narrower than either constraint alone implied is otherwise easy to misread as a bug.
 
 `--export-format csv` is meant for handing a finished sample to a tool that doesn't read Parquet (Excel, a quick spreadsheet look), not as a second internal storage format: CSV itself has no typed schema, so a numeric-looking string column (`EventCode`, `EventBaseCode`, `EventRootCode`; their zero-padded values, `"020"`, are meaningful) reads back as a plain integer, leading zero dropped, under a standard CSV reader's own default type inference, including a bare `pl.read_csv`/`pd.read_csv` call. A `<name>.csv.schema.json` sidecar is written alongside the CSV recording every column's real dtype; `gdeltforge.utils.io.read_csv_export(path)` reads it back through that sidecar for a fully lossless round trip (confirmed against real content, including null vs. genuine-empty-string values), and is the right way to read a gdeltforge CSV export back in Python. A plain CSV reader with no sidecar to consult, or a `--out` file moved away from its sidecar, still hits the original limitation; a warning naming the affected columns and a manual `schema_overrides` fix fires at export time either way.
 
@@ -363,7 +363,7 @@ gdeltforge aggregate --dataset gkg-v2 --period day
 gdeltforge sample --dataset gkg-v2 --mode indexed --source aggregated --period day -n 10000
 ```
 
-Reads from `gdeltforge aggregate`'s output directory instead of `filtered_data_directory`/`parquet_data_directory`; every mode works the same way against it. `--period` picks which of the day/month/year aggregated directories to read, independent of `--source filtered`/`converted`'s own choice of which directory `aggregate` itself read from when building the aggregated files.
+Reads from `gdeltforge aggregate`'s output directory instead of `cleaned_data_directory`/`parquet_data_directory`; every mode works the same way against it. `--period` picks which of the day/month/year aggregated directories to read, independent of `--source cleaned`/`converted`'s own choice of which directory `aggregate` itself read from when building the aggregated files.
 
 ## `gdeltforge crossref`
 
@@ -373,7 +373,7 @@ Enriches a sampled Events output with GKG: themes, tone, people, organizations e
 
 Nothing stops `--events` from actually pointing at the full archive (or a directory of files) instead, since a genuinely archive-scale join is sometimes exactly what's wanted, so this isn't blocked, but it logs a warning (not a hard stop, matching how a large `scrape` already warns) once `--events` crosses 1,000,000 rows: every file in the configured Mentions/GKG directory gets scanned regardless of `--events` size, and just building the join key set was measured at roughly 100 MB and a second per million events (10M: ~800 MB; 50M: ~5.2 GB), before that scan even starts. If that wasn't intentional, run `gdeltforge sample` first.
 
-The configured Mentions/GKG directory itself gets the same treatment, independent of `--events` size: past 50,000 files, a warning fires for that directory specifically (`Mentions`/`GKG 2.1`/`GKG 1.0` checked separately, so either one being the large one is called out by name), since crossref lists and opens every file in it on every run, regardless of how selective the join ends up being (real measurement: ~75 microseconds/file, so ~29s for the full historical GKG 2.1/Mentions archive just to list and open, before a single row is read). `--start-date`/`--end-date`, same as `scrape`/`convert`/`filter`, narrow which files in that directory get listed and opened at all; pointing `paths.*` at a smaller, already-narrowed directory reduces it further. Both flags only narrow the Mentions/GKG side, not `--events`: a Mentions row is timestamped by when it was recorded, not by its event's `DATEADDED` (see `auto`'s description below), so narrowing by date can exclude a legitimate late mention of an in-range event, a real scope decision rather than a risk-free filter.
+The configured Mentions/GKG directory itself gets the same treatment, independent of `--events` size: past 50,000 files, a warning fires for that directory specifically (`Mentions`/`GKG 2.1`/`GKG 1.0` checked separately, so either one being the large one is called out by name), since crossref lists and opens every file in it on every run, regardless of how selective the join ends up being (real measurement: ~75 microseconds/file, so ~29s for the full historical GKG 2.1/Mentions archive just to list and open, before a single row is read). `--start-date`/`--end-date`, same as `scrape`/`convert`/`clean`, narrow which files in that directory get listed and opened at all; pointing `paths.*` at a smaller, already-narrowed directory reduces it further. Both flags only narrow the Mentions/GKG side, not `--events`: a Mentions row is timestamped by when it was recorded, not by its event's `DATEADDED` (see `auto`'s description below), so narrowing by date can exclude a legitimate late mention of an in-range event, a real scope decision rather than a risk-free filter.
 
 ```bash
 gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parquet
@@ -381,9 +381,9 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 
 | Flag | Description |
 |------|-------------|
-| `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/filter output directly); `.done` resumability markers in it are ignored |
+| `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/clean output directly); `.done` resumability markers in it are ignored |
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
-| `--source {filtered,converted}` | Which stage's GKG/Mentions output to read from (default: `filtered`) |
+| `--source {cleaned,converted,filtered}` | Which stage's GKG/Mentions output to read from (default: `cleaned`; `filtered` is its deprecated pre-0.12 name) |
 | `--columns COL [COL ...]` | Restrict GKG-side output to these columns, named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
 | `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
@@ -494,7 +494,7 @@ Every one of these runs the four stages in order; only the last line differs.
     ```bash
     gdeltforge scrape --dataset events
     gdeltforge convert --dataset events
-    gdeltforge filter --dataset events
+    gdeltforge clean --dataset events
     gdeltforge sample --dataset events --mode indexed -n 10000
     ```
 
@@ -503,7 +503,7 @@ Every one of these runs the four stages in order; only the last line differs.
     ```bash
     gdeltforge scrape --dataset events
     gdeltforge convert --dataset events
-    gdeltforge filter --dataset events
+    gdeltforge clean --dataset events
     gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
     ```
 
@@ -512,7 +512,7 @@ Every one of these runs the four stages in order; only the last line differs.
     ```bash
     gdeltforge scrape --dataset events
     gdeltforge convert --dataset events
-    gdeltforge filter --dataset events
+    gdeltforge clean --dataset events
     gdeltforge sample \
         --dataset events \
         --mode filtered \
@@ -525,18 +525,18 @@ Every one of these runs the four stages in order; only the last line differs.
     ```bash
     gdeltforge scrape --dataset events
     gdeltforge convert --dataset events
-    gdeltforge filter --dataset events
+    gdeltforge clean --dataset events
     gdeltforge sample --dataset events --mode calendar --per-period 30
     ```
 
 ??? example "Date-restricted pipeline"
 
-    `scrape`, `convert`, `filter`, `sample`, and `crossref` each accept `--start-date`/`--end-date` independently. `scrape` narrows the remote listing it discovers files from; the later stages narrow which already-on-disk files they read. Passing the same range at every stage keeps the whole pipeline focused on that window, rather than scraping a narrow range and then having `convert`/`filter`/`sample` process every file already sitting on disk, including ones from outside it.
+    `scrape`, `convert`, `clean`, `sample`, and `crossref` each accept `--start-date`/`--end-date` independently. `scrape` narrows the remote listing it discovers files from; the later stages narrow which already-on-disk files they read. Passing the same range at every stage keeps the whole pipeline focused on that window, rather than scraping a narrow range and then having `convert`/`clean`/`sample` process every file already sitting on disk, including ones from outside it.
 
     ```bash
     gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
     gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2023-12-31
-    gdeltforge filter --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+    gdeltforge clean --dataset events --start-date 2020-01-01 --end-date 2023-12-31
     gdeltforge sample --dataset events --mode indexed -n 10000 --start-date 2020-01-01 --end-date 2023-12-31
     ```
 
@@ -545,14 +545,14 @@ Every one of these runs the four stages in order; only the last line differs.
     ```bash
     gdeltforge scrape --dataset events && \
     gdeltforge convert --dataset events && \
-    gdeltforge filter --dataset events && \
+    gdeltforge clean --dataset events && \
     gdeltforge sample --dataset events --mode indexed -n 10000
     ```
 
 ??? example "PowerShell loop"
 
     ```powershell
-    foreach ($c in "scrape", "convert", "filter") {
+    foreach ($c in "scrape", "convert", "clean") {
         gdeltforge $c --dataset events
     }
     gdeltforge sample --dataset events --mode indexed -n 10000

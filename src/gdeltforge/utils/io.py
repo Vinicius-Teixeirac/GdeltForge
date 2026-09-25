@@ -609,7 +609,7 @@ def warn_if_delete_source_drops_recoverable_data(
     logger, stage: str, delete_source: bool, narrowing: list[str]
 ) -> None:
     """
-    Shared by convert.py's run_converter and filter.py's run_filter, both
+    Shared by convert.py's run_converter and cleaner.py's run_cleaner, both
     of which expose a delete_source knob that removes the input file once
     its output is written successfully, to save the disk a full
     raw-plus-processed archive would otherwise need. Combined with any
