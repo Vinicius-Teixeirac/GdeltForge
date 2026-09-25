@@ -1096,6 +1096,8 @@
     "UNO": "United Nations"
   },
   "EVENT_CODES": {
+    "--": "No event: root of the null code ---",
+    "---": "No event: CAMEO null code, a matched verb pattern that generates no event",
     "01": "MAKE PUBLIC STATEMENT",
     "010": "Make statement, not specified below",
     "011": "Decline comment",
@@ -1413,7 +1415,8 @@
     "203": "Engage in ethnic cleansing",
     "204": "Use weapons of mass destruction, not specified below",
     "2041": "Use chemical, biological, or radiological weapons",
-    "2042": "Detonate nuclear weapons"
+    "2042": "Detonate nuclear weapons",
+    "X": "Unclassified material-conflict event (undocumented GDELT marker)"
   },
   "GEO_COUNTRY_CODES": {
     "AA": "Aruba",

@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 - `gdeltforge.sampling.cameo_codes.lookup(column, code)`, translating a code to its name case-insensitively, so a consumer translating codes needs no case handling of its own.
+- The three event-code values that aren't CAMEO categories are now listed with their meaning, so every value in the Events record resolves: `---` and its root `--` are the CAMEO null code (a matched verb pattern that generates no event, 325 rows in the 1979 to 2026 archive), and `X` is an undocumented GDELT marker whose 9 rows are all QuadClass 4, material conflict. Filtering on one no longer warns.
 
 ### Changed
 - **Breaking**: the bundled ethnic codes are keyed lowercase, the way GDELT writes them in the Events data and its own lookup table. Code that indexes `cameo_codes.ethnic_codes()` with an uppercase key (`ethnic_codes()["KUR"]`) now gets a `KeyError`; use the lowercase key or `cameo_codes.lookup(column, code)`, which ignores case. The keys were uppercase, so a plain dict lookup on a real ethnic value (`sco`, `idg`, `tam`, ...) found nothing for 9.85M of the archive's 9.90M ethnic values; `is_recognized_code` already compared case-insensitively, so `sample`'s warnings were unaffected. `PAL`, `ARB` and `KUR` also occur uppercase in the record, which `lookup` covers.

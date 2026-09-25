@@ -160,14 +160,13 @@ class TestEventCodes:
         assert codes["1213"] == "Reject judicial cooperation"
         assert codes["1214"] == "Reject intelligence cooperation"
 
-    def test_malformed_record_markers_are_not_included(self):
-        # GDELT's own sentinels for rows its event coder couldn't classify
-        # at all, not real CAMEO codes; deliberately excluded so filtering
-        # on one still (correctly) warns.
+    def test_non_category_markers_are_listed_with_their_meaning(self):
+        # Real values in the record that aren't CAMEO categories: the null
+        # code "---" (and its root "--"), and the undocumented "X".
         codes = cameo_codes.event_codes()
-        assert "X" not in codes
-        assert "--" not in codes
-        assert "---" not in codes
+        assert codes["---"].startswith("No event")
+        assert codes["--"].startswith("No event")
+        assert "undocumented" in codes["X"]
 
 
 class TestCodeFamilyForColumn:
@@ -242,12 +241,11 @@ class TestIsRecognizedCode:
         assert cameo_codes.is_recognized_code("EventBaseCode", "010") is True
         assert cameo_codes.is_recognized_code("EventCode", "1213") is True
 
-    def test_malformed_record_marker_is_not_recognized(self):
-        # A real value that occurs in real GDELT data (the event coder's
-        # own "couldn't classify this row" marker), correctly still flagged
-        # since it isn't a CAMEO code.
-        assert cameo_codes.is_recognized_code("EventCode", "X") is False
-        assert cameo_codes.is_recognized_code("EventRootCode", "--") is False
+    def test_non_category_markers_are_recognized(self):
+        # Every value in the record resolves, markers included.
+        assert cameo_codes.is_recognized_code("EventCode", "X") is True
+        assert cameo_codes.is_recognized_code("EventRootCode", "--") is True
+        assert cameo_codes.is_recognized_code("EventCode", "---") is True
 
 
 class TestLookup:
@@ -262,7 +260,7 @@ class TestLookup:
         assert cameo_codes.lookup("ActionGeo_CountryCode", "us") == "United States"
 
     def test_unknown_code_returns_none(self):
-        assert cameo_codes.lookup("EventCode", "X") is None
+        assert cameo_codes.lookup("EventCode", "999") is None
 
     def test_non_coded_column_returns_none(self):
         assert cameo_codes.lookup("QuadClass", "1") is None
