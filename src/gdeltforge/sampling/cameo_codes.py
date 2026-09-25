@@ -50,6 +50,17 @@ event coder couldn't classify at all. These aren't CAMEO codes and are
 deliberately left out of the reference, so a filter on one of them will
 (correctly) still warn.
 
+Every name was then checked again, in 2026-09, against GDELT's own lookup
+tables (gdeltproject.org/data/lookups/*.txt) and against the full Events
+archive (869M rows, 1979 to 2026-07): a geo-country code against the
+FullName GDELT writes for a country-level place, an actor code against the
+actor names coded with it. Where the two sources disagree, the archive
+wins. That pass corrected guessed names (known-group SCE is the OSCE, XFM
+is Oxfam, WAS is ECOWAS; geo HQ is Howland Island) and spelling slips
+("Columbia" for Colombia). GDELT's own tables carry errors of their own
+(ethnic "bod" as Tibetan where the archive codes it beside "BODO", geo LO
+as Czechoslovakia), so they aren't copied blindly either.
+
 None of this is exhaustive by construction, just by verification against
 one archive snapshot: FIPS 10-4 was retired as a standard in 2008 and the
 CAMEO known-group list isn't actively maintained, so a miss here means

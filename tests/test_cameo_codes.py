@@ -6,6 +6,7 @@ class TestActorCountryCodes:
         codes = cameo_codes.actor_country_codes()
         assert codes["USA"] == "United States"
         assert codes["RUS"] == "Russia"
+        assert codes["COL"] == "Colombia"
 
     def test_is_three_letter_codes(self):
         codes = cameo_codes.actor_country_codes()
@@ -37,6 +38,14 @@ class TestGeoCountryCodes:
         assert codes["JQ"] == "Johnston Atoll"
         assert codes["MQ"] == "Midway Islands"
 
+    def test_names_match_the_places_gdelt_writes_for_them(self):
+        # A country-level place's FullName is the country's own name, so the
+        # archive names these codes directly.
+        codes = cameo_codes.geo_country_codes()
+        assert codes["HQ"] == "Howland Island"
+        assert codes["RB"] == "Serbia (general)"
+        assert codes["OS"] == "Oceans"
+
 
 class TestEthnicCodes:
     def test_has_known_entries(self):
@@ -59,6 +68,17 @@ class TestKnownGroupCodes:
         assert codes["FID"] == "International Federation for Human Rights (FIDH)"
         assert codes["NON"] == "Non-Aligned Movement (Organization of Non-Aligned Countries)"
 
+    def test_names_match_the_actor_names_coded_with_them(self):
+        # These codes once carried guessed names that the full Events
+        # archive contradicts: SCE appears only beside "OSCE", XFM beside
+        # "OXFAM", GOE beside "GROUP OF EIGHT", WAS mostly beside "ECOWAS".
+        codes = cameo_codes.known_group_codes()
+        assert "OSCE" in codes["SCE"]
+        assert codes["XFM"] == "Oxfam"
+        assert codes["GOE"] == "Group of Eight (G-8)"
+        assert "ECOWAS" in codes["WAS"]
+        assert "SAARC" in codes["SAA"]
+
     def test_ambiguous_code_documents_both_real_meanings(self):
         # CEM maps to two distinct organizations in real archive data
         # (CEMAC, dominant; a COMESA-related usage, rare); both are kept
@@ -78,6 +98,9 @@ class TestReligionCodes:
         codes = cameo_codes.religion_codes()
         assert codes["JHW"] == "Jehovah's Witnesses"
         assert codes["MRN"] == "Maronite Church"
+        # Coded beside "ULTRA ORTHODOX"/"HAREDI" and "ALAWI" in the archive.
+        assert codes["UDX"] == "Ultra-Orthodox Judaism (Haredi)"
+        assert codes["ALE"] == "Alawites (Alawi)"
 
 
 class TestTypeCodes:

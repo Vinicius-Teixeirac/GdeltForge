@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- 43 wrong or misspelled names in the bundled CAMEO code tables (`gdeltforge codes`, `cameo_codes.json`), found by checking every entry against GDELT's own lookup tables and the full 1979 to 2026 Events archive. The heaviest: 11 known-group codes carried guessed names the archive contradicts, among them `SCE` (the OSCE, not a "Supreme Council of the Economy"), `XFM` (Oxfam, not "foreign militants"), `WAS` (ECOWAS, not the Warsaw Pact), `GOE`/`GOS` (the G-8/G-7, not the governments of Egypt/Sudan) and `IRC` (the Red Cross, not the International Rescue Committee), about 1.7M coded values between them. Also religion `UDX` (Ultra-Orthodox Judaism, not "Other Christian") and `ALE` (Alawi, not Alevism); geo `HQ` (Howland Island), `RB` (Serbia) and `OS` (Oceans); actor country `COL` ("Columbia"); 14 ethnic names; and event codes `0252` (popular, not political, dissent) and `137` (violent repression).
+
 ## [0.11.0] - 2026-09-20
 
 ### Added
