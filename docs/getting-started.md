@@ -75,7 +75,7 @@ gdeltforge clean --dataset events
 gdeltforge sample --dataset events --mode indexed -n 1000 --out sample.parquet
 ```
 
-This downloads one week of daily GDELT files, converts them to Parquet, drops rows missing your configured columns, and writes a 1,000-row random sample to `sample.parquet`.
+This downloads one week of daily GDELT files, converts them to Parquet, repairs known GDELT errors and drops rows missing your configured columns, and writes a 1,000-row random sample to `sample.parquet`.
 
 Once that works, drop the date flags to work with the full archive (1979-present).
 

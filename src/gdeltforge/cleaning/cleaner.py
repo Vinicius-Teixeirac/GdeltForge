@@ -75,6 +75,10 @@ from tqdm import tqdm
 
 from gdeltforge import __version__
 from gdeltforge.cleaning.steps import (
+    ERRATA_VERSION,
+    Date1920Repair,
+    EventMarkers,
+    FileContext,
     NarrowFloat32,
     ProjectColumns,
     RequireColumns,
@@ -115,15 +119,26 @@ AUDIT_DIRECTORY = "_clean_runs"
 
 @dataclass
 class FileReport:
-    """What cleaning one file did, for the run audit. `unrecognized` counts,
-    per CAMEO-coded column in the output, the non-null values that aren't
-    in the bundled code tables."""
+    """What cleaning one file did, for the run audit and the dry-run
+    report. `step_counts` holds each step's own counts (values repaired,
+    rows dropped), keyed "<step>.<what>"; `unrecognized` counts, per
+    CAMEO-coded column in the output, the non-null values that aren't in
+    the bundled code tables."""
 
     source: str
     output: str
     rows_in: int
     rows_out: int
     unrecognized: dict[str, int] = field(default_factory=dict)
+    step_counts: dict[str, int] = field(default_factory=dict)
+    columns_in: int = 0
+    columns_out: int = 0
+
+
+# The errata settings a dataset may set under clean.errata.<dataset>, and
+# the defaults a caller that sets none of them gets: nothing repaired.
+_ERRATA_KEYS = ("date_1920", "event_markers", "keep_original")
+_EVENT_MARKER_MODES = ("keep", "drop")
 
 
 class GDELTCleaner:
@@ -159,6 +174,9 @@ class GDELTCleaner:
         quiet: bool = False,
         force: bool = False,
         dry_run: bool = False,
+        errata: dict | None = None,
+        allow_lossy_delete_source: bool = False,
+        report: bool = False,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -253,16 +271,39 @@ class GDELTCleaner:
         # marker written under different values must not cause this run
         # to skip reprocessing that file and silently serve output shaped
         # by the old configuration.
-        self._config_fingerprint = config_fingerprint(
+        # Repairs of known GDELT errors (clean.errata.<dataset>, see
+        # steps.py and docs/data-cleaning.md#errata). None or {} repairs
+        # nothing; run_cleaner passes the bundled default's settings,
+        # which repair without losing any value.
+        self.errata = self._validated_errata(errata)
+        # With --dry-run: read every file in scope and report what each
+        # step would change, instead of only counting files.
+        self.report = report
+
+        fingerprint_fields: dict[str, object] = dict(
             columns_to_check=self.columns_to_check,
             output_columns=self.output_columns,
             float32_columns=self.float32_columns,
             compression=self.compression,
         )
+        if self.errata:
+            # Only when a rule is configured, so a dataset no rule applies
+            # to (GKG, Mentions) keeps its pre-0.12 fingerprint and isn't
+            # cleaned again for nothing after upgrading. Sorted JSON, since
+            # config_fingerprint renders a dict with str(), which depends on
+            # key order; the rule-set version makes a run after an errata
+            # rule changes clean every file again.
+            fingerprint_fields["errata"] = json.dumps(self.errata, sort_keys=True)
+            fingerprint_fields["errata_version"] = ERRATA_VERSION
+        self._config_fingerprint = config_fingerprint(**fingerprint_fields)
 
         # The stage's steps, built once from the settings above and applied
         # to every file in STEP_ORDER, whatever order they were built in.
         steps: list[Step] = [RequireColumns(tuple(self.columns_to_check))]
+        if self.errata.get("date_1920"):
+            steps.append(Date1920Repair(keep_original=self.errata.get("keep_original", True)))
+        if self.errata.get("event_markers") is not None:
+            steps.append(EventMarkers(mode=self.errata["event_markers"]))
         if self.output_columns is not None:
             steps.append(ProjectColumns(tuple(self.output_columns)))
         if self.float32_columns:
@@ -281,6 +322,20 @@ class GDELTCleaner:
                 for st in self.steps
             ],
         }
+
+        # --delete-source removes the converted copy, the only way back to
+        # what a lossy step discarded. The stage's original steps keep
+        # their long-standing warning (run_cleaner); every step added from
+        # 0.12.0 on refuses unless the configuration opts in explicitly.
+        refused = [st for st in self.steps if st.lossy and st.guarded]
+        if self.delete_source and refused and not allow_lossy_delete_source:
+            raise ValueError(
+                f"--delete-source would delete the converted copy of every file, and "
+                f"these steps are lossy: {', '.join(self._describe(st) for st in refused)}. "
+                f"Without the converted copy, what they discard is gone. Set "
+                f"clean.allow_lossy_delete_source: true to accept that, or make the "
+                f"steps lossless (event_markers: keep, keep_original: true)."
+            )
 
         self._refuse_output_inside_input()
 
@@ -357,6 +412,8 @@ class GDELTCleaner:
             )
             for parquet_path, _ in to_process:
                 logger.debug(f"[dry run]   {parquet_path.name}")
+            if self.report:
+                self._dry_run_report(to_process)
             return 0, 0
 
         flat_to_process = sum(1 for _, is_hist in to_process if not is_hist)
@@ -494,6 +551,7 @@ class GDELTCleaner:
         self,
         parquet_path: str | Path,
         output_path: Path | None = None,
+        write: bool = True,
     ) -> FileReport:
         """
         Clean a single parquet file and report what cleaning did.
@@ -535,9 +593,37 @@ class GDELTCleaner:
 
         # The steps, in STEP_ORDER (see steps.py). Planned lazily here, so
         # a step that can't run on this file (RequireColumns with none of
-        # its columns present) raises before anything is written.
+        # its columns present) raises before anything is written. Each
+        # step's own counts are planned over its own input frame and
+        # collected together with the row count below.
+        period_start, period_end = self.date_parser(file_path.name)
+        ctx = FileContext(file_path.name, period_start, period_end)
+        columns_in = len(lf.collect_schema())
+        count_frames: list[pl.LazyFrame] = []
         for step in self.steps:
-            lf = step.apply(lf, file_path.name)
+            exprs = step.counts(lf, ctx)
+            if exprs:
+                count_frames.append(lf.select([e.alias(k) for k, e in exprs.items()]))
+            lf = step.apply(lf, ctx)
+
+        unrecognized_exprs = self._unrecognized_code_exprs(lf)
+        final_counts = lf.select(pl.len().alias("__rows_out"), *unrecognized_exprs)
+        # One collect_all call, so polars can share the file scan across
+        # the count queries; each reads only the columns it needs.
+        *step_results, counts_df = pl.collect_all([*count_frames, final_counts])
+        step_counts: dict[str, int] = {}
+        for result in step_results:
+            step_counts.update({k: int(v) for k, v in result.row(0, named=True).items()})
+        counts = counts_df.row(0, named=True)
+        rows_after = counts.pop("__rows_out")
+        columns_out = len(lf.collect_schema())
+
+        if not write:
+            return FileReport(
+                source=file_path.name, output="", rows_in=rows_before, rows_out=rows_after,
+                unrecognized={k: v for k, v in counts.items() if v},
+                step_counts=step_counts, columns_in=columns_in, columns_out=columns_out,
+            )
 
         if output_path is None:
             output_path = self.output_folder / f"{file_path.stem}_cleaned.parquet"
@@ -554,16 +640,6 @@ class GDELTCleaner:
         # straight to disk to keep peak memory bounded, which is the whole
         # point of scanning rather than collecting above.
         tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.tmp")
-
-        # One pass for the row count and the audit's unrecognized-code
-        # counts, reading only the columns those need (projection
-        # pushdown), since sink_parquet streams to disk without handing
-        # back any count.
-        unrecognized_exprs = self._unrecognized_code_exprs(lf)
-        counts = lf.select(
-            pl.len().alias("__rows_out"), *unrecognized_exprs
-        ).collect().row(0, named=True)
-        rows_after = counts.pop("__rows_out")
 
         try:
             lf.sink_parquet(
@@ -586,6 +662,9 @@ class GDELTCleaner:
             rows_in=rows_before,
             rows_out=rows_after,
             unrecognized={k: v for k, v in counts.items() if v},
+            step_counts=step_counts,
+            columns_in=columns_in,
+            columns_out=columns_out,
         )
 
     @staticmethod
@@ -609,6 +688,57 @@ class GDELTCleaner:
             )
         return exprs
 
+    def _dry_run_report(self, to_process: list[tuple[Path, bool]]) -> list[FileReport]:
+        """
+        --dry-run --report: run every step over every file in scope without
+        writing anything, and log what each would change. Slower than a
+        plain --dry-run, which only counts files: this reads the data.
+        """
+        reports: list[FileReport] = []
+        with ProcessPoolExecutor(
+            max_workers=self.max_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            futures = {
+                executor.submit(
+                    self._clean_file, path, self._output_path_for(path, is_historical), False
+                ): path
+                for path, is_historical in to_process
+            }
+            try:
+                with tqdm(total=len(futures), desc="Measuring (dry run)") as pbar:
+                    for future in as_completed(futures):
+                        try:
+                            reports.append(future.result())
+                        except Exception as e:
+                            logger.error(f"[dry run] {futures[future].name} would fail: {e}")
+                        pbar.update(1)
+            except KeyboardInterrupt:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+
+        rows_in = sum(r.rows_in for r in reports)
+        rows_out = sum(r.rows_out for r in reports)
+        logger.info(
+            f"[dry run] {len(reports)} file(s) read: {rows_in:,} rows in, {rows_out:,} out "
+            f"({rows_in - rows_out:,} removed)"
+        )
+        totals: dict[str, int] = {}
+        for r in reports:
+            unrecognized = {f"unrecognized.{k}": v for k, v in r.unrecognized.items()}
+            for key, value in {**r.step_counts, **unrecognized}.items():
+                totals[key] = totals.get(key, 0) + value
+        for key in sorted(totals):
+            logger.info(f"[dry run] {key}: {totals[key]:,}")
+        if reports:
+            logger.info(
+                f"[dry run] columns: {max(r.columns_in for r in reports)} in, "
+                f"{max(r.columns_out for r in reports)} out"
+            )
+        lossy = [self._describe(st) for st in self.steps if st.lossy]
+        logger.info(f"[dry run] lossy steps: {', '.join(lossy) if lossy else 'none'}")
+        return reports
+
     def _write_audit(
         self, reports: list[FileReport], failed: list[str], started_at: datetime
     ) -> Path | None:
@@ -627,6 +757,7 @@ class GDELTCleaner:
             {
                 "source": r.source, "output": r.output,
                 "rows_in": r.rows_in, "rows_out": r.rows_out,
+                **r.step_counts,
                 **{f"unrecognized.{k}": v for k, v in r.unrecognized.items()},
             }
             for r in reports
@@ -635,9 +766,10 @@ class GDELTCleaner:
             schema={"source": pl.String, "output": pl.String,
                     "rows_in": pl.Int64, "rows_out": pl.Int64}
         )
-        unrecognized_cols = [c for c in df.columns if c.startswith("unrecognized.")]
-        if unrecognized_cols:
-            df = df.with_columns(pl.col(unrecognized_cols).fill_null(0))
+        count_cols = [c for c in df.columns if "." in c]
+        if count_cols:
+            df = df.with_columns(pl.col(count_cols).fill_null(0))
+        unrecognized_cols = [c for c in count_cols if c.startswith("unrecognized.")]
         path = self.output_folder / AUDIT_DIRECTORY / f"{started_at:%Y%m%dT%H%M%SZ}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
         run = {
@@ -647,10 +779,14 @@ class GDELTCleaner:
             "failed": failed,
         }
         write_parquet_atomic(df, path, metadata={CLEAN_MARKER_KEY + "-run": json.dumps(run)})
-        for column in unrecognized_cols:
+        for column in count_cols:
             total = int(df[column].sum())
-            if total:
+            if not total:
+                continue
+            if column in unrecognized_cols:
                 logger.info(f"Unrecognized codes in {column.split('.', 1)[1]}: {total:,}")
+            else:
+                logger.info(f"{column}: {total:,}")
         logger.info(f"Run audit written to {path}")
         return path
 
@@ -720,6 +856,35 @@ class GDELTCleaner:
             / relative.parent
             / f"{parquet_path.stem}_cleaned.parquet"
         )
+
+    @staticmethod
+    def _validated_errata(errata: dict | None) -> dict:
+        """clean.errata.<dataset>, checked before anything runs: unknown
+        keys and invalid values fail the run up front, naming the key."""
+        errata = dict(errata or {})
+        unknown = sorted(set(errata) - set(_ERRATA_KEYS))
+        if unknown:
+            raise ValueError(
+                f"clean.errata: unknown setting(s) {unknown}; known: {list(_ERRATA_KEYS)}"
+            )
+        for key in ("date_1920", "keep_original"):
+            if key in errata and not isinstance(errata[key], bool):
+                raise ValueError(f"clean.errata.{key} must be true or false, got {errata[key]!r}")
+        markers = errata.get("event_markers")
+        if markers is not None and markers not in _EVENT_MARKER_MODES:
+            raise ValueError(
+                f"clean.errata.event_markers must be one of {list(_EVENT_MARKER_MODES)}, "
+                f"got {markers!r}"
+            )
+        return errata
+
+    @staticmethod
+    def _describe(step: Step) -> str:
+        if isinstance(step, EventMarkers):
+            return "errata.event_markers: drop"
+        if isinstance(step, Date1920Repair):
+            return "errata.date_1920 without keep_original"
+        return step.name
 
     def _refuse_output_inside_input(self) -> None:
         """
@@ -813,6 +978,7 @@ def run_cleaner(
     quiet: bool = False,
     force: bool = False,
     dry_run: bool = False,
+    report: bool = False,
 ) -> tuple[int, int]:
     """
     Convenience wrapper so the CLI can call the clean stage.
@@ -861,6 +1027,8 @@ def run_cleaner(
     columns_to_check = config["clean"]["columns_to_check"][dataset] or []
     output_columns = get_dict(config["clean"], "output_columns").get(dataset)
     float32_columns = get_dict(config["clean"], "float32_columns").get(dataset)
+    errata = get_dict(get_dict(config["clean"], "errata"), dataset)
+    allow_lossy_delete_source = bool(config["clean"].get("allow_lossy_delete_source", False))
     warn_if_output_columns_drops_join_key(logger, "clean", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(
         logger, "clean", delete_source,
@@ -869,6 +1037,9 @@ def run_cleaner(
                 ("columns_to_check", columns_to_check),
                 ("output_columns", output_columns),
                 ("float32_columns", float32_columns),
+                ("errata.event_markers: drop", errata.get("event_markers") == "drop"),
+                ("errata.date_1920 without keep_original",
+                 errata.get("date_1920") and errata.get("keep_original") is False),
             )
             if value
         ],
@@ -893,5 +1064,8 @@ def run_cleaner(
         quiet=quiet,
         force=force,
         dry_run=dry_run,
+        errata=errata,
+        allow_lossy_delete_source=allow_lossy_delete_source,
+        report=report,
     )
     return cleaner.clean_all_files()

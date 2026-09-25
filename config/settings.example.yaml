@@ -596,6 +596,32 @@ clean:
   # the same reason.
   max_workers: null  # null = os.cpu_count()
 
+  # Repairs of known GDELT errors, applied before every other step. The
+  # defaults below repair without losing any value: see
+  # docs/data-cleaning.md#errata for each rule and its evidence.
+  errata:
+    gdelt_event:
+      # GDELT wrote year 1920 for 2020 in events it added between
+      # 2019-12-31 23:00 and 2020-01-05 15:00 UTC (536,074 daily-archive
+      # rows). Adds 100 years to Day, MonthYear, Year and FractionDate.
+      date_1920: true
+      # Keep GDELT's own values in Day_original, MonthYear_original,
+      # Year_original and FractionDate_original (repaired rows only).
+      # false makes the repair lossy.
+      keep_original: true
+      # Rows coded "---"/"--" (CAMEO null code) or "X" (undocumented):
+      # keep (counted in the run audit) or drop (lossy).
+      event_markers: keep
+    gdelt_event_15min:
+      date_1920: true
+      keep_original: true
+      event_markers: keep
+
+  # --delete-source removes the converted copy. It refuses to run while a
+  # lossy errata step is on (event_markers: drop, or date_1920 without
+  # keep_original) unless this is true.
+  allow_lossy_delete_source: false
+
   columns_to_check:
     gdelt_event: # example
       - GlobalEventID

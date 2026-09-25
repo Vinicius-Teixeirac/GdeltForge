@@ -36,6 +36,7 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 - Full historical archive, not just the last 3 months the API allows
 - Events enriched with GKG via `crossref`, preserving the real many-to-many structure instead of collapsing it
 - Efficient columnar storage (**Parquet**) instead of raw CSV/ZIP
+- A data-quality stage, `clean`, that repairs known GDELT errors by default without losing GDELT's own values, marks every file it writes, and audits every run
 - Reproducible sampling: indexed, calendar, and filtered modes, filtered mode also supports stratified sampling (fixed N per group)
 - Each stage (`scrape`/`convert`/`clean`/`sample`/`crossref`) runs independently and inspectably
 
@@ -117,7 +118,7 @@ The pipeline follows a **single-responsibility, single-stage execution model**. 
 |-------|------|
 | `scrape` | download raw GDELT CSV files (Events, GKG 2.1, GKG 1.0, or Mentions) |
 | `convert` | transform CSV -> Parquet |
-| `clean` | remove rows with missing values |
+| `clean` | repair known GDELT errors, drop rows missing required values, shape the output |
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 
@@ -398,7 +399,7 @@ gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2020-12-3
 gdeltforge clean --dataset events
 ```
 
-Drops rows with missing values in the columns defined in settings.yaml. Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
+The data-quality stage. By default it repairs known GDELT errors (the events GDELT dated 1920 for 2020, with GDELT's own values kept in `*_original` columns) and keeps every row; rows missing a value in the columns listed under `clean.columns_to_check` are dropped. Every cleaned file is marked as cleaned, every run leaves an audit, and `--dry-run --report` measures what each step would change before anything is written. See [Data Cleaning](https://vinicius-teixeirac.github.io/GdeltForge/data-cleaning/). Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
 
 ### Sampling
 

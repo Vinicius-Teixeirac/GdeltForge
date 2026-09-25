@@ -8,7 +8,7 @@ GdeltForge follows a **single-responsibility, single-stage execution model**: ea
 |-------|------|
 | `scrape` | download raw GDELT CSV files |
 | `convert` | transform CSV -> Parquet |
-| `clean` | remove rows with missing values |
+| `clean` | repair known GDELT errors, drop rows missing required values, shape the output ([Data Cleaning](data-cleaning.md)) |
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 

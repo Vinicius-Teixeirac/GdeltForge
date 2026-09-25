@@ -397,11 +397,16 @@ def run_clean_cmd(config: dict, args: argparse.Namespace) -> None:
     start_date, end_date = _parse_date_range(args)
 
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
+    if args.report and not args.dry_run:
+        raise ValueError(
+            "--report only applies with --dry-run: it measures what each step would "
+            "change without writing anything."
+        )
     logger.info("Starting clean stage...")
     files_processed, files_failed = run_cleaner(
         config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force, dry_run=args.dry_run,
+        force=args.force, dry_run=args.dry_run, report=args.report,
     )
     logger.info("Cleaning completed.")
 
@@ -1017,6 +1022,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report how many files would be cleaned without cleaning anything. "
              "Off by default"
+    )
+    clean_.add_argument(
+        "--report",
+        action="store_true",
+        help="With --dry-run: read every file in scope and report what each step "
+             "would change (rows removed, values repaired, columns kept, unrecognized "
+             "codes). Slower than a plain --dry-run, since it reads the data. Off by default"
     )
 
     # ----------------------------------------------------
