@@ -562,6 +562,7 @@ class TestRunCleanCmd:
         defaults = dict(
             dataset="events", start_date=None, end_date=None, order="asc",
             delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            report=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -570,7 +571,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (8, 2),
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (8, 2),
         )
         args = self._args()
 
@@ -581,7 +582,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (10, 0),
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (10, 0),
         )
         args = self._args()
 
@@ -592,7 +593,7 @@ class TestRunCleanCmd:
 
         def fake_run_cleaner(
             config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False,
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -616,7 +617,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(delete_source=delete_source) or (0, 0)
             ),
         )
@@ -631,7 +632,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(verbose=verbose) or (0, 0)
             ),
         )
@@ -646,7 +647,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(quiet=quiet) or (0, 0)
             ),
         )
@@ -661,7 +662,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(force=force) or (0, 0)
             ),
         )
@@ -676,7 +677,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(order=order) or (0, 0)
             ),
         )
@@ -691,7 +692,7 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(dry_run=dry_run) or (0, 0)
             ),
         )
@@ -700,6 +701,21 @@ class TestRunCleanCmd:
         cli.run_clean_cmd({}, args)
 
         assert captured == {"dry_run": True}
+
+    def test_report_is_forwarded_with_dry_run(self, monkeypatch):
+        captured = {}
+
+        def fake_run_cleaner(config, dataset, **kwargs):
+            captured.update(report=kwargs["report"], dry_run=kwargs["dry_run"])
+            return 0, 0
+
+        monkeypatch.setattr(cli, "run_cleaner", fake_run_cleaner)
+        cli.run_clean_cmd({}, self._args(dry_run=True, report=True))
+        assert captured == {"report": True, "dry_run": True}
+
+    def test_report_without_dry_run_is_rejected(self):
+        with pytest.raises(ValueError, match="--report only applies with --dry-run"):
+            cli.run_clean_cmd({}, self._args(report=True))
 
 
 class TestRunAggregateCmd:

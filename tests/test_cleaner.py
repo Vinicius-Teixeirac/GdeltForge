@@ -1742,3 +1742,183 @@ class TestRunAudit:
 
         out = self._run(tmp_path)
         assert read_parquet_path(out).height == 2
+
+
+DEFAULT_ERRATA = {"date_1920": True, "keep_original": True, "event_markers": "keep"}
+
+
+def _write_new_year_2020(in_dir):
+    # Three rows as GDELT published them on 2020-01-02: two dated 1920 by
+    # its year bug, one genuine 2019 date; one row is a CAMEO null code.
+    in_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        "GlobalEventID": [1, 2, 3],
+        "Day": [19200101, 19200102, 20191226],
+        "MonthYear": [192001, 192001, 201912],
+        "Year": [1920, 1920, 2019],
+        "FractionDate": [1920.0027, 1920.0055, 2019.9808],
+        "DATEADDED": [20200102, 20200102, 20200102],
+        "EventCode": ["010", "---", "190"],
+        "EventBaseCode": ["010", "---", "190"],
+        "EventRootCode": ["01", "--", "19"],
+    }).write_parquet(in_dir / "20200102.export.parquet")
+
+
+class TestErrata:
+    def test_default_settings_repair_the_dates_and_keep_every_value(self, tmp_path):
+        _write_new_year_2020(tmp_path / "in")
+        out_dir = tmp_path / "out"
+        GDELTCleaner(
+            str(tmp_path / "in"), str(out_dir), columns_to_check=[], errata=DEFAULT_ERRATA
+        ).clean_all_files()
+
+        out = pl.read_parquet(out_dir / "20200102.export_cleaned.parquet").sort("GlobalEventID")
+        assert out["Day"].to_list() == [20200101, 20200102, 20191226]
+        assert out["Day_original"].to_list() == [19200101, 19200102, None]
+        # Markers are kept by default: nothing is lost.
+        assert out.height == 3
+
+        audit = pl.read_parquet(next((out_dir / "_clean_runs").glob("*.parquet")))
+        assert audit["errata.date_1920"].to_list() == [2]
+        assert audit["errata.event_markers_keep"].to_list() == [1]
+
+    def test_no_errata_setting_leaves_gdelts_values(self, tmp_path):
+        _write_new_year_2020(tmp_path / "in")
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[]
+        ).clean_all_files()
+        out = pl.read_parquet(tmp_path / "out" / "20200102.export_cleaned.parquet")
+        assert sorted(out["Day"].to_list()) == [19200101, 19200102, 20191226]
+
+    def test_dropping_markers_removes_their_rows(self, tmp_path):
+        _write_new_year_2020(tmp_path / "in")
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            errata={"event_markers": "drop"},
+        ).clean_all_files()
+        out = pl.read_parquet(tmp_path / "out" / "20200102.export_cleaned.parquet")
+        assert "---" not in out["EventCode"].to_list()
+
+    @pytest.mark.parametrize("errata, message", [
+        ({"date_1921": True}, "unknown setting"),
+        ({"event_markers": "flag"}, "must be one of"),
+        ({"date_1920": "yes"}, "must be true or false"),
+    ])
+    def test_invalid_settings_fail_before_anything_runs(self, tmp_path, errata, message):
+        with pytest.raises(ValueError, match=message):
+            GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                         errata=errata)
+        assert not (tmp_path / "out").exists()
+
+    def test_changing_errata_settings_cleans_every_file_again(self, tmp_path):
+        _write_new_year_2020(tmp_path / "in")
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[]
+        ).clean_all_files()
+        processed, _ = GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            errata=DEFAULT_ERRATA,
+        ).clean_all_files()
+        assert processed == 1
+
+
+class TestDeleteSourceRefusesLossySteps:
+    def test_refused_while_a_new_lossy_step_is_on(self, tmp_path):
+        with pytest.raises(ValueError, match="errata.event_markers: drop"):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata={"event_markers": "drop"}, delete_source=True,
+            )
+
+    def test_a_repair_without_originals_is_lossy_too(self, tmp_path):
+        with pytest.raises(ValueError, match="date_1920 without keep_original"):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata={"date_1920": True, "keep_original": False}, delete_source=True,
+            )
+
+    def test_explicit_opt_in_allows_it(self, tmp_path):
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            errata={"event_markers": "drop"}, delete_source=True,
+            allow_lossy_delete_source=True,
+        )
+
+    def test_lossless_defaults_never_refuse(self, tmp_path):
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            errata=DEFAULT_ERRATA, delete_source=True,
+        )
+
+    def test_the_original_steps_keep_their_warning_only(self, tmp_path):
+        # columns_to_check/output_columns/float32_columns predate the guard.
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=["A"],
+            output_columns=["A"], float32_columns=["B"], delete_source=True,
+        )
+
+
+class TestDryRunReport:
+    def test_reports_each_steps_cost_and_writes_nothing(self, tmp_path, caplog):
+        _write_new_year_2020(tmp_path / "in")
+        out_dir = tmp_path / "out"
+        with caplog.at_level(logging.INFO):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(out_dir), columns_to_check=[],
+                errata={**DEFAULT_ERRATA, "event_markers": "drop"},
+                dry_run=True, report=True,
+            ).clean_all_files()
+        messages = [r.message for r in caplog.records]
+        assert "[dry run] errata.date_1920: 2" in messages
+        assert "[dry run] errata.event_markers_drop: 1" in messages
+        assert any(m.startswith("[dry run] 1 file(s) read: 3 rows in, 2 out") for m in messages)
+        assert any("lossy steps: errata.event_markers: drop" in m for m in messages)
+        assert list(out_dir.glob("*.parquet")) == []
+        assert not (out_dir / "_clean_runs").exists()
+
+    def test_plain_dry_run_does_not_read_the_data(self, tmp_path, caplog):
+        _write_new_year_2020(tmp_path / "in")
+        with caplog.at_level(logging.INFO):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA, dry_run=True,
+            ).clean_all_files()
+        assert not any("errata.date_1920" in r.message for r in caplog.records)
+
+
+class TestRunCleanerErrataConfig:
+    def test_errata_and_opt_in_are_read_from_the_config(self, tmp_path, monkeypatch):
+        captured = {}
+        real_init = GDELTCleaner.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(GDELTCleaner, "__init__", spy_init)
+        (tmp_path / "in").mkdir()
+        cfg = {
+            "paths": {"parquet_data_directory": str(tmp_path / "in"),
+                      "cleaned_data_directory": str(tmp_path / "out")},
+            "clean": {"columns_to_check": {"gdelt_event": []},
+                      "errata": {"gdelt_event": DEFAULT_ERRATA},
+                      "allow_lossy_delete_source": True},
+            "converter": {"partitioning": {"enabled": False}},
+        }
+        run_cleaner(cfg, dataset="gdelt_event", dry_run=True, report=True)
+        assert captured["errata"] == DEFAULT_ERRATA
+        assert captured["allow_lossy_delete_source"] is True
+        assert captured["report"] is True
+
+
+class TestFingerprintWithoutErrata:
+    def test_no_errata_keeps_the_pre_012_fingerprint(self, tmp_path):
+        # Datasets no errata rule applies to must not be cleaned again just
+        # because the stage learned about errata.
+        from gdeltforge.utils.io import config_fingerprint
+
+        cleaner = GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=["A"])
+        assert cleaner._config_fingerprint == config_fingerprint(
+            columns_to_check=["A"], output_columns=None, float32_columns=None,
+            compression="zstd",
+        )

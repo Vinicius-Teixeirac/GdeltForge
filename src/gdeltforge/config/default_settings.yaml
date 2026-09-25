@@ -469,6 +469,23 @@ clean:
     gdelt_mentions: []
     gdelt_gkg_v1: []
     gdelt_gkg_v1_counts: []
+  # Repairs of known GDELT errors, on by default and losing nothing: the
+  # 1920-for-2020 dates are repaired with GDELT's values kept in
+  # *_original columns, and the non-CAMEO event markers are kept (only
+  # counted). See docs/data-cleaning.md#errata.
+  errata:
+    gdelt_event:
+      date_1920: true
+      keep_original: true
+      event_markers: keep
+    gdelt_event_15min:
+      date_1920: true
+      keep_original: true
+      event_markers: keep
+  # --delete-source refuses to run while a lossy errata step is on
+  # (event_markers: drop, or date_1920 without keep_original) unless this
+  # is true.
+  allow_lossy_delete_source: false
 
 # Only relevant for gkg-v2/mentions/events-15min (see paths above);
 # concatenates a period's worth of their ~96-files/day cadence into one

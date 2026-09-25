@@ -161,6 +161,7 @@ The data-quality stage: drops rows with missing values in the columns defined un
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Reprocess files already marked done instead of skipping them, overwriting their cleaned output. Off by default |
 | `--dry-run` | Report how many files would be cleaned without cleaning anything. Off by default |
+| `--report` | With `--dry-run`: read every file in scope and report what each step would change (rows removed, values repaired, columns kept, unrecognized codes). Slower than a plain `--dry-run`, since it reads the data. Off by default |
 
 The stage refuses to start if `cleaned_data_directory` (or `cleaned_historical_directory`) is a converted-data directory or sits inside one. Cleaned files there would sit beside the converted files they came from: the next run would clean its own output again, and every reader of the converted directory would count those rows twice. The converted directory stays the copy to return to.
 
@@ -176,7 +177,9 @@ Already-cleaned files are skipped on a rerun too, tracked the same way as `conve
 
 By default `clean` shows the same setup line, progress bar, and end-of-run summary shape as `convert`/`scrape`. Its per-file line is quieter than `convert`'s (one line per file instead of two), but at `gkg-v2`/`mentions` scale it's still hundreds of thousands of lines; `--verbose` restores it, same reasoning as `convert`'s own flag. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
 
-`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything.
+`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything; add `--report` to also measure what each step would change, which reads every file in scope. `--report` without `--dry-run` is an error.
+
+With the default settings, `clean` also repairs known GDELT errors (the events dated 1920 instead of 2020) while keeping GDELT's own values, and counts the rows that aren't CAMEO events; see [Data Cleaning](data-cleaning.md#errata-known-gdelt-errors). `--delete-source` refuses to run while a lossy errata step is configured (`event_markers: drop`, or `date_1920` without `keep_original`) unless `clean.allow_lossy_delete_source` is `true`.
 
 ## `gdeltforge aggregate`
 
