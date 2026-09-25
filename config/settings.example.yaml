@@ -617,9 +617,18 @@ clean:
       keep_original: true
       event_markers: keep
 
+  # Optional whitespace normalization, off by default since it changes
+  # GDELT's values without keeping them. Around 2013 GDELT padded 11.3M
+  # Actor2Code values (" USA") and wrote 3.2M as a single space; no code
+  # table recognizes those. Recommended for analysis on codes or names.
+  normalize:
+    gdelt_event: # example
+      trim_strings: false   # strip leading/trailing whitespace
+      blank_to_null: false  # " " -> null, before the null check
+
   # --delete-source removes the converted copy. It refuses to run while a
-  # lossy errata step is on (event_markers: drop, or date_1920 without
-  # keep_original) unless this is true.
+  # lossy errata or normalize step is on (event_markers: drop, date_1920
+  # without keep_original, or a normalize switch) unless this is true.
   allow_lossy_delete_source: false
 
   columns_to_check:
