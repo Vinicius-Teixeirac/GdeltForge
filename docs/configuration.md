@@ -342,6 +342,18 @@ Measured on a 20-core laptop with an NVMe SSD, 4 workers, real Events data (182 
 
 Same speed or slightly faster, with 35-45% less memory. The old behavior bought nothing: extra threads per worker only competed with the other workers for the same cores.
 
+`aggregate` goes one step further and reads **one source file at a time per worker** (`POLARS_MAX_CONCURRENT_SCANS=1`). A period is pure concatenation into one sequential output, so reading several of its files at once only buffers them in memory. Same machine, month periods of real Events data:
+
+| Setup | Files read at once per worker | Wall time | Peak memory |
+|-------|-------------------------------|-----------|-------------|
+| 1 worker, 1 month, polars defaults | 20 | killed | over 3.7 GB and growing |
+| 1 worker, 1 month | 1 | 2.9s | 1.25 GB |
+| 3 workers, 3 months | 1 | 5.4s, 5.0s | 2.5 GB |
+| 3 workers, 3 months | 2 | 5.3s, 5.0s | 4.0 GB |
+| 3 workers, 3 months | 4 | killed | over 6 GB |
+
+"Killed" means a memory watchdog stopped the run once free RAM fell below a safety floor; the unguarded default run exhausted the machine's 16 GB outright. Even at one file at a time, plan on roughly 0.8 GB per `aggregate` worker for month periods of Events and set `aggregation.max_workers` to fit your RAM: the default of one worker per core assumes more memory per core than a typical laptop has.
+
 ### Aggregation: what `gdeltforge aggregate` actually buys, measured
 
 The motivation for `aggregate` was "drastically reduce I/O and memory" for sampling against GKG 2.1/Mentions/`events-15min`'s ~96-files/day cadence. Measured directly (no GKG 2.1/Mentions/`events-15min` data was locally available to benchmark against; this uses `IndexedSampler`'s `FileIndex` and `scan_dataset_reconciled`, the actual mechanisms this feature targets, against a real 1,920-file/32.7GB slice of this project's own `events` archive as a file-count-scaling proxy):

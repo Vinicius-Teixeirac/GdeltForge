@@ -10,12 +10,13 @@ threads, async I/O threads, and max_concurrent_scans (files a multi-file
 scan reads at once) all equal the core count. max_workers alone
 therefore only caps processes. N workers on a C-core machine used to
 carry roughly N x 2C threads, and each worker's memory grew with its
-own pool size. See docs/configuration.md's "Worker pools and polars
-threads" section for the measurements behind this module.
+own pool size, above all with how many files it read at once. See
+docs/configuration.md's "Worker pools and polars threads" section for
+the measurements behind this module.
 
 Provides:
     - WorkerPlan / plan_workers: resolve a stage's effective worker count
-      and each worker's polars thread budget
+      and each worker's polars thread and file-read budget
     - polars_worker_env: apply a WorkerPlan to the worker processes a
       ProcessPoolExecutor spawns inside it
 """
@@ -33,6 +34,7 @@ from gdeltforge.utils.logging import get_logger
 logger = get_logger(__name__)
 
 POLARS_MAX_THREADS = "POLARS_MAX_THREADS"
+POLARS_MAX_CONCURRENT_SCANS = "POLARS_MAX_CONCURRENT_SCANS"
 
 
 @dataclass(frozen=True)
@@ -40,21 +42,29 @@ class WorkerPlan:
     """
     workers: processes the pool will actually run at once.
     polars_threads: POLARS_MAX_THREADS for each worker.
+    concurrent_scans: POLARS_MAX_CONCURRENT_SCANS for each worker, or
+    None to leave polars' own default (which follows polars_threads).
     """
 
     workers: int
     polars_threads: int
+    concurrent_scans: int | None = None
 
     def describe(self) -> str:
+        scans = (
+            f", {self.concurrent_scans} file read(s) at once"
+            if self.concurrent_scans is not None else ""
+        )
         return (
             f"{self.workers} worker process(es), "
-            f"{self.polars_threads} polars thread(s) each"
+            f"{self.polars_threads} polars thread(s) each{scans}"
         )
 
 
 def plan_workers(
     max_workers: int | None,
     n_tasks: int,
+    scans_per_worker: int | None = None,
     cpu_count: int | None = None,
 ) -> WorkerPlan:
     """
@@ -69,6 +79,10 @@ def plan_workers(
     whole pool lands near one thread per core. Rounding up keeps a few
     workers on a many-core machine from leaving cores idle; it
     oversubscribes by at most one thread per worker.
+
+    scans_per_worker, when given, becomes each worker's concurrent_scans.
+    None leaves polars' own default, which follows the worker's thread
+    count once POLARS_MAX_THREADS is set.
     """
     cores = cpu_count or os.cpu_count() or 1
     workers = max_workers if max_workers is not None else cores
@@ -76,6 +90,7 @@ def plan_workers(
     return WorkerPlan(
         workers=workers,
         polars_threads=max(1, math.ceil(cores / workers)),
+        concurrent_scans=scans_per_worker,
     )
 
 
@@ -113,8 +128,11 @@ def polars_worker_env(plan: WorkerPlan) -> Generator[None, None, None]:
     runs too late: unpickling the task function already imported
     polars). A spawned worker inherits its parent's environment at the
     moment it starts, and ProcessPoolExecutor starts workers lazily, on
-    submit(), so the variable has to stay set for as long as the pool
-    may start one. It is removed from this process again afterwards.
+    submit(), so the variables have to stay set for as long as the pool
+    may start one. They are removed from this process again afterwards.
     """
-    with _env_overrides({POLARS_MAX_THREADS: plan.polars_threads}):
+    with _env_overrides({
+        POLARS_MAX_THREADS: plan.polars_threads,
+        POLARS_MAX_CONCURRENT_SCANS: plan.concurrent_scans,
+    }):
         yield

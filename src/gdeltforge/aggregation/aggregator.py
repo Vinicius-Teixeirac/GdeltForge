@@ -253,7 +253,13 @@ class GDELTAggregator:
                 )
             return 0, 0
 
-        worker_plan = plan_workers(self.max_workers, len(plan))
+        # One source file read at a time per worker: a period is pure
+        # concatenation into one sequential output, so reading several of
+        # its files at once only buffers them in memory. Measured on real
+        # Events data, 3 workers over 3 months: 1 file at a time, ~5s and
+        # 2.5 GB; 2 at a time, the same ~5s and 4.0 GB; 4 at a time, over
+        # 6 GB before it was killed. polars' default reads one per core.
+        worker_plan = plan_workers(self.max_workers, len(plan), scans_per_worker=1)
         logger.info(f"Aggregating {len(plan)} {self.period}(s) using {worker_plan.describe()}...")
 
         periods_processed = 0
