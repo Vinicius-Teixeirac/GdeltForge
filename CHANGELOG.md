@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 - `convert`, `filter`, and `aggregate` now size each worker process's polars thread pools to its share of the machine, `ceil(cores / workers)` threads, set through `POLARS_MAX_THREADS` in the worker's environment. Previously every spawned worker sized its pools to the whole machine, so `max_workers` only capped processes: N workers carried roughly N x 2 x cores threads (4,391 for a 32-worker `filter` on 32 cores), and memory grew with it. Measured at 4 workers on a 20-core machine, peak memory fell 35-45% at the same or better speed. The worker count also no longer exceeds the number of files or periods to process, and the startup log line reports both numbers. A `POLARS_MAX_THREADS` exported by the user is left untouched. See `docs/configuration.md#worker-pools-and-polars-threads`.
+- `aggregate` workers read one source file at a time (`POLARS_MAX_CONCURRENT_SCANS=1`), down from polars' default of one per core. A period is pure concatenation into one sequential output, so concurrent reads only buffered files in memory: a single worker with polars' defaults grew past 3.7 GB on one month of Events and ran a 16 GB machine out of memory with a few workers, while one file at a time finished the same month in 2.9s at 1.25 GB. Two files at a time measured the same speed at 60% more memory.
 
 ## [0.11.0] - 2026-09-20
 

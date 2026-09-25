@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 import pytest
 
 from gdeltforge.utils.concurrency import (
+    POLARS_MAX_CONCURRENT_SCANS,
     POLARS_MAX_THREADS,
     WorkerPlan,
     plan_workers,
@@ -40,9 +41,20 @@ class TestPlanWorkers:
     def test_zero_tasks_still_plans_one_worker(self):
         assert plan_workers(None, 0, cpu_count=8).workers == 1
 
+    def test_scans_per_worker_passes_through(self):
+        assert plan_workers(4, 100, scans_per_worker=1, cpu_count=32).concurrent_scans == 1
+
+    def test_scans_default_to_polars_own(self):
+        assert plan_workers(4, 100, cpu_count=32).concurrent_scans is None
+
     def test_describe_names_both_numbers(self):
         assert WorkerPlan(workers=4, polars_threads=8).describe() == (
             "4 worker process(es), 8 polars thread(s) each"
+        )
+
+    def test_describe_names_the_scan_limit_when_set(self):
+        assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
+            "4 worker process(es), 8 polars thread(s) each, 1 file read(s) at once"
         )
 
 
@@ -52,6 +64,14 @@ class TestPolarsWorkerEnv:
         with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
             assert os.environ[POLARS_MAX_THREADS] == "3"
         assert POLARS_MAX_THREADS not in os.environ
+
+    def test_sets_the_scan_limit_only_when_planned(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+        with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
+            assert POLARS_MAX_CONCURRENT_SCANS not in os.environ
+        with polars_worker_env(WorkerPlan(workers=2, polars_threads=3, concurrent_scans=1)):
+            assert os.environ[POLARS_MAX_CONCURRENT_SCANS] == "1"
+        assert POLARS_MAX_CONCURRENT_SCANS not in os.environ
 
     def test_restores_after_an_exception(self, monkeypatch):
         monkeypatch.delenv(POLARS_MAX_THREADS, raising=False)

@@ -706,7 +706,9 @@ filter:
 aggregation:
   # Worker processes for aggregation, one period per worker. null (the
   # default) uses os.cpu_count(), same tradeoffs as converter.max_workers/
-  # filter.max_workers above.
+  # filter.max_workers above. Each worker reads one source file at a
+  # time and needs roughly 0.8 GB for a month of Events, so size this to
+  # your RAM on a machine with many cores and little memory.
   max_workers: null
 
   # Write codec per dataset, same setting and same zstd default as
