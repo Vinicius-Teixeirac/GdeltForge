@@ -222,7 +222,8 @@ project_root/
 │ │ └── crossref.py # Events<->GKG join (direct for GKG 1.0, two-hop via Mentions for GKG 2.1)
 │ │
 │ ├── cleaning/
-│ │ └── cleaner.py # The clean stage (drop unusable rows, shape output)
+│ │ ├── cleaner.py # The clean stage: runs its steps on every file
+│ │ └── steps.py # The stage's steps, applied in one fixed order
 │ │
 │ ├── filtering/
 │ │ └── filter.py # Deprecation shim: the pre-0.12 filter names, forwarding to cleaning/

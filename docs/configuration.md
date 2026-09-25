@@ -184,7 +184,7 @@ Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the 
 
 ## `clean`
 
-The config section of the `clean` stage, called `filter:` before 0.12.0. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.
+The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.
 
 | Key | Description |
 |-----|-------------|

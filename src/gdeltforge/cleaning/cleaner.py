@@ -71,6 +71,13 @@ import polars as pl
 from polars._typing import ParquetCompression
 from tqdm import tqdm
 
+from gdeltforge.cleaning.steps import (
+    NarrowFloat32,
+    ProjectColumns,
+    RequireColumns,
+    Step,
+    ordered,
+)
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import (
     date_parser_for,
@@ -229,6 +236,15 @@ class GDELTCleaner:
             float32_columns=self.float32_columns,
             compression=self.compression,
         )
+
+        # The stage's steps, built once from the settings above and applied
+        # to every file in STEP_ORDER, whatever order they were built in.
+        steps: list[Step] = [RequireColumns(tuple(self.columns_to_check))]
+        if self.output_columns is not None:
+            steps.append(ProjectColumns(tuple(self.output_columns)))
+        if self.float32_columns:
+            steps.append(NarrowFloat32(tuple(self.float32_columns)))
+        self.steps: list[Step] = ordered(steps)
 
         self._refuse_output_inside_input()
 
@@ -425,7 +441,7 @@ class GDELTCleaner:
     ) -> tuple[int, int]:
         """
         Clean a single parquet file and return (rows_before, rows_after).
-        Built as a single lazy chain (scan, filter, project, sink) rather
+        Built as a single lazy chain (scan, the steps in STEP_ORDER, sink) rather
         than a hand-rolled batch loop: polars' own streaming engine is
         what keeps peak RAM bounded here, and sink_parquet writes through
         a temp file + atomic rename so a worker process killed mid-write
@@ -461,47 +477,19 @@ class GDELTCleaner:
             logger.warning(f"Empty parquet file skipped: {file_path.name}")
             return 0, 0
 
-        schema = lf.collect_schema()
-        schema_cols = schema.names()
-        existing_columns = [c for c in self.columns_to_check if c in schema_cols]
-        missing_columns  = [c for c in self.columns_to_check if c not in schema_cols]
-
-        if missing_columns:
-            logger.warning(
-                f"{file_path.name}: Missing {len(missing_columns)} column(s): {missing_columns}"
-            )
-
-        # An empty columns_to_check (the bundled default config ships this
-        # for every dataset) is a deliberate no-op, not an error: every
-        # row is meant to survive, so the null-check filter below is
-        # skipped entirely rather than handed an empty column list, which
-        # polars rejects outright ("cannot return empty fold because the
-        # number of output rows is unknown"), confirmed directly. That's
-        # a different case from columns_to_check being non-empty but
-        # matching nothing in this file's schema, which genuinely can't
-        # be checked at all. This used to log an ERROR and return as
-        # though the file had been filtered successfully, so the run's
-        # own summary reported it under "Files processed successfully"
-        # at 100% retention and exited 0, silently turning the requested
-        # null-check into a no-op. Raising here instead routes it through
-        # clean_all_files' existing per-file exception handling, so the
-        # file is counted under "Files failed" and the run exits non-zero,
-        # matching the documented contract that filter fails the run if
-        # any individual file failed.
-        if self.columns_to_check and not existing_columns:
-            raise ValueError(
-                f"{file_path.name}: none of the configured columns_to_check "
-                f"{self.columns_to_check} exist in this file's schema. There is "
-                f"nothing to filter on."
-            )
+        # The steps, in STEP_ORDER (see steps.py). Planned lazily here, so
+        # a step that can't run on this file (RequireColumns with none of
+        # its columns present) raises before anything is written.
+        for step in self.steps:
+            lf = step.apply(lf, file_path.name)
 
         if output_path is None:
             output_path = self.output_folder / f"{file_path.stem}_cleaned.parquet"
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         # PID-suffixed, matching write_parquet_atomic's own fix for the
-        # identical race: two concurrent filter invocations targeting the
-        # same output_path built this same fixed ".tmp" name, so whichever
+        # identical race: two concurrent invocations targeting the same
+        # output_path built this same fixed ".tmp" name, so whichever
         # process's os.replace() ran second found its own tmp file already
         # renamed away by the other, failing with a raw FileNotFoundError
         # despite neither run actually doing anything wrong. This can't go
@@ -511,68 +499,10 @@ class GDELTCleaner:
         # point of scanning rather than collecting above.
         tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.tmp")
 
-        if existing_columns:
-            lf = lf.filter(
-                ~pl.any_horizontal([pl.col(c).is_null() for c in existing_columns])
-            )
-
-        # Counted right after the null-check filter, before the output
-        # shaping below: this is a separate pass over whichever columns
-        # existing_columns actually needs (confirmed via the query plan
-        # to project down to just those, not this file's full, possibly
-        # much wider schema), not derived from the write itself, since
-        # sink_parquet (below) streams straight to disk without handing
-        # back a row count.
+        # A separate pass over only the columns the row-dropping steps
+        # read (projection pushdown), since sink_parquet streams to disk
+        # without handing back a row count.
         rows_after = lf.select(pl.len()).collect().item()
-
-        # Same existing/missing split as columns_to_check above: a
-        # configured output column that isn't in this file's schema is
-        # dropped rather than treated as fatal, since schemas can drift
-        # release to release the same way they already can for row-filters.
-        # This used to drop such a name with no trace at any log level,
-        # including --verbose, indistinguishable from a deliberate,
-        # working projection: a typo in output_columns silently and
-        # permanently discarded that column from every future run. Warned
-        # here now, naming exactly what was dropped and why, matching
-        # narrow_to_available_columns' own treatment of the same mistake
-        # in sample/crossref.
-        missing_output_columns = (
-            [c for c in self.output_columns if c not in schema_cols]
-            if self.output_columns is not None
-            else []
-        )
-        if missing_output_columns:
-            logger.warning(
-                f"{file_path.name}: output_columns names {len(missing_output_columns)} "
-                f"column(s) not present in this file's schema: {missing_output_columns}. "
-                f"They will be excluded from the output."
-            )
-
-        keep_columns = (
-            [c for c in self.output_columns if c in schema_cols]
-            if self.output_columns is not None
-            else None
-        )
-        selected_columns = keep_columns if keep_columns is not None else schema_cols
-        # Same existing/missing split as columns_to_check and output_columns
-        # above, plus this only applies to columns that are actually
-        # floating-point in this file's schema and survive output_columns'
-        # own projection: a configured column that doesn't exist, isn't a
-        # float (e.g. a stale config pointed at a renamed/retyped column),
-        # or was itself excluded by output_columns, is skipped rather than
-        # treated as fatal.
-        float32_cols = (
-            [
-                c for c in self.float32_columns
-                if c in selected_columns and schema[c].is_float()
-            ]
-            if self.float32_columns is not None
-            else []
-        )
-
-        lf = lf.select(selected_columns)
-        if float32_cols:
-            lf = lf.with_columns([pl.col(c).cast(pl.Float32) for c in float32_cols])
 
         try:
             lf.sink_parquet(tmp_path, compression=cast(ParquetCompression, self.compression))
