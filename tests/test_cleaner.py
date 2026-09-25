@@ -1,4 +1,5 @@
 import concurrent.futures
+import datetime
 import json
 import logging
 import os
@@ -1969,3 +1970,45 @@ class TestNormalizeSettings:
                 str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
                 normalize={"trim_strings": True}, delete_source=True,
             )
+
+
+class TestDeriveSettings:
+    def test_adds_the_columns_through_the_stage(self, tmp_path):
+        from gdeltforge.utils.io import cleaned_marker
+
+        _write_new_year_2020(tmp_path / "in")
+        out_dir = tmp_path / "out"
+        GDELTCleaner(
+            str(tmp_path / "in"), str(out_dir), columns_to_check=[], errata=DEFAULT_ERRATA,
+            derive={"event_date": True, "labels": ["EventRootCode"]},
+        ).clean_all_files()
+        path = out_dir / "20200102.export_cleaned.parquet"
+        out = pl.read_parquet(path).sort("GlobalEventID")
+        # After errata: the repaired 1920 dates become real 2020 dates.
+        assert out["EventDate"].to_list()[0] == datetime.date(2020, 1, 1)
+        assert out["EventRootCode_Label"].to_list()[0] == "MAKE PUBLIC STATEMENT"
+        marker = cleaned_marker(path)
+        assert marker is not None
+        derive_step = next(s for s in marker["steps"] if s["step"] == "derive")
+        assert derive_step == {"step": "derive", "lossy": False, "event_date": True,
+                               "labels": ["EventRootCode"]}
+
+    def test_projection_keeps_derived_columns_only_when_listed(self, tmp_path):
+        _write_new_year_2020(tmp_path / "in")
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            derive={"event_date": True}, output_columns=["GlobalEventID", "EventDate"],
+        ).clean_all_files()
+        out = pl.read_parquet(tmp_path / "out" / "20200102.export_cleaned.parquet")
+        assert out.columns == ["GlobalEventID", "EventDate"]
+
+    @pytest.mark.parametrize("derive, message", [
+        ({"event_dates": True}, "unknown setting"),
+        ({"event_date": 1}, "must be true or false"),
+        ({"labels": "EventCode"}, "must be a list"),
+        ({"labels": ["GlobalEventID"]}, "aren't CAMEO-coded columns"),
+    ])
+    def test_invalid_settings_fail_up_front(self, tmp_path, derive, message):
+        with pytest.raises(ValueError, match=message):
+            GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                         derive=derive)

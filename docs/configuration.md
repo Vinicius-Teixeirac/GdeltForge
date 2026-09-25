@@ -197,6 +197,8 @@ The config section of the `clean` stage, called `filter:` before 0.12.0. [Data C
 | `errata.<dataset>.event_markers` | Rows whose event code is `---`/`--` (CAMEO null code) or `X`: `keep` (default, counted in the run audit) or `drop` (lossy) |
 | `normalize.<dataset>.trim_strings` | Strip leading and trailing whitespace from every string column. `false` by default; lossy |
 | `normalize.<dataset>.blank_to_null` | Turn whitespace-only strings into null, before the `columns_to_check` null check. `false` by default; lossy |
+| `derive.<dataset>.event_date` | Add `EventDate`, a real date parsed from `Day`, after errata. `false` by default |
+| `derive.<dataset>.labels` | CAMEO-coded columns to add a `<column>_Label` name column for, from the bundled code tables. Empty by default |
 | `allow_lossy_delete_source` | `false` by default: `--delete-source` refuses to run while a lossy errata or normalize step is on. `true` accepts that deleting the converted copy loses what the step discarded |
 | `float32_columns.<dataset>` | Narrows these float64 columns to float32 on write. Unset keeps every float column at full float64 precision. See "Capacity planning" below before using this: it's a real precision change, not free compression |
 

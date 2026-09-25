@@ -6,6 +6,7 @@ import pytest
 from gdeltforge.cleaning.steps import (
     STEP_ORDER,
     Date1920Repair,
+    DeriveColumns,
     EventMarkers,
     FileContext,
     NarrowFloat32,
@@ -169,3 +170,30 @@ class TestNormalizeStrings:
         for step in steps:
             lf = step.apply(lf, CTX)
         assert lf.collect()["n"].to_list() == [1, 3]
+
+
+class TestDeriveColumns:
+    def test_event_date_is_a_real_date_from_day(self):
+        lf = pl.LazyFrame({"Day": [20200105, 19790101]})
+        out = DeriveColumns(event_date=True).apply(lf, CTX).collect()
+        assert out["EventDate"].to_list() == [date(2020, 1, 5), date(1979, 1, 1)]
+
+    def test_counts_day_values_that_are_not_dates(self):
+        lf = pl.LazyFrame({"Day": [20200105, 20201341, None]})
+        exprs = DeriveColumns(event_date=True).counts(lf, CTX)
+        assert lf.select(**exprs).collect().row(0, named=True) == {"derive.event_date_invalid": 1}
+
+    def test_labels_match_case_insensitively_and_leave_unknown_codes_null(self):
+        lf = pl.LazyFrame({"Actor1EthnicCode": ["kur", "KUR", "zzz", None]})
+        step = DeriveColumns(label_maps=(("Actor1EthnicCode", (("KUR", "Kurd"),)),))
+        out = step.apply(lf, CTX).collect()
+        assert out["Actor1EthnicCode_Label"].to_list() == ["Kurd", "Kurd", None, None]
+        # Added, never replacing the code column.
+        assert out["Actor1EthnicCode"].to_list() == ["kur", "KUR", "zzz", None]
+
+    def test_is_not_lossy(self):
+        assert DeriveColumns(event_date=True).lossy is False
+
+    def test_settings_name_the_columns_not_the_tables(self):
+        step = DeriveColumns(label_maps=(("EventRootCode", (("01", "MAKE PUBLIC STATEMENT"),)),))
+        assert step.settings() == {"event_date": False, "labels": ["EventRootCode"]}

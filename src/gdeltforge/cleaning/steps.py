@@ -23,13 +23,15 @@ Provides:
     - Date1920Repair, EventMarkers: repairs of known GDELT errors
       (the errata step)
     - NormalizeStrings: optional whitespace normalization
+    - DeriveColumns: optional derived columns (a real event date, code
+      labels)
     - ordered: sort steps into STEP_ORDER
 """
 
 from __future__ import annotations
 
 import operator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 from functools import reduce
 
@@ -80,6 +82,11 @@ class Step:
 
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         return {}
+
+    def settings(self) -> dict:
+        """The step's settings as JSON-ready values, for the cleaned-file
+        marker and the run audit."""
+        return {k: list(v) if isinstance(v, tuple) else v for k, v in asdict(self).items()}
 
 
 @dataclass(frozen=True)
@@ -332,6 +339,53 @@ class NormalizeStrings(Step):
                 (pl.col(c).str.strip_chars() == "").sum() for c in columns
             ])
         return out
+
+
+@dataclass(frozen=True)
+class DeriveColumns(Step):
+    """
+    Optional columns computed from existing ones, added and never replacing
+    anything. event_date adds EventDate, a real date parsed from Day (after
+    errata, so the 1920 repair is in it). labels adds <column>_Label for
+    each listed CAMEO-coded column, the code's name from the bundled code
+    tables, matched case-insensitively; a code with no name gets null.
+    `label_maps` holds, per column, those tables with upper-cased keys.
+    """
+
+    event_date: bool = False
+    label_maps: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    name = "derive"
+    lossy = False
+
+    def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
+        schema = lf.collect_schema().names()
+        exprs = []
+        if self.event_date and "Day" in schema:
+            exprs.append(
+                pl.col("Day").cast(pl.String).str.strptime(pl.Date, "%Y%m%d", strict=False)
+                .alias("EventDate")
+            )
+        for column, pairs in self.label_maps:
+            if column not in schema:
+                continue
+            exprs.append(
+                pl.col(column).cast(pl.String).str.to_uppercase()
+                .replace_strict(dict(pairs), default=None, return_dtype=pl.String)
+                .alias(f"{column}_Label")
+            )
+        return lf.with_columns(exprs) if exprs else lf
+
+    def settings(self) -> dict:
+        # The column names, not the code tables behind them: the tables
+        # would add tens of KB to every cleaned file's metadata.
+        return {"event_date": self.event_date, "labels": [c for c, _ in self.label_maps]}
+
+    def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
+        if not self.event_date or "Day" not in lf.collect_schema().names():
+            return {}
+        # Day values present but not a real date (a malformed record).
+        parsed = pl.col("Day").cast(pl.String).str.strptime(pl.Date, "%Y%m%d", strict=False)
+        return {"derive.event_date_invalid": (pl.col("Day").is_not_null() & parsed.is_null()).sum()}
 
 
 def ordered(steps: list[Step]) -> list[Step]:
