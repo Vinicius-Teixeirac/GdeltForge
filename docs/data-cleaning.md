@@ -42,6 +42,8 @@ question, it belongs to sampling.
 | **Row-level, one file at a time** | Keeps the stage streaming, parallel and resumable. Operations that need the whole archive at once (deduplication across files, global statistics) are out of scope |
 | **Steps run in one fixed order** | No configuration can produce an order-dependent result by accident |
 | **Every step declares whether it's lossy** | A lossy step leaves the cleaned output unable to tell what the converted input held, which matters for deciding whether the converted copy can go |
+| **Every cleaned file says it's cleaned** | A cleaned file must never pass for GDELT's own data. Each one carries a `gdeltforge:clean` entry in its Parquet metadata; `clean` warns when its input already carries it, and `sample`/`aggregate`/`crossref` warn when a `--source converted` directory does |
+| **Every run leaves an audit** | So you can always tell what a run changed, per file, without re-deriving it |
 | **Output never goes into an input directory** | Cleaned files beside the converted ones would be cleaned again on the next run, and every reader of the converted directory would count those rows twice. `clean` refuses to start in that configuration |
 | **Named `clean`**, `filter` before 0.12.0 | `filter` collided with `sample --filter`, which does the relevance job above. The old names keep working through 0.12.x with a deprecation warning |
 
@@ -61,6 +63,46 @@ so an interrupted run never leaves a half-written file.
 
 Every step is off unless configured: the bundled default configuration
 cleans nothing away, so a first run's output equals its input.
+
+## Every cleaned file is marked
+
+Each cleaned file's Parquet metadata holds a `gdeltforge:clean` entry: the
+gdeltforge version, every step with its settings and whether it is lossy,
+the configuration fingerprint, and the source file's name. Read it with:
+
+```python
+import json, polars as pl
+json.loads(pl.read_parquet_metadata("20200101.export_cleaned.parquet")["gdeltforge:clean"])
+```
+
+Three places check for it, reading the first, middle and last file's
+metadata (a full scan of an archive's footers would cost minutes for a
+warning):
+
+- `clean` warns when its own input directory holds cleaned files, since
+  cleaning twice compounds every lossy step;
+- `sample --source converted`, `aggregate --source converted` and
+  `crossref --source converted` warn when the directory they treat as
+  GDELT's own data holds cleaned files.
+
+## The run audit
+
+Each run writes `<cleaned_data_directory>/_clean_runs/<UTC start time>.parquet`,
+one row per cleaned file:
+
+| Column | Meaning |
+|---|---|
+| `source`, `output` | The converted file and the cleaned file |
+| `rows_in`, `rows_out` | Rows before and after the steps |
+| `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output |
+
+The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
+start and end times, and the files that failed. The end-of-run summary
+prints any unrecognized-code totals. One audit per run, never one per data
+file: an archive has hundreds of thousands of files, and per-file sidecars
+would recreate the many-small-files problem. The leading underscore keeps
+the directory out of every reader of cleaned data, following the usual
+Parquet convention that `_`- and `.`-prefixed paths are metadata.
 
 ## Going back to GDELT's own values
 

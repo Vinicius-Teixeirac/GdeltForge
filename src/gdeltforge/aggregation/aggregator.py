@@ -61,6 +61,7 @@ from gdeltforge.utils.io import (
     mark_done,
     scan_dataset_reconciled,
     sink_parquet_atomic,
+    warn_if_folder_holds_cleaned_files,
 )
 from gdeltforge.utils.logging import get_logger
 
@@ -418,6 +419,8 @@ def run_aggregator(
         "cleaned_data_directory" if source == "cleaned" else "parquet_data_directory"
     )
     input_folder = config["paths"][dataset_path_key(dataset, input_base_key)]
+    if source == "converted":
+        warn_if_folder_holds_cleaned_files(input_folder, "aggregate --source converted", logger)
     output_base_key = f"aggregated_{period}_data_directory"
     output_folder = config["paths"][dataset_path_key(dataset, output_base_key)]
 

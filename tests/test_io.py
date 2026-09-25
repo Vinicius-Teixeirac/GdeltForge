@@ -1374,3 +1374,23 @@ class TestScanFileAgainstSchema:
 
         assert df["n"].dtype == pl.Int64
         assert df["n"].to_list() == [42]
+
+
+class TestWarnIfFolderHoldsCleanedFiles:
+    def test_warns_only_for_files_carrying_the_clean_marker(self, tmp_path, caplog):
+        import json as _json
+        import logging as _logging
+
+        from gdeltforge.utils.io import CLEAN_MARKER_KEY, warn_if_folder_holds_cleaned_files
+
+        log = _logging.getLogger("test-clean-marker")
+        pl.DataFrame({"a": [1]}).write_parquet(tmp_path / "20200101.parquet")
+        with caplog.at_level(_logging.WARNING):
+            assert warn_if_folder_holds_cleaned_files(tmp_path, "here", log) is False
+
+        pl.DataFrame({"a": [1]}).write_parquet(
+            tmp_path / "20200102.parquet", metadata={CLEAN_MARKER_KEY: _json.dumps({})}
+        )
+        with caplog.at_level(_logging.WARNING):
+            assert warn_if_folder_holds_cleaned_files(tmp_path, "here", log) is True
+        assert any("20200102.parquet" in r.message for r in caplog.records)
