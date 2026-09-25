@@ -37,7 +37,6 @@ from __future__ import annotations
 import glob
 import logging
 import multiprocessing
-import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
@@ -48,6 +47,7 @@ from polars._typing import ParquetCompression
 from tqdm import tqdm
 
 from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
+from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
     dataset_is_aggregation_eligible,
     dataset_path_key,
@@ -253,10 +253,8 @@ class GDELTAggregator:
                 )
             return 0, 0
 
-        logger.info(
-            f"Aggregating {len(plan)} {self.period}(s) using "
-            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
-        )
+        worker_plan = plan_workers(self.max_workers, len(plan))
+        logger.info(f"Aggregating {len(plan)} {self.period}(s) using {worker_plan.describe()}...")
 
         periods_processed = 0
         periods_failed = 0
@@ -265,9 +263,11 @@ class GDELTAggregator:
         # own output path), so period-level parallelism across processes
         # is safe. mp_context forced to spawn, matching converter.py's/
         # filter.py's identical fix for polars' Rayon thread pool not
-        # surviving fork() on Linux.
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers,
+        # surviving fork() on Linux. polars_worker_env sizes each worker's
+        # own polars pools to its share of the machine; see utils.
+        # concurrency for why max_workers alone doesn't.
+        with polars_worker_env(worker_plan), ProcessPoolExecutor(
+            max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
         ) as executor:
             futures = {
