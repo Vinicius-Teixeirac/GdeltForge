@@ -1,0 +1,81 @@
+import multiprocessing
+import os
+from concurrent.futures import ProcessPoolExecutor
+
+import pytest
+
+from gdeltforge.utils.concurrency import (
+    POLARS_MAX_THREADS,
+    WorkerPlan,
+    plan_workers,
+    polars_worker_env,
+)
+
+
+def _report_polars_threads() -> tuple[str | None, int]:
+    # Runs inside a spawned worker: what the worker's own polars actually
+    # sized its pool to, not just what the environment claims.
+    import polars as pl
+
+    return os.environ.get(POLARS_MAX_THREADS), pl.thread_pool_size()
+
+
+class TestPlanWorkers:
+    def test_none_means_one_worker_per_core(self):
+        assert plan_workers(None, 100, cpu_count=32) == WorkerPlan(workers=32, polars_threads=1)
+
+    def test_explicit_workers_split_the_cores(self):
+        assert plan_workers(4, 100, cpu_count=32) == WorkerPlan(workers=4, polars_threads=8)
+
+    def test_uneven_split_rounds_threads_up(self):
+        # 20 cores over 3 workers: 7 threads each (21 total), not 6 (18),
+        # which would leave two cores idle.
+        assert plan_workers(3, 100, cpu_count=20).polars_threads == 7
+
+    def test_never_more_workers_than_tasks(self):
+        # 2 periods on a 32-core machine: 2 workers with 16 threads each,
+        # not 32 workers with one thread each, 30 of them never started.
+        assert plan_workers(None, 2, cpu_count=32) == WorkerPlan(workers=2, polars_threads=16)
+
+    def test_zero_tasks_still_plans_one_worker(self):
+        assert plan_workers(None, 0, cpu_count=8).workers == 1
+
+    def test_describe_names_both_numbers(self):
+        assert WorkerPlan(workers=4, polars_threads=8).describe() == (
+            "4 worker process(es), 8 polars thread(s) each"
+        )
+
+
+class TestPolarsWorkerEnv:
+    def test_sets_and_restores(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_THREADS, raising=False)
+        with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
+            assert os.environ[POLARS_MAX_THREADS] == "3"
+        assert POLARS_MAX_THREADS not in os.environ
+
+    def test_restores_after_an_exception(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_THREADS, raising=False)
+        with pytest.raises(RuntimeError):
+            with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
+                raise RuntimeError("boom")
+        assert POLARS_MAX_THREADS not in os.environ
+
+    def test_keeps_a_value_the_user_exported(self, monkeypatch):
+        monkeypatch.setenv(POLARS_MAX_THREADS, "5")
+        with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
+            assert os.environ[POLARS_MAX_THREADS] == "5"
+        assert os.environ[POLARS_MAX_THREADS] == "5"
+
+    def test_spawned_worker_polars_pool_follows_the_plan(self, monkeypatch):
+        # The real contract: polars reads POLARS_MAX_THREADS only at import,
+        # so the value has to reach the worker through its inherited
+        # environment, before the worker ever imports polars.
+        monkeypatch.delenv(POLARS_MAX_THREADS, raising=False)
+        plan = WorkerPlan(workers=1, polars_threads=2)
+        with polars_worker_env(plan), ProcessPoolExecutor(
+            max_workers=plan.workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            env_value, pool_size = executor.submit(_report_polars_threads).result()
+        assert env_value == "2"
+        assert pool_size == 2

@@ -81,6 +81,7 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
+from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
     dataset_is_always_historical,
     dataset_path_key,
@@ -305,10 +306,11 @@ class GDELTFilter:
 
         flat_to_process = sum(1 for _, is_hist in to_process if not is_hist)
         historical_to_process = len(to_process) - flat_to_process
+        worker_plan = plan_workers(self.max_workers, len(to_process))
         logger.info(
             f"Filtering {flat_to_process} flat file(s) "
             f"and {historical_to_process} historical file(s) using "
-            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
+            f"{worker_plan.describe()}..."
         )
 
         total_rows_before = 0
@@ -331,8 +333,10 @@ class GDELTFilter:
         # point). spawn starts a genuinely fresh interpreter per worker
         # with nothing inherited, the same mechanism Windows' own
         # ProcessPoolExecutor already relies on by default.
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers,
+        # polars_worker_env sizes each worker's own polars pools to its
+        # share of the machine: see converter.py's _process_files.
+        with polars_worker_env(worker_plan), ProcessPoolExecutor(
+            max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
         ) as executor:
             futures = {
