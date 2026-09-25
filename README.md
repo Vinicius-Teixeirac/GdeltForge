@@ -31,13 +31,13 @@ pip install gdeltforge
 gdeltforge --help
 ```
 
-GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, filters, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history. It also scrapes the Global Knowledge Graph (both current GKG 2.1 and legacy GKG 1.0) and Mentions, and can cross-reference a sampled Events output back onto GKG (themes, tone, people, organizations) with `crossref`.
+GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, cleans, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history. It also scrapes the Global Knowledge Graph (both current GKG 2.1 and legacy GKG 1.0) and Mentions, and can cross-reference a sampled Events output back onto GKG (themes, tone, people, organizations) with `crossref`.
 
 - Full historical archive, not just the last 3 months the API allows
 - Events enriched with GKG via `crossref`, preserving the real many-to-many structure instead of collapsing it
 - Efficient columnar storage (**Parquet**) instead of raw CSV/ZIP
 - Reproducible sampling: indexed, calendar, and filtered modes, filtered mode also supports stratified sampling (fixed N per group)
-- Each stage (`scrape`/`convert`/`filter`/`sample`/`crossref`) runs independently and inspectably
+- Each stage (`scrape`/`convert`/`clean`/`sample`/`crossref`) runs independently and inspectably
 
 ## Contents
 
@@ -110,14 +110,14 @@ See [Comparison to Other Tools](https://vinicius-teixeirac.github.io/GdeltForge/
 The pipeline follows a **single-responsibility, single-stage execution model**. Each command performs *exactly one* transformation:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/pipeline-diagram.svg" alt="scrape produces CSV, convert produces Parquet, filter produces cleaned data, sample produces a sample, crossref produces sample plus GKG" width="860">
+  <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/pipeline-diagram.svg" alt="scrape produces CSV, convert produces Parquet, clean produces cleaned data, sample produces a sample, crossref produces sample plus GKG" width="860">
 </p>
 
 | Stage | Does |
 |-------|------|
 | `scrape` | download raw GDELT CSV files (Events, GKG 2.1, GKG 1.0, or Mentions) |
 | `convert` | transform CSV -> Parquet |
-| `filter` | remove rows with missing values |
+| `clean` | remove rows with missing values |
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 
@@ -221,8 +221,11 @@ project_root/
 │ ├── crossref/
 │ │ └── crossref.py # Events<->GKG join (direct for GKG 1.0, two-hop via Mentions for GKG 2.1)
 │ │
+│ ├── cleaning/
+│ │ └── cleaner.py # The clean stage (drop unusable rows, shape output)
+│ │
 │ ├── filtering/
-│ │ └── filter.py # Filtering logic (drop invalid rows)
+│ │ └── filter.py # Deprecation shim: the pre-0.12 filter names, forwarding to cleaning/
 │ │
 │ ├── sampling/
 │ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command
@@ -263,7 +266,7 @@ gdeltforge <command> [options]
 |---------|-------------|
 | `scrape` | Download raw GDELT data (ZIP -> CSV) |
 | `convert` | Convert downloaded CSV files to Parquet |
-| `filter` | Apply row-column filtering to Parquet files |
+| `clean` | Clean converted Parquet: the data-quality stage (formerly `filter`) |
 | `sample` | Efficient, reproducible sampling |
 | `crossref` | Join a sampled Events output back onto GKG |
 | `codes` | Look up valid CAMEO/FIPS codes across seven column families |
@@ -346,7 +349,7 @@ The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `19
 paths:
   # existing paths ...
   parquet_historical_directory: "./data/events/historical"
-  filtered_historical_directory: "./data/events/filtered_historical"
+  cleaned_historical_directory: "./data/events/cleaned_historical"
 
 converter:
   partitioning:
@@ -378,7 +381,7 @@ Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files. Y
 
 Historical ZIPs that have already been converted are tracked with `.done` marker files, so re-running `convert` skips them safely.
 
-All downstream stages (`filter`, `sample`) detect the historical directory automatically from the config and include its data without any extra flags.
+All downstream stages (`clean`, `sample`) detect the historical directory automatically from the config and include its data without any extra flags.
 
 </details>
 
@@ -388,10 +391,10 @@ All downstream stages (`filter`, `sample`) detect the historical directory autom
 gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2020-12-31
 ```
 
-### Filter the Parquet Dataset
+### Clean the Parquet Dataset
 
 ```bash
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 ```
 
 Drops rows with missing values in the columns defined in settings.yaml. Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
@@ -402,7 +405,7 @@ Drops rows with missing values in the columns defined in settings.yaml. Also acc
   <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/sampling-modes.svg" alt="The three sampling modes, indexed, calendar and filtered, plus stratified as filtered's own optional sub-mode" width="900">
 </p>
 
-All sampling modes read from the filtered directory by default. Pass `--source converted` to sample from raw converted Parquet instead, skipping the `filter` stage entirely.
+All sampling modes read from the cleaned directory by default. Pass `--source converted` to sample from raw converted Parquet instead, skipping the `clean` stage entirely.
 
 > Note: sampling is already as memory-friendly as the underlying data volume allows, but `--source converted` will still use noticeably more RAM than the default, since it isn't working from data that's already had its missing-value rows dropped.
 
@@ -489,8 +492,8 @@ gdeltforge scrape --dataset gkg-v2
 gdeltforge scrape --dataset mentions
 gdeltforge convert --dataset gkg-v2
 gdeltforge convert --dataset mentions
-gdeltforge filter --dataset gkg-v2
-gdeltforge filter --dataset mentions
+gdeltforge clean --dataset gkg-v2
+gdeltforge clean --dataset mentions
 
 gdeltforge crossref \
     --events sample.parquet \
@@ -512,7 +515,7 @@ See [Recipes](https://vinicius-teixeirac.github.io/GdeltForge/recipes/#gkg-enric
 ```bash
 gdeltforge scrape --dataset events
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
@@ -521,7 +524,7 @@ gdeltforge sample --dataset events --mode indexed -n 10000
 ```bash
 gdeltforge scrape --dataset events
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
 ```
 
@@ -530,7 +533,7 @@ gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42
 ```bash
 gdeltforge scrape --dataset events
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 gdeltforge sample \
     --dataset events \
     --mode filtered \
@@ -543,7 +546,7 @@ gdeltforge sample \
 ```bash
 gdeltforge scrape --dataset events
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 gdeltforge sample --dataset events --mode calendar --per-period 30
 ```
 
@@ -552,7 +555,7 @@ gdeltforge sample --dataset events --mode calendar --per-period 30
 ```bash
 gdeltforge scrape --dataset events && \
 gdeltforge convert --dataset events && \
-gdeltforge filter --dataset events && \
+gdeltforge clean --dataset events && \
 gdeltforge sample --dataset events --mode indexed -n 10000
 ```
 
@@ -570,11 +573,11 @@ gdeltforge sample --dataset events --mode indexed -n 10000
 ```bash
 gdeltforge scrape --dataset events --start-date 2020-01-01 --end-date 2023-12-31
 gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2023-12-31
-gdeltforge filter --dataset events --start-date 2020-01-01 --end-date 2023-12-31
+gdeltforge clean --dataset events --start-date 2020-01-01 --end-date 2023-12-31
 gdeltforge sample --dataset events --mode indexed -n 10000 --start-date 2020-01-01 --end-date 2023-12-31
 ```
 
-`scrape`, `convert`, `filter`, and `sample` each accept `--start-date`/`--end-date` independently. `scrape` narrows the remote listing it discovers files from; the later stages narrow which already-on-disk files they read, so repeating the same range keeps the whole pipeline focused on that window instead of processing every file already on disk once `scrape` is done.
+`scrape`, `convert`, `clean`, and `sample` each accept `--start-date`/`--end-date` independently. `scrape` narrows the remote listing it discovers files from; the later stages narrow which already-on-disk files they read, so repeating the same range keeps the whole pipeline focused on that window instead of processing every file already on disk once `scrape` is done.
 
 </details>
 
@@ -599,7 +602,7 @@ logger = get_logger(__name__, log_to_file=True)
 
 ## Limitations and Roadmap
 
-GdeltForge is intentionally simple: one pipeline stage per command (no automatic chaining or dependency resolution), CSV -> Parquet only, and `scrape`/`convert`/`filter` now exit non-zero if any individual file fails.
+GdeltForge is intentionally simple: one pipeline stage per command (no automatic chaining or dependency resolution), CSV -> Parquet only, and `scrape`/`convert`/`clean` now exit non-zero if any individual file fails.
 
 The full, current list of limitations and the roadmap live in one place, the docs site, rather than duplicated here where they'd inevitably drift: see [Limitations & Roadmap](https://vinicius-teixeirac.github.io/GdeltForge/limitations-and-roadmap/).
 

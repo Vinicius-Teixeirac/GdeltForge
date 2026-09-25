@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Changed
+- **Breaking**: the `filter` stage is now `clean`, gdeltforge's data-quality stage. The old name collided with `sample --mode filtered --filter`, which does something unrelated: `clean` decides whether a row is usable at all, filtered sampling decides whether it's relevant to a research question. Renamed together: the command (`gdeltforge clean`), the config section (`clean:`), the path keys (`cleaned_data_directory`, `cleaned_historical_directory`, dataset-prefixed ones included; the bundled default's directories are now `data/<dataset>/cleaned`), the `--source cleaned` value of `sample`/`aggregate`/`crossref` (now the default), the module (`gdeltforge.cleaning.cleaner`: `GDELTCleaner`, `run_cleaner`), and the output files (`<stem>_cleaned.parquet`). Every old name keeps working through 0.12.x with a deprecation warning: `gdeltforge filter`, a `filter:` section, the `*filtered_*` path keys, `--source filtered`, and `gdeltforge.filtering.filter` (`GDELTFilter`, `run_filter`). A config setting both an old and a new name for the same thing is rejected. Cleaning a file removes the same source's pre-0.12 `<stem>_filtered.parquet` from the output directory, so a directory never holds both copies of the same day. `aggregate` records its source in its resumability fingerprint, so periods aggregated with `--source filtered` are rebuilt once under `cleaned`.
+
 ## [0.11.0] - 2026-09-20
 
 ### Added

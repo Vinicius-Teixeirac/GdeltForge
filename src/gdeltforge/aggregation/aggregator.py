@@ -73,7 +73,7 @@ class GDELTAggregator:
     encodes (day/month/year) and writes each period's concatenated rows
     to one output file, resumably.
 
-    Unlike GDELTConverter/GDELTFilter, whose resumability marker is keyed
+    Unlike GDELTConverter/GDELTCleaner, whose resumability marker is keyed
     one-per-source-file, this is many-sources-in-one-output: the marker
     is keyed to the OUTPUT file, fingerprinted on both the run's own
     settings (compression, source, delete_source) and the sorted set of
@@ -91,7 +91,7 @@ class GDELTAggregator:
         input_folder: str,
         output_folder: str,
         period: str = "day",
-        source: str = "filtered",
+        source: str = "cleaned",
         max_workers: int | None = None,
         compression: str = "zstd",
         start_date: date | None = None,
@@ -264,7 +264,7 @@ class GDELTAggregator:
         # Each period is aggregated independently (its own source files,
         # own output path), so period-level parallelism across processes
         # is safe. mp_context forced to spawn, matching converter.py's/
-        # filter.py's identical fix for polars' Rayon thread pool not
+        # cleaner.py's identical fix for polars' Rayon thread pool not
         # surviving fork() on Linux.
         with ProcessPoolExecutor(
             max_workers=self.max_workers,
@@ -362,7 +362,7 @@ class GDELTAggregator:
         here (permissions, the file already gone) is logged and
         swallowed rather than counted as an aggregation failure: the
         aggregation itself already succeeded, this is best-effort
-        cleanup on top of it, matching convert.py's/filter.py's own
+        cleanup on top of it, matching convert.py's/cleaner.py's own
         identical _delete_source.
         """
         try:
@@ -381,7 +381,7 @@ def run_aggregator(
     config: dict,
     dataset: str = "gdelt_gkg_v2",
     period: str = "day",
-    source: str = "filtered",
+    source: str = "cleaned",
     start_date: date | None = None,
     end_date: date | None = None,
     order: str = "asc",
@@ -415,7 +415,7 @@ def run_aggregator(
     from gdeltforge.scraping.scraper import date_parser_for
 
     input_base_key = (
-        "filtered_data_directory" if source == "filtered" else "parquet_data_directory"
+        "cleaned_data_directory" if source == "cleaned" else "parquet_data_directory"
     )
     input_folder = config["paths"][dataset_path_key(dataset, input_base_key)]
     output_base_key = f"aggregated_{period}_data_directory"

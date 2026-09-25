@@ -8,7 +8,7 @@ GdeltForge follows a **single-responsibility, single-stage execution model**: ea
 |-------|------|
 | `scrape` | download raw GDELT CSV files |
 | `convert` | transform CSV -> Parquet |
-| `filter` | remove rows with missing values |
+| `clean` | remove rows with missing values |
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 
@@ -19,7 +19,7 @@ This is intentionally transparent and low-magic:
 - each module is individually testable
 - any stage can be re-run without affecting the others
 
-![The five pipeline stages: scrape produces CSV, convert produces Parquet, filter produces cleaned data, sample produces a sample, crossref produces a sample enriched with GKG](assets/pipeline-diagram.svg)
+![The five pipeline stages: scrape produces CSV, convert produces Parquet, clean produces cleaned data, sample produces a sample, crossref produces a sample enriched with GKG](assets/pipeline-diagram.svg)
 
 The same stages run independently per dataset (`--dataset events`, `gkg-v2`, `mentions`, ...). `crossref` is the one stage that reads two datasets at once, joining a sampled Events output against a GKG dataset processed the same way.
 
@@ -29,7 +29,7 @@ Each stage consumes the previous stage's output, which gives you:
 - per-file, worker-pool processing, so no single process ever holds the whole archive in memory at once; the largest single-file source (`events-reduced`) and the `filtered`/`stratified` sampling modes go further still, reading even one file in row batches rather than all at once
 - memory-efficient processing on datasets much larger than RAM
 - simple debugging (inspect intermediate Parquet at any point)
-- reusable intermediate data (multiple sampling runs off one filtered dataset)
+- reusable intermediate data (multiple sampling runs off one cleaned dataset)
 
 ## Project structure
 
@@ -59,8 +59,11 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ ├── crossref/
     │ │ └── crossref.py # Events<->GKG join (direct for GKG 1.0, two-hop via Mentions for GKG 2.1)
     │ │
+    │ ├── cleaning/
+    │ │ └── cleaner.py # The clean stage (drop unusable rows, shape output)
+    │ │
     │ ├── filtering/
-    │ │ └── filter.py # Filtering logic (drop invalid rows)
+    │ │ └── filter.py # Deprecation shim: the pre-0.12 filter names, forwarding to cleaning/
     │ │
     │ ├── sampling/
     │ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command

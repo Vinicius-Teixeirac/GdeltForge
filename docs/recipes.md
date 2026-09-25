@@ -1,13 +1,13 @@
 # Recipes
 
-![The five pipeline stages: scrape, convert, filter, sample, crossref](assets/pipeline-diagram.svg)
+![The five pipeline stages: scrape, convert, clean, sample, crossref](assets/pipeline-diagram.svg)
 
 Practical, runnable sampling recipes, assuming you've already run:
 
 ```bash
 gdeltforge scrape --dataset events
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 ```
 
 ## Random global samples
@@ -117,8 +117,8 @@ gdeltforge scrape --dataset gkg-v2 --start-date 2020-01-01 --end-date 2020-01-31
 gdeltforge scrape --dataset mentions --start-date 2020-01-01 --end-date 2020-01-31
 gdeltforge convert --dataset gkg-v2
 gdeltforge convert --dataset mentions
-gdeltforge filter --dataset gkg-v2
-gdeltforge filter --dataset mentions
+gdeltforge clean --dataset gkg-v2
+gdeltforge clean --dataset mentions
 
 gdeltforge sample --dataset events --mode indexed -n 5000 --seed 42 --out samples/events_5k.parquet
 
@@ -133,7 +133,7 @@ gdeltforge crossref \
 ```bash
 gdeltforge scrape --dataset gkg-v1 --start-date 2020-01-01 --end-date 2020-01-31
 gdeltforge convert --dataset gkg-v1
-gdeltforge filter --dataset gkg-v1
+gdeltforge clean --dataset gkg-v1
 
 gdeltforge crossref \
   --events samples/events_5k.parquet \
@@ -151,16 +151,16 @@ GKG 2.1 and Mentions don't exist before GDELT 2.0 launched, 2015-02-18; GKG 1.0 
 # GKG 1.0 covers the whole window; GKG 2.1 + Mentions only from 2015-02-18 on.
 gdeltforge scrape --dataset gkg-v1 --start-date 2014-01-01 --end-date 2016-01-01
 gdeltforge convert --dataset gkg-v1
-gdeltforge filter --dataset gkg-v1
+gdeltforge clean --dataset gkg-v1
 
 gdeltforge scrape --dataset gkg-v2 --start-date 2015-02-18 --end-date 2016-01-01
 gdeltforge scrape --dataset mentions --start-date 2015-02-18 --end-date 2016-01-01
 gdeltforge convert --dataset gkg-v2
 gdeltforge convert --dataset mentions
-gdeltforge filter --dataset gkg-v2
-gdeltforge filter --dataset mentions
+gdeltforge clean --dataset gkg-v2
+gdeltforge clean --dataset mentions
 
-gdeltforge filter --dataset events --start-date 2014-01-01 --end-date 2016-01-01
+gdeltforge clean --dataset events --start-date 2014-01-01 --end-date 2016-01-01
 gdeltforge sample \
     --dataset events \
     --mode filtered \

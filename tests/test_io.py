@@ -738,7 +738,7 @@ class TestReadParquetPath:
         hist_dir = tmp_path / "Year=2008" / "MonthYear=200801"
         hist_dir.mkdir(parents=True)
         pl.DataFrame({"GlobalEventID": [1, 2, 3]}).write_parquet(
-            hist_dir / "200801_filtered.parquet"
+            hist_dir / "200801_cleaned.parquet"
         )
 
         result = read_parquet_path(tmp_path)

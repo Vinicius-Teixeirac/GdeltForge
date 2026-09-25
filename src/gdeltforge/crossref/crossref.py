@@ -364,7 +364,7 @@ def warn_if_output_columns_drops_join_key(
     logger, stage: str, dataset: str, output_columns: list[str] | None
 ) -> None:
     """
-    Shared by convert.py's run_converter and filter.py's run_filter, both
+    Shared by convert.py's run_converter and cleaner.py's run_cleaner, both
     of which expose an output_columns knob that can prune away a column
     this module's REQUIRED_JOIN_COLUMNS says a dataset needs. Nothing
     about picking a lean column set for disk/CPU reasons hints that one
