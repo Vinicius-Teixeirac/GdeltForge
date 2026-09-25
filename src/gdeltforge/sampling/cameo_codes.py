@@ -44,11 +44,17 @@ repeatedly on extradition/tribunal/judge-order patterns (judicial), 1214
 on a records-related pattern (intelligence), consistent with the X13/X14
 convention rather than assumed from numbering alone.
 
-EventCode/EventBaseCode/EventRootCode also carry a small number of
-GDELT's own malformed-record markers ("X", "--", "---") for rows its
-event coder couldn't classify at all. These aren't CAMEO codes and are
-deliberately left out of the reference, so a filter on one of them will
-(correctly) still warn.
+EventCode/EventBaseCode/EventRootCode also carry three markers that
+aren't CAMEO event categories, listed here so every value in the record
+resolves. "---" (EventCode/EventBaseCode, 325 rows in the 1979 to 2026
+archive) is the CAMEO null code: PETRARCH's reader defines it as the
+code of a verb pattern that "does not generate an event", used on 693
+patterns in the CAMEO verb dictionary to block phrases that match an
+event verb without being a political event. "--" is its first two
+characters, written to EventRootCode on the same rows. "X" (9 rows,
+all three columns) is undocumented anywhere in CAMEO or PETRARCH; every
+row carrying it is QuadClass 4, material conflict, with no Goldstein
+score, so it reads as a coercion-type event whose code was lost.
 
 Every name was then checked again, in 2026-09, against GDELT's own lookup
 tables (gdeltproject.org/data/lookups/*.txt) and against the full Events
