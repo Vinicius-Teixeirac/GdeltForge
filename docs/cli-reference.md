@@ -440,6 +440,8 @@ Covers seven code families, each with its own reference list:
 
 FIPS 10-4 country codes are a different scheme from CAMEO's own 3-letter actor-country codes (`UK` not `GBR`, `RS` not `RUS`), so a value valid on one family can be silently wrong on another; `gdeltforge codes <column>` disambiguates before you run a sample.
 
+Ethnic codes are listed lowercase (`kur`, `pal`), the way GDELT writes them in the Events data; every other family is uppercase. Matching ignores case everywhere: `--search`, `sample`'s unrecognized-code warning, and `gdeltforge.sampling.cameo_codes.lookup(column, code)` for translating codes in your own code.
+
 A handful of real `EventCode`/`EventBaseCode`/`EventRootCode` values (`"X"`, `"--"`, `"---"`) are GDELT's own markers for rows its event coder couldn't classify, not CAMEO codes, so `gdeltforge codes` deliberately won't list them and a filter using one will still warn.
 
 List which columns have a reference list:

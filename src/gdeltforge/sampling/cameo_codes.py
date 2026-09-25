@@ -71,9 +71,13 @@ one archive snapshot: FIPS 10-4 was retired as a standard in 2008 and the
 CAMEO known-group list isn't actively maintained, so a miss here means
 "not recognized," not "definitely wrong."
 
-Ethnic codes are stored lowercase in real GDELT data but uppercase in the
-source codebook; is_recognized_code() compares case-insensitively
-everywhere to avoid that mismatch alone producing false warnings.
+Ethnic codes are keyed lowercase, the way GDELT writes them in the
+Events data and in its own lookup table (99.5% of the archive's ethnic
+values). Every other family is uppercase, matching the data. A few
+ethnic codes also occur uppercase in the record ("PAL", "ARB", "KUR"),
+so lookup() and is_recognized_code() both compare case-insensitively;
+translate codes through lookup(), never a raw dict index, and no
+spelling of a code falls through.
 """
 
 import json
@@ -172,8 +176,19 @@ def family_name_for_column(column: str) -> str | None:
 
 
 @cache
-def _uppercase_keys(family_key: str) -> frozenset[str]:
-    return frozenset(k.upper() for k in _load()[family_key])
+def _uppercase_keys(family_key: str) -> dict[str, str]:
+    return {k.upper(): name for k, name in _load()[family_key].items()}
+
+
+def lookup(column: str, value: str) -> str | None:
+    """
+    The name for value in column's code family, case-insensitively, or
+    None if column isn't a CAMEO-coded column or value isn't a known code.
+    """
+    family_key = _FAMILY_KEY_FOR_COLUMN.get(column)
+    if family_key is None:
+        return None
+    return _uppercase_keys(family_key).get(value.upper())
 
 
 def is_recognized_code(column: str, value: str) -> bool | None:

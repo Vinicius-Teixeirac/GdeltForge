@@ -58,8 +58,13 @@ class TestGeoCountryCodes:
 class TestEthnicCodes:
     def test_has_known_entries(self):
         codes = cameo_codes.ethnic_codes()
-        assert codes["AAR"] == "Afar"
-        assert codes["KUR"] == "Kurd"
+        assert codes["aar"] == "Afar"
+        assert codes["kur"] == "Kurd"
+
+    def test_keys_are_lowercase_like_the_data(self):
+        # GDELT writes ethnic codes lowercase, in the Events data and in its
+        # own CAMEO.ethnic.txt; an exact-key lookup must match the record.
+        assert all(c == c.lower() for c in cameo_codes.ethnic_codes())
 
 
 class TestKnownGroupCodes:
@@ -225,9 +230,9 @@ class TestIsRecognizedCode:
         assert cameo_codes.is_recognized_code("QuadClass", "1") is None
 
     def test_is_case_insensitive(self):
-        # Real GDELT data stores Actor1/2EthnicCode lowercase; the bundled
-        # reference uses uppercase keys. A naive membership check on raw
-        # case would report every real ethnic code as unrecognized.
+        # A few ethnic codes occur in both cases in the real archive
+        # ("pal" and "PAL"), so neither spelling may be reported as
+        # unrecognized.
         assert cameo_codes.is_recognized_code("Actor1EthnicCode", "aar") is True
         assert cameo_codes.is_recognized_code("Actor1EthnicCode", "AAR") is True
         assert cameo_codes.is_recognized_code("Actor1CountryCode", "usa") is True
@@ -243,3 +248,21 @@ class TestIsRecognizedCode:
         # since it isn't a CAMEO code.
         assert cameo_codes.is_recognized_code("EventCode", "X") is False
         assert cameo_codes.is_recognized_code("EventRootCode", "--") is False
+
+
+class TestLookup:
+    def test_returns_the_name(self):
+        assert cameo_codes.lookup("Actor1CountryCode", "USA") == "United States"
+
+    def test_is_case_insensitive_in_both_directions(self):
+        # Ethnic keys are lowercase, other families uppercase; the record
+        # holds a few ethnic codes in uppercase too.
+        assert cameo_codes.lookup("Actor1EthnicCode", "pal") == "Palestinian"
+        assert cameo_codes.lookup("Actor2EthnicCode", "PAL") == "Palestinian"
+        assert cameo_codes.lookup("ActionGeo_CountryCode", "us") == "United States"
+
+    def test_unknown_code_returns_none(self):
+        assert cameo_codes.lookup("EventCode", "X") is None
+
+    def test_non_coded_column_returns_none(self):
+        assert cameo_codes.lookup("QuadClass", "1") is None
