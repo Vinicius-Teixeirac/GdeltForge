@@ -46,6 +46,14 @@ class TestGeoCountryCodes:
         assert codes["RB"] == "Serbia (general)"
         assert codes["OS"] == "Oceans"
 
+    def test_has_fips_codes_only(self):
+        # AX is Akrotiri in FIPS 10-4; AD, SR and UM are ISO 3166 codes
+        # (FIPS Suriname is NS) that never occur in the record.
+        codes = cameo_codes.geo_country_codes()
+        assert codes["AX"] == "Akrotiri"
+        assert codes["NS"] == "Suriname"
+        assert not {"AD", "SR", "UM"} & set(codes)
+
 
 class TestEthnicCodes:
     def test_has_known_entries(self):
@@ -79,6 +87,18 @@ class TestKnownGroupCodes:
         assert "ECOWAS" in codes["WAS"]
         assert "SAARC" in codes["SAA"]
 
+    def test_has_every_code_in_gdelts_own_lookup_table(self):
+        # gdeltproject.org/data/lookups/CAMEO.knowngroup.txt; none of these
+        # occurs in the Events archive, all are GDELT's own codes.
+        codes = cameo_codes.known_group_codes()
+        assert codes["HMS"] == "Hamas"
+        assert codes["WHO"] == "World Health Organization"
+
+    def test_holds_only_three_letter_group_codes(self):
+        # Complete actor codes such as IGOUNO or NGOAMN are the group code
+        # behind a type prefix; KnownGroupCode never carries one.
+        assert all(len(c) == 3 for c in cameo_codes.known_group_codes())
+
     def test_ambiguous_code_documents_both_real_meanings(self):
         # CEM maps to two distinct organizations in real archive data
         # (CEMAC, dominant; a COMESA-related usage, rare); both are kept
@@ -101,6 +121,7 @@ class TestReligionCodes:
         # Coded beside "ULTRA ORTHODOX"/"HAREDI" and "ALAWI" in the archive.
         assert codes["UDX"] == "Ultra-Orthodox Judaism (Haredi)"
         assert codes["ALE"] == "Alawites (Alawi)"
+        assert codes["DRZ"] == "Druze"
 
 
 class TestTypeCodes:
@@ -109,6 +130,10 @@ class TestTypeCodes:
         assert codes["GOV"].startswith("Government")
         assert codes["MIL"].startswith("Military")
         assert codes["REB"].startswith("Rebels")
+        assert codes["PKO"] == "Peacekeepers"
+
+    def test_holds_only_three_letter_type_codes(self):
+        assert all(len(c) == 3 for c in cameo_codes.type_codes())
 
 
 class TestEventCodes:

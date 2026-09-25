@@ -57,7 +57,12 @@ FullName GDELT writes for a country-level place, an actor code against the
 actor names coded with it. Where the two sources disagree, the archive
 wins. That pass corrected guessed names (known-group SCE is the OSCE, XFM
 is Oxfam, WAS is ECOWAS; geo HQ is Howland Island) and spelling slips
-("Columbia" for Colombia). GDELT's own tables carry errors of their own
+("Columbia" for Colombia), added every code GDELT's tables list that was
+missing here (Hamas, WHO and 47 more known groups, 38 ethnic codes,
+peacekeepers and 4 more actor types, Druze, Akrotiri and Dhekelia), and
+dropped keys that aren't codes of their family: complete actor codes
+such as IGOUNO in the known-group and type tables, and ISO 3166 codes
+(AD, SR, UM) among the FIPS ones. GDELT's own tables carry errors of their own
 (ethnic "bod" as Tibetan where the archive codes it beside "BODO", geo LO
 as Czechoslovakia), so they aren't copied blindly either.
 
