@@ -22,13 +22,16 @@ Provides:
       original operations
     - Date1920Repair, EventMarkers: repairs of known GDELT errors
       (the errata step)
+    - NormalizeStrings: optional whitespace normalization
     - ordered: sort steps into STEP_ORDER
 """
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 from datetime import date
+from functools import reduce
 
 import polars as pl
 
@@ -282,6 +285,53 @@ class EventMarkers(Step):
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         cond = self._condition(lf)
         return {} if cond is None else {f"errata.event_markers_{self.mode}": cond.sum()}
+
+
+@dataclass(frozen=True)
+class NormalizeStrings(Step):
+    """
+    Optional whitespace normalization of every string column. trim strips
+    leading and trailing whitespace (" USA" -> "USA"); blank_to_null turns
+    whitespace-only values (" ") into null. Around 2013 GDELT padded 11.3M
+    Actor2Code values and wrote 3.2M as a single space, which no code table
+    recognizes. Lossy: GDELT's own spelling of the value is gone.
+    """
+
+    trim: bool = False
+    blank_to_null: bool = False
+    name = "normalize"
+    lossy = True
+
+    @staticmethod
+    def _string_columns(lf: pl.LazyFrame) -> list[str]:
+        schema = lf.collect_schema()
+        return [c for c in schema.names() if schema[c] == pl.String]
+
+    def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
+        exprs = []
+        for c in self._string_columns(lf):
+            value = pl.col(c).str.strip_chars() if self.trim else pl.col(c)
+            if self.blank_to_null:
+                value = pl.when(pl.col(c).str.strip_chars() == "").then(None).otherwise(value)
+            exprs.append(value.alias(c))
+        return lf.with_columns(exprs) if exprs else lf
+
+    def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
+        columns = self._string_columns(lf)
+        if not columns:
+            return {}
+        out = {}
+        if self.trim:
+            out["normalize.trimmed"] = reduce(operator.add, [
+                ((pl.col(c) != pl.col(c).str.strip_chars())
+                 & (pl.col(c).str.strip_chars() != "")).sum()
+                for c in columns
+            ])
+        if self.blank_to_null:
+            out["normalize.blank_to_null"] = reduce(operator.add, [
+                (pl.col(c).str.strip_chars() == "").sum() for c in columns
+            ])
+        return out
 
 
 def ordered(steps: list[Step]) -> list[Step]:

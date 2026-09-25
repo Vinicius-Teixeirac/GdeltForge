@@ -43,7 +43,8 @@ question, it belongs to sampling.
 | **Known GDELT errors are repaired by default, and the defaults lose nothing** | Nearly everyone needs these repairs and almost nobody knows the errors exist. Each rule is exact, backed by evidence from the full archive, and can be switched off. The defaults keep GDELT's own values beside every repaired one and keep rows they flag, so a default run never discards anything GDELT published |
 | **Steps run in one fixed order** | No configuration can produce an order-dependent result by accident |
 | **Every step declares whether it's lossy** | A lossy step leaves the cleaned output unable to tell what the converted input held, which matters for deciding whether the converted copy can go |
-| **`--delete-source` refuses a lossy errata step** unless `allow_lossy_delete_source: true` | Deleting the converted copy removes the only way back to what a lossy step discarded, so that combination has to be chosen deliberately. The original three steps (`columns_to_check`, `output_columns`, `float32_columns`) keep their long-standing warning, since existing setups rely on them to fit disk |
+| **Normalization is available but off by default** | Whitespace padding is common in GDELT's 2013 files and breaks code lookups, but fixing it rewrites GDELT's values without keeping them, which the defaults never do |
+| **`--delete-source` refuses a lossy step added in 0.12.0** (errata, normalize) unless `allow_lossy_delete_source: true` | Deleting the converted copy removes the only way back to what a lossy step discarded, so that combination has to be chosen deliberately. The original three steps (`columns_to_check`, `output_columns`, `float32_columns`) keep their long-standing warning, since existing setups rely on them to fit disk |
 | **Every cleaned file says it's cleaned** | A cleaned file must never pass for GDELT's own data. Each one carries a `gdeltforge:clean` entry in its Parquet metadata; `clean` warns when its input already carries it, and `sample`/`aggregate`/`crossref` warn when a `--source converted` directory does |
 | **Every run leaves an audit** | So you can always tell what a run changed, per file, without re-deriving it |
 | **Output never goes into an input directory** | Cleaned files beside the converted ones would be cleaned again on the next run, and every reader of the converted directory would count those rows twice. `clean` refuses to start in that configuration |
@@ -56,11 +57,14 @@ Each file passes through the configured steps in this order:
 | Order | Step | Setting | What it does | Lossy |
 |---|---|---|---|---|
 | 1 | errata | `errata.<dataset>` | Repairs known GDELT errors ([below](#errata-known-gdelt-errors)) | No, with the default settings |
-| 2 | require | `columns_to_check` | Drops rows with a null in any listed column | Yes: the rows |
-| 3 | project | `output_columns` | Keeps only the listed columns | Yes: the other columns |
-| 4 | narrow | `float32_columns` | Stores the listed float columns as float32 | Yes: GDELT floats carry up to 15 significant figures, float32 about 7 |
+| 2 | normalize | `normalize.<dataset>` | Trims whitespace, turns blank strings into null ([below](#normalize-whitespace)); off by default | Yes: GDELT's own spelling |
+| 3 | require | `columns_to_check` | Drops rows with a null in any listed column | Yes: the rows |
+| 4 | project | `output_columns` | Keeps only the listed columns | Yes: the other columns |
+| 5 | narrow | `float32_columns` | Stores the listed float columns as float32 | Yes: GDELT floats carry up to 15 significant figures, float32 about 7 |
 
-Errata come first so every later step sees corrected values.
+Errata come first so every later step sees corrected values, and
+normalization comes before the null check so a blank value counts as
+missing there.
 
 Then the file is written with the configured `compression` (zstd by default,
 lossless) as `<stem>_cleaned.parquet`, through a temporary file and a rename,
@@ -169,7 +173,7 @@ one row per cleaned file:
 |---|---|
 | `source`, `output` | The converted file and the cleaned file |
 | `rows_in`, `rows_out` | Rows before and after the steps |
-| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `require.rows_dropped` |
+| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped` |
 | `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output |
 
 The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
@@ -179,6 +183,45 @@ file: an archive has hundreds of thousands of files, and per-file sidecars
 would recreate the many-small-files problem. The leading underscore keeps
 the directory out of every reader of cleaned data, following the usual
 Parquet convention that `_`- and `.`-prefixed paths are metadata.
+
+## Normalize: whitespace
+
+Optional, per dataset, under `clean.normalize.<dataset>`, off by default:
+
+- **`trim_strings`**: strips leading and trailing whitespace from every
+  string column (`" USA"` becomes `"USA"`).
+- **`blank_to_null`**: turns whitespace-only values (`" "`) into null.
+  Use it with `trim_strings`; trimming alone turns `" "` into an empty
+  string.
+
+**Evidence**, from all 869 million rows of the 1979 to 2026 Events
+archive, almost entirely in files from 2013:
+
+| Column | Padded values | Whitespace-only values |
+|---|---|---|
+| `Actor2Code` | 11,304,577 | 3,152,942 |
+| `Actor1Name` | 479,498 | 0 |
+| `Actor2Name` | 383,705 | 0 |
+| `*Geo_FullName` (all three) | 23,897 | 0 |
+
+A padded code such as `" USA"` matches no code table, so the run audit
+counts it as unrecognized and a `sample --filter` on `"USA"` misses it.
+
+**Why off by default**: it changes GDELT's values without keeping the
+originals, and the defaults never lose a value. For analysis on codes or
+actor names, turning both switches on is recommended:
+
+```yaml
+clean:
+  normalize:
+    gdelt_event:
+      trim_strings: true
+      blank_to_null: true
+```
+
+The run audit counts `normalize.trimmed` and `normalize.blank_to_null`.
+Both switches are lossy, so `--delete-source` refuses them unless
+`allow_lossy_delete_source: true`.
 
 ## Measuring before cleaning
 

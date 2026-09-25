@@ -80,6 +80,7 @@ from gdeltforge.cleaning.steps import (
     EventMarkers,
     FileContext,
     NarrowFloat32,
+    NormalizeStrings,
     ProjectColumns,
     RequireColumns,
     Step,
@@ -139,6 +140,7 @@ class FileReport:
 # the defaults a caller that sets none of them gets: nothing repaired.
 _ERRATA_KEYS = ("date_1920", "event_markers", "keep_original")
 _EVENT_MARKER_MODES = ("keep", "drop")
+_NORMALIZE_KEYS = ("trim_strings", "blank_to_null")
 
 
 class GDELTCleaner:
@@ -175,6 +177,7 @@ class GDELTCleaner:
         force: bool = False,
         dry_run: bool = False,
         errata: dict | None = None,
+        normalize: dict | None = None,
         allow_lossy_delete_source: bool = False,
         report: bool = False,
     ):
@@ -276,6 +279,9 @@ class GDELTCleaner:
         # nothing; run_cleaner passes the bundled default's settings,
         # which repair without losing any value.
         self.errata = self._validated_errata(errata)
+        # Optional whitespace normalization (clean.normalize.<dataset>),
+        # off by default: it changes GDELT's values without keeping them.
+        self.normalize = self._validated_flags(normalize, _NORMALIZE_KEYS, "clean.normalize")
         # With --dry-run: read every file in scope and report what each
         # step would change, instead of only counting files.
         self.report = report
@@ -295,6 +301,8 @@ class GDELTCleaner:
             # rule changes clean every file again.
             fingerprint_fields["errata"] = json.dumps(self.errata, sort_keys=True)
             fingerprint_fields["errata_version"] = ERRATA_VERSION
+        if any(self.normalize.values()):
+            fingerprint_fields["normalize"] = json.dumps(self.normalize, sort_keys=True)
         self._config_fingerprint = config_fingerprint(**fingerprint_fields)
 
         # The stage's steps, built once from the settings above and applied
@@ -304,6 +312,11 @@ class GDELTCleaner:
             steps.append(Date1920Repair(keep_original=self.errata.get("keep_original", True)))
         if self.errata.get("event_markers") is not None:
             steps.append(EventMarkers(mode=self.errata["event_markers"]))
+        if any(self.normalize.values()):
+            steps.append(NormalizeStrings(
+                trim=self.normalize.get("trim_strings", False),
+                blank_to_null=self.normalize.get("blank_to_null", False),
+            ))
         if self.output_columns is not None:
             steps.append(ProjectColumns(tuple(self.output_columns)))
         if self.float32_columns:
@@ -879,11 +892,28 @@ class GDELTCleaner:
         return errata
 
     @staticmethod
+    def _validated_flags(settings: dict | None, keys: tuple[str, ...], label: str) -> dict:
+        """A section of true/false switches, checked up front like errata."""
+        settings = dict(settings or {})
+        unknown = sorted(set(settings) - set(keys))
+        if unknown:
+            raise ValueError(f"{label}: unknown setting(s) {unknown}; known: {list(keys)}")
+        for key, value in settings.items():
+            if not isinstance(value, bool):
+                raise ValueError(f"{label}.{key} must be true or false, got {value!r}")
+        return settings
+
+    @staticmethod
     def _describe(step: Step) -> str:
         if isinstance(step, EventMarkers):
             return "errata.event_markers: drop"
         if isinstance(step, Date1920Repair):
             return "errata.date_1920 without keep_original"
+        if isinstance(step, NormalizeStrings):
+            return " and ".join(
+                f"normalize.{key}" for key, on in
+                (("trim_strings", step.trim), ("blank_to_null", step.blank_to_null)) if on
+            )
         return step.name
 
     def _refuse_output_inside_input(self) -> None:
@@ -1028,6 +1058,7 @@ def run_cleaner(
     output_columns = get_dict(config["clean"], "output_columns").get(dataset)
     float32_columns = get_dict(config["clean"], "float32_columns").get(dataset)
     errata = get_dict(get_dict(config["clean"], "errata"), dataset)
+    normalize = get_dict(get_dict(config["clean"], "normalize"), dataset)
     allow_lossy_delete_source = bool(config["clean"].get("allow_lossy_delete_source", False))
     warn_if_output_columns_drops_join_key(logger, "clean", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(
@@ -1040,6 +1071,7 @@ def run_cleaner(
                 ("errata.event_markers: drop", errata.get("event_markers") == "drop"),
                 ("errata.date_1920 without keep_original",
                  errata.get("date_1920") and errata.get("keep_original") is False),
+                ("normalize", any(normalize.values())),
             )
             if value
         ],
@@ -1065,6 +1097,7 @@ def run_cleaner(
         force=force,
         dry_run=dry_run,
         errata=errata,
+        normalize=normalize,
         allow_lossy_delete_source=allow_lossy_delete_source,
         report=report,
     )

@@ -9,6 +9,7 @@ from gdeltforge.cleaning.steps import (
     EventMarkers,
     FileContext,
     NarrowFloat32,
+    NormalizeStrings,
     ProjectColumns,
     RequireColumns,
     ordered,
@@ -132,3 +133,39 @@ class TestEventMarkers:
         out = step.apply(self._lf(), CTX).collect()
         assert out["EventCode"].to_list() == ["010", "190"]
         assert step.lossy is True
+
+
+class TestNormalizeStrings:
+    def _lf(self):
+        return pl.LazyFrame({"Actor2Code": [" USA", " ", "GOV", None], "n": [1, 2, 3, 4]})
+
+    def test_trim_strips_padding(self):
+        out = NormalizeStrings(trim=True).apply(self._lf(), CTX).collect()
+        assert out["Actor2Code"].to_list() == ["USA", "", "GOV", None]
+
+    def test_blank_to_null_nulls_whitespace_only_values(self):
+        out = NormalizeStrings(blank_to_null=True).apply(self._lf(), CTX).collect()
+        assert out["Actor2Code"].to_list() == [" USA", None, "GOV", None]
+
+    def test_both_together(self):
+        out = NormalizeStrings(trim=True, blank_to_null=True).apply(self._lf(), CTX).collect()
+        assert out["Actor2Code"].to_list() == ["USA", None, "GOV", None]
+
+    def test_counts_what_it_changes(self):
+        lf = self._lf()
+        exprs = NormalizeStrings(trim=True, blank_to_null=True).counts(lf, CTX)
+        assert lf.select(**exprs).collect().row(0, named=True) == {
+            "normalize.trimmed": 1, "normalize.blank_to_null": 1,
+        }
+
+    def test_is_lossy(self):
+        assert NormalizeStrings(trim=True).lossy is True
+
+    def test_runs_before_the_null_check(self):
+        # The reason for the fixed order: a blank becomes null first, so the
+        # null check drops its row.
+        steps = ordered([RequireColumns(("Actor2Code",)), NormalizeStrings(blank_to_null=True)])
+        lf = self._lf()
+        for step in steps:
+            lf = step.apply(lf, CTX)
+        assert lf.collect()["n"].to_list() == [1, 3]

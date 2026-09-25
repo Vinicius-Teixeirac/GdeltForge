@@ -1922,3 +1922,50 @@ class TestFingerprintWithoutErrata:
             columns_to_check=["A"], output_columns=None, float32_columns=None,
             compression="zstd",
         )
+
+
+class TestNormalizeSettings:
+    def test_trims_and_nulls_through_the_stage(self, tmp_path):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [1, 2], "Actor2Code": [" USA", " "]}).write_parquet(
+            in_dir / "20130501.export.parquet"
+        )
+        out_dir = tmp_path / "out"
+        GDELTCleaner(
+            str(in_dir), str(out_dir), columns_to_check=[],
+            normalize={"trim_strings": True, "blank_to_null": True},
+        ).clean_all_files()
+        out = pl.read_parquet(out_dir / "20130501.export_cleaned.parquet")
+        assert out["Actor2Code"].to_list() == ["USA", None]
+        audit = pl.read_parquet(next((out_dir / "_clean_runs").glob("*.parquet")))
+        assert audit["normalize.trimmed"].to_list() == [1]
+        assert audit["normalize.blank_to_null"].to_list() == [1]
+
+    def test_off_by_default_and_fingerprint_unchanged(self, tmp_path):
+        from gdeltforge.utils.io import config_fingerprint
+
+        cleaner = GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            normalize={"trim_strings": False},
+        )
+        assert [s.name for s in cleaner.steps] == ["require"]
+        assert cleaner._config_fingerprint == config_fingerprint(
+            columns_to_check=[], output_columns=None, float32_columns=None, compression="zstd",
+        )
+
+    @pytest.mark.parametrize("normalize, message", [
+        ({"trim": True}, "unknown setting"),
+        ({"trim_strings": "yes"}, "must be true or false"),
+    ])
+    def test_invalid_settings_fail_up_front(self, tmp_path, normalize, message):
+        with pytest.raises(ValueError, match=message):
+            GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                         normalize=normalize)
+
+    def test_delete_source_refuses_it(self, tmp_path):
+        with pytest.raises(ValueError, match="normalize.trim_strings"):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                normalize={"trim_strings": True}, delete_source=True,
+            )
