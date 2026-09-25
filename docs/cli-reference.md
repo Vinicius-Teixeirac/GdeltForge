@@ -299,6 +299,10 @@ gdeltforge sample --dataset gkg-v2 --mode calendar --period month --per-period 5
 
     `--period day` groups strictly by the grouping column's own `YYYYMMDD` value, not by which file a row came from. GDELT's own event-date misdating means a single day's file can legitimately carry `Day` values spanning a decade (a wire report referencing a much older date, a source article with a malformed or placeholder date), so the number of distinct periods a run actually produces can be far larger than "one per file downloaded" suggests. This is a real property of the underlying data, not a bug in the grouping itself.
 
+!!! warning "Dates before 1979 are GDELT's 1920-for-2020 error"
+
+    GDELT wrote the year 1920 for 2020 in events it added from 2019-12-31 to 2020-01-05. In uncleaned data those rows form false periods (1920-01-01 to 01-06, each drawing a full `--per-period`) while the real first days of 2020 come out nearly empty. Calendar sampling warns with the row count whenever it meets a date before 1979, GDELT's first year. `clean` repairs these dates by default ([Data Cleaning](data-cleaning.md#date_1920-events-dated-1920-instead-of-2020)), so sampling `--source cleaned` avoids it.
+
 !!! warning "Equal allocation, not proportional"
 
     `--per-period` draws the same count from every period regardless of how many rows that period actually has. A quiet day and a busy day both contribute `--per-period` rows, so the pooled sample deliberately does not reproduce the archive's real day-to-day volume: an unweighted statistic computed on the output (an overall rate, a class share) is biased toward low-volume periods relative to the true archive. This is what makes calendar sampling useful for even temporal coverage; it's also why it isn't a drop-in for `--mode indexed` when the goal is a population-representative estimate rather than coverage. See [Limitations](limitations-and-roadmap.md#representativeness).
