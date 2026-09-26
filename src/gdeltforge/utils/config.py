@@ -122,7 +122,7 @@ def validate_max_workers(value: int | None, label: str) -> int | None:
 
 def resolve_max_concurrent_reads(config: dict) -> int | None:
     """
-    io.max_concurrent_reads: how many files one filter/aggregate/sample/
+    io.max_concurrent_reads: how many files one clean/aggregate/sample/
     crossref command may read at once, or None (the default) for no cap
     beyond each stage's own worker count. Validated the same way as
     max_workers, since 0 is just as falsy and just as meaningless here.
