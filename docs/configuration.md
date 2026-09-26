@@ -272,11 +272,11 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 
 | Key | Default | Description |
 |-----|---------|--------------|
-| `max_concurrent_reads` | `null` | How many files one `filter`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
+| `max_concurrent_reads` | `null` | How many files one `clean`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
 
 `max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:
 
-- **`filter`, `aggregate`**: each worker reads one file at a time, so the worker count is capped to `max_concurrent_reads`. The startup log line shows the resulting count.
+- **`clean`, `aggregate`**: each worker reads one file at a time, so the worker count is capped to `max_concurrent_reads`. The startup log line shows the resulting count.
 - **`sample`, `crossref`**: these read many files through one multi-file scan in a single process, so polars' own concurrent file scans (`POLARS_MAX_CONCURRENT_SCANS`, one per core by default) are capped to it.
 - **`convert`**: not capped. Its reads are one zip per worker, and its CPU work needs the workers; see "Network storage" below for what to tune there.
 
@@ -290,7 +290,7 @@ A measured starting point for that kind of storage:
 
 ```yaml
 io:
-  max_concurrent_reads: 4             # filter/aggregate: 4 workers; sample/crossref: 4 scans
+  max_concurrent_reads: 4             # clean/aggregate: 4 workers; sample/crossref: 4 scans
 
 converter:
   max_workers: 8                      # and any max_workers_by_dataset override
@@ -374,16 +374,16 @@ That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned
 
 ### Worker pools and polars threads
 
-`max_workers` caps worker *processes*. Each worker is a separately spawned interpreter, and polars sizes its own thread pools to the whole machine in every one of them: compute threads, async I/O threads, and the number of files a multi-file scan reads at once all default to the core count. Left alone, N workers on a C-core machine carry roughly N x 2C threads (a 32-worker `filter` on a 32-core server peaked at 4,391 threads), and each worker's memory grows with its own pool size. For how these pools behave on network storage, see [Storage Concurrency Benchmark](storage-concurrency-benchmark.md).
+`max_workers` caps worker *processes*. Each worker is a separately spawned interpreter, and polars sizes its own thread pools to the whole machine in every one of them: compute threads, async I/O threads, and the number of files a multi-file scan reads at once all default to the core count. Left alone, N workers on a C-core machine carry roughly N x 2C threads (a 32-worker `filter`, today's `clean`, on a 32-core server peaked at 4,391 threads), and each worker's memory grows with its own pool size. For how these pools behave on network storage, see [Storage Concurrency Benchmark](storage-concurrency-benchmark.md).
 
-`convert`, `filter`, and `aggregate` therefore give each worker `ceil(cores / workers)` polars threads, via `POLARS_MAX_THREADS` set in the worker's environment before it starts, so the whole pool lands near one thread per core. The worker count itself also never exceeds the number of files or periods to process. The startup log line reports both numbers, e.g. `using 4 worker process(es), 5 polars thread(s) each`. A `POLARS_MAX_THREADS` you export yourself is left untouched.
+`convert`, `clean`, and `aggregate` therefore give each worker `ceil(cores / workers)` polars threads, via `POLARS_MAX_THREADS` set in the worker's environment before it starts, so the whole pool lands near one thread per core. The worker count itself also never exceeds the number of files or periods to process. The startup log line reports both numbers, e.g. `using 4 worker process(es), 5 polars thread(s) each`. A `POLARS_MAX_THREADS` you export yourself is left untouched.
 
-Measured on a 20-core laptop with an NVMe SSD, 4 workers, real Events data (182 daily files for `filter`, 62 daily zips for `convert`), two runs each:
+Measured on a 20-core laptop with an NVMe SSD, 4 workers, real Events data (182 daily files for `clean`, measured under its pre-0.12 name `filter`; 62 daily zips for `convert`), two runs each:
 
 | Stage | polars threads per worker | Wall time | Peak memory (whole pool) |
 |-------|---------------------------|-----------|--------------------------|
-| `filter` | 20 (previous behavior) | 13.2s, 10.0s | 3.9 GB |
-| `filter` | 5 | 11.5s, 9.9s | 2.2 GB |
+| `clean` | 20 (previous behavior) | 13.2s, 10.0s | 3.9 GB |
+| `clean` | 5 | 11.5s, 9.9s | 2.2 GB |
 | `convert` | 20 (previous behavior) | 14.4s, 13.0s | 3.9-4.2 GB |
 | `convert` | 5 | 12.4s, 12.3s | 2.5 GB |
 
