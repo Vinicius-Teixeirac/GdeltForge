@@ -484,3 +484,51 @@ class TestDeprecatedCleanNames:
         )
         with pytest.raises(ValueError, match="paths.filtered_data_directory and"):
             load_config(str(path))
+
+
+class TestMovedDefaultDirectories:
+    """0.12.0 moved the bundled default's clean-stage directories from
+    data/<dataset>/filtered to data/<dataset>/cleaned; a config leaving them
+    to the default, next to output from an earlier version, gets a warning
+    naming both."""
+
+    def _load(self, tmp_path, monkeypatch, caplog, text="clean: {max_workers: 2}\n"):
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / "settings.yaml"
+        path.write_text(text, encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            load_config(str(path))
+        return [r.message for r in caplog.records if "holds clean-stage output" in r.message]
+
+    def test_warns_when_only_the_old_default_directory_exists(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        (tmp_path / "data" / "mentions" / "filtered").mkdir(parents=True)
+        (tmp_path / "data" / "events" / "filtered_historical").mkdir(parents=True)
+        messages = self._load(tmp_path, monkeypatch, caplog)
+        assert len(messages) == 2
+        mentions = next(m for m in messages if "mentions" in m)
+        assert "paths.mentions_cleaned_data_directory" in mentions
+        assert str(Path("data/mentions/filtered")) in mentions
+        assert str(Path("data/mentions/cleaned")) in mentions
+        assert any("paths.cleaned_historical_directory" in m for m in messages)
+
+    def test_quiet_once_the_new_directory_exists(self, tmp_path, monkeypatch, caplog):
+        (tmp_path / "data" / "mentions" / "filtered").mkdir(parents=True)
+        (tmp_path / "data" / "mentions" / "cleaned").mkdir(parents=True)
+        assert self._load(tmp_path, monkeypatch, caplog) == []
+
+    def test_quiet_when_the_config_sets_the_path(self, tmp_path, monkeypatch, caplog):
+        (tmp_path / "data" / "mentions" / "filtered").mkdir(parents=True)
+        text = "paths:\n  mentions_filtered_data_directory: ./data/mentions/filtered\n"
+        assert self._load(tmp_path, monkeypatch, caplog, text) == []
+
+    def test_the_bundled_default_fallback_warns_too(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+        (tmp_path / "data" / "gkg_v2" / "filtered").mkdir(parents=True)
+        with caplog.at_level(logging.WARNING):
+            load_config()
+        assert any(
+            "paths.gkg_v2_cleaned_data_directory" in r.message for r in caplog.records
+        )
