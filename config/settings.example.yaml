@@ -706,10 +706,29 @@ filter:
 aggregation:
   # Worker processes for aggregation, one period per worker. null (the
   # default) uses os.cpu_count(), same tradeoffs as converter.max_workers/
-  # filter.max_workers above.
+  # filter.max_workers above. Each worker reads one source file at a
+  # time and needs roughly 0.8 GB for a month of Events, so size this to
+  # your RAM on a machine with many cores and little memory.
   max_workers: null
 
   # Write codec per dataset, same setting and same zstd default as
   # converter.compression/filter.compression above.
   compression:
     gdelt_gkg_v2: snappy # example override away from the zstd default
+
+# Storage-side concurrency, separate from the CPU-side max_workers above.
+io:
+  # How many files one filter/aggregate/sample/crossref command may read
+  # at once. filter/aggregate cap their worker count to it (each worker
+  # reads one file at a time); sample/crossref cap polars' own concurrent
+  # file scans to it. null (the default) means no cap beyond the worker
+  # counts above, the right choice for local SSDs.
+  #
+  # Set it when the data lives on network storage (NFS, SMB) or a shared
+  # HDD array: those slow down for everyone under many concurrent
+  # readers, without reading any faster. 4 kept a shared NFS server's
+  # response time at its idle level in real measurements, at 70-90% of
+  # the best throughput any setting reached; see
+  # docs/configuration.md#io. convert is not capped by this: tune its
+  # own max_workers and unzipped_data_directory instead (same page).
+  max_concurrent_reads: null
