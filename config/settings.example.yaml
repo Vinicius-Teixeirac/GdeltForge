@@ -760,8 +760,8 @@ aggregation:
 
 # Storage-side concurrency, separate from the CPU-side max_workers above.
 io:
-  # How many files one filter/aggregate/sample/crossref command may read
-  # at once. filter/aggregate cap their worker count to it (each worker
+  # How many files one clean/aggregate/sample/crossref command may read
+  # at once. clean/aggregate cap their worker count to it (each worker
   # reads one file at a time); sample/crossref cap polars' own concurrent
   # file scans to it. null (the default) means no cap beyond the worker
   # counts above, the right choice for local SSDs.

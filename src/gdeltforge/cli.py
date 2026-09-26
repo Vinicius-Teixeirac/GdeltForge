@@ -1406,7 +1406,7 @@ def main() -> None:
 
         # sample/crossref read many files through one multi-file scan in
         # this process, not a worker pool, so io.max_concurrent_reads is
-        # applied here directly; filter/aggregate apply it to their own
+        # applied here directly; clean/aggregate apply it to their own
         # worker count instead.
         elif args.command == "sample":
             with polars_scan_limit(resolve_max_concurrent_reads(config)):

@@ -494,7 +494,7 @@ clean:
 aggregation:
   max_workers: null
 
-# How many files one filter/aggregate/sample/crossref command may read at
+# How many files one clean/aggregate/sample/crossref command may read at
 # once. null = no cap beyond each stage's own worker count, the right
 # choice for local SSDs. Set a small number (4 is a measured starting
 # point) when the data lives on network storage (NFS, SMB) or a shared
