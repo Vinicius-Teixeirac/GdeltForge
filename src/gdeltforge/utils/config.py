@@ -112,9 +112,19 @@ def validate_max_workers(value: int | None, label: str) -> int | None:
     log line or the executor ever see the value, makes 0 (and any other
     non-positive value) fail immediately with one clear error instead of
     two contradictory statements about the same run.
+
+    The value comes straight from YAML, so it can be any scalar. true is
+    an int in Python and would run as one worker, logged as "True worker
+    process(es)"; "4" failed the comparison below with a bare TypeError;
+    2.5 was logged and then failed inside the pool. Only an int is a
+    worker count.
     """
     if value is None:
         return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{label} must be a whole number greater than 0, or null; got {value!r}"
+        )
     if value <= 0:
         raise ValueError(f"{label} must be greater than 0, got {value}")
     return value
