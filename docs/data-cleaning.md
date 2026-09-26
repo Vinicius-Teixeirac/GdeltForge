@@ -300,6 +300,13 @@ errata repairs. Nothing needs doing by hand:
 - **Other datasets**: their fingerprint is unchanged, so their files aren't
   cleaned again. Existing `<stem>_filtered.parquet` files stay valid and
   are read as before.
+- **The bundled default's directories moved** from `data/<dataset>/filtered`
+  to `data/<dataset>/cleaned`. A config that leaves these paths to the
+  default, next to output from an earlier version, would read an empty
+  directory, since files already cleaned aren't written again. Loading the
+  config warns while the old directory exists and the new one doesn't:
+  rename the old directory, or set `paths.cleaned_data_directory` (or the
+  dataset's own key) to it.
 - `gdeltforge clean --force` re-cleans files in scope regardless of their
   fingerprint.
 
@@ -316,5 +323,5 @@ errata repairs. Nothing needs doing by hand:
 - **Keep the converted copy** unless disk space forces otherwise:
   `--delete-source` removes it once the cleaned file is written, and after
   that the only way back is re-converting from GDELT's raw ZIPs. It refuses
-  to run with a lossy errata step unless you set
-  `allow_lossy_delete_source: true`.
+  to run with a lossy step added in 0.12.0 (errata or normalize) unless you
+  set `allow_lossy_delete_source: true`.
