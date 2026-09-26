@@ -95,10 +95,12 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
+from gdeltforge.utils.concurrency import WorkerPlan, plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
+    resolve_max_concurrent_reads,
     validate_max_workers,
 )
 from gdeltforge.utils.io import (
@@ -166,6 +168,7 @@ class GDELTCleaner:
         historical_input_folder: str | None = None,
         historical_output_folder: str | None = None,
         max_workers: int | None = None,
+        max_concurrent_reads: int | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
@@ -255,6 +258,12 @@ class GDELTCleaner:
         # validate_max_workers' own docstring for the exact contradiction
         # a falsy-but-invalid max_workers: 0 produced).
         self.max_workers = validate_max_workers(max_workers, "clean.max_workers")
+        # io.max_concurrent_reads: each worker reads one file, so this caps
+        # the worker count further, for storage that slows down under many
+        # concurrent readers (see docs/configuration.md#io).
+        self.max_concurrent_reads = validate_max_workers(
+            max_concurrent_reads, "io.max_concurrent_reads"
+        )
         # GDELTCleaner stays dataset-agnostic (it never sees a dataset name,
         # only already-resolved paths/columns, see run_cleaner below), so
         # the caller resolves which filename convention date_parser needs
@@ -448,10 +457,11 @@ class GDELTCleaner:
 
         flat_to_process = sum(1 for _, is_hist in to_process if not is_hist)
         historical_to_process = len(to_process) - flat_to_process
+        worker_plan = self._worker_plan(len(to_process))
         logger.info(
             f"Cleaning {flat_to_process} flat file(s) "
             f"and {historical_to_process} historical file(s) using "
-            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
+            f"{worker_plan.describe()}..."
         )
 
         total_rows_before = 0
@@ -477,8 +487,10 @@ class GDELTCleaner:
         # point). spawn starts a genuinely fresh interpreter per worker
         # with nothing inherited, the same mechanism Windows' own
         # ProcessPoolExecutor already relies on by default.
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers,
+        # polars_worker_env sizes each worker's own polars pools to its
+        # share of the machine: see converter.py's _process_files.
+        with polars_worker_env(worker_plan), ProcessPoolExecutor(
+            max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
         ) as executor:
             futures = {
@@ -718,6 +730,15 @@ class GDELTCleaner:
             )
         return exprs
 
+    def _worker_plan(self, n_files: int) -> WorkerPlan:
+        """
+        Worker count and per-worker polars threads for n_files, capped by
+        clean.max_workers and io.max_concurrent_reads.
+        """
+        return plan_workers(
+            self.max_workers, n_files, max_concurrent_reads=self.max_concurrent_reads
+        )
+
     def _dry_run_report(self, to_process: list[tuple[Path, bool]]) -> list[FileReport]:
         """
         --dry-run --report: run every step over every file in scope without
@@ -725,8 +746,10 @@ class GDELTCleaner:
         plain --dry-run, which only counts files: this reads the data.
         """
         reports: list[FileReport] = []
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers,
+        # The same worker plan as a real run: this reads every file too.
+        worker_plan = self._worker_plan(len(to_process))
+        with polars_worker_env(worker_plan), ProcessPoolExecutor(
+            max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
         ) as executor:
             futures = {
@@ -1128,6 +1151,7 @@ def run_cleaner(
         historical_input_folder=historical_input,
         historical_output_folder=historical_output,
         max_workers=config["clean"].get("max_workers"),
+        max_concurrent_reads=resolve_max_concurrent_reads(config),
         start_date=start_date,
         end_date=end_date,
         date_parser=date_parser_for(dataset),

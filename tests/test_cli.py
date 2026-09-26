@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 import signal
 import sys
@@ -2780,6 +2781,54 @@ class TestEmblemOnEveryRealInvocation:
             cli.main()
 
         assert "gdeltforge" in capsys.readouterr().out
+
+
+class TestIoMaxConcurrentReads:
+    """sample/crossref read many files through one multi-file scan in the
+    CLI's own process, so io.max_concurrent_reads reaches them as
+    POLARS_MAX_CONCURRENT_SCANS for the duration of the command only."""
+
+    @pytest.mark.parametrize("command, handler", [
+        (["sample", "--dataset", "events", "--mode", "indexed", "--n", "1",
+          "--out", "o.parquet"], "run_sampling_cmd"),
+        (["crossref", "--events", "e.parquet", "--gkg-version", "v2", "--out", "o.parquet"],
+         "run_crossref_cmd"),
+    ])
+    def test_scan_limit_applies_during_the_command(self, monkeypatch, command, handler):
+        monkeypatch.delenv("POLARS_MAX_CONCURRENT_SCANS", raising=False)
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", *command])
+        monkeypatch.setattr(
+            cli, "load_config", lambda path: {"io": {"max_concurrent_reads": 3}}
+        )
+        seen = {}
+
+        def fake_handler(config, args):
+            seen["value"] = os.environ.get("POLARS_MAX_CONCURRENT_SCANS")
+
+        monkeypatch.setattr(cli, handler, fake_handler)
+
+        cli.main()
+
+        assert seen["value"] == "3"
+        assert "POLARS_MAX_CONCURRENT_SCANS" not in os.environ
+
+    def test_no_cap_leaves_polars_default(self, monkeypatch):
+        monkeypatch.delenv("POLARS_MAX_CONCURRENT_SCANS", raising=False)
+        monkeypatch.setattr(sys, "argv", [
+            "gdeltforge", "sample", "--dataset", "events", "--mode", "indexed", "--n", "1",
+            "--out", "o.parquet",
+        ])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        seen = {}
+
+        def fake_handler(config, args):
+            seen["value"] = os.environ.get("POLARS_MAX_CONCURRENT_SCANS")
+
+        monkeypatch.setattr(cli, "run_sampling_cmd", fake_handler)
+
+        cli.main()
+
+        assert seen["value"] is None
 
 
 class TestDeprecatedFilterNames:

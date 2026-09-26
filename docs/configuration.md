@@ -124,7 +124,7 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | `compression.<dataset>` | `zstd` | Parquet codec for converter's own output (`parquet_data_directory`), independent of `clean.compression` below for the cleaned output that follows it. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
 | `partitioning` | see below | Optional Hive partitioning for historical (pre-daily) files |
 
-Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`.
+Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`. Each worker gets its share of the machine's cores as polars threads, not all of them; see "Worker pools and polars threads" below.
 
 `output_columns` is worth setting for GKG 2.1 in particular: most of its columns are free-text fields (quotations, all-names, GCAM, extras XML, image/video embeds) that a themes/tone/persons/orgs crossref never reads. See "Capacity planning" below for what dropping them and raising `max_workers_by_dataset` measurably bought on real data.
 
@@ -268,6 +268,43 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 
 `--delete-source` (off by default) deletes each contributing source file once its period's aggregated output is confirmed written, matching `convert`'s/`clean`'s own flag of the same name; the safe default keeps the aggregated output in its own separate directory alongside the untouched source files, mirroring how `events-reduced` got its own directory rather than overwriting `events`.
 
+## `io`
+
+| Key | Default | Description |
+|-----|---------|--------------|
+| `max_concurrent_reads` | `null` | How many files one `filter`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
+
+`max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:
+
+- **`filter`, `aggregate`**: each worker reads one file at a time, so the worker count is capped to `max_concurrent_reads`. The startup log line shows the resulting count.
+- **`sample`, `crossref`**: these read many files through one multi-file scan in a single process, so polars' own concurrent file scans (`POLARS_MAX_CONCURRENT_SCANS`, one per core by default) are capped to it.
+- **`convert`**: not capped. Its reads are one zip per worker, and its CPU work needs the workers; see "Network storage" below for what to tune there.
+
+A `POLARS_MAX_CONCURRENT_SCANS` you export yourself takes precedence over this setting.
+
+### Network storage (NFS, SMB, shared HDD arrays)
+
+Leave `max_concurrent_reads` at `null` on a local SSD: it serves many requests in parallel, and the other defaults on this page are sized for it. On network storage, and on any disk shared with other users, the opposite holds. Past a handful of reads in flight, throughput stops growing, every request waits in a longer queue, and everyone else using the same storage slows down too, your own later jobs included. A shared NFS server saturated at about 4 reads in flight in real measurements, while the defaults allow one per core, 32 on a 32-core server. The full measurements, including the incident that prompted them, are in [Storage Concurrency Benchmark](storage-concurrency-benchmark.md).
+
+A measured starting point for that kind of storage:
+
+```yaml
+io:
+  max_concurrent_reads: 4             # filter/aggregate: 4 workers; sample/crossref: 4 scans
+
+converter:
+  max_workers: 8                      # and any max_workers_by_dataset override
+
+paths:
+  # Extract CSVs to a local disk, not next to the zips on the share.
+  unzipped_data_directory: "/tmp/gdelt_csv"
+  gkg_v2_unzipped_data_directory: "/tmp/gdelt_csv"   # one per dataset you convert
+```
+
+- **`convert`** extracts each zip's CSV to `unzipped_data_directory`, reads it back, then deletes it. On a network share that is a full write plus a full read of every CSV across the network, which measured 2.5 to 3x slower than extracting to local disk at every worker count. Point it at local disk with room for `max_workers` extracted CSVs at once (tens of MB each for GKG 2.1, up to a few hundred MB for a daily Events file), and leave `keep_unzipped` off unless that disk can hold them all.
+- **Going below 4 bought nothing measurable** for `aggregate`: 2 concurrent reads kept the same idle-level response time as 4 (about 10 ms), at about 60% of the throughput. Lower it only if the storage's response time says so (next point).
+- **Watch the storage, not the CPU**: on Linux, `nfsiostat 5 <mountpoint>` shows the average round-trip time per read. If it climbs well above the idle figure while gdeltforge runs, lower `max_concurrent_reads`.
+
 ## Capacity planning: real measured numbers
 
 Everything below was measured against real GDELT data (not synthetic benchmarks), on GKG 2.1, since it's the dataset these knobs matter most for: mostly free-text fields, and 15-minute-interval files means a multi-year pull is hundreds of thousands of files. Treat these as a starting point for sizing your own pull, not a guarantee: your mix of news volume, disk, and CPU will shift the numbers.
@@ -334,6 +371,35 @@ Roughly a 2x day-to-day spread, GKG 2.1's raw size tracks news volume as much as
 That lands closer to the *unpruned* Parquet projection (~2.9 TB) than the pruned one (~220-380 GB): raw zip and unpruned-`snappy` Parquet both hold the full, unpruned content, just under different codecs, while pruning is a `convert`-time decision the raw archive never sees. `convert --delete-source` (see [CLI Reference](cli-reference.md#gdeltforge-convert)) removes each zip once its parquet output is confirmed written, the real lever to avoid holding both footprints on disk at once; `filter --delete-source` does the same for the converted parquet once its filtered output exists. Neither is on by default, and combined with any column-pruning or row-filtering setting, whatever that dropped can't be recovered later without redoing an earlier stage.
 
 **`events-15min`** is a much lighter pull than GKG 2.1 at the same file count: a live master-file-list check counted 396,086 `.export.CSV.zip` files (2015-02-18 to present, same window as GKG 2.1/Mentions), totaling ~39.7 GB, ~100 KB/file average. File count, not raw size, dominates the cost here (~81x the daily `events` archive's file count for the same date range): Events rows are compact structured data, not GKG's free text, so the per-file and total-size story looks much closer to Mentions' ~67 GB than to GKG 2.1's multi-TB footprint.
+
+### Worker pools and polars threads
+
+`max_workers` caps worker *processes*. Each worker is a separately spawned interpreter, and polars sizes its own thread pools to the whole machine in every one of them: compute threads, async I/O threads, and the number of files a multi-file scan reads at once all default to the core count. Left alone, N workers on a C-core machine carry roughly N x 2C threads (a 32-worker `filter` on a 32-core server peaked at 4,391 threads), and each worker's memory grows with its own pool size. For how these pools behave on network storage, see [Storage Concurrency Benchmark](storage-concurrency-benchmark.md).
+
+`convert`, `filter`, and `aggregate` therefore give each worker `ceil(cores / workers)` polars threads, via `POLARS_MAX_THREADS` set in the worker's environment before it starts, so the whole pool lands near one thread per core. The worker count itself also never exceeds the number of files or periods to process. The startup log line reports both numbers, e.g. `using 4 worker process(es), 5 polars thread(s) each`. A `POLARS_MAX_THREADS` you export yourself is left untouched.
+
+Measured on a 20-core laptop with an NVMe SSD, 4 workers, real Events data (182 daily files for `filter`, 62 daily zips for `convert`), two runs each:
+
+| Stage | polars threads per worker | Wall time | Peak memory (whole pool) |
+|-------|---------------------------|-----------|--------------------------|
+| `filter` | 20 (previous behavior) | 13.2s, 10.0s | 3.9 GB |
+| `filter` | 5 | 11.5s, 9.9s | 2.2 GB |
+| `convert` | 20 (previous behavior) | 14.4s, 13.0s | 3.9-4.2 GB |
+| `convert` | 5 | 12.4s, 12.3s | 2.5 GB |
+
+Same speed or slightly faster, with 35-45% less memory. The old behavior bought nothing: extra threads per worker only competed with the other workers for the same cores.
+
+`aggregate` goes one step further and reads **one source file at a time per worker** (`POLARS_MAX_CONCURRENT_SCANS=1`). A period is pure concatenation into one sequential output, so reading several of its files at once only buffers them in memory. Same machine, month periods of real Events data:
+
+| Setup | Files read at once per worker | Wall time | Peak memory |
+|-------|-------------------------------|-----------|-------------|
+| 1 worker, 1 month, polars defaults | 20 | killed | over 3.7 GB and growing |
+| 1 worker, 1 month | 1 | 2.9s | 1.25 GB |
+| 3 workers, 3 months | 1 | 5.4s, 5.0s | 2.5 GB |
+| 3 workers, 3 months | 2 | 5.3s, 5.0s | 4.0 GB |
+| 3 workers, 3 months | 4 | killed | over 6 GB |
+
+"Killed" means a memory watchdog stopped the run once free RAM fell below a safety floor; the unguarded default run exhausted the machine's 16 GB outright. Even at one file at a time, plan on roughly 0.8 GB per `aggregate` worker for month periods of Events and set `aggregation.max_workers` to fit your RAM: the default of one worker per core assumes more memory per core than a typical laptop has.
 
 ### Aggregation: what `gdeltforge aggregate` actually buys, measured
 

@@ -1086,6 +1086,49 @@ class TestRunFilterDatasetParameter:
 
         assert captured["max_workers"] == 3
 
+    def test_passes_io_max_concurrent_reads_through_to_the_cleaner(self, tmp_path, monkeypatch):
+        cfg, events_in, _ = self._config(tmp_path)
+        cfg["io"] = {"max_concurrent_reads": 2}
+        pl.DataFrame(
+            {"GlobalEventID": [1], "Actor1Name": ["A"]}
+        ).write_parquet(events_in / "a.parquet")
+
+        captured = {}
+        real_init = GDELTCleaner.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(GDELTCleaner, "__init__", spy_init)
+
+        run_cleaner(cfg)
+
+        assert captured["max_concurrent_reads"] == 2
+
+    def test_max_concurrent_reads_caps_the_worker_count(self, tmp_path, monkeypatch):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        for name in ("a", "b", "c"):
+            pl.DataFrame({"GlobalEventID": [1]}).write_parquet(in_dir / f"{name}.parquet")
+
+        plans = []
+        real_plan_workers = cleaner_module.plan_workers
+
+        def recording_plan_workers(*args, **kwargs):
+            plan = real_plan_workers(*args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(cleaner_module, "plan_workers", recording_plan_workers)
+        cleaner = GDELTCleaner(
+            str(in_dir), str(tmp_path / "out"), columns_to_check=[],
+            max_workers=4, max_concurrent_reads=2,
+        )
+        cleaner.clean_all_files()
+
+        assert plans[0].workers == 2
+
     def test_events_reduced_resolves_historical_folders_regardless_of_partitioning(
         self, tmp_path, monkeypatch
     ):
@@ -1885,6 +1928,28 @@ class TestDryRunReport:
                 errata=DEFAULT_ERRATA, dry_run=True,
             ).clean_all_files()
         assert not any("errata.date_1920" in r.message for r in caplog.records)
+
+    def test_reads_with_the_same_worker_plan_as_a_real_run(self, tmp_path, monkeypatch):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        for name in ("a", "b", "c"):
+            pl.DataFrame({"GlobalEventID": [1]}).write_parquet(in_dir / f"{name}.parquet")
+
+        plans = []
+        real_plan_workers = cleaner_module.plan_workers
+
+        def recording_plan_workers(*args, **kwargs):
+            plan = real_plan_workers(*args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(cleaner_module, "plan_workers", recording_plan_workers)
+        GDELTCleaner(
+            str(in_dir), str(tmp_path / "out"), columns_to_check=[],
+            max_workers=4, max_concurrent_reads=2, dry_run=True, report=True,
+        ).clean_all_files()
+
+        assert [plan.workers for plan in plans] == [2]
 
 
 class TestRunCleanerErrataConfig:

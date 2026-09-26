@@ -120,6 +120,18 @@ def validate_max_workers(value: int | None, label: str) -> int | None:
     return value
 
 
+def resolve_max_concurrent_reads(config: dict) -> int | None:
+    """
+    io.max_concurrent_reads: how many files one filter/aggregate/sample/
+    crossref command may read at once, or None (the default) for no cap
+    beyond each stage's own worker count. Validated the same way as
+    max_workers, since 0 is just as falsy and just as meaningless here.
+    """
+    return validate_max_workers(
+        get_dict(config, "io").get("max_concurrent_reads"), "io.max_concurrent_reads"
+    )
+
+
 def get_dict(section: dict, key: str) -> dict:
     """
     section.get(key, {}), except an explicit `key: null` in the YAML is

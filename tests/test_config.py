@@ -12,8 +12,29 @@ from gdeltforge.utils.config import (
     dataset_path_key,
     get_dict,
     load_config,
+    resolve_max_concurrent_reads,
     validate_max_workers,
 )
+
+
+class TestResolveMaxConcurrentReads:
+    def test_missing_section_means_no_cap(self):
+        assert resolve_max_concurrent_reads({}) is None
+
+    def test_null_section_means_no_cap(self):
+        assert resolve_max_concurrent_reads({"io": None}) is None
+
+    def test_reads_the_configured_value(self):
+        assert resolve_max_concurrent_reads({"io": {"max_concurrent_reads": 4}}) == 4
+
+    def test_rejects_zero(self):
+        with pytest.raises(ValueError, match="io.max_concurrent_reads must be greater than 0"):
+            resolve_max_concurrent_reads({"io": {"max_concurrent_reads": 0}})
+
+    def test_bundled_default_ships_no_cap(self):
+        # SSD-first default: a config that never mentions io still gets the
+        # section from the bundled default, with no cap in it.
+        assert config_module._bundled_default_dict()["io"] == {"max_concurrent_reads": None}
 
 
 class TestDatasetPathKey:
@@ -279,7 +300,7 @@ class TestLoadConfig:
 
         assert set(config) == {
             "columns", "columns_numeric", "paths", "scraping", "converter", "clean",
-            "aggregation",
+            "aggregation", "io",
         }
         assert any("built-in default" in r.message for r in caplog.records)
 
@@ -414,7 +435,7 @@ class TestLoadConfig:
 
         assert set(config) == {
             "columns", "columns_numeric", "paths", "scraping", "converter", "clean",
-            "aggregation",
+            "aggregation", "io",
         }
         assert any(
             "in memory only" in r.message and "read-only filesystem" in r.message
