@@ -6,6 +6,7 @@ class TestActorCountryCodes:
         codes = cameo_codes.actor_country_codes()
         assert codes["USA"] == "United States"
         assert codes["RUS"] == "Russia"
+        assert codes["COL"] == "Colombia"
 
     def test_is_three_letter_codes(self):
         codes = cameo_codes.actor_country_codes()
@@ -37,12 +38,33 @@ class TestGeoCountryCodes:
         assert codes["JQ"] == "Johnston Atoll"
         assert codes["MQ"] == "Midway Islands"
 
+    def test_names_match_the_places_gdelt_writes_for_them(self):
+        # A country-level place's FullName is the country's own name, so the
+        # archive names these codes directly.
+        codes = cameo_codes.geo_country_codes()
+        assert codes["HQ"] == "Howland Island"
+        assert codes["RB"] == "Serbia (general)"
+        assert codes["OS"] == "Oceans"
+
+    def test_has_fips_codes_only(self):
+        # AX is Akrotiri in FIPS 10-4; AD, SR and UM are ISO 3166 codes
+        # (FIPS Suriname is NS) that never occur in the record.
+        codes = cameo_codes.geo_country_codes()
+        assert codes["AX"] == "Akrotiri"
+        assert codes["NS"] == "Suriname"
+        assert not {"AD", "SR", "UM"} & set(codes)
+
 
 class TestEthnicCodes:
     def test_has_known_entries(self):
         codes = cameo_codes.ethnic_codes()
-        assert codes["AAR"] == "Afar"
-        assert codes["KUR"] == "Kurd"
+        assert codes["aar"] == "Afar"
+        assert codes["kur"] == "Kurd"
+
+    def test_keys_are_lowercase_like_the_data(self):
+        # GDELT writes ethnic codes lowercase, in the Events data and in its
+        # own CAMEO.ethnic.txt; an exact-key lookup must match the record.
+        assert all(c == c.lower() for c in cameo_codes.ethnic_codes())
 
 
 class TestKnownGroupCodes:
@@ -58,6 +80,29 @@ class TestKnownGroupCodes:
         assert codes["PLO"] == "Palestine Liberation Organization"
         assert codes["FID"] == "International Federation for Human Rights (FIDH)"
         assert codes["NON"] == "Non-Aligned Movement (Organization of Non-Aligned Countries)"
+
+    def test_names_match_the_actor_names_coded_with_them(self):
+        # These codes once carried guessed names that the full Events
+        # archive contradicts: SCE appears only beside "OSCE", XFM beside
+        # "OXFAM", GOE beside "GROUP OF EIGHT", WAS mostly beside "ECOWAS".
+        codes = cameo_codes.known_group_codes()
+        assert "OSCE" in codes["SCE"]
+        assert codes["XFM"] == "Oxfam"
+        assert codes["GOE"] == "Group of Eight (G-8)"
+        assert "ECOWAS" in codes["WAS"]
+        assert "SAARC" in codes["SAA"]
+
+    def test_has_every_code_in_gdelts_own_lookup_table(self):
+        # gdeltproject.org/data/lookups/CAMEO.knowngroup.txt; none of these
+        # occurs in the Events archive, all are GDELT's own codes.
+        codes = cameo_codes.known_group_codes()
+        assert codes["HMS"] == "Hamas"
+        assert codes["WHO"] == "World Health Organization"
+
+    def test_holds_only_three_letter_group_codes(self):
+        # Complete actor codes such as IGOUNO or NGOAMN are the group code
+        # behind a type prefix; KnownGroupCode never carries one.
+        assert all(len(c) == 3 for c in cameo_codes.known_group_codes())
 
     def test_ambiguous_code_documents_both_real_meanings(self):
         # CEM maps to two distinct organizations in real archive data
@@ -78,6 +123,10 @@ class TestReligionCodes:
         codes = cameo_codes.religion_codes()
         assert codes["JHW"] == "Jehovah's Witnesses"
         assert codes["MRN"] == "Maronite Church"
+        # Coded beside "ULTRA ORTHODOX"/"HAREDI" and "ALAWI" in the archive.
+        assert codes["UDX"] == "Ultra-Orthodox Judaism (Haredi)"
+        assert codes["ALE"] == "Alawites (Alawi)"
+        assert codes["DRZ"] == "Druze"
 
 
 class TestTypeCodes:
@@ -86,6 +135,10 @@ class TestTypeCodes:
         assert codes["GOV"].startswith("Government")
         assert codes["MIL"].startswith("Military")
         assert codes["REB"].startswith("Rebels")
+        assert codes["PKO"] == "Peacekeepers"
+
+    def test_holds_only_three_letter_type_codes(self):
+        assert all(len(c) == 3 for c in cameo_codes.type_codes())
 
 
 class TestEventCodes:
@@ -107,14 +160,13 @@ class TestEventCodes:
         assert codes["1213"] == "Reject judicial cooperation"
         assert codes["1214"] == "Reject intelligence cooperation"
 
-    def test_malformed_record_markers_are_not_included(self):
-        # GDELT's own sentinels for rows its event coder couldn't classify
-        # at all, not real CAMEO codes; deliberately excluded so filtering
-        # on one still (correctly) warns.
+    def test_non_category_markers_are_listed_with_their_meaning(self):
+        # Real values in the record that aren't CAMEO categories: the null
+        # code "---" (and its root "--"), and the undocumented "X".
         codes = cameo_codes.event_codes()
-        assert "X" not in codes
-        assert "--" not in codes
-        assert "---" not in codes
+        assert codes["---"].startswith("No event")
+        assert codes["--"].startswith("No event")
+        assert "undocumented" in codes["X"]
 
 
 class TestCodeFamilyForColumn:
@@ -177,9 +229,9 @@ class TestIsRecognizedCode:
         assert cameo_codes.is_recognized_code("QuadClass", "1") is None
 
     def test_is_case_insensitive(self):
-        # Real GDELT data stores Actor1/2EthnicCode lowercase; the bundled
-        # reference uses uppercase keys. A naive membership check on raw
-        # case would report every real ethnic code as unrecognized.
+        # A few ethnic codes occur in both cases in the real archive
+        # ("pal" and "PAL"), so neither spelling may be reported as
+        # unrecognized.
         assert cameo_codes.is_recognized_code("Actor1EthnicCode", "aar") is True
         assert cameo_codes.is_recognized_code("Actor1EthnicCode", "AAR") is True
         assert cameo_codes.is_recognized_code("Actor1CountryCode", "usa") is True
@@ -189,9 +241,26 @@ class TestIsRecognizedCode:
         assert cameo_codes.is_recognized_code("EventBaseCode", "010") is True
         assert cameo_codes.is_recognized_code("EventCode", "1213") is True
 
-    def test_malformed_record_marker_is_not_recognized(self):
-        # A real value that occurs in real GDELT data (the event coder's
-        # own "couldn't classify this row" marker), correctly still flagged
-        # since it isn't a CAMEO code.
-        assert cameo_codes.is_recognized_code("EventCode", "X") is False
-        assert cameo_codes.is_recognized_code("EventRootCode", "--") is False
+    def test_non_category_markers_are_recognized(self):
+        # Every value in the record resolves, markers included.
+        assert cameo_codes.is_recognized_code("EventCode", "X") is True
+        assert cameo_codes.is_recognized_code("EventRootCode", "--") is True
+        assert cameo_codes.is_recognized_code("EventCode", "---") is True
+
+
+class TestLookup:
+    def test_returns_the_name(self):
+        assert cameo_codes.lookup("Actor1CountryCode", "USA") == "United States"
+
+    def test_is_case_insensitive_in_both_directions(self):
+        # Ethnic keys are lowercase, other families uppercase; the record
+        # holds a few ethnic codes in uppercase too.
+        assert cameo_codes.lookup("Actor1EthnicCode", "pal") == "Palestinian"
+        assert cameo_codes.lookup("Actor2EthnicCode", "PAL") == "Palestinian"
+        assert cameo_codes.lookup("ActionGeo_CountryCode", "us") == "United States"
+
+    def test_unknown_code_returns_none(self):
+        assert cameo_codes.lookup("EventCode", "999") is None
+
+    def test_non_coded_column_returns_none(self):
+        assert cameo_codes.lookup("QuadClass", "1") is None

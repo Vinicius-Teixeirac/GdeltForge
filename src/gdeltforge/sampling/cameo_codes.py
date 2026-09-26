@@ -44,20 +44,46 @@ repeatedly on extradition/tribunal/judge-order patterns (judicial), 1214
 on a records-related pattern (intelligence), consistent with the X13/X14
 convention rather than assumed from numbering alone.
 
-EventCode/EventBaseCode/EventRootCode also carry a small number of
-GDELT's own malformed-record markers ("X", "--", "---") for rows its
-event coder couldn't classify at all. These aren't CAMEO codes and are
-deliberately left out of the reference, so a filter on one of them will
-(correctly) still warn.
+EventCode/EventBaseCode/EventRootCode also carry three markers that
+aren't CAMEO event categories, listed here so every value in the record
+resolves. "---" (EventCode/EventBaseCode, 325 rows in the 1979 to 2026
+archive) is the CAMEO null code: PETRARCH's reader defines it as the
+code of a verb pattern that "does not generate an event", used on 693
+patterns in the CAMEO verb dictionary to block phrases that match an
+event verb without being a political event. "--" is its first two
+characters, written to EventRootCode on the same rows. "X" (9 rows,
+all three columns) is undocumented anywhere in CAMEO or PETRARCH; every
+row carrying it is QuadClass 4, material conflict, with no Goldstein
+score, so it reads as a coercion-type event whose code was lost.
+
+Every name was then checked again, in 2026-09, against GDELT's own lookup
+tables (gdeltproject.org/data/lookups/*.txt) and against the full Events
+archive (869M rows, 1979 to 2026-07): a geo-country code against the
+FullName GDELT writes for a country-level place, an actor code against the
+actor names coded with it. Where the two sources disagree, the archive
+wins. That pass corrected guessed names (known-group SCE is the OSCE, XFM
+is Oxfam, WAS is ECOWAS; geo HQ is Howland Island) and spelling slips
+("Columbia" for Colombia), added every code GDELT's tables list that was
+missing here (Hamas, WHO and 47 more known groups, 38 ethnic codes,
+peacekeepers and 4 more actor types, Druze, Akrotiri and Dhekelia), and
+dropped keys that aren't codes of their family: complete actor codes
+such as IGOUNO in the known-group and type tables, and ISO 3166 codes
+(AD, SR, UM) among the FIPS ones. GDELT's own tables carry errors of their own
+(ethnic "bod" as Tibetan where the archive codes it beside "BODO", geo LO
+as Czechoslovakia), so they aren't copied blindly either.
 
 None of this is exhaustive by construction, just by verification against
 one archive snapshot: FIPS 10-4 was retired as a standard in 2008 and the
 CAMEO known-group list isn't actively maintained, so a miss here means
 "not recognized," not "definitely wrong."
 
-Ethnic codes are stored lowercase in real GDELT data but uppercase in the
-source codebook; is_recognized_code() compares case-insensitively
-everywhere to avoid that mismatch alone producing false warnings.
+Ethnic codes are keyed lowercase, the way GDELT writes them in the
+Events data and in its own lookup table (99.5% of the archive's ethnic
+values). Every other family is uppercase, matching the data. A few
+ethnic codes also occur uppercase in the record ("PAL", "ARB", "KUR"),
+so lookup() and is_recognized_code() both compare case-insensitively;
+translate codes through lookup(), never a raw dict index, and no
+spelling of a code falls through.
 """
 
 import json
@@ -156,8 +182,19 @@ def family_name_for_column(column: str) -> str | None:
 
 
 @cache
-def _uppercase_keys(family_key: str) -> frozenset[str]:
-    return frozenset(k.upper() for k in _load()[family_key])
+def _uppercase_keys(family_key: str) -> dict[str, str]:
+    return {k.upper(): name for k, name in _load()[family_key].items()}
+
+
+def lookup(column: str, value: str) -> str | None:
+    """
+    The name for value in column's code family, case-insensitively, or
+    None if column isn't a CAMEO-coded column or value isn't a known code.
+    """
+    family_key = _FAMILY_KEY_FOR_COLUMN.get(column)
+    if family_key is None:
+        return None
+    return _uppercase_keys(family_key).get(value.upper())
 
 
 def is_recognized_code(column: str, value: str) -> bool | None:
