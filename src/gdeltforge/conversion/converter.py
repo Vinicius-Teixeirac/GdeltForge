@@ -53,6 +53,7 @@ from tqdm import tqdm
 
 from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
+from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
     dataset_is_always_historical,
     dataset_path_key,
@@ -691,9 +692,9 @@ class GDELTConverter:
                 logger.debug(f"[dry run]   {Path(source_file).name}")
             return [], []
 
+        worker_plan = plan_workers(self.max_workers, len(to_process))
         logger.info(
-            f"Converting {len(to_process)} {unit} file(s) using "
-            f"{self.max_workers or os.cpu_count() or '?'} worker process(es)..."
+            f"Converting {len(to_process)} {unit} file(s) using {worker_plan.describe()}..."
         )
         all_outputs: list[str] = []
         failed: list[str] = []
@@ -717,8 +718,14 @@ class GDELTConverter:
         # spawn starts a genuinely fresh interpreter per worker with
         # nothing inherited, the same mechanism Windows already relies on
         # here.
-        with ProcessPoolExecutor(
-            max_workers=self.max_workers,
+        #
+        # polars_worker_env gives each worker ceil(cores / workers) polars
+        # threads. Without it every spawned worker sized its own pools to
+        # the whole machine: N workers carried N x 2 x cores threads, and
+        # measured peak memory at 4 workers fell from ~4 GB to ~2.5 GB
+        # with the split, at the same or better speed.
+        with polars_worker_env(worker_plan), ProcessPoolExecutor(
+            max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
         ) as executor:
             futures = {

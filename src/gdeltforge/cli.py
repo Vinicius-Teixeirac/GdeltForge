@@ -28,12 +28,14 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import date_parser_for, parse_file_date, run_scraping_pipeline
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
+from gdeltforge.utils.concurrency import polars_scan_limit
 from gdeltforge.utils.config import (
     dataset_is_aggregation_eligible,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
     load_config,
+    resolve_max_concurrent_reads,
 )
 from gdeltforge.utils.io import (
     ensure_exists,
@@ -1402,11 +1404,17 @@ def main() -> None:
         elif args.command == "aggregate":
             run_aggregate_cmd(config, args)
 
+        # sample/crossref read many files through one multi-file scan in
+        # this process, not a worker pool, so io.max_concurrent_reads is
+        # applied here directly; filter/aggregate apply it to their own
+        # worker count instead.
         elif args.command == "sample":
-            run_sampling_cmd(config, args)
+            with polars_scan_limit(resolve_max_concurrent_reads(config)):
+                run_sampling_cmd(config, args)
 
         elif args.command == "crossref":
-            run_crossref_cmd(config, args)
+            with polars_scan_limit(resolve_max_concurrent_reads(config)):
+                run_crossref_cmd(config, args)
 
     except _Terminated:
         # Caught ahead of the plain KeyboardInterrupt clause below, since
