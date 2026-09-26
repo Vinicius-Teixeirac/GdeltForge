@@ -52,8 +52,8 @@ class TestDatasetPathKey:
         assert dataset_path_key("gdelt_gkg_v2", "parquet_data_directory") == (
             "gkg_v2_parquet_data_directory"
         )
-        assert dataset_path_key("gdelt_mentions", "filtered_data_directory") == (
-            "mentions_filtered_data_directory"
+        assert dataset_path_key("gdelt_mentions", "cleaned_data_directory") == (
+            "mentions_cleaned_data_directory"
         )
 
     def test_unknown_dataset_raises(self):
@@ -122,29 +122,29 @@ class TestDeepMergeDefaults:
 
     def test_missing_nested_key_is_filled_in(self):
         merged = config_module._deep_merge_defaults(
-            {"filter": {"max_workers": 4}},
-            {"filter": {"max_workers": None, "columns_to_check": {"gdelt_event": []}}},
+            {"clean": {"max_workers": 4}},
+            {"clean": {"max_workers": None, "columns_to_check": {"gdelt_event": []}}},
         )
-        assert merged["filter"] == {"max_workers": 4, "columns_to_check": {"gdelt_event": []}}
+        assert merged["clean"] == {"max_workers": 4, "columns_to_check": {"gdelt_event": []}}
 
     def test_a_users_list_value_is_never_merged_element_by_element(self):
         # A user's own (possibly empty) columns_to_check list for a dataset
         # must win outright, not get padded with the default's entries for
         # that same dataset: only dict values recurse, never lists.
         merged = config_module._deep_merge_defaults(
-            {"filter": {"columns_to_check": {"gdelt_event": []}}},
-            {"filter": {"columns_to_check": {"gdelt_event": ["Actor1Name"]}}},
+            {"clean": {"columns_to_check": {"gdelt_event": []}}},
+            {"clean": {"columns_to_check": {"gdelt_event": ["Actor1Name"]}}},
         )
-        assert merged["filter"]["columns_to_check"]["gdelt_event"] == []
+        assert merged["clean"]["columns_to_check"]["gdelt_event"] == []
 
     def test_original_dicts_are_not_mutated(self):
-        config = {"filter": {"max_workers": 4}}
-        defaults = {"filter": {"max_workers": None, "columns_to_check": {}}}
+        config = {"clean": {"max_workers": 4}}
+        defaults = {"clean": {"max_workers": None, "columns_to_check": {}}}
 
         config_module._deep_merge_defaults(config, defaults)
 
-        assert config == {"filter": {"max_workers": 4}}
-        assert defaults == {"filter": {"max_workers": None, "columns_to_check": {}}}
+        assert config == {"clean": {"max_workers": 4}}
+        assert defaults == {"clean": {"max_workers": None, "columns_to_check": {}}}
 
 
 class TestValidateMaxWorkers:
@@ -299,7 +299,7 @@ class TestLoadConfig:
             config = load_config()
 
         assert set(config) == {
-            "columns", "columns_numeric", "paths", "scraping", "converter", "filter",
+            "columns", "columns_numeric", "paths", "scraping", "converter", "clean",
             "aggregation", "io",
         }
         assert any("built-in default" in r.message for r in caplog.records)
@@ -309,7 +309,7 @@ class TestLoadConfig:
         # zero-config run must never silently drop rows or columns.
         config = load_config()
 
-        for columns in config["filter"]["columns_to_check"].values():
+        for columns in config["clean"]["columns_to_check"].values():
             assert columns == []
         assert "output_columns" not in config.get("filter", {})
         assert "output_columns" not in config.get("converter", {})
@@ -371,10 +371,10 @@ class TestLoadConfig:
 
         defaults = config_module._bundled_default_dict()
         assert config["converter"] == defaults["converter"]
-        assert config["filter"] == defaults["filter"]
+        assert config["clean"] == defaults["clean"]
         # And the .get() chains real call sites use no longer raise:
         assert config["converter"].get("max_workers") is None
-        assert config["filter"].get("output_columns", {}).get("gdelt_event") is None
+        assert config["clean"].get("output_columns", {}).get("gdelt_event") is None
 
     def test_sections_with_real_content_keep_the_users_values(self):
         custom = self.tmp_path / "custom.yaml"
@@ -412,7 +412,7 @@ class TestLoadConfig:
         defaults = config_module._bundled_default_dict()
         assert config["columns"] == defaults["columns"]
         assert config["columns_numeric"] == defaults["columns_numeric"]
-        assert config["filter"]["columns_to_check"] == defaults["filter"]["columns_to_check"]
+        assert config["clean"]["columns_to_check"] == defaults["clean"]["columns_to_check"]
         assert config["scraping"]["timeout"] == 60
         # Untouched scraping keys still come from the default alongside it.
         assert config["scraping"]["retries"] == defaults["scraping"]["retries"]
@@ -434,10 +434,53 @@ class TestLoadConfig:
             config = load_config()
 
         assert set(config) == {
-            "columns", "columns_numeric", "paths", "scraping", "converter", "filter",
+            "columns", "columns_numeric", "paths", "scraping", "converter", "clean",
             "aggregation", "io",
         }
         assert any(
             "in memory only" in r.message and "read-only filesystem" in r.message
             for r in caplog.records
         )
+
+
+class TestDeprecatedCleanNames:
+    """The clean stage was called `filter` before 0.12: an existing
+    settings.yaml using the old section and path-key names keeps loading,
+    translated, with a warning per name."""
+
+    def test_filter_section_and_path_keys_are_translated(self, tmp_path, caplog):
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "filter:\n"
+            "  columns_to_check:\n"
+            "    gdelt_event: [Actor1Code]\n"
+            "paths:\n"
+            "  filtered_data_directory: ./old/events/filtered\n"
+            "  gkg_v2_filtered_historical_directory: ./old/gkg/hist\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            config = load_config(str(path))
+        assert "filter" not in config
+        assert config["clean"]["columns_to_check"]["gdelt_event"] == ["Actor1Code"]
+        assert config["paths"]["cleaned_data_directory"] == "./old/events/filtered"
+        assert config["paths"]["gkg_v2_cleaned_historical_directory"] == "./old/gkg/hist"
+        assert "filtered_data_directory" not in config["paths"]
+        messages = " ".join(r.message for r in caplog.records)
+        assert "`filter:` section is deprecated" in messages
+        assert "paths.filtered_data_directory is deprecated" in messages
+
+    def test_old_and_new_section_together_is_an_error(self, tmp_path):
+        path = tmp_path / "settings.yaml"
+        path.write_text("filter: {max_workers: 2}\nclean: {max_workers: 4}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="sets both `filter:` and `clean:`"):
+            load_config(str(path))
+
+    def test_old_and_new_path_key_together_is_an_error(self, tmp_path):
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "paths:\n  filtered_data_directory: a\n  cleaned_data_directory: b\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="paths.filtered_data_directory and"):
+            load_config(str(path))

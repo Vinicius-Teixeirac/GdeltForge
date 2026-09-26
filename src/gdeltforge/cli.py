@@ -9,13 +9,13 @@ from pathlib import Path
 
 from gdeltforge import __version__
 from gdeltforge.aggregation.aggregator import run_aggregator
+from gdeltforge.cleaning.cleaner import run_cleaner
 from gdeltforge.conversion.converter import run_converter
 from gdeltforge.crossref.crossref import (
     crossref_events_gkg_auto,
     crossref_events_gkg_v1,
     crossref_events_gkg_v2,
 )
-from gdeltforge.filtering.filter import run_filter
 
 # Samplers
 from gdeltforge.sampling import cameo_codes
@@ -40,6 +40,7 @@ from gdeltforge.utils.config import (
 from gdeltforge.utils.io import (
     ensure_exists,
     read_parquet_path,
+    warn_if_folder_holds_cleaned_files,
     write_dataframe_atomic,
     write_parquet_atomic,
 )
@@ -265,7 +266,7 @@ def _apply_verbosity(args: argparse.Namespace) -> None:
     Applies --verbose/--quiet to this module's own logger (gdeltforge.cli),
     not just the stage module's. Without this, "Starting X stage..."/"X
     completed." (logged from here, not from scraper.py/converter.py/
-    filter.py/aggregation.py) would leak through under --quiet, and
+    cleaner.py/aggregation.py) would leak through under --quiet, and
     --quiet's own "suppress even the default setup/summary lines" promise
     would be a lie for exactly those two lines. Only called from the four
     commands that actually define these flags (scrape/convert/filter/
@@ -374,22 +375,46 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
 
-def run_filter_cmd(config: dict, args: argparse.Namespace) -> None:
+def _migrate_deprecated_args(args: argparse.Namespace) -> None:
+    """
+    Translate the clean stage's pre-0.12 CLI names, with a warning: the
+    `filter` command (an argparse alias of `clean`) and `--source filtered`
+    (sample/aggregate/crossref) both keep working through 0.12.x.
+    """
+    if args.command == "filter":
+        logger.warning(
+            "`gdeltforge filter` is deprecated: the stage is now `gdeltforge clean`. "
+            "The old name will stop working in a future release."
+        )
+    if getattr(args, "source", None) == "filtered":
+        logger.warning(
+            "--source filtered is deprecated: use --source cleaned. "
+            "The old value will stop working in a future release."
+        )
+        args.source = "cleaned"
+
+
+def run_clean_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
     start_date, end_date = _parse_date_range(args)
 
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
-    logger.info("Starting filtering stage...")
-    files_processed, files_failed = run_filter(
+    if args.report and not args.dry_run:
+        raise ValueError(
+            "--report only applies with --dry-run: it measures what each step would "
+            "change without writing anything."
+        )
+    logger.info("Starting clean stage...")
+    files_processed, files_failed = run_cleaner(
         config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force, dry_run=args.dry_run,
+        force=args.force, dry_run=args.dry_run, report=args.report,
     )
-    logger.info("Filtering completed.")
+    logger.info("Cleaning completed.")
 
     if files_failed:
         raise RuntimeError(
-            f"Filtering finished with {files_failed} failed file(s) out of "
+            f"Cleaning finished with {files_failed} failed file(s) out of "
             f"{files_processed + files_failed}."
         )
 
@@ -471,13 +496,15 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         date_parser = parse_file_date
     else:
         source_key, historical_key = (
-            ("filtered_data_directory", "filtered_historical_directory")
-            if args.source == "filtered"
+            ("cleaned_data_directory", "cleaned_historical_directory")
+            if args.source == "cleaned"
             else ("parquet_data_directory", "parquet_historical_directory")
         )
         source_key = dataset_path_key(dataset, source_key)
         historical_key = dataset_path_key(dataset, historical_key)
         source_folder = ensure_exists(config["paths"][source_key], source_key)
+        if args.source == "converted":
+            warn_if_folder_holds_cleaned_files(source_folder, "sample --source converted", logger)
         hist_folder = _historical_folder(config, historical_key, dataset)
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
@@ -624,8 +651,15 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     events_df = read_parquet_path(args.events)
     columns = set(args.columns) if args.columns else None
     source_key = (
-        "filtered_data_directory" if args.source == "filtered" else "parquet_data_directory"
+        "cleaned_data_directory" if args.source == "cleaned" else "parquet_data_directory"
     )
+    if args.source == "converted":
+        for joined in ("gdelt_gkg_v1", "gdelt_gkg_v1_counts", "gdelt_mentions", "gdelt_gkg_v2"):
+            folder = config["paths"].get(dataset_path_key(joined, source_key))
+            if folder and Path(folder).is_dir():
+                warn_if_folder_holds_cleaned_files(
+                    folder, f"crossref --source converted ({joined})", logger
+                )
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -925,26 +959,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ----------------------------------------------------
-    # filter
+    # clean (formerly filter, still accepted as a deprecated alias)
     # ----------------------------------------------------
-    filter_ = subparsers.add_parser("filter", help="Filter parquet files")
-    filter_.add_argument(
+    clean_ = subparsers.add_parser(
+        "clean", aliases=["filter"],
+        help="Clean converted parquet: gdeltforge's data-quality stage "
+             "(`filter` is its deprecated pre-0.12 name)",
+    )
+    clean_.add_argument(
         "--dataset",
         choices=_DATASET_CHOICES,
         required=True,
-        help="Which GDELT dataset to filter (required)"
+        help="Which GDELT dataset to clean (required)"
     )
-    filter_.add_argument(
+    clean_.add_argument(
         "--start-date",
         metavar="YYYY-MM-DD",
-        help="Only filter files whose period starts on or after this date",
+        help="Only clean files whose period starts on or after this date",
     )
-    filter_.add_argument(
+    clean_.add_argument(
         "--end-date",
         metavar="YYYY-MM-DD",
-        help="Only filter files whose period ends on or before this date",
+        help="Only clean files whose period ends on or before this date",
     )
-    filter_.add_argument(
+    clean_.add_argument(
         "--order",
         choices=["asc", "desc"],
         default="asc",
@@ -952,40 +990,47 @@ def build_parser() -> argparse.ArgumentParser:
              "Only controls which files are submitted to the worker pool first, not real "
              "completion order under concurrency"
     )
-    filter_.add_argument(
+    clean_.add_argument(
         "--delete-source",
         action="store_true",
-        help="Delete each source (unfiltered, converted) parquet once its filtered output "
+        help="Delete each source (converted) parquet once its cleaned output "
              "is written and confirmed done. Off by default. Combined with "
              "columns_to_check/output_columns/float32_columns, whatever those narrowed away "
              "can't be recovered without re-converting; also removes the option to later "
-             "`sample --source converted` against the unfiltered data"
+             "`sample --source converted` against the uncleaned data"
     )
-    filter_verbosity = filter_.add_mutually_exclusive_group()
-    filter_verbosity.add_argument(
+    clean_verbosity = clean_.add_mutually_exclusive_group()
+    clean_verbosity.add_argument(
         "--verbose",
         action="store_true",
-        help="Show per-file filter detail (rows kept per file, which are skipped as already "
+        help="Show per-file clean detail (rows kept per file, which are skipped as already "
              "done) instead of just the progress bar and summary. Off by default: at GKG "
              "2.1/Mentions scale this is hundreds of thousands of lines"
     )
-    filter_verbosity.add_argument(
+    clean_verbosity.add_argument(
         "--quiet", "-q",
         action="store_true",
         help="Suppress even the default setup/summary lines, leaving only warnings and "
              "errors. Off by default"
     )
-    filter_.add_argument(
+    clean_.add_argument(
         "--force",
         action="store_true",
         help="Reprocess files already marked done instead of skipping them, overwriting "
-             "their filtered output. Off by default"
+             "their cleaned output. Off by default"
     )
-    filter_.add_argument(
+    clean_.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report how many files would be filtered without filtering anything. "
+        help="Report how many files would be cleaned without cleaning anything. "
              "Off by default"
+    )
+    clean_.add_argument(
+        "--report",
+        action="store_true",
+        help="With --dry-run: read every file in scope and report what each step "
+             "would change (rows removed, values repaired, columns kept, unrecognized "
+             "codes). Slower than a plain --dry-run, since it reads the data. Off by default"
     )
 
     # ----------------------------------------------------
@@ -1014,11 +1059,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     aggregate.add_argument(
         "--source",
-        choices=["filtered", "converted"],
-        default="filtered",
-        help="Which stage's output to aggregate from: 'filtered' (default, "
-             "after the filter command) or 'converted' (raw parquet, before "
-             "filtering). Recorded as part of this run's resumability "
+        choices=["cleaned", "converted", "filtered"],
+        default="cleaned",
+        help="Which stage's output to aggregate from: 'cleaned' (default, "
+             "after the clean command) or 'converted' (raw parquet, before "
+             "cleaning); 'filtered' is a deprecated alias of 'cleaned'. "
+             "Recorded as part of this run's resumability "
              "fingerprint, so switching source for an already-aggregated "
              "period reprocesses and overwrites it rather than mixing the two"
     )
@@ -1098,14 +1144,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sample.add_argument(
         "--source",
-        choices=["filtered", "converted", "aggregated"],
-        default="filtered",
-        help="Which stage's output to sample from: 'filtered' (default, "
-             "after the filter command), 'converted' (raw parquet, "
-             "before filtering), or 'aggregated' (after `gdeltforge "
+        choices=["cleaned", "converted", "aggregated", "filtered"],
+        default="cleaned",
+        help="Which stage's output to sample from: 'cleaned' (default, "
+             "after the clean command), 'converted' (raw parquet, "
+             "before cleaning), or 'aggregated' (after `gdeltforge "
              "aggregate`; --dataset must be gkg-v2/mentions/events-15min, "
              "and --period picks which of its day/month/year directories "
-             "to read, default 'day')"
+             "to read, default 'day'). 'filtered' is a deprecated alias "
+             "of 'cleaned'"
     )
     sample.add_argument(
         "-n", type=int, default=1000,
@@ -1228,9 +1275,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     crossref.add_argument(
         "--source",
-        choices=["filtered", "converted"],
-        default="filtered",
-        help="Which stage's GKG/Mentions output to read from (default: filtered)"
+        choices=["cleaned", "converted", "filtered"],
+        default="cleaned",
+        help="Which stage's GKG/Mentions output to read from (default: cleaned; "
+             "'filtered' is a deprecated alias of 'cleaned')"
     )
     crossref.add_argument(
         "--columns",
@@ -1340,6 +1388,7 @@ def main() -> None:
             return
 
         config = load_config(args.config)
+        _migrate_deprecated_args(args)
 
         logger.info(f"Running command: {args.command}")
 
@@ -1349,8 +1398,8 @@ def main() -> None:
         elif args.command == "convert":
             run_convert_cmd(config, args)
 
-        elif args.command == "filter":
-            run_filter_cmd(config, args)
+        elif args.command in ("clean", "filter"):
+            run_clean_cmd(config, args)
 
         elif args.command == "aggregate":
             run_aggregate_cmd(config, args)

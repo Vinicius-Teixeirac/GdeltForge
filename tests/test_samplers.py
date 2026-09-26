@@ -2581,3 +2581,37 @@ class TestTqdmInterruptDoesNotLeakATraceback:
                 sampler.get_stratified_sample("QuadClass", n_per_group=1)
 
         assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+
+class TestCalendarWarnsAboutPre1979Dates:
+    """GDELT dated some 2020 events 1920; uncleaned data turns them into
+    false calendar periods, which the sampler says out loud."""
+
+    def test_warns_and_names_the_fix(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(4),
+            "Day": [19200101, 19200102, 20200105, 20200106],
+        }).write_parquet(folder / "a.parquet")
+
+        with caplog.at_level(logging.WARNING):
+            df = CalendarSampler(str(folder), random_state=1).get_calendar_samples(
+                samples_per_period=5
+            )
+
+        # The rows are still sampled: the warning reports, it doesn't drop.
+        assert df.height == 4
+        messages = [r.message for r in caplog.records]
+        assert any("2 row(s) have a Day before 1979" in m and "gdeltforge clean" in m
+                   for m in messages)
+
+    def test_no_warning_for_dates_from_1979_on(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [19790101]}).write_parquet(
+            folder / "a.parquet"
+        )
+        with caplog.at_level(logging.WARNING):
+            CalendarSampler(str(folder), random_state=1).get_calendar_samples()
+        assert not any("before 1979" in r.message for r in caplog.records)

@@ -8,6 +8,9 @@
 - relational operators (`>`, `<`)
 - nested `AND` / `OR` logical blocks
 
+!!! note "Filtered sampling vs the `clean` stage"
+    Filtered sampling selects rows that are *relevant* to your study, per run, without writing anything but the sample. The [`clean`](data-cleaning.md) stage decides whether rows are *usable* at all, once, for the whole dataset. Row selection by content lives only here; see [Data Cleaning](data-cleaning.md#quality-not-relevance) for why.
+
 Below is the complete specification. For runnable end-to-end examples built on it, see [Recipes](recipes.md); to check that a filter value is a valid code before running, see [`gdeltforge codes`](cli-reference.md#gdeltforge-codes).
 
 !!! note "Which columns you can filter on depends on your dataset"

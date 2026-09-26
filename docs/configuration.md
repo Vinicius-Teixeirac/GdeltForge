@@ -13,7 +13,7 @@ For a real, ongoing project, start from the template:
 cp config/settings.example.yaml config/settings.yaml
 ```
 
-and customize it, especially `paths` and `filter.columns_to_check`.
+and customize it, especially `paths` and `clean.columns_to_check`.
 
 ### Tier 4: the built-in default
 
@@ -21,13 +21,13 @@ You don't have to do that first, though. If none of 1-3 resolve to a real file, 
 
 This exists for exactly the case where copying a template first isn't practical: a `pip install gdeltforge` (in a fresh Google Colab session, for instance) drops nothing into the working directory the way a git clone's `config/settings.example.yaml` does, and an ephemeral environment that wipes its filesystem on every session reset means you'd otherwise be reconstructing that file by hand every single time. `--config`/`GDELTFORGE_CONFIG` still work exactly as before for anything you want to survive past the current session, e.g. a file saved on a mounted Google Drive.
 
-It is deliberately a different, more conservative file than `settings.example.yaml`, not the same content with the paths changed: every row and every column survive by default (`filter.columns_to_check` is present but empty for every dataset, and there's no `output_columns`/`float32_columns` pruning anywhere), so a first run's output is never silently shaped by choices you didn't make. `settings.example.yaml` remains the place to look for the storage/row-filtering wins (GKG column pruning, `zstd` compression, geocoding-required filtering) that are worth opting into deliberately once you know your data's shape; see the source of `src/gdeltforge/config/default_settings.yaml` for its own paths (real `./data/...` locations, not `settings.example.yaml`'s `./path_example/...` placeholders) and every other default it sets.
+It is deliberately a different, more conservative file than `settings.example.yaml`, not the same content with the paths changed: every row and every column survive by default (`clean.columns_to_check` is present but empty for every dataset, and there's no `output_columns`/`float32_columns` pruning anywhere), so a first run's output is never silently shaped by choices you didn't make. `settings.example.yaml` remains the place to look for the storage/row-filtering wins (GKG column pruning, `zstd` compression, geocoding-required filtering) that are worth opting into deliberately once you know your data's shape; see the source of `src/gdeltforge/config/default_settings.yaml` for its own paths (real `./data/...` locations, not `settings.example.yaml`'s `./path_example/...` placeholders) and every other default it sets.
 
 An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a path that turns out to be missing still raises `FileNotFoundError` rather than silently falling back: that's almost always a typo, not a request to use the built-in default instead.
 
 ## Datasets and `--dataset`
 
-`convert`, `filter`, `sample`, and `scrape` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there is no default. This selects which set of `columns`/`columns_numeric`/`filter.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
+`convert`, `clean`, `sample`, and `scrape` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there is no default. This selects which set of `columns`/`columns_numeric`/`clean.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
 
 | `--dataset` | Config key | Status |
 |---|---|---|
@@ -55,7 +55,7 @@ GKG's own repeated/structured sub-fields (themes, persons, GCAM scores, `EventId
 
 All directories the pipeline reads from or writes to. Absolute or relative paths both work. Events keeps its original, unprefixed keys; every other dataset uses a prefixed sibling key for the same four stages, since mixing different datasets' files in one directory would be a real correctness hazard, not just an organizational one. The actual config key is `<prefix><base key>`, e.g. `gkg_v1_counts_` + `downloaded_data_directory` = `gkg_v1_counts_downloaded_data_directory`.
 
-The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/filtered`, ...) rather than a flat `data/<dataset>_<stage>`, so the seven datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
+The key names don't nest, but the example paths do: `settings.example.yaml` points every stage at `data/<dataset>/<stage>` (`data/events/raw`, `data/gkg_v2/parquet`, `data/mentions/cleaned`, ...) rather than a flat `data/<dataset>_<stage>`, so the seven datasets stay easy to tell apart on disk even though nothing requires following that convention if you'd rather lay it out differently.
 
 | `--dataset` | Path prefix |
 |---|---|
@@ -71,10 +71,10 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 |-----|---------|---------|
 | `downloaded_data_directory` | scrape | Where ZIP files land |
 | `unzipped_data_directory` | convert | Scratch space for extracted CSVs (cleaned up automatically unless `converter.keep_unzipped` is true) |
-| `parquet_data_directory` | convert, filter, sample | Flat Parquet output |
-| `filtered_data_directory` | filter, sample | Flat filtered Parquet output |
+| `parquet_data_directory` | convert, clean, sample | Flat Parquet output |
+| `cleaned_data_directory` | clean, sample | Flat cleaned Parquet output (`filtered_data_directory` before 0.12, still read with a deprecation warning) |
 
-Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `filtered_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
+Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `cleaned_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
 
 ## `scraping`
 
@@ -121,7 +121,7 @@ Downloads run through a bounded thread pool (`max_workers`) since they're I/O-bo
 | `max_workers` | `null` | Worker processes for conversion. `null` uses `os.cpu_count()` |
 | `max_workers_by_dataset.<dataset>` | none | Overrides `max_workers` for one dataset. See "Capacity planning" below: a worker count safe for one dataset isn't necessarily safe for another, since it depends on peak per-worker memory |
 | `output_columns.<dataset>` | none | Restricts CSV parsing to just these columns instead of every column `columns.<dataset>` defines. `columns.<dataset>` is still needed in full (it's what maps each raw position to a name on files with no header row), but the pruned subset is passed to `polars.read_csv` as integer positions, not names: this is what makes polars skip allocating/decoding whatever isn't in `output_columns`, the same optimization pandas' own `usecols` gave under the previous implementation. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
-| `compression.<dataset>` | `zstd` | Parquet codec for converter's own output (`parquet_data_directory`), independent of `filter.compression` below for the filtered output that follows it. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
+| `compression.<dataset>` | `zstd` | Parquet codec for converter's own output (`parquet_data_directory`), independent of `clean.compression` below for the cleaned output that follows it. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
 | `partitioning` | see below | Optional Hive partitioning for historical (pre-daily) files |
 
 Conversion is CPU-bound (CSV parsing + Parquet writing), and each ZIP is independent, so it runs across a `ProcessPoolExecutor`. Each worker gets its share of the machine's cores as polars threads, not all of them; see "Worker pools and polars threads" below.
@@ -142,7 +142,7 @@ The GDELT archive distributes pre-2013 data in yearly and monthly ZIPs (e.g. `19
 paths:
   # existing paths ...
   parquet_historical_directory: "./data/events/historical"
-  filtered_historical_directory: "./data/events/filtered_historical"
+  cleaned_historical_directory: "./data/events/cleaned_historical"
 
 converter:
   partitioning:
@@ -170,9 +170,9 @@ data/
     └── ...
 ```
 
-Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, unaffected by this setting. Historical ZIPs that have already been converted are tracked with `.done` marker files, so re-running `convert` skips them safely. `filter` and `sample` detect the historical directory automatically from the config and include its data without any extra flags.
+Daily ZIPs (2013-present) always go to `parquet_data_directory` as flat files, unaffected by this setting. Historical ZIPs that have already been converted are tracked with `.done` marker files, so re-running `convert` skips them safely. `clean` and `sample` detect the historical directory automatically from the config and include its data without any extra flags.
 
-`events-reduced` is a related but separate case, not governed by `converter.partitioning.enabled` at all: it always writes Hive-partitioned by `Year` (never `MonthYear`, since its one file carries no month-level structure of its own), because it has no flat output mode to fall back to in the first place. Its `parquet_historical_directory`/`filtered_historical_directory` are required as soon as `--dataset events-reduced` is used, whether or not `partitioning.enabled` is set for Events.
+`events-reduced` is a related but separate case, not governed by `converter.partitioning.enabled` at all: it always writes Hive-partitioned by `Year` (never `MonthYear`, since its one file carries no month-level structure of its own), because it has no flat output mode to fall back to in the first place. Its `parquet_historical_directory`/`cleaned_historical_directory` are required as soon as `--dataset events-reduced` is used, whether or not `partitioning.enabled` is set for Events.
 
 ### Resumability
 
@@ -180,25 +180,35 @@ Flat output (Events daily, GKG 1.0, GKG 2.1, Mentions) is tracked with the same 
 
 The marker records the run's own `output_columns` and `compression` settings, not just that a file was processed. Changing either between runs invalidates markers left by the old configuration, so a rerun reprocesses affected files instead of silently serving output shaped by settings that no longer match.
 
-Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the standard convention for "not a data file" that `pandas.read_parquet`/`pyarrow.dataset` already skip on their own. A directory `convert`/`filter` has written into is safe to point any tool at directly, no special handling needed, even though `filter`'s own source directory is `convert`'s output directory and therefore always ends up holding both. Markers from before this existed aren't dot-prefixed; they're recognized and quietly migrated to the current naming the next time that file is checked, without reprocessing it.
+Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the standard convention for "not a data file" that `pandas.read_parquet`/`pyarrow.dataset` already skip on their own. A directory `convert`/`clean` has written into is safe to point any tool at directly, no special handling needed, even though `clean`'s own source directory is `convert`'s output directory and therefore always ends up holding both. Markers from before this existed aren't dot-prefixed; they're recognized and quietly migrated to the current naming the next time that file is checked, without reprocessing it.
 
-## `filter`
+## `clean`
+
+The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.
 
 | Key | Description |
 |-----|-------------|
-| `max_workers` | Worker processes for filtering, same tradeoffs as `converter.max_workers`. `null` (default) uses `os.cpu_count()` |
+| `max_workers` | Worker processes for cleaning, same tradeoffs as `converter.max_workers`. `null` (default) uses `os.cpu_count()` |
 | `columns_to_check.<dataset>` | Rows with a `NaN`/null value in any of these columns are dropped. Nested under the dataset name (mirroring `columns`/`columns_numeric`), one list per dataset |
-| `output_columns.<dataset>` | Projects the filtered output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
-| `compression.<dataset>` | Parquet codec for the filtered output. Unset defaults to `zstd`. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
+| `output_columns.<dataset>` | Projects the cleaned output down to this column subset, independent of `columns_to_check` (row-filtering still runs against the full row first). Unset keeps every column, same as before this existed. See "`output_columns` and `crossref`" below before pruning a dataset you plan to `crossref` later |
+| `compression.<dataset>` | Parquet codec for the cleaned output. Unset defaults to `zstd`. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
+| `errata.<dataset>.date_1920` | Repair the events GDELT dated 1920 instead of 2020 (add 100 years to `Day`, `MonthYear`, `Year`, `FractionDate` where `Day` is before 1979 and `DATEADDED` is 2019-12-31 to 2020-01-05). `true` by default for `gdelt_event` and `gdelt_event_15min` |
+| `errata.<dataset>.keep_original` | Keep GDELT's values of repaired columns in `<column>_original`. `true` by default; `false` makes the repair lossy |
+| `errata.<dataset>.event_markers` | Rows whose event code is `---`/`--` (CAMEO null code) or `X`: `keep` (default, counted in the run audit) or `drop` (lossy) |
+| `normalize.<dataset>.trim_strings` | Strip leading and trailing whitespace from every string column. `false` by default; lossy |
+| `normalize.<dataset>.blank_to_null` | Turn whitespace-only strings into null, before the `columns_to_check` null check. `false` by default; lossy |
+| `derive.<dataset>.event_date` | Add `EventDate`, a real date parsed from `Day`, after errata. `false` by default |
+| `derive.<dataset>.labels` | CAMEO-coded columns to add a `<column>_Label` name column for, from the bundled code tables. Empty by default |
+| `allow_lossy_delete_source` | `false` by default: `--delete-source` refuses to run while a lossy errata or normalize step is on. `true` accepts that deleting the converted copy loses what the step discarded |
 | `float32_columns.<dataset>` | Narrows these float64 columns to float32 on write. Unset keeps every float column at full float64 precision. See "Capacity planning" below before using this: it's a real precision change, not free compression |
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate. See [Column Redundancy](column-redundancy.md) for which columns are safe to prune from `output_columns` because they duplicate another column, measured against real GDELT data, and which look redundant but aren't.
 
-Filtered output is resumable the same way `convert`'s is (see "Resumability" above): a `.done` marker per file records `columns_to_check`, `output_columns`, `float32_columns`, and `compression`, so an interrupted `filter` run resumes instead of restarting from the first file, and changing any of those settings invalidates old markers rather than silently skipping files that need to be reprocessed under the new configuration.
+Cleaned output is resumable the same way `convert`'s is (see "Resumability" above): a `.done` marker per file records `columns_to_check`, `output_columns`, `float32_columns`, and `compression`, so an interrupted `clean` run resumes instead of restarting from the first file, and changing any of those settings invalidates old markers rather than silently skipping files that need to be reprocessed under the new configuration.
 
 ### `output_columns` and `crossref`: four columns you can't prune away
 
-Both `converter.output_columns` and `filter.output_columns` share this same hazard: if you plan to run `gdeltforge crossref` on a dataset later, whichever stage you prune it in must keep the column the join actually runs on, no matter how aggressively you trim everything else:
+Both `converter.output_columns` and `clean.output_columns` share this same hazard: if you plan to run `gdeltforge crossref` on a dataset later, whichever stage you prune it in must keep the column the join actually runs on, no matter how aggressively you trim everything else:
 
 | Dataset | Required column | Used by |
 |---------|------------------|---------|
@@ -215,7 +225,7 @@ Note that `SOURCEURL` is *not* on this list: the two-hop join to GKG 2.1 goes th
 
 See [Crossref Join Semantics](crossref-join-semantics.md) for how often an event ends up joined to more than one article (and vice versa) on real data, and for `on_duplicate_document`/`dedupe_mentions`, the two knobs controlling what happens when GKG 2.1 or Mentions themselves carry more than one record for what the join treats as a single (event, article) pair.
 
-Dropping one of the required columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `convert`, `filter`, and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. Both `run_converter` and `run_filter` warn proactively instead, at the point `output_columns` is configured for either stage, against a single `REQUIRED_JOIN_COLUMNS` mapping shared with `crossref.py` itself so the two can't drift apart.
+Dropping one of the required columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `convert`, `clean`, and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. Both `run_converter` and `run_filter` warn proactively instead, at the point `output_columns` is configured for either stage, against a single `REQUIRED_JOIN_COLUMNS` mapping shared with `crossref.py` itself so the two can't drift apart.
 
 Every *other* column, the ones not on the table above, is handled more leniently: `sample --mode filtered`/`--stratify` and every `crossref --gkg-version` default their own output projection to a dataset's full `columns.<dataset>` schema unless you pass `--columns` yourself, and a real file pruned by `output_columns` isn't guaranteed to still have all of it. Rather than failing outright, whichever of those columns is actually missing is dropped, logged as a warning naming exactly what and why, and the run proceeds with what's left; only a column something can't function without at all (the join key above, `--stratify`'s own column, a `--filter` condition's own column) still raises a clear error if genuinely missing, since silently dropping one of those would trade a loud failure for a quiet, misleading one instead.
 
@@ -227,14 +237,14 @@ Even with every required column intact, `crossref` finds nothing for an event da
 
 For a sample that genuinely spans both eras, `--gkg-version auto` (`crossref_events_gkg_auto`) is worth reaching for instead of picking one version and accepting the gap: rather than routing each event to exactly one generation by its own `DATEADDED`, it attempts every eligible event against both. `DATEADDED` only decides whether an event is within either generation's coverage window at all, not which single path is allowed to match it: a Mentions row is timestamped by when it was created, not by its event's `DATEADDED`, so an event from before 2015-02-18 can still have a real GKG 2.1 match created much later, and GKG 1.0 remains live and daily-published today, so a recent event isn't guaranteed to be GKG-2.1-only either. See the "GKG-Enriched Events Across the 2013-2015 Boundary" recipe in [Recipes](recipes.md) for a full worked example, including why the two generations' output columns are concatenated rather than unified (they don't share a single field name in common).
 
-Dropping one of the columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `filter` and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. `filter` now warns proactively instead, at the point where `output_columns` is configured, if it detects a dataset's join key isn't in the kept column list, so you find out before those later steps run rather than after.
+Dropping one of the columns above doesn't corrupt anything: `crossref` checks for it explicitly and raises a clear error (`"... must include a 'GlobalEventID' column"` or similar) rather than silently returning wrong or empty results. The problem is *when* that error shows up: potentially after `clean` and a `sample` run have already completed on the pruned data, discovering the missing column only once you actually try to enrich it. `clean` now warns proactively instead, at the point where `output_columns` is configured, if it detects a dataset's join key isn't in the kept column list, so you find out before those later steps run rather than after.
 
 ## `aggregation`
 
 | Key | Default | Description |
 |-----|---------|--------------|
-| `max_workers` | `null` | Worker processes for aggregation, one period (day/month/year) per worker. `null` uses `os.cpu_count()`, same tradeoffs as `converter.max_workers`/`filter.max_workers` |
-| `compression.<dataset>` | `zstd` | Parquet codec for aggregated output. Unset defaults to `zstd`, same reasoning as `converter.compression`/`filter.compression` |
+| `max_workers` | `null` | Worker processes for aggregation, one period (day/month/year) per worker. `null` uses `os.cpu_count()`, same tradeoffs as `converter.max_workers`/`clean.max_workers` |
+| `compression.<dataset>` | `zstd` | Parquet codec for aggregated output. Unset defaults to `zstd`, same reasoning as `converter.compression`/`clean.compression` |
 
 `gdeltforge aggregate` concatenates a period's worth of GKG 2.1/Mentions/`events-15min` files (the three datasets discovered from GDELT's 15-minute `gdeltv2` master file list; see `dataset_is_aggregation_eligible`) into one larger file per day, month, or year, so `sample` reads far fewer, larger files instead of the ~96 files/day these datasets publish at. Pure concatenation: every row from every contributing file lands in the aggregated output unchanged, no deduplication or rollup math, and the total bytes a full-archive scan reads doesn't shrink; this addresses per-file overhead (footer reads, scan scheduling), not data volume. See "Capacity planning" below for the real numbers this was measured against.
 
@@ -248,15 +258,15 @@ Three new base keys per eligible dataset, `dataset_path_key`-prefixed the same w
 | `aggregated_month_data_directory` | Month-granularity aggregated output |
 | `aggregated_year_data_directory` | Year-granularity aggregated output |
 
-`aggregate --source {converted,filtered}` (default `filtered`, matching `sample`'s own default) picks which upstream directory to build the aggregate *from*; the result always writes to the one canonical directory per period above, regardless of which source built it. Re-running `aggregate` with a different `--source` for an already-aggregated period is detected (`source` is part of the resumability fingerprint below) and overwrites it rather than silently mixing the two, so there's no need for a separate directory per source the way `filtered_historical_directory`/`parquet_historical_directory` need one each for Events.
+`aggregate --source {converted,cleaned}` (default `cleaned`, matching `sample`'s own default; `filtered` is the deprecated pre-0.12 name) picks which upstream directory to build the aggregate *from*; the result always writes to the one canonical directory per period above, regardless of which source built it. Re-running `aggregate` with a different `--source` for an already-aggregated period is detected (`source` is part of the resumability fingerprint below) and overwrites it rather than silently mixing the two, so there's no need for a separate directory per source the way `cleaned_historical_directory`/`parquet_historical_directory` need one each for Events.
 
 Aggregated output files are named plainly by the period they cover (`20200101.parquet`, `202001.parquet`, `2020.parquet`), the same convention Events' own historical yearly/monthly archive already uses. This is deliberate: it means the existing generic `parse_file_date` (not the 15-minute `parse_gdeltv2_file_date` these datasets' *source* files use) reads them back with no code changes, so `sample --source aggregated`'s own `--start-date`/`--end-date` narrowing and file ordering reuse the identical machinery every other stage already has.
 
 ### Resumability
 
-Unlike `convert`/`filter`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output, so the marker sits next to each aggregated OUTPUT file instead, fingerprinted on `compression`, `source`, `delete_source`, and the sorted set of contributing source filenames. That last part matters specifically here: a period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists. `--force` bypasses the check entirely, same as `convert`/`filter`.
+Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output, so the marker sits next to each aggregated OUTPUT file instead, fingerprinted on `compression`, `source`, `delete_source`, and the sorted set of contributing source filenames. That last part matters specifically here: a period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists. `--force` bypasses the check entirely, same as `convert`/`clean`.
 
-`--delete-source` (off by default) deletes each contributing source file once its period's aggregated output is confirmed written, matching `convert`'s/`filter`'s own flag of the same name; the safe default keeps the aggregated output in its own separate directory alongside the untouched source files, mirroring how `events-reduced` got its own directory rather than overwriting `events`.
+`--delete-source` (off by default) deletes each contributing source file once its period's aggregated output is confirmed written, matching `convert`'s/`clean`'s own flag of the same name; the safe default keeps the aggregated output in its own separate directory alongside the untouched source files, mirroring how `events-reduced` got its own directory rather than overwriting `events`.
 
 ## `io`
 
@@ -309,7 +319,7 @@ Everything below was measured against real GDELT data (not synthetic benchmarks)
 | `brotli` | 284.2 MB | 87.7s | 2.6x smaller, ~8x slower to write |
 | `zstd`, level 19 | 232.6 MB | slow | 3.2x smaller, not worth it once columns are pruned (below) |
 
-`gzip` and `zstd` level 19 both cost far more write time than they're worth here; plain `zstd` is the pick, which is what `filter.compression` defaults `gdelt_gkg_v2` to.
+`gzip` and `zstd` level 19 both cost far more write time than they're worth here; plain `zstd` is the pick, which is what `clean.compression` defaults `gdelt_gkg_v2` to.
 
 **Column pruning**, same day, `output_columns` set to the join key plus themes/tone/persons/orgs (10 of 27 columns):
 
@@ -334,14 +344,14 @@ Column pruning did most of the work; the codec switch on top was a smaller, roug
 
 **Putting it together**: projecting to the full ~385,728-file GKG 2.1 archive (15-minute files, 2015-present) at these measured rates, with `mentions` (needed for the crossref join) excluded since it is small enough not to move these numbers much:
 
-| Scope | Files | Wall-clock (scrape + convert + filter) | Disk |
+| Scope | Files | Wall-clock (scrape + convert + clean) | Disk |
 |-------|-------|------------------------------------------|------|
 | Previous approach (no pruning, 4 workers, `snappy`) | 385,728 | ~103 hours (~4.3 days) | ~2.9 TB |
 | Pruned + `zstd` + 8 workers | 385,728 | ~46 hours (~1.9 days) | ~220-380 GB |
 
 Scrape throughput (~4.2 files/s) is network-bound against `data.gdeltproject.org` and unaffected by any of the above; convert is where pruning and worker count actually move the number, from the previous bottleneck (~71 hours) down to roughly 12 hours.
 
-**Raw scrape footprint**, separate from the Disk figures above: those are `convert`/`filter`'s Parquet output, after column pruning and codec choice both apply. `scrape` downloads GDELT's files whole, unconditionally; `output_columns` can't reduce what lands on disk at this stage, since it only takes effect once `convert` parses a file. So the raw archive is close to a fixed cost, not a tunable one.
+**Raw scrape footprint**, separate from the Disk figures above: those are `convert`/`clean`'s Parquet output, after column pruning and codec choice both apply. `scrape` downloads GDELT's files whole, unconditionally; `output_columns` can't reduce what lands on disk at this stage, since it only takes effect once `convert` parses a file. So the raw archive is close to a fixed cost, not a tunable one.
 
 Measured two full real days directly (96 files each, GKG 2.1's 15-minute cadence):
 
@@ -420,7 +430,7 @@ A natural next question after the above is whether narrowing individual column t
 
 The first pass at this reasoned "float32's ~7 significant digits should be plenty for a tone score" without checking GDELT's actual emitted precision. That assumption was wrong. A real downloaded Events file (`20130401.export.CSV.zip`) shows `AvgTone` values with up to 16 decimal places and 15 significant figures in source data, e.g. `0.0284010224368077`, and a direct round-trip test (cast to float32, back to float64, compare to the original) against 6.5M real rows confirms the practical effect: the value changes on 31% of rows for `GoldsteinScale`, 96% for `AvgTone`, and literally 100% for `FractionDate`. Each individual change is tiny (on the order of float32's ~1.19e-7 relative precision floor), but it is a genuine, measurable change to the value, not just a smaller encoding of the same one.
 
-That's exactly why `filter.float32_columns` exists as an explicit, per-dataset, per-column opt-in rather than a blanket setting or a new default: it's available for anyone who has decided that tradeoff is acceptable for their use case, but nothing is cast to float32 unless a column is named there.
+That's exactly why `clean.float32_columns` exists as an explicit, per-dataset, per-column opt-in rather than a blanket setting or a new default: it's available for anyone who has decided that tradeoff is acceptable for their use case, but nothing is cast to float32 unless a column is named there.
 
 ### Why compression defaults to zstd now, for every dataset
 
@@ -431,11 +441,11 @@ The GKG 2.1 codec numbers earlier in this page don't automatically transfer to E
 | `snappy` (previous default) | 471.6 MB | 81.1 | 64.0s |
 | `zstd` (current default) | 330.4 MB | 56.8 | 50.5s |
 
-Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, this isn't a tradeoff to weigh the way `float32_columns` is: there's no case where `snappy` is the better default. `filter.compression` defaults to `zstd` for every dataset as of 2026-08-07; `compression.<dataset>` remains available to override to a specific codec if one is ever needed.
+Roughly 30% smaller, and faster to write, not slower. Since `zstd` is lossless, this isn't a tradeoff to weigh the way `float32_columns` is: there's no case where `snappy` is the better default. `clean.compression` defaults to `zstd` for every dataset as of 2026-08-07; `compression.<dataset>` remains available to override to a specific codec if one is ever needed.
 
 ### pandas vs polars: real measured throughput
 
-The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `filter`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with a dedicated benchmark script via the real `gdeltforge convert`/`gdeltforge filter`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
+The pipeline moved from pandas to polars for every DataFrame operation (`convert`'s CSV parsing, `clean`'s row/column pruning, `sample`'s reservoir scanning, `crossref`'s joins). Measured with a dedicated benchmark script via the real `gdeltforge convert`/`gdeltforge clean`/`gdeltforge crossref` CLI entry points, once from a pandas-based checkout and once from this one, against identical synthetic fixtures shaped like real Events/Mentions/GKG 2.1 data (Windows, single machine, one run per size, not averaged):
 
 **`convert`**, a single Events-shaped file at each row count:
 
@@ -448,7 +458,7 @@ The pipeline moved from pandas to polars for every DataFrame operation (`convert
 
 The gap widens sharply with size rather than staying fixed: at 10,000 rows both engines spend most of their wall-clock on process/interpreter startup, not CSV parsing, so there's little for a faster parser to win back yet. Past that, polars' advantage compounds, reaching over 14x at 10M rows, comfortably ahead of what the raw row-count growth (1,000x from 10k to 10M) alone would predict for a fixed-overhead explanation.
 
-**`filter`**, a single already-converted Events file at each row count, dropping rows with a null in any of three geo lat/long pairs (roughly 39% of rows dropped, a chosen rate for exercising real work, not a measured real-world geocoding-failure rate):
+**`clean`**, a single already-converted Events file at each row count, dropping rows with a null in any of three geo lat/long pairs (roughly 39% of rows dropped, a chosen rate for exercising real work, not a measured real-world geocoding-failure rate):
 
 | Rows | pandas | polars | Speedup |
 |------|--------|--------|---------|
@@ -457,7 +467,7 @@ The gap widens sharply with size rather than staying fixed: at 10,000 rows both 
 | 1,000,000 | 3.93s | 1.99s | 1.97x |
 | 10,000,000 | 107.31s | 4.04s | 26.56x |
 
-`filter` is the one stage where polars is measurably *slower* at small sizes, not just less ahead: at 10,000 rows it's about 1.3x slower than pandas, and the two are within noise of each other at 100,000. The likely cause is architectural, not a regression: the polars port reports `rows_before`/`rows_after` as two separate `lf.select(pl.len())` passes plus the actual `sink_parquet` write, three passes over the file, where the pandas implementation's single streaming batch loop (`pyarrow.ParquetFile.iter_batches` + per-batch `dropna` + write) made do with one. That fixed per-pass cost dominates at small files and is completely swallowed at scale: by 10M rows polars finishes in 4 seconds what takes pandas over a minute and a half, a 26.6x difference, the largest gap measured anywhere in this comparison.
+`clean` is the one stage where polars is measurably *slower* at small sizes, not just less ahead: at 10,000 rows it's about 1.3x slower than pandas, and the two are within noise of each other at 100,000. The likely cause is architectural, not a regression: the polars port reports `rows_before`/`rows_after` as two separate `lf.select(pl.len())` passes plus the actual `sink_parquet` write, three passes over the file, where the pandas implementation's single streaming batch loop (`pyarrow.ParquetFile.iter_batches` + per-batch `dropna` + write) made do with one. That fixed per-pass cost dominates at small files and is completely swallowed at scale: by 10M rows polars finishes in 4 seconds what takes pandas over a minute and a half, a 26.6x difference, the largest gap measured anywhere in this comparison.
 
 **`crossref`**, Events joined against synthetic Mentions/GKG 2.1 (roughly 80% of events finding at least one match):
 
@@ -470,4 +480,4 @@ The gap widens sharply with size rather than staying fixed: at 10,000 rows both 
 
 `crossref` does not show the same widening pattern: the speedup stays in a narrow 1.1-1.3x band across two full orders of magnitude in event count, unlike `convert`'s clear scaling trend. The most likely explanation is that this benchmark's own fixture is a single Mentions file and a single GKG 2.1 file per size, so the join itself (a hash join against an in-memory key set either engine handles well) is a smaller fraction of total wall-clock than process startup, config/schema loading, and Python-level orchestration, none of which the engine swap touches. This doesn't rule out a bigger real-world win at archive scale (thousands of Mentions/GKG 2.1 files, where `_dataset`'s own per-file footer-schema read and predicate pushdown do proportionally more work), just that this benchmark's own fixture shape doesn't exercise that path; a genuine multi-file archive-scale crossref benchmark is a natural follow-up, not yet measured.
 
-`converter.compression` defaults to `zstd` too, for the same reason: it wasn't independently re-measured against converter's own (unfiltered, wider-row-count) output, but a lossless codec with no measured downside on real GDELT data has no case for defaulting to `snappy` there either. It was previously hardcoded to `snappy` with no way to change it; it's now a normal per-dataset setting, same shape as `filter.compression`.
+`converter.compression` defaults to `zstd` too, for the same reason: it wasn't independently re-measured against converter's own (unfiltered, wider-row-count) output, but a lossless codec with no measured downside on real GDELT data has no case for defaulting to `snappy` there either. It was previously hardcoded to `snappy` with no way to change it; it's now a normal per-dataset setting, same shape as `clean.compression`.

@@ -186,7 +186,7 @@ class TestResumability:
         _write_parquet(input_dir / "20200101000000.gkg.parquet", {"GKGRECORDID": [1]})
 
         agg = GDELTAggregator(
-            str(input_dir), str(tmp_path / "out"), period="day", source="filtered",
+            str(input_dir), str(tmp_path / "out"), period="day", source="cleaned",
             date_parser=_gdeltv2_date_parser,
         )
         agg.aggregate_all_periods()
@@ -383,12 +383,12 @@ class TestRunAggregatorDatasetEligibility:
 
         config = {
             "paths": {
-                "gkg_v2_filtered_data_directory": str(tmp_path / "filtered"),
+                "gkg_v2_cleaned_data_directory": str(tmp_path / "filtered"),
                 "gkg_v2_aggregated_day_data_directory": str(tmp_path / "aggregated_day"),
             },
             "aggregation": {},
         }
-        run_aggregator(config, dataset="gdelt_gkg_v2", period="day", source="filtered")
+        run_aggregator(config, dataset="gdelt_gkg_v2", period="day", source="cleaned")
 
         assert captured["input_folder"] == str(tmp_path / "filtered")
         assert captured["output_folder"] == str(tmp_path / "aggregated_day")
