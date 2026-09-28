@@ -163,9 +163,6 @@ class GDELTAggregator:
         self.force = force
         self.dry_run = dry_run
 
-        self.output_folder.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Aggregation output folder ensured: {self.output_folder}")
-
     # ------------------------------------------------------------
     # PERIOD GROUPING
     # ------------------------------------------------------------
@@ -262,6 +259,11 @@ class GDELTAggregator:
                     f"[dry run]   {key}: {len(group_files)} file(s) -> {output_path.name}"
                 )
             return 0, 0
+
+        # Created only now, so a dry run leaves the filesystem as it found
+        # it, directories included.
+        self.output_folder.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Aggregation output folder ensured: {self.output_folder}")
 
         # One source file read at a time per worker: a period is pure
         # concatenation into one sequential output, so reading several of

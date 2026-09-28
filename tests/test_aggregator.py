@@ -234,6 +234,18 @@ class TestDryRun:
         assert (processed, failed) == (0, 0)
         assert not (tmp_path / "out" / "20200101.parquet").exists()
 
+    def test_dry_run_creates_no_directory(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "20200101000000.gkg.parquet", {"GKGRECORDID": [1]})
+
+        GDELTAggregator(
+            str(input_dir), str(tmp_path / "out"), period="day", dry_run=True,
+            date_parser=_gdeltv2_date_parser,
+        ).aggregate_all_periods()
+
+        assert not (tmp_path / "out").exists()
+
 
 class TestDeleteSource:
     def test_delete_source_removes_every_contributing_file(self, tmp_path):
