@@ -183,7 +183,7 @@ next to the cleaned directory, with `_runs` added to its name
 | `source`, `output` | The converted file and the cleaned file |
 | `rows_in`, `rows_out` | Rows before and after the steps |
 | `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped`, `derive.event_date_invalid` |
-| `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output |
+| `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output. One column per coded column the output has, zero included |
 
 The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
 start and end times, and the files that failed. The end-of-run summary
@@ -217,8 +217,11 @@ archive, almost entirely in files from 2013:
 | `Actor2Name` | 383,705 | 0 |
 | `*Geo_FullName` (all three) | 23,897 | 0 |
 
-A padded code such as `" USA"` matches no code table, so the run audit
-counts it as unrecognized and a `sample --filter` on `"USA"` misses it.
+A padded code such as `" USA"` isn't equal to `"USA"`, so a
+`sample --filter` on `"USA"` misses it. `Actor2Code` holds composite actor
+codes, not one of the CAMEO-coded columns the run audit checks against the
+code tables, so the audit doesn't count its padding; `normalize.trimmed`
+does, once normalization is on.
 
 **Why off by default**: it changes GDELT's values without keeping the
 originals, and the defaults never lose a value. For analysis on codes or

@@ -316,8 +316,8 @@ class NormalizeStrings(Step):
     Optional whitespace normalization of every string column. trim strips
     leading and trailing whitespace (" USA" -> "USA"); blank_to_null turns
     whitespace-only values (" ") into null. Around 2013 GDELT padded 11.3M
-    Actor2Code values and wrote 3.2M as a single space, which no code table
-    recognizes. Lossy: GDELT's own spelling of the value is gone.
+    Actor2Code values and wrote 3.2M as a single space, so an exact match on
+    the code misses them. Lossy: GDELT's own spelling of the value is gone.
     """
 
     trim: bool = False
@@ -345,11 +345,15 @@ class NormalizeStrings(Step):
             return {}
         out = {}
         if self.trim:
-            out["normalize.trimmed"] = reduce(operator.add, [
-                ((pl.col(c) != pl.col(c).str.strip_chars())
-                 & (pl.col(c).str.strip_chars() != "")).sum()
-                for c in columns
-            ])
+            # Every value trimming changes, " " -> "" included, except those
+            # blank_to_null turns into null instead; those are its count.
+            def trimmed(c: str) -> pl.Expr:
+                changed = pl.col(c) != pl.col(c).str.strip_chars()
+                if self.blank_to_null:
+                    changed = changed & (pl.col(c).str.strip_chars() != "")
+                return changed.sum()
+
+            out["normalize.trimmed"] = reduce(operator.add, [trimmed(c) for c in columns])
         if self.blank_to_null:
             out["normalize.blank_to_null"] = reduce(operator.add, [
                 (pl.col(c).str.strip_chars() == "").sum() for c in columns
