@@ -324,7 +324,11 @@ class GDELTCleaner:
 
         # The stage's steps, built once from the settings above and applied
         # to every file in STEP_ORDER, whatever order they were built in.
-        steps: list[Step] = [RequireColumns(tuple(self.columns_to_check))]
+        # An empty columns_to_check checks nothing, so it isn't a step:
+        # listing it would record a lossy null check that never ran.
+        steps: list[Step] = []
+        if self.columns_to_check:
+            steps.append(RequireColumns(tuple(self.columns_to_check)))
         if self.errata.get("date_1920"):
             steps.append(Date1920Repair(keep_original=self.errata.get("keep_original", True)))
         if self.errata.get("event_markers") is not None:
@@ -377,12 +381,20 @@ class GDELTCleaner:
             )
         refused = [st for st in self.steps if st.lossy and st.guarded]
         if self.delete_source and refused and not allow_lossy_delete_source:
+            remedies = []
+            for st in refused:
+                if isinstance(st, EventMarkers):
+                    remedies.append("event_markers: keep")
+                elif isinstance(st, Date1920Repair):
+                    remedies.append("keep_original: true")
+                elif isinstance(st, NormalizeStrings):
+                    remedies.append("turn normalize off")
             raise ValueError(
                 f"--delete-source would delete the converted copy of every file, and "
                 f"these steps are lossy: {', '.join(self._describe(st) for st in refused)}. "
                 f"Without the converted copy, what they discard is gone. Set "
-                f"clean.allow_lossy_delete_source: true to accept that, or make the "
-                f"steps lossless (event_markers: keep, keep_original: true)."
+                f"clean.allow_lossy_delete_source: true to accept that, or "
+                f"{', '.join(remedies)}."
             )
 
         self._refuse_output_inside_input()

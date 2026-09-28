@@ -264,6 +264,11 @@ class Date1920Repair(Step):
             ]
         return lf.with_columns(exprs) if exprs else lf
 
+    def settings(self) -> dict:
+        # Both errata rules are steps named "errata"; the rule name tells
+        # them apart in the marker.
+        return {"rule": "date_1920", **super().settings()}
+
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         if not self._applies(lf, ctx):
             return {}
@@ -289,6 +294,9 @@ class EventMarkers(Step):
     @property
     def lossy(self) -> bool:  # type: ignore[override]
         return self.mode == "drop"
+
+    def settings(self) -> dict:
+        return {"rule": "event_markers", **super().settings()}
 
     @staticmethod
     def _condition(lf: pl.LazyFrame) -> pl.Expr | None:

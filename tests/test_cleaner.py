@@ -1797,6 +1797,18 @@ class TestRunAudit:
         assert run["failed"] == []
         assert run["steps"][0]["step"] == "require"
 
+    def test_an_empty_null_check_is_not_listed(self, tmp_path):
+        from gdeltforge.utils.io import cleaned_marker
+
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [1]}).write_parquet(in_dir / "a.parquet")
+        cleaner = GDELTCleaner(str(in_dir), str(tmp_path / "out"), columns_to_check=[])
+        cleaner.clean_all_files()
+        marker = cleaned_marker(tmp_path / "out" / "a_cleaned.parquet")
+        assert marker is not None
+        assert marker["steps"] == []
+
     def test_dry_run_writes_no_audit(self, tmp_path):
         self._run(tmp_path, dry_run=True)
         assert not (tmp_path / "out_runs").exists()
@@ -1991,6 +2003,15 @@ class TestMisappliedCleanSettings:
 
 
 class TestDeleteSourceRefusesLossySteps:
+    def test_the_refusal_suggests_what_applies(self, tmp_path):
+        with pytest.raises(ValueError) as err:
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                normalize={"trim_strings": True}, delete_source=True,
+            )
+        assert "turn normalize off" in str(err.value)
+        assert "event_markers: keep" not in str(err.value)
+
     @pytest.mark.parametrize("value", ["no", "false", "true", 1, 0])
     def test_the_opt_in_accepts_only_true_or_false(self, tmp_path, value):
         # A quoted "no" used to count as true and let --delete-source
@@ -2167,7 +2188,7 @@ class TestNormalizeSettings:
             str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
             normalize={"trim_strings": False},
         )
-        assert [s.name for s in cleaner.steps] == ["require"]
+        assert cleaner.steps == []
         assert cleaner._config_fingerprint == config_fingerprint(
             columns_to_check=[], output_columns=None, float32_columns=None, compression="zstd",
         )
