@@ -1755,9 +1755,13 @@ class TestRunAudit:
         ).clean_all_files()
         return out
 
+    @staticmethod
+    def _audit(out):
+        return next((out.parent / f"{out.name}_runs").glob("*.parquet"))
+
     def test_one_audit_file_per_run_with_one_row_per_file(self, tmp_path):
-        out = self._run(tmp_path)
-        audits = list((out / "_clean_runs").glob("*.parquet"))
+        self._run(tmp_path)
+        audits = list((tmp_path / "out_runs").glob("*.parquet"))
         assert len(audits) == 1
         audit = pl.read_parquet(audits[0])
         assert audit.select("source", "output", "rows_in", "rows_out").rows() == [
@@ -1767,25 +1771,65 @@ class TestRunAudit:
     def test_counts_unrecognized_codes_per_coded_column(self, tmp_path):
         # "99" isn't a CAMEO event root; the null is not counted.
         out = self._run(tmp_path)
-        audit = pl.read_parquet(next((out / "_clean_runs").glob("*.parquet")))
+        audit = pl.read_parquet(self._audit(out))
         assert audit["unrecognized.EventRootCode"].to_list() == [1]
 
     def test_run_settings_are_in_the_audit_metadata(self, tmp_path):
         out = self._run(tmp_path)
-        meta = pl.read_parquet_metadata(next((out / "_clean_runs").glob("*.parquet")))
+        meta = pl.read_parquet_metadata(self._audit(out))
         run = json.loads(meta["gdeltforge:clean-run"])
         assert run["failed"] == []
         assert run["steps"][0]["step"] == "require"
 
     def test_dry_run_writes_no_audit(self, tmp_path):
-        out = self._run(tmp_path, dry_run=True)
-        assert not (out / "_clean_runs").exists()
+        self._run(tmp_path, dry_run=True)
+        assert not (tmp_path / "out_runs").exists()
 
     def test_audit_is_never_read_as_data(self, tmp_path):
         from gdeltforge.utils.io import read_parquet_path
 
         out = self._run(tmp_path)
         assert read_parquet_path(out).height == 2
+        # polars reads every subdirectory of a directory, `_`-prefixed ones
+        # included, so the audit must sit outside the cleaned directory.
+        assert pl.read_parquet(out).height == 2
+        assert pl.scan_parquet(out).select(pl.len()).collect().item() == 2
+
+    def test_configured_runs_folder_is_used(self, tmp_path):
+        runs = tmp_path / "audits" / "events"
+        self._run(tmp_path, runs_folder=str(runs))
+        assert len(list(runs.glob("*.parquet"))) == 1
+        assert not (tmp_path / "out_runs").exists()
+
+    @pytest.mark.parametrize("where", ["out", "out/sub", "in", "in/sub"])
+    def test_runs_folder_inside_a_data_directory_is_refused(self, tmp_path, where):
+        (tmp_path / "in").mkdir()
+        with pytest.raises(ValueError, match="run audit directory"):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                runs_folder=str(tmp_path / where),
+            )
+
+    def test_run_cleaner_reads_the_dataset_runs_key(self, tmp_path, monkeypatch):
+        captured = {}
+        real_init = GDELTCleaner.__init__
+
+        def spy_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(GDELTCleaner, "__init__", spy_init)
+        (tmp_path / "gkg").mkdir()
+        cfg = {
+            "paths": {
+                "gkg_v2_parquet_data_directory": str(tmp_path / "gkg"),
+                "gkg_v2_cleaned_data_directory": str(tmp_path / "gkg_cleaned"),
+                "gkg_v2_clean_runs_directory": str(tmp_path / "gkg_audits"),
+            },
+            "clean": {"columns_to_check": {"gdelt_gkg_v2": []}},
+        }
+        run_cleaner(cfg, dataset="gdelt_gkg_v2")
+        assert captured["runs_folder"] == str(tmp_path / "gkg_audits")
 
 
 DEFAULT_ERRATA = {"date_1920": True, "keep_original": True, "event_markers": "keep"}
@@ -1822,7 +1866,7 @@ class TestErrata:
         # Markers are kept by default: nothing is lost.
         assert out.height == 3
 
-        audit = pl.read_parquet(next((out_dir / "_clean_runs").glob("*.parquet")))
+        audit = pl.read_parquet(next((out_dir.parent / f"{out_dir.name}_runs").glob("*.parquet")))
         assert audit["errata.date_1920"].to_list() == [2]
         assert audit["errata.event_markers_keep"].to_list() == [1]
 
@@ -1918,7 +1962,7 @@ class TestDryRunReport:
         assert any(m.startswith("[dry run] 1 file(s) read: 3 rows in, 2 out") for m in messages)
         assert any("lossy steps: errata.event_markers: drop" in m for m in messages)
         assert list(out_dir.glob("*.parquet")) == []
-        assert not (out_dir / "_clean_runs").exists()
+        assert not (out_dir.parent / f"{out_dir.name}_runs").exists()
 
     def test_plain_dry_run_does_not_read_the_data(self, tmp_path, caplog):
         _write_new_year_2020(tmp_path / "in")
@@ -2004,7 +2048,7 @@ class TestNormalizeSettings:
         ).clean_all_files()
         out = pl.read_parquet(out_dir / "20130501.export_cleaned.parquet")
         assert out["Actor2Code"].to_list() == ["USA", None]
-        audit = pl.read_parquet(next((out_dir / "_clean_runs").glob("*.parquet")))
+        audit = pl.read_parquet(next((out_dir.parent / f"{out_dir.name}_runs").glob("*.parquet")))
         assert audit["normalize.trimmed"].to_list() == [1]
         assert audit["normalize.blank_to_null"].to_list() == [1]
 

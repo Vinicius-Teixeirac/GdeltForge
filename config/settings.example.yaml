@@ -406,6 +406,11 @@ paths:
   # Directory for cleaned Parquet files (the clean stage's output)
   cleaned_data_directory: "./path_example/events/cleaned"
 
+  # Where each clean run writes its audit. Unset, it's the cleaned
+  # directory's sibling with "_runs" added (here ./path_example/events/
+  # cleaned_runs). Must sit outside every data directory.
+  # clean_runs_directory: "./path_example/events/clean_runs"
+
   # Hive-partitioned Parquet for historical files (yearly / monthly ZIPs).
   # Only used when converter.partitioning.enabled is true.
   parquet_historical_directory: "./path_example/events/historical"
