@@ -170,8 +170,11 @@ warning):
 
 ## The run audit
 
-Each run writes `<cleaned_data_directory>/_clean_runs/<UTC start time>.parquet`,
-one row per cleaned file:
+Each run writes `<runs directory>/<UTC start time>.parquet`, one row per
+cleaned file. The runs directory is `paths.clean_runs_directory` (or the
+dataset's own key, such as `gkg_v2_clean_runs_directory`); unset, it sits
+next to the cleaned directory, with `_runs` added to its name
+(`data/events/cleaned` gets `data/events/cleaned_runs`):
 
 | Column | Meaning |
 |---|---|
@@ -184,9 +187,13 @@ The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
 start and end times, and the files that failed. The end-of-run summary
 prints every non-zero count. One audit per run, never one per data
 file: an archive has hundreds of thousands of files, and per-file sidecars
-would recreate the many-small-files problem. The leading underscore keeps
-the directory out of every reader of cleaned data, following the usual
-Parquet convention that `_`- and `.`-prefixed paths are metadata.
+would recreate the many-small-files problem.
+
+**Why outside the cleaned directory**: polars reads every subdirectory of a
+directory it's given, `_`- and `.`-prefixed ones included, so an audit
+inside the cleaned directory would be read as rows by
+`pl.read_parquet("data/events/cleaned")`. The stage refuses a runs
+directory that is, or sits inside, any of its input or output directories.
 
 ## Normalize: whitespace
 

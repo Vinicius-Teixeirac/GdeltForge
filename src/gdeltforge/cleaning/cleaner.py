@@ -118,7 +118,6 @@ from gdeltforge.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-AUDIT_DIRECTORY = "_clean_runs"
 
 
 @dataclass
@@ -186,6 +185,7 @@ class GDELTCleaner:
         derive: dict | None = None,
         allow_lossy_delete_source: bool = False,
         report: bool = False,
+        runs_folder: str | None = None,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -377,6 +377,20 @@ class GDELTCleaner:
             )
 
         self._refuse_output_inside_input()
+
+        # Where each run's audit goes (paths.clean_runs_directory, or the
+        # dataset's own key). Never inside a data directory: polars reads
+        # every subdirectory of a directory it's given, `_`- and
+        # `.`-prefixed ones included, so an audit there would be read as
+        # data. The default is a sibling of the cleaned directory.
+        output_base = (
+            self.output_folder if self.output_folder.name else self.output_folder.resolve()
+        )
+        self.runs_folder = (
+            Path(runs_folder) if runs_folder
+            else output_base.with_name(f"{output_base.name}_runs")
+        )
+        self._refuse_runs_inside_data()
 
         self.output_folder.mkdir(parents=True, exist_ok=True)
         logger.info(f"Clean output folder ensured: {self.output_folder}")
@@ -796,13 +810,13 @@ class GDELTCleaner:
         self, reports: list[FileReport], failed: list[str], started_at: datetime
     ) -> Path | None:
         """
-        Write this run's audit to <output_folder>/_clean_runs/<UTC start>.parquet:
-        one row per cleaned file (source, output, rows in and out, and one
+        Write this run's audit to <runs_folder>/<UTC start>.parquet: one row
+        per cleaned file (source, output, rows in and out, and one
         `unrecognized.<column>` count per coded column), with the run's
         settings, timing and failed files in the file's metadata. One file
         per run, never per data file: per-file sidecars would recreate the
-        many-small-files problem. The leading underscore keeps it out of
-        every reader of the cleaned directory.
+        many-small-files problem. runs_folder sits outside every data
+        directory (see _refuse_runs_inside_data).
         """
         if not reports and not failed:
             return None
@@ -823,7 +837,7 @@ class GDELTCleaner:
         if count_cols:
             df = df.with_columns(pl.col(count_cols).fill_null(0))
         unrecognized_cols = [c for c in count_cols if c.startswith("unrecognized.")]
-        path = self.output_folder / AUDIT_DIRECTORY / f"{started_at:%Y%m%dT%H%M%SZ}.parquet"
+        path = self.runs_folder / f"{started_at:%Y%m%dT%H%M%SZ}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
         run = {
             **self._marker,
@@ -981,6 +995,29 @@ class GDELTCleaner:
                 (("trim_strings", step.trim), ("blank_to_null", step.blank_to_null)) if on
             )
         return step.name
+
+    def _refuse_runs_inside_data(self) -> None:
+        """
+        Raise before any work if the audit directory is, or sits inside, a
+        directory holding data (flat or historical, input or output): a
+        reader handed that directory would read the audits as rows.
+        """
+        runs = self.runs_folder.resolve()
+        data_dirs = [
+            self.input_folder, self.historical_input_folder,
+            self.output_folder, self.historical_output_folder,
+        ]
+        for folder in data_dirs:
+            if folder is None:
+                continue
+            resolved = folder.resolve()
+            if runs == resolved or resolved in runs.parents:
+                raise ValueError(
+                    f"The run audit directory {self.runs_folder} is, or sits inside, "
+                    f"data directory {folder}, so reading that directory would read "
+                    f"the audits as data. Point paths.clean_runs_directory (or the "
+                    f"dataset's own key) at a directory outside the data directories."
+                )
 
     def _refuse_output_inside_input(self) -> None:
         """
@@ -1169,5 +1206,6 @@ def run_cleaner(
         derive=derive,
         allow_lossy_delete_source=allow_lossy_delete_source,
         report=report,
+        runs_folder=config["paths"].get(dataset_path_key(dataset, "clean_runs_directory")),
     )
     return cleaner.clean_all_files()
