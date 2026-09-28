@@ -366,6 +366,14 @@ class GDELTCleaner:
         # what a lossy step discarded. The stage's original steps keep
         # their long-standing warning (run_cleaner); every step added from
         # 0.12.0 on refuses unless the configuration opts in explicitly.
+        # A safety switch, so only a real boolean counts: YAML hands a
+        # quoted "no" or "false" through as a non-empty string, which
+        # bool() would read as true.
+        if not isinstance(allow_lossy_delete_source, bool):
+            raise ValueError(
+                f"clean.allow_lossy_delete_source must be true or false, "
+                f"got {allow_lossy_delete_source!r}"
+            )
         refused = [st for st in self.steps if st.lossy and st.guarded]
         if self.delete_source and refused and not allow_lossy_delete_source:
             raise ValueError(
@@ -1164,7 +1172,9 @@ def run_cleaner(
     errata = get_dict(get_dict(config["clean"], "errata"), dataset)
     normalize = get_dict(get_dict(config["clean"], "normalize"), dataset)
     derive = get_dict(get_dict(config["clean"], "derive"), dataset)
-    allow_lossy_delete_source = bool(config["clean"].get("allow_lossy_delete_source", False))
+    allow_lossy_delete_source = config["clean"].get("allow_lossy_delete_source")
+    if allow_lossy_delete_source is None:
+        allow_lossy_delete_source = False
     warn_if_output_columns_drops_join_key(logger, "clean", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(
         logger, "clean", delete_source,
