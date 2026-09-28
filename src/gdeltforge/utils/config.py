@@ -245,11 +245,15 @@ def _warn_about_moved_default_directories(config: dict, user_paths: dict) -> Non
     0.12.0 moved the bundled default's clean-stage directories from
     data/<dataset>/filtered to data/<dataset>/cleaned. A config that leaves
     those paths to the default, run from a directory holding output from an
-    earlier version, would otherwise see an empty directory: clean skips
-    every file already cleaned under unchanged settings (every dataset
-    without an errata rule), so nothing is written to the new location, and
-    sample and aggregate find nothing to read. Warn, naming both
-    directories, while the old one exists and the new one doesn't.
+    earlier version, no longer reads that output: clean skips every file
+    already cleaned under unchanged settings (every dataset without an
+    errata rule), so nothing is written to the new location, and sample
+    and aggregate read only what was cleaned after the upgrade. Warn,
+    naming both directories, for as long as the old one holds Parquet
+    files. Whether the new one exists says nothing: any clean run creates
+    it, and it can hold part of the data. The check stops at the first
+    file found, so it costs a directory stat and one entry even on a
+    large network share.
     """
     suffixes = tuple(_DEPRECATED_PATH_SUFFIXES.values())
     for key, value in get_dict(config, "paths").items():
@@ -259,14 +263,15 @@ def _warn_about_moved_default_directories(config: dict, user_paths: dict) -> Non
         if not new.name.startswith("cleaned"):
             continue
         old = new.with_name("filtered" + new.name[len("cleaned"):])
-        if old.is_dir() and not new.exists():
-            logger.warning(
-                f"{old} holds clean-stage output from before 0.12.0, but "
-                f"paths.{key} now defaults to {new}, which doesn't exist. Rename "
-                f"{old} to {new}, or set paths.{key}: {old}. Otherwise sample and "
-                f"aggregate read an empty directory, and clean doesn't rewrite files "
-                f"it already cleaned under the same settings."
-            )
+        if not old.is_dir() or next(old.rglob("*.parquet"), None) is None:
+            continue
+        fix = f"move its files into {new}" if new.exists() else f"rename it to {new}"
+        logger.warning(
+            f"{old} holds clean-stage output from before 0.12.0, but "
+            f"paths.{key} now defaults to {new}: {fix}, or set paths.{key}: {old}. "
+            f"Until then sample and aggregate don't read those files, and clean "
+            f"doesn't rewrite files it already cleaned under the same settings."
+        )
 
 
 def _bundled_default_dict() -> dict:
