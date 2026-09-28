@@ -264,6 +264,11 @@ clean:
 With `output_columns` set, list the derived columns there too
 (`EventDate`, `EventRootCode_Label`); projection keeps only what's listed.
 
+Every sampling mode returns the derived and `*_original` columns with the
+rest. `sample --mode filtered` checks names against the dataset's declared
+columns, and it accepts these as well, in `--columns`, `--filter` and
+`--stratify`.
+
 **Why off by default**: they make every cleaned file wider, and which
 labels are worth storing depends on the analysis. Labels are also tied to
 the code tables of the gdeltforge version that wrote them; the code column
