@@ -658,6 +658,16 @@ class TestMaxWorkersByDataset:
                 )
             )
 
+    def test_a_bad_dataset_override_names_its_own_key(self, tmp_path):
+        with pytest.raises(
+            ValueError, match=r"converter\.max_workers_by_dataset\.gdelt_event must be"
+        ):
+            GDELTConverter(
+                _make_config(
+                    tmp_path, max_workers=4, max_workers_by_dataset={"gdelt_event": "8"}
+                )
+            )
+
 
 class TestOutputColumnsConfig:
     def test_defaults_to_none_so_every_column_is_parsed(self, tmp_path):
