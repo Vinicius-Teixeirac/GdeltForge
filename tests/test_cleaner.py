@@ -1869,6 +1869,24 @@ def _write_new_year_2020(in_dir):
 
 
 class TestErrata:
+    def test_a_cleaned_directory_reads_as_one_dataset(self, tmp_path):
+        # A window file and a file from another year: both carry the four
+        # *_original columns, so polars reads the directory in one go and
+        # pandas/pyarrow readers don't lose them.
+        _write_new_year_2020(tmp_path / "in")
+        pl.DataFrame({
+            "GlobalEventID": [4], "Day": [20210101], "MonthYear": [202101],
+            "Year": [2021], "FractionDate": [2021.0027], "DATEADDED": [20210101],
+            "EventCode": ["010"], "EventBaseCode": ["010"], "EventRootCode": ["01"],
+        }).write_parquet(tmp_path / "in" / "20210101.export.parquet")
+        out_dir = tmp_path / "out"
+        GDELTCleaner(
+            str(tmp_path / "in"), str(out_dir), columns_to_check=[], errata=DEFAULT_ERRATA
+        ).clean_all_files()
+        out = pl.read_parquet(out_dir).sort("GlobalEventID")
+        assert out["Day_original"].to_list() == [19200101, 19200102, None, None]
+        assert out["Day"].to_list() == [20200101, 20200102, 20191226, 20210101]
+
     def test_default_settings_repair_the_dates_and_keep_every_value(self, tmp_path):
         _write_new_year_2020(tmp_path / "in")
         out_dir = tmp_path / "out"
