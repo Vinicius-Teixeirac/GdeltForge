@@ -37,6 +37,7 @@ from functools import reduce
 
 import polars as pl
 
+from gdeltforge.sampling import cameo_codes
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -401,6 +402,25 @@ class DeriveColumns(Step):
         # Day values present but not a real date (a malformed record).
         parsed = pl.col("Day").cast(pl.String).str.strptime(pl.Date, "%Y%m%d", strict=False)
         return {"derive.event_date_invalid": (pl.col("Day").is_not_null() & parsed.is_null()).sum()}
+
+
+def added_columns(declared: list[str]) -> list[str]:
+    """
+    Every column the clean stage can add to a dataset whose declared
+    schema (config columns.<dataset>) is `declared`: date_1920's
+    *_original columns, derive's EventDate, and one <column>_Label per
+    CAMEO-coded column. None of them is in the declared schema, yet all
+    are real columns of a cleaned file, so a reader that checks names
+    against the declared schema (sample --mode filtered) accepts these
+    too and keeps whichever the files actually have.
+    """
+    names = []
+    if all(c in declared for c in _DATE_1920_OFFSETS):
+        names += [f"{c}_original" for c in _DATE_1920_OFFSETS]
+    if "Day" in declared:
+        names.append("EventDate")
+    names += [f"{c}_Label" for c in declared if cameo_codes.code_family_for_column(c)]
+    return names
 
 
 def ordered(steps: list[Step]) -> list[Step]:
