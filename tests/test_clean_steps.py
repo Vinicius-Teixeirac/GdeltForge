@@ -13,6 +13,7 @@ from gdeltforge.cleaning.steps import (
     NormalizeStrings,
     ProjectColumns,
     RequireColumns,
+    added_columns,
     ordered,
 )
 
@@ -184,6 +185,19 @@ class TestNormalizeStrings:
         for step in steps:
             lf = step.apply(lf, CTX)
         assert lf.collect()["n"].to_list() == [1, 3]
+
+
+class TestAddedColumns:
+    def test_names_every_column_the_stage_can_add(self):
+        declared = ["GlobalEventID", "Day", "MonthYear", "Year", "FractionDate",
+                    "EventRootCode", "Actor1EthnicCode"]
+        assert added_columns(declared) == [
+            "Day_original", "MonthYear_original", "Year_original", "FractionDate_original",
+            "EventDate", "EventRootCode_Label", "Actor1EthnicCode_Label",
+        ]
+
+    def test_a_dataset_without_dates_or_codes_gets_nothing(self):
+        assert added_columns(["GKGRECORDID", "V2DOCUMENTIDENTIFIER"]) == []
 
 
 class TestDeriveColumns:

@@ -1090,6 +1090,73 @@ class TestCalendarStratifiedCrossLayoutReproducibilityUnparseableNames:
         assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
 
 
+def _make_cleaned_dataset(folder):
+    # The declared columns plus what the clean stage adds: a derived date,
+    # a code label, and a date_1920 original.
+    pl.DataFrame({
+        "GlobalEventID": [1, 2, 3], "Day": [20200101, 20200101, 20200102],
+        "MonthYear": [202001] * 3, "Year": [2020] * 3,
+        "FractionDate": [2020.0027] * 3, "EventRootCode": ["01", "14", "14"],
+        "Day_original": [19200101, None, None], "MonthYear_original": [192001, None, None],
+        "Year_original": [1920, None, None], "FractionDate_original": [1920.0027, None, None],
+        "EventDate": [date(2020, 1, 1), date(2020, 1, 1), date(2020, 1, 2)],
+        "EventRootCode_Label": ["MAKE PUBLIC STATEMENT", "PROTEST", "PROTEST"],
+    }).write_parquet(folder / "20200101.export_cleaned.parquet")
+
+
+CLEANED_DECLARED = ["GlobalEventID", "Day", "MonthYear", "Year", "FractionDate", "EventRootCode"]
+
+
+class TestFilteredSamplerReadsCleanStageColumns:
+    """Columns the clean stage adds aren't in config's declared schema, but
+    filtered sampling accepts and returns them like any other column."""
+
+    def test_default_output_includes_them(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(str(tmp_path), CLEANED_DECLARED).filter_dataset()
+        for column in ("EventDate", "EventRootCode_Label", "Day_original"):
+            assert column in out.columns
+
+    def test_they_are_valid_in_columns_and_filter(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED,
+            columns={"GlobalEventID", "EventDate", "Day_original"},
+            filter_dict={"EventRootCode_Label": ["PROTEST"]},
+        ).filter_dataset()
+        assert sorted(out["GlobalEventID"].to_list()) == [2, 3]
+        # The filter's own column is always read and returned as well.
+        assert set(out.columns) == {
+            "GlobalEventID", "EventDate", "Day_original", "EventRootCode_Label"
+        }
+
+    def test_random_sample_keeps_them_after_the_declared_columns(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(str(tmp_path), CLEANED_DECLARED, random_state=1).get_random_sample(2)
+        assert out.columns[: len(CLEANED_DECLARED)] == CLEANED_DECLARED
+        assert out.columns[len(CLEANED_DECLARED):] == [
+            "Day_original", "MonthYear_original", "Year_original", "FractionDate_original",
+            "EventDate", "EventRootCode_Label",
+        ]
+
+    def test_stratifying_by_a_label_keeps_it_in_the_output(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED, random_state=1
+        ).get_stratified_sample("EventRootCode_Label", n_per_group=1)
+        assert sorted(out["EventRootCode_Label"].to_list()) == ["MAKE PUBLIC STATEMENT", "PROTEST"]
+
+    def test_unknown_names_are_still_rejected(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid columns"):
+            FilteredSampler(str(tmp_path), CLEANED_DECLARED, columns={"GlobalEventID_Label"})
+
+    def test_absent_from_uncleaned_files_without_complaint(self, tmp_path):
+        _make_dataset(tmp_path)
+        out = FilteredSampler(str(tmp_path), GDELT_COLUMNS).filter_dataset()
+        assert "EventDate" not in out.columns
+
+
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
         folder = tmp_path / "data"
