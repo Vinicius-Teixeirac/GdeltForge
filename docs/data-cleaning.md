@@ -244,9 +244,9 @@ Both switches are lossy, so `--delete-source` refuses them unless
 
 ## Derive: added columns
 
-Optional, per dataset, under `clean.derive.<dataset>`, off by default. A
-derived column is added next to the columns it comes from; nothing is
-replaced, so the step is never lossy.
+Optional, per dataset, under `clean.derive.<dataset>`, off by default.
+Derived columns go after the file's own columns, in the order listed
+below; nothing is replaced, so the step is never lossy.
 
 - **`event_date: true`** adds `EventDate`, a real date parsed from `Day`
   (`YYYYMMDD`), after errata, so the 1920 repair is in it. The run audit
