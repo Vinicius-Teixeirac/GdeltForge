@@ -48,8 +48,9 @@ STEP_ORDER = ("errata", "normalize", "require", "derive", "project", "narrow")
 
 # Bumped whenever an errata rule is added or changed, and recorded in the
 # resumability fingerprint, so data cleaned under an older rule set is
-# cleaned again on the next run.
-ERRATA_VERSION = 1
+# cleaned again on the next run. 2: date_1920's *_original columns are
+# written to every file, not only to files around the window.
+ERRATA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -201,8 +202,12 @@ class Date1920Repair(Step):
     Add 100 years to Day, MonthYear, Year and FractionDate where Day is
     before 1979 and DATEADDED falls from 2019-12-31 to 2020-01-05.
     keep_original also writes each repaired column's GDELT value to
-    <column>_original on repaired rows (null elsewhere), in files whose
-    period touches the window; with it the repair is not lossy.
+    <column>_original on repaired rows, null elsewhere; with it the repair
+    is not lossy. Those four columns go into every file that has the date
+    columns, null throughout in files outside the window, so a cleaned
+    directory has one schema: polars refuses a multi-file read whose files
+    disagree on columns, and pandas and pyarrow silently drop the extra
+    ones.
     """
 
     keep_original: bool = True
@@ -213,9 +218,13 @@ class Date1920Repair(Step):
         return not self.keep_original
 
     @staticmethod
-    def _applies(lf: pl.LazyFrame, ctx: FileContext) -> bool:
+    def _has_date_columns(lf: pl.LazyFrame) -> bool:
         schema = lf.collect_schema().names()
-        if not all(c in schema for c in (*_DATE_1920_OFFSETS, "DATEADDED")):
+        return all(c in schema for c in _DATE_1920_OFFSETS)
+
+    @classmethod
+    def _applies(cls, lf: pl.LazyFrame, ctx: FileContext) -> bool:
+        if not cls._has_date_columns(lf) or "DATEADDED" not in lf.collect_schema().names():
             return False
         # A file whose name puts it wholly outside the window can't hold
         # the bug: its rows were added in its own period.
@@ -233,20 +242,26 @@ class Date1920Repair(Step):
         return (pl.col("Day") < 19790101) & added_day.is_between(lo, hi)
 
     def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
-        if not self._applies(lf, ctx):
+        if not self._has_date_columns(lf):
             return lf
-        hit = self._condition()
+        applies = self._applies(lf, ctx)
         exprs = []
         if self.keep_original:
+            schema = lf.collect_schema()
             exprs += [
-                pl.when(hit).then(pl.col(c)).otherwise(None).alias(f"{c}_original")
+                (
+                    pl.when(self._condition()).then(pl.col(c)).otherwise(None)
+                    if applies else pl.lit(None, dtype=schema[c])
+                ).alias(f"{c}_original")
                 for c in _DATE_1920_OFFSETS
             ]
-        exprs += [
-            pl.when(hit).then(pl.col(c) + offset).otherwise(pl.col(c)).alias(c)
-            for c, offset in _DATE_1920_OFFSETS.items()
-        ]
-        return lf.with_columns(exprs)
+        if applies:
+            hit = self._condition()
+            exprs += [
+                pl.when(hit).then(pl.col(c) + offset).otherwise(pl.col(c)).alias(c)
+                for c, offset in _DATE_1920_OFFSETS.items()
+            ]
+        return lf.with_columns(exprs) if exprs else lf
 
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         if not self._applies(lf, ctx):
