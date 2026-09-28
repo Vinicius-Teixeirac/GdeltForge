@@ -43,6 +43,9 @@ _DATASET_PATH_PREFIXES = {
     "gdelt_mentions": "mentions_",
 }
 
+# Every dataset's config name, for settings keyed by dataset.
+DATASET_NAMES = tuple(_DATASET_PATH_PREFIXES)
+
 # Datasets whose converted output is always Hive-partitioned, never flat:
 # unlike Events' pre-2013 yearly/monthly archives (opt-in via
 # converter.partitioning.enabled, alongside its own flat daily files),
