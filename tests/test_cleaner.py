@@ -1944,6 +1944,52 @@ class TestErrata:
         assert processed == 1
 
 
+class TestMisappliedCleanSettings:
+    """Settings that used to be ignored without a word, or to fail only
+    once files were being read, are caught before any file is touched."""
+
+    @staticmethod
+    def _config(tmp_path, **clean):
+        from gdeltforge.utils.config import _bundled_default_dict
+
+        cfg = _bundled_default_dict()
+        (tmp_path / "in").mkdir(exist_ok=True)
+        for dataset in ("gdelt_event", "gdelt_mentions"):
+            prefix = "" if dataset == "gdelt_event" else "mentions_"
+            cfg["paths"][f"{prefix}parquet_data_directory"] = str(tmp_path / "in")
+            cfg["paths"][f"{prefix}cleaned_data_directory"] = str(tmp_path / "out")
+        cfg["clean"].update(clean)
+        return cfg
+
+    @pytest.mark.parametrize("clean, dataset, message", [
+        ({"derive": {"gdelt_evnt": {"event_date": True}}}, "gdelt_event",
+         "clean.derive.gdelt_evnt: not a dataset"),
+        ({"derive": {"gdelt_event": True}}, "gdelt_event",
+         "clean.derive.gdelt_event must be a mapping"),
+        ({"errata": {"gdelt_mentions": {"event_markers": "drop"}}}, "gdelt_mentions",
+         "clean.errata.gdelt_mentions: the known GDELT errors"),
+        ({"derive": {"gdelt_mentions": {"event_date": True}}}, "gdelt_mentions",
+         "gdelt_mentions has no Day column"),
+        ({"derive": {"gdelt_mentions": {"labels": ["EventRootCode"]}}}, "gdelt_mentions",
+         "aren't columns of gdelt_mentions"),
+        ({"derive": {"gdelt_event": {"labels": ["EventRootCode", "EventRootCode"]}}},
+         "gdelt_event", "more than once"),
+    ])
+    def test_fails_before_reading_any_file(self, tmp_path, clean, dataset, message):
+        with pytest.raises(ValueError, match=message):
+            run_cleaner(self._config(tmp_path, **clean), dataset=dataset)
+        assert not (tmp_path / "out").exists()
+
+    def test_an_unknown_key_under_clean_warns(self, tmp_path, caplog):
+        cfg = self._config(tmp_path, allow_lossy_delete_sources=True)
+        with caplog.at_level(logging.WARNING):
+            run_cleaner(cfg, dataset="gdelt_event")
+        assert any(
+            "unknown setting(s) ['allow_lossy_delete_sources']" in r.message
+            for r in caplog.records
+        )
+
+
 class TestDeleteSourceRefusesLossySteps:
     @pytest.mark.parametrize("value", ["no", "false", "true", 1, 0])
     def test_the_opt_in_accepts_only_true_or_false(self, tmp_path, value):

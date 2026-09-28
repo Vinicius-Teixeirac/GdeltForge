@@ -97,6 +97,7 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.concurrency import WorkerPlan, plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
+    DATASET_NAMES,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
@@ -987,6 +988,9 @@ class GDELTCleaner:
         labels = derive.get("labels") or []
         if not isinstance(labels, list) or not all(isinstance(c, str) for c in labels):
             raise ValueError(f"clean.derive.labels must be a list of column names, got {labels!r}")
+        repeated = sorted({c for c in labels if labels.count(c) > 1})
+        if repeated:
+            raise ValueError(f"clean.derive.labels lists {repeated} more than once")
         uncoded = [c for c in labels if cameo_codes.code_family_for_column(c) is None]
         if uncoded:
             raise ValueError(
@@ -1113,6 +1117,67 @@ class GDELTCleaner:
 # RUN WRAPPER (used by main.py)
 # ======================================================================
 
+_CLEAN_KEYS = frozenset({
+    "max_workers", "columns_to_check", "output_columns", "float32_columns", "compression",
+    "errata", "normalize", "derive", "allow_lossy_delete_source",
+})
+# The datasets GDELT's known errors (errata) are in.
+_ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
+
+
+def _validate_clean_section(config: dict, dataset: str) -> None:
+    """
+    Catch clean settings that would otherwise be ignored without a word or
+    fail only once files are being read: an unknown key under clean:, a
+    name under errata/normalize/derive that isn't a dataset, a dataset's
+    settings that aren't a mapping, errata for a dataset GDELT's known
+    errors aren't in, and derive columns the dataset being cleaned doesn't
+    declare.
+    """
+    clean = config["clean"]
+    unknown = sorted(set(clean) - _CLEAN_KEYS)
+    if unknown:
+        logger.warning(
+            f"clean: unknown setting(s) {unknown} are ignored; known: {sorted(_CLEAN_KEYS)}"
+        )
+    for section in ("errata", "normalize", "derive"):
+        per_dataset = clean.get(section)
+        if per_dataset is None:
+            continue
+        if not isinstance(per_dataset, dict):
+            raise ValueError(
+                f"clean.{section} must map dataset names to settings, got {per_dataset!r}"
+            )
+        for name, settings in per_dataset.items():
+            if name not in DATASET_NAMES:
+                raise ValueError(
+                    f"clean.{section}.{name}: not a dataset; known: {', '.join(DATASET_NAMES)}"
+                )
+            if settings is not None and not isinstance(settings, dict):
+                raise ValueError(
+                    f"clean.{section}.{name} must be a mapping of settings, got {settings!r}"
+                )
+            if section == "errata" and settings and name not in _ERRATA_DATASETS:
+                raise ValueError(
+                    f"clean.errata.{name}: the known GDELT errors this stage repairs are "
+                    f"in {' and '.join(_ERRATA_DATASETS)} only"
+                )
+
+    # Checked against the declared schema of the dataset being cleaned,
+    # when the config has one: a derived column needs its source column.
+    declared = get_dict(config, "columns").get(dataset) or []
+    derive = get_dict(get_dict(clean, "derive"), dataset)
+    if declared and derive.get("event_date") and "Day" not in declared:
+        raise ValueError(
+            f"clean.derive.{dataset}.event_date: {dataset} has no Day column to parse"
+        )
+    labels = derive.get("labels") or []
+    missing = [c for c in labels if isinstance(c, str) and c not in declared]
+    if declared and missing:
+        raise ValueError(
+            f"clean.derive.{dataset}.labels: {missing} aren't columns of {dataset}"
+        )
+
 def run_cleaner(
     config: dict,
     dataset: str = "gdelt_event",
@@ -1151,6 +1216,7 @@ def run_cleaner(
     anything; it sees force's effect on the skip list, since it runs
     after that check.
     """
+    _validate_clean_section(config, dataset)
     part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     historical_input = historical_output = None
 
