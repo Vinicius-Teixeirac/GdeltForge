@@ -628,6 +628,22 @@ class TestDryRun:
         )
         assert not (tmp_path / "out").exists() or list((tmp_path / "out").glob("*.parquet")) == []
 
+    @pytest.mark.parametrize("report", [False, True])
+    def test_dry_run_creates_no_directory(self, tmp_path, report):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+        (tmp_path / "hist_in").mkdir()
+
+        GDELTCleaner(
+            str(input_dir), str(tmp_path / "out"), ["QuadClass"],
+            historical_input_folder=str(tmp_path / "hist_in"),
+            historical_output_folder=str(tmp_path / "hist_out"),
+            dry_run=True, report=report,
+        ).clean_all_files()
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["hist_in", "in"]
+
     def test_dry_run_reports_the_would_be_processed_count_at_info(self, tmp_path, caplog):
         input_dir = tmp_path / "in"
         input_dir.mkdir()
