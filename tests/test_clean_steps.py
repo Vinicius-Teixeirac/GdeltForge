@@ -174,6 +174,16 @@ class TestNormalizeStrings:
             "normalize.trimmed": 1, "normalize.blank_to_null": 1,
         }
 
+    def test_trimming_alone_counts_blanks_it_empties(self):
+        # Without blank_to_null, " " becomes "": a value trimming changed.
+        lf = self._lf()
+        exprs = NormalizeStrings(trim=True).counts(lf, CTX)
+        changed = (
+            NormalizeStrings(trim=True).apply(lf, CTX).collect()["Actor2Code"]
+            != lf.collect()["Actor2Code"]
+        ).sum()
+        assert lf.select(**exprs).collect().row(0, named=True) == {"normalize.trimmed": changed}
+
     def test_is_lossy(self):
         assert NormalizeStrings(trim=True).lossy is True
 
