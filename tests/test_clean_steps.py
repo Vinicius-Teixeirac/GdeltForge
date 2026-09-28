@@ -126,6 +126,10 @@ class TestDate1920Repair:
         exprs = Date1920Repair().counts(lf, CTX)
         assert lf.select(**exprs).collect().row(0, named=True) == {"errata.date_1920": 1}
 
+    def test_settings_name_the_rule(self):
+        assert Date1920Repair().settings() == {"rule": "date_1920", "keep_original": True}
+        assert EventMarkers("drop").settings() == {"rule": "event_markers", "mode": "drop"}
+
     def test_lossy_only_without_the_originals(self):
         assert Date1920Repair(keep_original=True).lossy is False
         assert Date1920Repair(keep_original=False).lossy is True
