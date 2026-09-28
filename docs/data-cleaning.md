@@ -153,7 +153,10 @@ release with a changed rule, cleans the affected datasets again.
 
 Each cleaned file's Parquet metadata holds a `gdeltforge:clean` entry: the
 gdeltforge version, every step with its settings and whether it is lossy,
-the configuration fingerprint, and the source file's name. Read it with:
+the configuration fingerprint, and the source file's name. The two errata
+steps name their `rule` (`date_1920`, `event_markers`), and a step the
+configuration leaves empty (a `columns_to_check` of `[]`) isn't listed.
+Read it with:
 
 ```python
 import json, polars as pl
