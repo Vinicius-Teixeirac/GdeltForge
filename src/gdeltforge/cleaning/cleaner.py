@@ -686,7 +686,7 @@ class GDELTCleaner:
         if not write:
             return FileReport(
                 source=file_path.name, output="", rows_in=rows_before, rows_out=rows_after,
-                unrecognized={k: v for k, v in counts.items() if v},
+                unrecognized=dict(counts),
                 step_counts=step_counts, columns_in=columns_in, columns_out=columns_out,
             )
 
@@ -726,7 +726,9 @@ class GDELTCleaner:
             output=output_path.name,
             rows_in=rows_before,
             rows_out=rows_after,
-            unrecognized={k: v for k, v in counts.items() if v},
+            # Zeros kept, so the audit has one column per checked coded
+            # column and a zero reads as checked, never as missing.
+            unrecognized=dict(counts),
             step_counts=step_counts,
             columns_in=columns_in,
             columns_out=columns_out,
@@ -805,6 +807,8 @@ class GDELTCleaner:
             for key, value in {**r.step_counts, **unrecognized}.items():
                 totals[key] = totals.get(key, 0) + value
         for key in sorted(totals):
+            if key.startswith("unrecognized.") and not totals[key]:
+                continue
             logger.info(f"[dry run] {key}: {totals[key]:,}")
         if reports:
             logger.info(
