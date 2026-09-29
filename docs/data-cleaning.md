@@ -184,9 +184,11 @@ warning):
 ## The run audit
 
 Each run writes `<runs directory>/<UTC start time>.parquet`, one row per
-cleaned file. The runs directory is `paths.clean_runs_directory` (or the
-dataset's own key, such as `gkg_v2_clean_runs_directory`); unset, it sits
-next to the cleaned directory, with `_runs` added to its name
+cleaned file. The runs directory is `paths.clean_runs_directory` for
+Events and the prefixed key for every other dataset
+(`gkg_v2_clean_runs_directory`, `mentions_clean_runs_directory`, ...), the
+same rule every path key follows; unset, it sits next to the cleaned
+directory, with `_runs` added to its name
 (`data/events/cleaned` gets `data/events/cleaned_runs`):
 
 | Column | Meaning |
