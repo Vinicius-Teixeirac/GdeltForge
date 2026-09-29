@@ -387,6 +387,30 @@ class TestLoadConfig:
         assert config["converter"].get("max_workers") is None
         assert config["clean"].get("output_columns", {}).get("gdelt_event") is None
 
+    @pytest.mark.parametrize("section", ["paths", "clean", "io", "converter"])
+    def test_an_empty_top_level_section_is_warned_about(self, section, caplog):
+        custom = self.tmp_path / "custom.yaml"
+        custom.write_text(f"columns: {{gdelt_event: [GlobalEventID]}}\n{section}:\n")
+
+        with caplog.at_level(logging.WARNING):
+            load_config(str(custom))
+
+        messages = [r.message for r in caplog.records if "is empty (null)" in r.message]
+        assert len(messages) == 1
+        assert messages[0].startswith(f"{section} is empty (null) in {custom}")
+        assert ("relative to the directory gdeltforge runs in" in messages[0]) == (
+            section == "paths"
+        )
+
+    def test_sections_with_content_or_left_out_are_not_warned_about(self, caplog):
+        custom = self.tmp_path / "custom.yaml"
+        custom.write_text("columns: {gdelt_event: [GlobalEventID]}\nconverter: {}\n")
+
+        with caplog.at_level(logging.WARNING):
+            load_config(str(custom))
+
+        assert not any("is empty (null)" in r.message for r in caplog.records)
+
     def test_sections_with_real_content_keep_the_users_values(self):
         custom = self.tmp_path / "custom.yaml"
         custom.write_text(
