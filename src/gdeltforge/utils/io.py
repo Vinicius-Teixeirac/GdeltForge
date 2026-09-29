@@ -532,9 +532,8 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
 
     # A path component starting with "_" or "." marks metadata, not data,
     # the same Hadoop/Spark/Parquet convention (_SUCCESS, _metadata) this
-    # function already relies on for dot-files: the clean stage keeps its
-    # run audits in <cleaned_data_directory>/_clean_runs/, which a
-    # recursive glob would otherwise read as rows.
+    # function already relies on for dot-files, so a recursive glob never
+    # reads such files as rows.
     files = sorted(
         f for f in p.rglob("*.parquet")
         if not any(part.startswith(("_", ".")) for part in f.relative_to(p).parts)

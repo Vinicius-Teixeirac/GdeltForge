@@ -73,6 +73,7 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 | `unzipped_data_directory` | convert | Scratch space for extracted CSVs (cleaned up automatically unless `converter.keep_unzipped` is true) |
 | `parquet_data_directory` | convert, clean, sample | Flat Parquet output |
 | `cleaned_data_directory` | clean, sample | Flat cleaned Parquet output (`filtered_data_directory` before 0.12, still read with a deprecation warning) |
+| `clean_runs_directory` | clean | Where each `clean` run writes its audit. Unset (the default), a sibling of `cleaned_data_directory` with `_runs` added to its name. Must sit outside every data directory; see [the run audit](data-cleaning.md#the-run-audit) |
 
 Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `cleaned_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
 
