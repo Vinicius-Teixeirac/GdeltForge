@@ -44,7 +44,9 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │
     ├── src/gdeltforge/
     │ ├── py.typed # PEP 561 marker: this package ships inline type hints
-    │ ├── cli.py # Argument parsing + subcommand dispatch (the gdeltforge entry point)
+    │ ├── cli.py # Argument parsing + subcommand dispatch
+    │ ├── launcher.py # The gdeltforge command's entry point: sizes polars' thread pool before polars loads, then runs cli
+    │ ├── __main__.py # python -m gdeltforge, through the same launcher
     │ ├── _version.py # Generated at build time from the git tag (hatch-vcs); not hand-edited
     │ │
     │ ├── config/
