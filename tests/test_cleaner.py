@@ -1838,6 +1838,19 @@ class TestRunAudit:
                 runs_folder=str(tmp_path / where),
             )
 
+    def test_runs_folder_inside_another_datasets_data_is_refused(self, tmp_path):
+        from gdeltforge.utils.config import _bundled_default_dict
+
+        cfg = _bundled_default_dict()
+        (tmp_path / "mentions").mkdir()
+        cfg["paths"]["mentions_parquet_data_directory"] = str(tmp_path / "mentions")
+        cfg["paths"]["mentions_cleaned_data_directory"] = str(tmp_path / "mentions_clean")
+        cfg["paths"]["parquet_data_directory"] = str(tmp_path / "events")
+        cfg["paths"]["mentions_clean_runs_directory"] = str(tmp_path / "events" / "audits")
+        with pytest.raises(ValueError, match="run audit directory"):
+            run_cleaner(cfg, dataset="gdelt_mentions")
+        assert not (tmp_path / "events").exists()
+
     def test_run_cleaner_reads_the_dataset_runs_key(self, tmp_path, monkeypatch):
         captured = {}
         real_init = GDELTCleaner.__init__
