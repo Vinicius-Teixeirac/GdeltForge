@@ -50,6 +50,24 @@ class TestPlanWorkers:
             workers=4, polars_threads=8
         )
 
+    @pytest.mark.parametrize("max_workers, n_tasks, expected", [
+        (None, 1, WorkerPlan(workers=1, polars_threads=4, concurrent_scans=1)),
+        (None, 10, WorkerPlan(workers=4, polars_threads=1, concurrent_scans=1)),
+        (2, 10, WorkerPlan(workers=2, polars_threads=2, concurrent_scans=1)),
+    ])
+    def test_multi_file_workers_share_the_cap_among_their_threads(
+        self, max_workers, n_tasks, expected
+    ):
+        # An aggregate worker fetches a period's footers on its thread
+        # pool, so under a read cap its threads count toward the cap.
+        plan = plan_workers(
+            max_workers, n_tasks, scans_per_worker=1, max_concurrent_reads=4, cpu_count=32
+        )
+        assert plan == expected
+
+    def test_multi_file_workers_keep_their_threads_without_a_cap(self):
+        assert plan_workers(None, 1, scans_per_worker=1, cpu_count=32).polars_threads == 32
+
     def test_max_concurrent_reads_above_the_worker_count_changes_nothing(self):
         assert plan_workers(2, 100, max_concurrent_reads=4, cpu_count=32).workers == 2
 
