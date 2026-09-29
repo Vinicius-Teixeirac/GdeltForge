@@ -111,6 +111,11 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
 - **Why repair**: dropping the rows would leave a five-day hole, and
   setting the dates to null would hide the rows from calendar sampling. The
   repair is exact, and `DATEADDED` confirms every repaired row.
+- **When it can't run**: the rule reads `Day`, `MonthYear`, `Year`,
+  `FractionDate` and `DATEADDED`. A converted file missing one of them
+  (pruned by `converter.output_columns`) is cleaned without the repair, and
+  the run warns once, with the number of such files; the audit counts them
+  as `errata.date_1920_skipped_files`.
 - **Without it**: calendar sampling treats 1920-01-01 to 01-06 as six real
   days, each drawing its full quota, while the real 2020-01-01 to 01-05
   come out almost empty. `sample --mode calendar` warns whenever it meets
@@ -185,7 +190,7 @@ next to the cleaned directory, with `_runs` added to its name
 |---|---|
 | `source`, `output` | The converted file and the cleaned file |
 | `rows_in`, `rows_out` | Rows before and after the steps |
-| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped`, `derive.event_date_invalid` |
+| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.date_1920_skipped_files` (files the repair couldn't read), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped`, `derive.event_date_invalid` |
 | `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output. One column per coded column the output has, zero included |
 
 The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
