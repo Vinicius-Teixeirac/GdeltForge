@@ -1756,6 +1756,21 @@ class TestCleanedFileMarker:
             ).clean_all_files()
         assert any("carries the clean stage's marker" in r.message for r in caplog.records)
 
+    def test_the_warning_names_the_datasets_own_path_keys(self, tmp_path, caplog):
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        pl.DataFrame({"GlobalEventID": [1]}).write_parquet(in_dir / "20200101.parquet")
+        GDELTCleaner(str(in_dir), str(tmp_path / "out"), columns_to_check=[]).clean_all_files()
+
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "out"), str(tmp_path / "again"), columns_to_check=[],
+                dataset="gdelt_mentions",
+            ).clean_all_files()
+        message = next(r.message for r in caplog.records if "marker" in r.message)
+        assert ("paths.mentions_parquet_data_directory and "
+                "paths.mentions_cleaned_data_directory") in message
+
 
 class TestRunAudit:
     def _run(self, tmp_path, **kwargs):

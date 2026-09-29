@@ -189,6 +189,7 @@ class GDELTCleaner:
         report: bool = False,
         runs_folder: str | None = None,
         other_data_folders: list[str] | None = None,
+        dataset: str | None = None,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -432,6 +433,9 @@ class GDELTCleaner:
         # dataset's data just the same.
         self.other_data_folders = [Path(f) for f in other_data_folders or []]
         self._refuse_runs_inside_data()
+        # Only names the dataset's own path keys in warnings; nothing the
+        # cleaner does depends on it.
+        self.dataset = dataset
 
     # ======================================================================
     # PUBLIC API
@@ -474,7 +478,7 @@ class GDELTCleaner:
             return 0, 0
 
         warn_if_cleaned_files(
-            [p for p, _ in all_files], "clean's input directory", logger
+            [p for p, _ in all_files], "clean's input directory", logger, dataset=self.dataset
         )
 
         to_process = []
@@ -1377,6 +1381,7 @@ def run_cleaner(
             value for key, value in get_dict(config, "paths").items()
             if key.endswith(_PARQUET_DIRECTORY_KEYS) and isinstance(value, str) and value
         ],
+        dataset=dataset,
     )
     # After GDELTCleaner, which refuses --delete-source under a lossy step
     # added in 0.12.0: a run that won't happen gets no warning about it.
