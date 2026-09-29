@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import zlib
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -945,8 +945,57 @@ class FilteredSampler:
         return cols
 
     # ---------- convert simple condition -> polars expression ----------
-    def _expr_for_condition(self, column: str, cond: Any) -> pl.Expr:
+    @staticmethod
+    def _as_date(value: Any, column: str) -> date:
+        """
+        A --filter value for a Date column (EventDate), as a date: an ISO
+        "YYYY-MM-DD" string, or a YYYYMMDD integer, the form every other
+        GDELT date column (Day, DATEADDED) takes. Left as given, a string
+        fails to compare with a date, and an integer compares as days
+        since 1970, silently selecting everything or nothing.
+        """
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                pass
+        if isinstance(value, int) and not isinstance(value, bool):
+            try:
+                return datetime.strptime(str(value), "%Y%m%d").date()
+            except ValueError:
+                pass
+        raise ValueError(
+            f"--filter: column {column!r} holds dates; give each date as "
+            f'"YYYY-MM-DD" or as a YYYYMMDD number, got {value!r}'
+        )
+
+    @classmethod
+    def _dates_in(cls, cond: Any, column: str) -> Any:
+        """cond with every operand converted by _as_date, same shape."""
+        if isinstance(cond, list):
+            return [cls._as_date(v, column) for v in cond]
+        if isinstance(cond, tuple) and len(cond) == 2:
+            return tuple(cls._as_date(v, column) for v in cond)
+        if isinstance(cond, dict):
+            converted = dict(cond)
+            for key in ("value", "min", "max"):
+                if key in converted:
+                    converted[key] = cls._as_date(converted[key], column)
+            if "values" in converted:
+                converted["values"] = [cls._as_date(v, column) for v in converted["values"]]
+            return converted
+        return cls._as_date(cond, column)
+
+    def _expr_for_condition(
+        self, column: str, cond: Any, is_date: bool = False
+    ) -> pl.Expr:
         f = pl.col(column)
+        if is_date:
+            cond = self._dates_in(cond, column)
+        if isinstance(cond, date):
+            return f == cond
 
         if isinstance(cond, (str, int, float, bool)):
             return f == cond
@@ -1050,6 +1099,9 @@ class FilteredSampler:
                             f"the filter value(s) {bad} are string(s). Check the "
                             f"--filter argument."
                         )
+                elif dtype == pl.Date:
+                    for v in operands:
+                        self._as_date(v, key)
                 elif dtype == pl.Utf8:
                     bad = [
                         v for v in operands
@@ -1066,7 +1118,8 @@ class FilteredSampler:
 
     # ---------- recursive builder: filter_dict -> polars expression ----------
     def _build_expression(
-        self, block: dict[str, Any], _join_with: str = "AND"
+        self, block: dict[str, Any], _join_with: str = "AND",
+        date_columns: frozenset[str] = frozenset(),
     ) -> pl.Expr | None:
         """
         Return a polars Expr or None if block is empty.
@@ -1084,19 +1137,19 @@ class FilteredSampler:
 
         for key, val in block.items():
             if key == "AND":
-                sub = self._build_expression(val, _join_with="AND")
+                sub = self._build_expression(val, _join_with="AND", date_columns=date_columns)
                 if sub is None:
                     continue
                 expr = _combine(expr, sub)
 
             elif key == "OR":
-                sub = self._build_expression(val, _join_with="OR")
+                sub = self._build_expression(val, _join_with="OR", date_columns=date_columns)
                 if sub is None:
                     continue
                 expr = _combine(expr, sub)
 
             else:
-                sub = self._expr_for_condition(key, val)
+                sub = self._expr_for_condition(key, val, is_date=key in date_columns)
                 expr = _combine(expr, sub)
 
         return expr
@@ -1121,7 +1174,9 @@ class FilteredSampler:
         # happens to land.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
             lf = self._dataset()
-            expr = self._build_expression(self.filter_dict)
+            schema = lf.collect_schema()
+            date_columns = frozenset(c for c in schema.names() if schema[c] == pl.Date)
+            expr = self._build_expression(self.filter_dict, date_columns=date_columns)
             if expr is not None:
                 lf = lf.filter(expr)
             lf = lf.select(needed_columns)
