@@ -184,6 +184,30 @@ def _normalize_top_level_sections(config: dict) -> dict:
     return {key: ({} if value is None else value) for key, value in config.items()}
 
 
+def _warn_about_empty_sections(config: dict, source: Path) -> None:
+    """
+    An empty (null) top-level section loads as if it were absent: every
+    setting in it is the bundled default. That is rarely what an edited
+    file means (settings lost to an indentation slip, or all commented
+    out), and for paths it points every stage at ./data under whatever
+    directory gdeltforge runs in, which on a shared machine can hold
+    someone else's data. Say so once per section.
+    """
+    for key, value in config.items():
+        if value is not None:
+            continue
+        where = (
+            " Its default data directories are relative to the directory gdeltforge "
+            "runs in."
+            if key == "paths" else ""
+        )
+        logger.warning(
+            f"{key} is empty (null) in {source}, so every {key} setting is the bundled "
+            f"default.{where} Remove the key if that is what you want, or indent the "
+            f"settings under it."
+        )
+
+
 # Pre-0.12 names of the clean stage, when it was called `filter`: the
 # top-level config section and the path keys' base names. Translated on
 # load with a warning, so an existing settings.yaml keeps working through
@@ -414,6 +438,7 @@ def load_config(config_path: str | None = None) -> dict:
                 f"Config file is empty: {path}. Copy config/settings.example.yaml as a "
                 f"starting point, or see docs/configuration.md."
             )
+        _warn_about_empty_sections(config, path)
         config = _migrate_deprecated_names(_normalize_top_level_sections(config), path)
         user_paths = get_dict(config, "paths")
         config = _deep_merge_defaults(config, _bundled_default_dict())

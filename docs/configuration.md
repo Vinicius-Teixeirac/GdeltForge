@@ -25,6 +25,8 @@ It is deliberately a different, more conservative file than `settings.example.ya
 
 An explicit `--config`/`GDELTFORGE_CONFIG` pointing at a path that turns out to be missing still raises `FileNotFoundError` rather than silently falling back: that's almost always a typo, not a request to use the built-in default instead.
 
+A section your file leaves out takes every one of its settings from the built-in default. So does a top-level section written with nothing under it (`paths:` alone, or `paths: null`), and that one logs a warning naming the section, since it usually means settings lost to an indentation slip or commented out. For `paths` the warning adds that the default data directories are relative to the directory gdeltforge runs in.
+
 ## Datasets and `--dataset`
 
 `convert`, `clean`, `sample`, and `scrape` all accept `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}`, and require it: there is no default. This selects which set of `columns`/`columns_numeric`/`clean.columns_to_check`/`paths.*` keys a command reads; see below for exactly how each section is namespaced per dataset.
