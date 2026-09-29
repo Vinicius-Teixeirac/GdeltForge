@@ -1260,7 +1260,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="PATH",
         help="Parquet file of Events rows to enrich, e.g. the output of `gdeltforge sample`. "
-             "A directory of parquet files (e.g. convert/filter output) also works; .done "
+             "A directory of parquet files (e.g. convert/clean output) also works; .done "
              "resumability markers in it are ignored"
     )
     crossref.add_argument(

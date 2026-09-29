@@ -738,7 +738,7 @@ def narrow_to_available_columns(
         raise ValueError(
             f"{label}: required column(s) {sorted(missing_required)} not found in the "
             f"scanned data. This dataset's configured output_columns may have pruned "
-            f"them away at an earlier stage (convert/filter)."
+            f"them away at an earlier stage (convert/clean)."
         )
 
     missing_output = requested - available - required
