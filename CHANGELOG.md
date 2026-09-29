@@ -28,7 +28,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - `clean --dry-run` (with or without `--report`) and `aggregate --dry-run` no longer create their output directories; a dry run now leaves the filesystem as it found it.
-- `converter.max_workers` (and `max_workers_by_dataset`), `clean.max_workers`, `aggregation.max_workers` and `io.max_concurrent_reads` reject a value that isn't a whole number, naming the setting. `true` used to run as one worker, logged as "True worker process(es)"; a quoted `"4"` failed with a bare `TypeError`; `2.5` was logged as the worker count and then failed inside the worker pool.
+- `converter.max_workers` (and `max_workers_by_dataset`), `clean.max_workers`, `aggregation.max_workers` and `io.max_concurrent_reads` reject a value that isn't a whole number, naming the setting. `true` used to run as one worker, logged as "True worker process(es)"; a quoted `"4"` failed with a bare `TypeError`; `2.5` was logged as the worker count and then failed inside the worker pool. A `max_workers_by_dataset` that isn't a mapping, or names something that isn't a dataset, fails the same way; a misspelled dataset used to leave that dataset at the default worker count without a word.
 
 ## [0.11.0] - 2026-09-20
 

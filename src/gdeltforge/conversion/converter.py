@@ -55,6 +55,7 @@ from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
 from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
+    DATASET_NAMES,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
@@ -352,6 +353,19 @@ class GDELTConverter:
         # changes a lot for wide datasets like GKG 2.1), so a value safe
         # for one dataset isn't necessarily safe for another.
         by_dataset = get_dict(config["converter"], "max_workers_by_dataset")
+        # A typo in a dataset name would otherwise leave that dataset at the
+        # scalar default without a word.
+        if not isinstance(by_dataset, dict):
+            raise ValueError(
+                f"converter.max_workers_by_dataset must be a mapping of dataset names to "
+                f"worker counts, got {by_dataset!r}"
+            )
+        unknown = sorted(str(k) for k in by_dataset if k not in DATASET_NAMES)
+        if unknown:
+            raise ValueError(
+                f"converter.max_workers_by_dataset: {unknown} aren't datasets; known: "
+                f"{', '.join(DATASET_NAMES)}"
+            )
         self.max_workers: int | None = (
             validate_max_workers(
                 by_dataset[dataset], f"converter.max_workers_by_dataset.{dataset}"
