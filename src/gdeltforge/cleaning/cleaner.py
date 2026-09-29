@@ -76,6 +76,7 @@ from tqdm import tqdm
 from gdeltforge import __version__
 from gdeltforge.cleaning.steps import (
     ERRATA_VERSION,
+    ORIGINAL_COLUMNS,
     Date1920Repair,
     DeriveColumns,
     EventMarkers,
@@ -331,7 +332,18 @@ class GDELTCleaner:
         if self.columns_to_check:
             steps.append(RequireColumns(tuple(self.columns_to_check)))
         if self.errata.get("date_1920"):
-            steps.append(Date1920Repair(keep_original=self.errata.get("keep_original", True)))
+            keep = self.errata.get("keep_original", True)
+            left_out = (
+                [c for c in ORIGINAL_COLUMNS if c not in self.output_columns]
+                if keep and self.output_columns is not None else []
+            )
+            if left_out:
+                logger.warning(
+                    f"clean.output_columns leaves out {left_out}, where the date repair "
+                    f"keeps GDELT's values, so the repaired files lose them and the repair "
+                    f"counts as lossy. List them in output_columns to keep them."
+                )
+            steps.append(Date1920Repair(keep_original=keep, originals_left_out=bool(left_out)))
         if self.errata.get("event_markers") is not None:
             steps.append(EventMarkers(mode=self.errata["event_markers"]))
         if any(self.normalize.values()):
@@ -387,7 +399,10 @@ class GDELTCleaner:
                 if isinstance(st, EventMarkers):
                     remedies.append("event_markers: keep")
                 elif isinstance(st, Date1920Repair):
-                    remedies.append("keep_original: true")
+                    remedies.append(
+                        "list the *_original columns in output_columns"
+                        if st.originals_left_out else "keep_original: true"
+                    )
                 elif isinstance(st, NormalizeStrings):
                     remedies.append("turn normalize off")
             raise ValueError(
@@ -1046,6 +1061,8 @@ class GDELTCleaner:
         if isinstance(step, EventMarkers):
             return "errata.event_markers: drop"
         if isinstance(step, Date1920Repair):
+            if step.originals_left_out:
+                return "errata.date_1920 with its *_original columns left out of output_columns"
             return "errata.date_1920 without keep_original"
         if isinstance(step, NormalizeStrings):
             return " and ".join(

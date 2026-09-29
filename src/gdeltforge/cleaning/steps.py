@@ -195,6 +195,8 @@ class NarrowFloat32(Step):
 # 1979 to 2026 archive, so the rule is exact.
 _DATE_1920_WINDOW = (date(2019, 12, 31), date(2020, 1, 5))
 _DATE_1920_OFFSETS = {"Day": 1_000_000, "MonthYear": 10_000, "Year": 100, "FractionDate": 100}
+# Where date_1920 keeps GDELT's values (keep_original).
+ORIGINAL_COLUMNS = tuple(f"{c}_original" for c in _DATE_1920_OFFSETS)
 
 
 @dataclass(frozen=True)
@@ -212,11 +214,14 @@ class Date1920Repair(Step):
     """
 
     keep_original: bool = True
+    # Set when clean.output_columns leaves the *_original columns out: they
+    # are written, then projected away, so GDELT's values are lost anyway.
+    originals_left_out: bool = False
     name = "errata"
 
     @property
     def lossy(self) -> bool:  # type: ignore[override]
-        return not self.keep_original
+        return not self.keep_original or self.originals_left_out
 
     @staticmethod
     def _has_date_columns(lf: pl.LazyFrame) -> bool:
