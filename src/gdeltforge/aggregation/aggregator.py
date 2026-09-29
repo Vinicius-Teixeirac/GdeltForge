@@ -440,7 +440,9 @@ def run_aggregator(
     )
     input_folder = config["paths"][dataset_path_key(dataset, input_base_key)]
     if source == "converted":
-        warn_if_folder_holds_cleaned_files(input_folder, "aggregate --source converted", logger)
+        warn_if_folder_holds_cleaned_files(
+            input_folder, "aggregate --source converted", logger, dataset=dataset
+        )
     output_base_key = f"aggregated_{period}_data_directory"
     output_folder = config["paths"][dataset_path_key(dataset, output_base_key)]
 
