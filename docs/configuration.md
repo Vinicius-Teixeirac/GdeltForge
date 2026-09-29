@@ -187,7 +187,7 @@ Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the 
 
 The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.
 
-The section is checked before any file is read. An unknown key under `clean:` is ignored with a warning. A name under `errata`, `normalize` or `derive` that isn't a dataset, settings for a dataset that aren't a mapping, `errata` for a dataset other than `gdelt_event`/`gdelt_event_15min`, a derived column whose source the dataset doesn't declare, or a `labels` column listed twice fails the run, naming the setting.
+The section is checked before any file is read. An unknown key under `clean:` is ignored with a warning. A name under `errata`, `normalize` or `derive` that isn't a dataset, settings for a dataset that aren't a mapping, an empty (null) block, `errata` for a dataset other than `gdelt_event`/`gdelt_event_15min`, a `labels` value that isn't a list, a derived column whose source the dataset doesn't declare, or a `labels` column listed twice fails the run, naming the setting. An empty block is what YAML makes of one whose lines are all commented out; for `errata` it would otherwise switch the default repair off. Write `{}` to keep the defaults, or turn a rule off by name (`date_1920: false`).
 
 | Key | Description |
 |-----|-------------|

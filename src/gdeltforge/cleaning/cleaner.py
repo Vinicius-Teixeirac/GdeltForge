@@ -1148,6 +1148,10 @@ _PARQUET_DIRECTORY_KEYS = (
     "aggregated_day_data_directory", "aggregated_month_data_directory",
     "aggregated_year_data_directory",
 )
+_EMPTY_BLOCK_HINT = (
+    "Remove the key to keep the defaults, write {} for the same, or give the settings; "
+    "to turn a default rule off, say so (errata: date_1920: false)."
+)
 # The datasets GDELT's known errors (errata) are in.
 _ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
 
@@ -1169,6 +1173,11 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
         )
     for section in ("errata", "normalize", "derive"):
         per_dataset = clean.get(section)
+        # A block whose lines are all commented out loads as null. For
+        # errata that used to switch the default repair off without a
+        # word, while an empty mapping ({}) keeps it.
+        if section in clean and per_dataset is None:
+            raise ValueError(f"clean.{section} is empty (null). {_EMPTY_BLOCK_HINT}")
         if per_dataset is None:
             continue
         if not isinstance(per_dataset, dict):
@@ -1180,7 +1189,9 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
                 raise ValueError(
                     f"clean.{section}.{name}: not a dataset; known: {', '.join(DATASET_NAMES)}"
                 )
-            if settings is not None and not isinstance(settings, dict):
+            if settings is None:
+                raise ValueError(f"clean.{section}.{name} is empty (null). {_EMPTY_BLOCK_HINT}")
+            if not isinstance(settings, dict):
                 raise ValueError(
                     f"clean.{section}.{name} must be a mapping of settings, got {settings!r}"
                 )
@@ -1199,11 +1210,19 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
             f"clean.derive.{dataset}.event_date: {dataset} has no Day column to parse"
         )
     labels = derive.get("labels") or []
+    if not isinstance(labels, list):
+        raise ValueError(
+            f"clean.derive.{dataset}.labels must be a list of column names, got {labels!r}"
+        )
+    repeated = sorted({c for c in labels if labels.count(c) > 1})
+    if repeated:
+        raise ValueError(f"clean.derive.{dataset}.labels lists {repeated} more than once")
     missing = [c for c in labels if isinstance(c, str) and c not in declared]
     if declared and missing:
         raise ValueError(
             f"clean.derive.{dataset}.labels: {missing} aren't columns of {dataset}"
         )
+
 
 def run_cleaner(
     config: dict,
