@@ -7,6 +7,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import polars as pl
+
 from gdeltforge import __version__
 from gdeltforge.aggregation.aggregator import run_aggregator
 from gdeltforge.cleaning.cleaner import run_cleaner
@@ -1356,6 +1358,30 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _report_scan_threads(cap: int | None) -> None:
+    """
+    With io.max_concurrent_reads set, say how many files sample/crossref
+    read at once and on how many polars threads. polars fetches file
+    footers on its thread pool, so a pool larger than the cap (an
+    exported POLARS_MAX_THREADS, or gdeltforge.cli.main called from
+    Python, where gdeltforge.launcher couldn't size the pool before
+    polars loaded) lets footer reads exceed it: warn then.
+    """
+    if cap is None:
+        return
+    threads = pl.thread_pool_size()
+    if threads > cap:
+        logger.warning(
+            f"io.max_concurrent_reads is {cap}, but polars runs {threads} thread(s) in this "
+            f"process and fetches file footers on them, so footer reads can exceed the cap. "
+            f"Export POLARS_MAX_THREADS={cap}, or run the gdeltforge command (or python -m "
+            f"gdeltforge) without POLARS_MAX_THREADS exported: it then starts polars with "
+            f"{cap} thread(s)."
+        )
+    else:
+        logger.info(f"Reading at most {cap} file(s) at once, on {threads} polars thread(s)")
+
+
 # ======================================================================
 # Entrypoint
 # ======================================================================
@@ -1409,11 +1435,15 @@ def main() -> None:
         # applied here directly; clean/aggregate apply it to their own
         # worker count instead.
         elif args.command == "sample":
-            with polars_scan_limit(resolve_max_concurrent_reads(config)):
+            cap = resolve_max_concurrent_reads(config)
+            _report_scan_threads(cap)
+            with polars_scan_limit(cap):
                 run_sampling_cmd(config, args)
 
         elif args.command == "crossref":
-            with polars_scan_limit(resolve_max_concurrent_reads(config)):
+            cap = resolve_max_concurrent_reads(config)
+            _report_scan_threads(cap)
+            with polars_scan_limit(cap):
                 run_crossref_cmd(config, args)
 
     except _Terminated:
