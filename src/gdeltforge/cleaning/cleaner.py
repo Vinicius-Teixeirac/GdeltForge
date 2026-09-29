@@ -1194,10 +1194,11 @@ _PARQUET_DIRECTORY_KEYS = (
     "aggregated_day_data_directory", "aggregated_month_data_directory",
     "aggregated_year_data_directory",
 )
-_EMPTY_BLOCK_HINT = (
-    "Remove the key to keep the defaults, write {} for the same, or give the settings; "
-    "to turn a default rule off, say so (errata: date_1920: false)."
-)
+def _empty_block_hint(section: str) -> str:
+    if section == "errata":
+        return ("Remove the key to keep the defaults, write {} for the same, or give the "
+                "settings; to turn a default rule off, say so (date_1920: false).")
+    return f"Remove the key, or write the {section} settings you want ({{}} for none)."
 # The datasets GDELT's known errors (errata) are in.
 _ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
 
@@ -1223,7 +1224,7 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
         # errata that used to switch the default repair off without a
         # word, while an empty mapping ({}) keeps it.
         if section in clean and per_dataset is None:
-            raise ValueError(f"clean.{section} is empty (null). {_EMPTY_BLOCK_HINT}")
+            raise ValueError(f"clean.{section} is empty (null). {_empty_block_hint(section)}")
         if per_dataset is None:
             continue
         if not isinstance(per_dataset, dict):
@@ -1236,7 +1237,9 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
                     f"clean.{section}.{name}: not a dataset; known: {', '.join(DATASET_NAMES)}"
                 )
             if settings is None:
-                raise ValueError(f"clean.{section}.{name} is empty (null). {_EMPTY_BLOCK_HINT}")
+                raise ValueError(
+                    f"clean.{section}.{name} is empty (null). {_empty_block_hint(section)}"
+                )
             if not isinstance(settings, dict):
                 raise ValueError(
                     f"clean.{section}.{name} must be a mapping of settings, got {settings!r}"
@@ -1256,9 +1259,15 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
             f"clean.derive.{dataset}.event_date: {dataset} has no Day column to parse"
         )
     labels = derive.get("labels") or []
-    if not isinstance(labels, list):
+    if not isinstance(labels, list) or not all(isinstance(c, str) for c in labels):
         raise ValueError(
             f"clean.derive.{dataset}.labels must be a list of column names, got {labels!r}"
+        )
+    uncoded = [c for c in labels if cameo_codes.code_family_for_column(c) is None]
+    if uncoded:
+        raise ValueError(
+            f"clean.derive.{dataset}.labels: {uncoded} aren't CAMEO-coded columns; "
+            f"`gdeltforge codes` lists the ones that are."
         )
     repeated = sorted({c for c in labels if labels.count(c) > 1})
     if repeated:

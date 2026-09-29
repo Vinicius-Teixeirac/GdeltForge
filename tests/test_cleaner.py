@@ -2068,7 +2068,13 @@ class TestMisappliedCleanSettings:
         ({"errata": {"gdelt_event": None}}, "gdelt_event",
          r"clean\.errata\.gdelt_event is empty \(null\)"),
         ({"errata": None}, "gdelt_event", r"clean\.errata is empty \(null\)"),
-        ({"normalize": {"gdelt_event": None}}, "gdelt_event", "is empty"),
+        ({"normalize": {"gdelt_event": None}}, "gdelt_event",
+         r"clean\.normalize\.gdelt_event is empty \(null\)\. Remove the key, or write the "
+         r"normalize settings"),
+        ({"derive": {"gdelt_event": {"labels": ["GlobalEventID"]}}}, "gdelt_event",
+         r"clean\.derive\.gdelt_event\.labels: \['GlobalEventID'\] aren't CAMEO-coded"),
+        ({"derive": {"gdelt_event": {"labels": [1]}}}, "gdelt_event",
+         r"clean\.derive\.gdelt_event\.labels must be a list of column names"),
     ])
     def test_fails_before_reading_any_file(self, tmp_path, clean, dataset, message):
         with pytest.raises(ValueError, match=message):
