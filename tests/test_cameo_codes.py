@@ -1,3 +1,5 @@
+import pytest
+
 from gdeltforge.sampling import cameo_codes
 
 
@@ -249,6 +251,11 @@ class TestIsRecognizedCode:
 
 
 class TestLookup:
+    @pytest.mark.parametrize("value", [None, 1, 1.0])
+    def test_a_value_that_isnt_a_string_is_not_a_code(self, value):
+        # A null read straight from the data used to raise AttributeError.
+        assert cameo_codes.lookup("EventRootCode", value) is None
+
     def test_returns_the_name(self):
         assert cameo_codes.lookup("Actor1CountryCode", "USA") == "United States"
 

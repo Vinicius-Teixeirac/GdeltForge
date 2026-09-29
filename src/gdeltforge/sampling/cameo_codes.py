@@ -186,13 +186,15 @@ def _uppercase_keys(family_key: str) -> dict[str, str]:
     return {k.upper(): name for k, name in _load()[family_key].items()}
 
 
-def lookup(column: str, value: str) -> str | None:
+def lookup(column: str, value: object) -> str | None:
     """
     The name for value in column's code family, case-insensitively, or
     None if column isn't a CAMEO-coded column or value isn't a known code.
+    A value that isn't a string (a null read from the data, a number) is
+    never a known code, so it gets None too.
     """
     family_key = _FAMILY_KEY_FOR_COLUMN.get(column)
-    if family_key is None:
+    if family_key is None or not isinstance(value, str):
         return None
     return _uppercase_keys(family_key).get(value.upper())
 
