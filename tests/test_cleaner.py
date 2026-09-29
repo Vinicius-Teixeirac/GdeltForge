@@ -2042,6 +2042,22 @@ class TestDeleteSourceRefusesLossySteps:
                 allow_lossy_delete_source=value,
             )
 
+    def test_a_refused_run_logs_no_data_loss_warning_first(self, tmp_path, caplog):
+        (tmp_path / "in").mkdir()
+        cfg = {
+            "paths": {
+                "parquet_data_directory": str(tmp_path / "in"),
+                "cleaned_data_directory": str(tmp_path / "out"),
+            },
+            "clean": {
+                "columns_to_check": {"gdelt_event": ["Actor1Code"]},
+                "errata": {"gdelt_event": {"event_markers": "drop"}},
+            },
+        }
+        with caplog.at_level(logging.WARNING), pytest.raises(ValueError, match="lossy"):
+            run_cleaner(cfg, delete_source=True)
+        assert not any("delete_source is set" in r.message for r in caplog.records)
+
     def test_run_cleaner_rejects_a_string_opt_in(self, tmp_path):
         (tmp_path / "in").mkdir()
         cfg = {
