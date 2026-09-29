@@ -114,7 +114,7 @@ On large files, throughput stops growing at 2-4 readers, about 75% of the link. 
 |---|---|---|---|
 | `aggregate` | 1 file per worker, one worker per period up to one per core | 4 workers x 1 file | `4 / SCANS=1`: 27-33 MB/s at 10-11 ms average RTT |
 | `clean` (measured as `filter`) | one worker per core | 4 workers | `max_workers 4`: same throughput as 32, a third lower RTT |
-| `sample`, `crossref` | polars default, one scan per core | 4 concurrent scans | not measured directly; same multi-file scan mechanism as `aggregate` |
+| `sample`, `crossref` | polars default, one scan per core | 4 concurrent scans on 4 polars threads | not measured directly; same multi-file scan mechanism as `aggregate` |
 | `convert` | one worker per core, uncapped | uncapped: set `max_workers` and `unzipped_data_directory` | `8 / local / 4 threads`: 72 MB/s at 25 ms |
 
 The recommended settings for this kind of storage are in [Network storage](configuration.md#network-storage-nfs-smb-shared-hdd-arrays).
