@@ -1927,6 +1927,34 @@ class TestErrata:
 
 
 class TestDeleteSourceRefusesLossySteps:
+    @pytest.mark.parametrize("value", ["no", "false", "true", 1, 0])
+    def test_the_opt_in_accepts_only_true_or_false(self, tmp_path, value):
+        # A quoted "no" used to count as true and let --delete-source
+        # remove the converted copy under a lossy step.
+        with pytest.raises(ValueError, match="allow_lossy_delete_source must be true or false"):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata={"event_markers": "drop"}, delete_source=True,
+                allow_lossy_delete_source=value,
+            )
+
+    def test_run_cleaner_rejects_a_string_opt_in(self, tmp_path):
+        (tmp_path / "in").mkdir()
+        cfg = {
+            "paths": {
+                "parquet_data_directory": str(tmp_path / "in"),
+                "cleaned_data_directory": str(tmp_path / "out"),
+            },
+            "clean": {
+                "columns_to_check": {"gdelt_event": []},
+                "errata": {"gdelt_event": {"event_markers": "drop"}},
+                "allow_lossy_delete_source": "no",
+            },
+        }
+        with pytest.raises(ValueError, match="allow_lossy_delete_source must be true or false"):
+            run_cleaner(cfg, delete_source=True)
+        assert (tmp_path / "in").exists()
+
     def test_refused_while_a_new_lossy_step_is_on(self, tmp_path):
         with pytest.raises(ValueError, match="errata.event_markers: drop"):
             GDELTCleaner(
