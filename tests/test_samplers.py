@@ -1146,6 +1146,13 @@ class TestFilteredSamplerReadsCleanStageColumns:
         ).get_stratified_sample("EventRootCode_Label", n_per_group=1)
         assert sorted(out["EventRootCode_Label"].to_list()) == ["MAKE PUBLIC STATEMENT", "PROTEST"]
 
+    def test_an_unknown_stratify_column_is_named_as_such(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid stratify column: Nope_Label"):
+            FilteredSampler(str(tmp_path), CLEANED_DECLARED).get_stratified_sample(
+                "Nope_Label", n_per_group=1
+            )
+
     def test_unknown_names_are_still_rejected(self, tmp_path):
         _make_cleaned_dataset(tmp_path)
         with pytest.raises(ValueError, match="Invalid columns"):
