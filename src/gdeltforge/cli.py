@@ -1367,12 +1367,25 @@ def _report_scan_threads(cap: int | None) -> None:
     footers on its thread pool, so a pool larger than the cap (an
     exported POLARS_MAX_THREADS, or gdeltforge.cli.main called from
     Python, where gdeltforge.launcher couldn't size the pool before
-    polars loaded) lets footer reads exceed it: warn then.
+    polars loaded) lets footer reads exceed it: warn then. An exported
+    POLARS_MAX_CONCURRENT_SCANS wins over the cap for data reads
+    (polars_scan_limit leaves it in place), so one above the cap is warned
+    about too.
     """
     if cap is None:
         return
+    exceeded = False
+    exported = os.environ.get("POLARS_MAX_CONCURRENT_SCANS")
+    if exported is not None and not (exported.isdigit() and int(exported) <= cap):
+        exceeded = True
+        logger.warning(
+            f"io.max_concurrent_reads is {cap}, but POLARS_MAX_CONCURRENT_SCANS={exported} "
+            f"is exported and takes precedence, so data reads can exceed the cap. Unset it, "
+            f"or export a value of {cap} or less."
+        )
     threads = pl.thread_pool_size()
     if threads > cap:
+        exceeded = True
         logger.warning(
             f"io.max_concurrent_reads is {cap}, but polars runs {threads} thread(s) in this "
             f"process and fetches file footers on them, so footer reads can exceed the cap. "
@@ -1380,7 +1393,7 @@ def _report_scan_threads(cap: int | None) -> None:
             f"gdeltforge) without POLARS_MAX_THREADS exported: it then starts polars with "
             f"{cap} thread(s)."
         )
-    else:
+    if not exceeded:
         logger.info(f"Reading at most {cap} file(s) at once, on {threads} polars thread(s)")
 
 
