@@ -107,7 +107,10 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   window, so a cleaned directory has one schema: polars refuses to read
   files that disagree on columns as one dataset, and pandas and pyarrow
   silently drop columns missing from some files. All-null columns cost next
-  to nothing in Parquet. `false` repairs in place and is lossy.
+  to nothing in Parquet. `false` repairs in place and is lossy. With
+  `clean.output_columns` set, list the four `*_original` columns there too:
+  left out, they are projected away, the run warns once, and the repair
+  counts as lossy (so `--delete-source` refuses it).
 - **Why repair**: dropping the rows would leave a five-day hole, and
   setting the dates to null would hide the rows from calendar sampling. The
   repair is exact, and `DATEADDED` confirms every repaired row.
