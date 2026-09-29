@@ -270,6 +270,11 @@ class Date1920Repair(Step):
         return {"rule": "date_1920", **super().settings()}
 
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
+        names = lf.collect_schema().names()
+        if not all(c in names for c in (*_DATE_1920_OFFSETS, "DATEADDED")):
+            # A converted file pruned by converter.output_columns: the rule
+            # can't run, and the cleaner warns once per run with the count.
+            return {"errata.date_1920_skipped_files": pl.lit(1)}
         if not self._applies(lf, ctx):
             return {}
         return {"errata.date_1920": self._condition().sum()}
