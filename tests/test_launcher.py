@@ -99,7 +99,9 @@ class TestReportScanThreads:
 
     def test_reports_the_bound_when_the_pool_fits(self, monkeypatch, caplog):
         monkeypatch.setattr(cli.pl, "thread_pool_size", lambda: 4)
-        with caplog.at_level(logging.INFO):
+        # On the CLI's own logger: an earlier --quiet run can leave it at
+        # WARNING, which the root level caplog sets doesn't override.
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
             cli._report_scan_threads(4)
         assert any("at most 4 file(s) at once, on 4 polars" in r.message for r in caplog.records)
 
