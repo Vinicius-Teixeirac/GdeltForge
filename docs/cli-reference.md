@@ -493,6 +493,10 @@ mean" question, not a fuzzy search, and every code in a family is unique.
 A search term that isn't itself a valid code falls back to the substring
 match above.
 
+A term that starts with a dash, such as the event markers `---` and `--`,
+has to be given as `--search=---`: written as `--search ---`, the shell
+argument parser reads it as another option.
+
 | Flag | Description |
 |------|-------------|
 | `column` | Positional, optional. A CAMEO/FIPS-coded column, e.g. `ActionGeo_CountryCode` |
