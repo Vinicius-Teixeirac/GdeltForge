@@ -1438,6 +1438,11 @@ class FilteredSampler:
         # "sample nothing" request.
         if n_per_group < 0:
             raise ValueError(f"n_per_group must be non-negative, got {n_per_group}")
+        # Checked like --columns and --filter names: without it, an unknown
+        # name reached the available-columns check, whose message blames
+        # output_columns pruning.
+        if stratify_col not in self._valid_columns:
+            raise ValueError(f"Invalid stratify column: {stratify_col}")
         if n_per_group == 0:
             return pl.DataFrame()
 
