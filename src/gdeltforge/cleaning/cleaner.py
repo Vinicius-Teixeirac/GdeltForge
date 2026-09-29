@@ -614,6 +614,7 @@ class GDELTCleaner:
             logger.info(f"Overall retention rate: {retention:.2f}%")
             logger.info(f"Total rows removed: {dropped:,}")
 
+        self._warn_skipped(reports)
         self._write_audit(reports, failed_files, started_at)
         return files_processed, files_failed
 
@@ -835,7 +836,30 @@ class GDELTCleaner:
             )
         lossy = [self._describe(st) for st in self.steps if st.lossy]
         logger.info(f"[dry run] lossy steps: {', '.join(lossy) if lossy else 'none'}")
+        self._warn_skipped(reports)
         return reports
+
+    @staticmethod
+    def _warn_skipped(reports: list[FileReport]) -> None:
+        """
+        Warn once per run for every step that couldn't run on some files
+        because they lack the columns it reads (a `<step>_skipped_files`
+        count): those files come out as GDELT wrote them, without a word
+        otherwise, and without the columns the step adds.
+        """
+        totals: dict[str, int] = {}
+        for r in reports:
+            for key, value in r.step_counts.items():
+                if key.endswith("_skipped_files") and value:
+                    totals[key] = totals.get(key, 0) + value
+        for key, n in sorted(totals.items()):
+            step = key[: -len("_skipped_files")]
+            logger.warning(
+                f"{step} didn't run on {n} file(s): they lack a column it reads "
+                f"({_STEP_COLUMNS.get(step, 'see docs/data-cleaning.md')}), most likely "
+                f"pruned by converter.output_columns. Those files are as GDELT wrote them, "
+                f"without the columns {step} adds."
+            )
 
     def _write_audit(
         self, reports: list[FileReport], failed: list[str], started_at: datetime
@@ -1140,6 +1164,11 @@ _CLEAN_KEYS = frozenset({
     "max_workers", "columns_to_check", "output_columns", "float32_columns", "compression",
     "errata", "normalize", "derive", "allow_lossy_delete_source",
 })
+# The columns a step that can be skipped needs, for its warning.
+_STEP_COLUMNS = {
+    "errata.date_1920": "Day, MonthYear, Year, FractionDate and DATEADDED",
+}
+
 # Base names of every paths.* key holding Parquet data, for any dataset
 # (each also exists dataset-prefixed): no run audit may land inside one.
 _PARQUET_DIRECTORY_KEYS = (

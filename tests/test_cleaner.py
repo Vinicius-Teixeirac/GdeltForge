@@ -1894,6 +1894,32 @@ def _write_new_year_2020(in_dir):
 
 
 class TestErrata:
+    @pytest.mark.parametrize("dropped", ["DATEADDED", "Day"])
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_a_file_the_repair_cant_read_is_warned_about(
+        self, tmp_path, caplog, dropped, dry_run
+    ):
+        _write_new_year_2020(tmp_path / "in")
+        path = tmp_path / "in" / "20200102.export.parquet"
+        pl.read_parquet(path).drop(dropped).write_parquet(path)
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA, dry_run=dry_run, report=dry_run,
+            ).clean_all_files()
+        assert any(
+            "errata.date_1920 didn't run on 1 file(s)" in r.message for r in caplog.records
+        )
+
+    def test_no_warning_when_every_file_has_the_columns(self, tmp_path, caplog):
+        _write_new_year_2020(tmp_path / "in")
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA,
+            ).clean_all_files()
+        assert not any("didn't run" in r.message for r in caplog.records)
+
     def test_a_cleaned_directory_reads_as_one_dataset(self, tmp_path):
         # A window file and a file from another year: both carry the four
         # *_original columns, so polars reads the directory in one go and
