@@ -104,7 +104,21 @@ class TestDate1920Repair:
         ctx = FileContext("20210101.export.parquet", date(2021, 1, 1), date(2021, 1, 1))
         out = Date1920Repair().apply(lf, ctx).collect()
         assert out["Day"].to_list() == [19200101]
-        assert "Day_original" not in out.columns
+        # The original columns are still there, null, so every file of a
+        # cleaned directory has the same schema.
+        assert out["Day_original"].to_list() == [None]
+
+    def test_every_file_gets_the_same_original_columns(self):
+        inside = Date1920Repair().apply(_events([19200101], [20200101]), CTX).collect()
+        ctx = FileContext("20210101.export.parquet", date(2021, 1, 1), date(2021, 1, 1))
+        outside = Date1920Repair().apply(_events([20210101], [20210101]), ctx).collect()
+        assert inside.schema == outside.schema
+
+    def test_without_keep_original_no_column_is_added(self):
+        ctx = FileContext("20210101.export.parquet", date(2021, 1, 1), date(2021, 1, 1))
+        lf = _events([20210101], [20210101])
+        out = Date1920Repair(keep_original=False).apply(lf, ctx).collect()
+        assert out.columns == lf.collect_schema().names()
 
     def test_counts_the_rows_it_repairs(self):
         lf = _events([19200101, 20200105], [20200101, 20200105])

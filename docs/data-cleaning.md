@@ -102,10 +102,12 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   and `FractionDate`. Applies to `gdelt_event` and `gdelt_event_15min`.
 - **`keep_original: true`** (default): GDELT's own values stay in
   `Day_original`, `MonthYear_original`, `Year_original` and
-  `FractionDate_original`, filled on repaired rows and null elsewhere. The
-  columns exist only in files whose period touches the window, so the
-  rest of the archive keeps its schema. `false` repairs in place and is
-  lossy.
+  `FractionDate_original`, filled on repaired rows and null elsewhere. Every
+  file of the dataset gets the four columns, null throughout outside the
+  window, so a cleaned directory has one schema: polars refuses to read
+  files that disagree on columns as one dataset, and pandas and pyarrow
+  silently drop columns missing from some files. All-null columns cost next
+  to nothing in Parquet. `false` repairs in place and is lossy.
 - **Why repair**: dropping the rows would leave a five-day hole, and
   setting the dates to null would hide the rows from calendar sampling. The
   repair is exact, and `DATEADDED` confirms every repaired row.
