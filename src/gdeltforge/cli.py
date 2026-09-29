@@ -506,7 +506,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         historical_key = dataset_path_key(dataset, historical_key)
         source_folder = ensure_exists(config["paths"][source_key], source_key)
         if args.source == "converted":
-            warn_if_folder_holds_cleaned_files(source_folder, "sample --source converted", logger)
+            warn_if_folder_holds_cleaned_files(
+                source_folder, "sample --source converted", logger, dataset=dataset
+            )
         hist_folder = _historical_folder(config, historical_key, dataset)
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
@@ -660,7 +662,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             folder = config["paths"].get(dataset_path_key(joined, source_key))
             if folder and Path(folder).is_dir():
                 warn_if_folder_holds_cleaned_files(
-                    folder, f"crossref --source converted ({joined})", logger
+                    folder, f"crossref --source converted ({joined})", logger, dataset=joined
                 )
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
