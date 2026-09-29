@@ -351,11 +351,15 @@ class GDELTConverter:
         # depends on peak per-worker memory, which output_columns above
         # changes a lot for wide datasets like GKG 2.1), so a value safe
         # for one dataset isn't necessarily safe for another.
-        self.max_workers: int | None = validate_max_workers(
-            get_dict(config["converter"], "max_workers_by_dataset").get(
-                dataset, config["converter"].get("max_workers")
-            ),
-            "converter.max_workers",
+        by_dataset = get_dict(config["converter"], "max_workers_by_dataset")
+        self.max_workers: int | None = (
+            validate_max_workers(
+                by_dataset[dataset], f"converter.max_workers_by_dataset.{dataset}"
+            )
+            if dataset in by_dataset
+            else validate_max_workers(
+                config["converter"].get("max_workers"), "converter.max_workers"
+            )
         )
 
         self.COLUMN_NAMES    = config["columns"][dataset]
