@@ -279,7 +279,7 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 
 `max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:
 
-- **`clean`, `aggregate`**: each worker reads one file at a time, so the worker count is capped to `max_concurrent_reads`. The startup log line shows the resulting count.
+- **`clean`, `aggregate`**: each worker reads one file at a time, so the worker count is capped to `max_concurrent_reads`. An `aggregate` worker also fetches the footers of its period's many files on its polars thread pool, so its workers share the cap among their threads as well (`max_concurrent_reads` divided by the worker count, each). The startup log line shows both numbers.
 - **`sample`, `crossref`**: these read many files through one multi-file scan in a single process, so polars' own concurrent file scans (`POLARS_MAX_CONCURRENT_SCANS`, one per core by default) are capped to it.
 - **`convert`**: not capped. Its reads are one zip per worker, and its CPU work needs the workers; see "Network storage" below for what to tune there.
 
