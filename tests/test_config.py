@@ -31,6 +31,10 @@ class TestResolveMaxConcurrentReads:
         with pytest.raises(ValueError, match="io.max_concurrent_reads must be greater than 0"):
             resolve_max_concurrent_reads({"io": {"max_concurrent_reads": 0}})
 
+    def test_rejects_a_quoted_number(self):
+        with pytest.raises(ValueError, match="io.max_concurrent_reads must be a whole number"):
+            resolve_max_concurrent_reads({"io": {"max_concurrent_reads": "4"}})
+
     def test_bundled_default_ships_no_cap(self):
         # SSD-first default: a config that never mentions io still gets the
         # section from the bundled default, with no cap in it.
@@ -171,6 +175,13 @@ class TestValidateMaxWorkers:
     def test_negative_raises_the_same_way_as_zero(self):
         with pytest.raises(ValueError, match="filter.max_workers must be greater than 0"):
             validate_max_workers(-1, "filter.max_workers")
+
+    @pytest.mark.parametrize("value", [True, False, 2.5, 4.0, "4"])
+    def test_a_value_that_isnt_an_int_raises_naming_the_given_label(self, value):
+        # true would otherwise run as one worker, "4" failed with a bare
+        # TypeError, and 2.5 failed inside the pool after being logged.
+        with pytest.raises(ValueError, match="clean.max_workers must be a whole number"):
+            validate_max_workers(value, "clean.max_workers")
 
 
 class TestModuleLoggerIsProperlyConfigured:
