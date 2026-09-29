@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 import gdeltforge.cleaning.cleaner as cleaner_module
 from gdeltforge.cleaning.cleaner import GDELTCleaner, run_cleaner
+from gdeltforge.cleaning.steps import Date1920Repair
 
 
 def _write_parquet(path, data):
@@ -1894,6 +1895,43 @@ def _write_new_year_2020(in_dir):
 
 
 class TestErrata:
+    def test_output_columns_leaving_out_the_originals_makes_the_repair_lossy(
+        self, tmp_path, caplog
+    ):
+        from gdeltforge.utils.io import cleaned_marker
+
+        _write_new_year_2020(tmp_path / "in")
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA, output_columns=["GlobalEventID", "Day"],
+            ).clean_all_files()
+        assert any("leaves out ['Day_original'" in r.message for r in caplog.records)
+        marker = cleaned_marker(tmp_path / "out" / "20200102.export_cleaned.parquet")
+        assert marker is not None
+        step = next(s for s in marker["steps"] if s.get("rule") == "date_1920")
+        assert step["lossy"] is True and step["originals_left_out"] is True
+        with pytest.raises(ValueError, match="left out of output_columns"):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out2"), columns_to_check=[],
+                errata=DEFAULT_ERRATA, output_columns=["GlobalEventID", "Day"],
+                delete_source=True,
+            )
+
+    def test_output_columns_listing_the_originals_keeps_the_repair_lossless(
+        self, tmp_path, caplog
+    ):
+        cols = ["GlobalEventID", "Day", "Day_original", "MonthYear_original",
+                "Year_original", "FractionDate_original"]
+        _write_new_year_2020(tmp_path / "in")
+        with caplog.at_level(logging.WARNING):
+            cleaner = GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA, output_columns=cols,
+            )
+        assert not any("leaves out" in r.message for r in caplog.records)
+        assert not next(s for s in cleaner.steps if isinstance(s, Date1920Repair)).lossy
+
     @pytest.mark.parametrize("dropped", ["DATEADDED", "Day"])
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_a_file_the_repair_cant_read_is_warned_about(
