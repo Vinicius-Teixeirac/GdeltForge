@@ -1292,22 +1292,6 @@ def run_cleaner(
     if allow_lossy_delete_source is None:
         allow_lossy_delete_source = False
     warn_if_output_columns_drops_join_key(logger, "clean", dataset, output_columns)
-    warn_if_delete_source_drops_recoverable_data(
-        logger, "clean", delete_source,
-        narrowing=[
-            name for name, value in (
-                ("columns_to_check", columns_to_check),
-                ("output_columns", output_columns),
-                ("float32_columns", float32_columns),
-                ("errata.event_markers: drop", errata.get("event_markers") == "drop"),
-                ("errata.date_1920 without keep_original",
-                 errata.get("date_1920") and errata.get("keep_original") is False),
-                ("normalize", any(normalize.values())),
-            )
-            if value
-        ],
-    )
-
     cleaner = GDELTCleaner(
         input_folder=config["paths"][dataset_path_key(dataset, "parquet_data_directory")],
         output_folder=config["paths"][dataset_path_key(dataset, "cleaned_data_directory")],
@@ -1339,4 +1323,22 @@ def run_cleaner(
             if key.endswith(_PARQUET_DIRECTORY_KEYS) and isinstance(value, str) and value
         ],
     )
+    # After GDELTCleaner, which refuses --delete-source under a lossy step
+    # added in 0.12.0: a run that won't happen gets no warning about it.
+    warn_if_delete_source_drops_recoverable_data(
+        logger, "clean", delete_source,
+        narrowing=[
+            name for name, value in (
+                ("columns_to_check", columns_to_check),
+                ("output_columns", output_columns),
+                ("float32_columns", float32_columns),
+                ("errata.event_markers: drop", errata.get("event_markers") == "drop"),
+                ("errata.date_1920 without keep_original",
+                 errata.get("date_1920") and errata.get("keep_original") is False),
+                ("normalize", any(normalize.values())),
+            )
+            if value
+        ],
+    )
+
     return cleaner.clean_all_files()
