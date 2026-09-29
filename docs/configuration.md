@@ -283,7 +283,7 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 - **`sample`, `crossref`**: these read many files through one multi-file scan in a single process, so polars' own concurrent file scans (`POLARS_MAX_CONCURRENT_SCANS`, one per core by default) are capped to it. That bounds data reads only: polars fetches each file's footer on its thread pool. The `gdeltforge` command (and `python -m gdeltforge`) therefore starts polars with at most `max_concurrent_reads` threads for these two commands, which bounds footer reads the same way. They compute on fewer threads as a result, which costs little when the storage is the bottleneck. The run logs the file and thread counts, and warns when polars runs more threads than the cap: an exported `POLARS_MAX_THREADS`, or `gdeltforge.cli.main` called from Python after polars has loaded.
 - **`convert`**: not capped. Its reads are one zip per worker, and its CPU work needs the workers; see "Network storage" below for what to tune there.
 
-A `POLARS_MAX_CONCURRENT_SCANS` or `POLARS_MAX_THREADS` you export yourself takes precedence over this setting.
+A `POLARS_MAX_CONCURRENT_SCANS` or `POLARS_MAX_THREADS` you export yourself takes precedence over this setting; `sample` and `crossref` warn when either is above it.
 
 ### Network storage (NFS, SMB, shared HDD arrays)
 

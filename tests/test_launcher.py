@@ -97,8 +97,22 @@ class TestReportScanThreads:
             for r in caplog.records
         )
 
+    @pytest.mark.parametrize("exported, warned", [("8", True), ("x", True), ("4", False)])
+    def test_an_exported_scan_limit_above_the_cap_is_warned_about(
+        self, monkeypatch, caplog, exported, warned
+    ):
+        monkeypatch.setattr(cli.pl, "thread_pool_size", lambda: 4)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", exported)
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            cli._report_scan_threads(4)
+        messages = [r.message for r in caplog.records]
+        assert any("POLARS_MAX_CONCURRENT_SCANS" in m for m in messages) is warned
+        # The "at most N" line only when nothing exceeds the cap.
+        assert any("Reading at most 4" in m for m in messages) is not warned
+
     def test_reports_the_bound_when_the_pool_fits(self, monkeypatch, caplog):
         monkeypatch.setattr(cli.pl, "thread_pool_size", lambda: 4)
+        monkeypatch.delenv("POLARS_MAX_CONCURRENT_SCANS", raising=False)
         # On the CLI's own logger: an earlier --quiet run can leave it at
         # WARNING, which the root level caplog sets doesn't override.
         with caplog.at_level(logging.INFO, logger=cli.logger.name):
