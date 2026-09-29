@@ -1998,7 +1998,13 @@ class TestMisappliedCleanSettings:
         ({"derive": {"gdelt_mentions": {"labels": ["EventRootCode"]}}}, "gdelt_mentions",
          "aren't columns of gdelt_mentions"),
         ({"derive": {"gdelt_event": {"labels": ["EventRootCode", "EventRootCode"]}}},
-         "gdelt_event", "more than once"),
+         "gdelt_event", r"clean\.derive\.gdelt_event\.labels lists \['EventRootCode'\]"),
+        ({"derive": {"gdelt_event": {"labels": "EventRootCode"}}}, "gdelt_event",
+         "labels must be a list of column names"),
+        ({"errata": {"gdelt_event": None}}, "gdelt_event",
+         r"clean\.errata\.gdelt_event is empty \(null\)"),
+        ({"errata": None}, "gdelt_event", r"clean\.errata is empty \(null\)"),
+        ({"normalize": {"gdelt_event": None}}, "gdelt_event", "is empty"),
     ])
     def test_fails_before_reading_any_file(self, tmp_path, clean, dataset, message):
         with pytest.raises(ValueError, match=message):
