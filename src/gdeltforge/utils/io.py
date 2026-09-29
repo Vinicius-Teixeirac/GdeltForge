@@ -16,6 +16,7 @@ import pyarrow as pa
 # reportPrivateImportUsage = false.
 from polars._typing import PolarsDataType
 
+from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -303,32 +304,46 @@ def cleaned_marker(path: str | Path) -> dict | None:
         return {}
 
 
-def warn_if_cleaned_files(files: list[Path], where: str, logger, sample_size: int = 3) -> bool:
+def warn_if_cleaned_files(
+    files: list[Path], where: str, logger, sample_size: int = 3, dataset: str | None = None
+) -> bool:
     """
     Warn when files expected to hold GDELT's own data (converted output, or
     the clean stage's input) carry the clean stage's marker. Checks the
     first, middle and last of `files` (sample_size of them), since reading
     every footer of a full archive would cost real time for a warning.
-    Returns whether it warned.
+    The warning names the directory and, when the caller knows its dataset,
+    that dataset's own path keys. Returns whether it warned.
     """
     if not files:
         return False
     picks = sorted({0, len(files) // 2, len(files) - 1})[:sample_size]
-    marked = [files[i].name for i in picks if cleaned_marker(files[i]) is not None]
+    marked = [files[i] for i in picks if cleaned_marker(files[i]) is not None]
     if marked:
+        keys = (
+            f"paths.{dataset_path_key(dataset, 'parquet_data_directory')} and "
+            f"paths.{dataset_path_key(dataset, 'cleaned_data_directory')}"
+            if dataset else
+            "paths.parquet_data_directory and paths.cleaned_data_directory (or the "
+            "dataset's own keys)"
+        )
         logger.warning(
-            f"{where}: {', '.join(marked)} carr{'ies' if len(marked) == 1 else 'y'} the "
-            f"clean stage's marker, so this directory holds cleaned data, not GDELT's "
-            f"own. Check paths.parquet_data_directory and paths.cleaned_data_directory "
-            f"point at different directories."
+            f"{where}: {', '.join(f.name for f in marked)} in {marked[0].parent} "
+            f"carr{'ies' if len(marked) == 1 else 'y'} the clean stage's marker, so this "
+            f"directory holds cleaned data, not GDELT's own. Check {keys} point at "
+            f"different directories."
         )
     return bool(marked)
 
 
-def warn_if_folder_holds_cleaned_files(folder: str | Path, where: str, logger) -> bool:
+def warn_if_folder_holds_cleaned_files(
+    folder: str | Path, where: str, logger, dataset: str | None = None
+) -> bool:
     """warn_if_cleaned_files over a directory's own top-level *.parquet
     files, for a caller that reads a converted directory by path."""
-    return warn_if_cleaned_files(sorted(Path(folder).glob("*.parquet")), where, logger)
+    return warn_if_cleaned_files(
+        sorted(Path(folder).glob("*.parquet")), where, logger, dataset=dataset
+    )
 
 
 _EXPORT_FORMATS = ("parquet", "csv")
