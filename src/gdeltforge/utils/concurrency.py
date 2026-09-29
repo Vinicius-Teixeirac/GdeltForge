@@ -1,7 +1,7 @@
 """
 concurrency.py
 
-Sizes the polars thread pools inside convert/filter/aggregate's worker
+Sizes the polars thread pools inside convert/clean/aggregate's worker
 processes, and bounds how many files one command reads at once
 (io.max_concurrent_reads).
 
@@ -77,7 +77,7 @@ def plan_workers(
     max_workers None means one worker per core, the same default
     ProcessPoolExecutor applies on its own. The worker count never
     exceeds n_tasks (a pool never runs more processes than it has tasks
-    for), nor max_concurrent_reads when that is set: every filter/
+    for), nor max_concurrent_reads when that is set: every clean/
     aggregate worker reads its own input file, so capping how many files
     the command reads at once means capping workers.
 
