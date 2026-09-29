@@ -89,15 +89,26 @@ def plan_workers(
     scans_per_worker, when given, becomes each worker's concurrent_scans.
     None leaves polars' own default, which follows the worker's thread
     count once POLARS_MAX_THREADS is set.
+
+    A worker given scans_per_worker scans many files at once (aggregate:
+    a whole period). POLARS_MAX_CONCURRENT_SCANS bounds its data reads,
+    but polars fetches the files' footers on its thread pool. Under
+    max_concurrent_reads the workers' threads therefore share the cap
+    too, max_concurrent_reads // workers each, so footer reads stay
+    within it. A worker that reads one file (clean, convert) fetches one
+    footer at a time whatever its thread count.
     """
     cores = cpu_count or os.cpu_count() or 1
     workers = max_workers if max_workers is not None else cores
     workers = min(workers, max(1, n_tasks))
     if max_concurrent_reads is not None:
         workers = min(workers, max_concurrent_reads)
+    threads = max(1, math.ceil(cores / workers))
+    if max_concurrent_reads is not None and scans_per_worker is not None:
+        threads = max(1, min(threads, max_concurrent_reads // workers))
     return WorkerPlan(
         workers=workers,
-        polars_threads=max(1, math.ceil(cores / workers)),
+        polars_threads=threads,
         concurrent_scans=scans_per_worker,
     )
 
