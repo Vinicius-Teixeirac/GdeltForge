@@ -187,6 +187,7 @@ class GDELTCleaner:
         allow_lossy_delete_source: bool = False,
         report: bool = False,
         runs_folder: str | None = None,
+        other_data_folders: list[str] | None = None,
     ):
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
@@ -411,6 +412,10 @@ class GDELTCleaner:
             Path(runs_folder) if runs_folder
             else output_base.with_name(f"{output_base.name}_runs")
         )
+        # Every other dataset's Parquet directories (run_cleaner passes
+        # them from paths.*): an audit there would be read as that
+        # dataset's data just the same.
+        self.other_data_folders = [Path(f) for f in other_data_folders or []]
         self._refuse_runs_inside_data()
 
     # ======================================================================
@@ -1028,13 +1033,15 @@ class GDELTCleaner:
     def _refuse_runs_inside_data(self) -> None:
         """
         Raise before any work if the audit directory is, or sits inside, a
-        directory holding data (flat or historical, input or output): a
-        reader handed that directory would read the audits as rows.
+        directory holding data (flat or historical, input or output, this
+        dataset's or another's): a reader handed that directory would read
+        the audits as rows.
         """
         runs = self.runs_folder.resolve()
         data_dirs = [
             self.input_folder, self.historical_input_folder,
             self.output_folder, self.historical_output_folder,
+            *self.other_data_folders,
         ]
         for folder in data_dirs:
             if folder is None:
@@ -1133,6 +1140,14 @@ _CLEAN_KEYS = frozenset({
     "max_workers", "columns_to_check", "output_columns", "float32_columns", "compression",
     "errata", "normalize", "derive", "allow_lossy_delete_source",
 })
+# Base names of every paths.* key holding Parquet data, for any dataset
+# (each also exists dataset-prefixed): no run audit may land inside one.
+_PARQUET_DIRECTORY_KEYS = (
+    "parquet_data_directory", "parquet_historical_directory",
+    "cleaned_data_directory", "cleaned_historical_directory",
+    "aggregated_day_data_directory", "aggregated_month_data_directory",
+    "aggregated_year_data_directory",
+)
 # The datasets GDELT's known errors (errata) are in.
 _ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
 
@@ -1300,5 +1315,9 @@ def run_cleaner(
         allow_lossy_delete_source=allow_lossy_delete_source,
         report=report,
         runs_folder=config["paths"].get(dataset_path_key(dataset, "clean_runs_directory")),
+        other_data_folders=[
+            value for key, value in get_dict(config, "paths").items()
+            if key.endswith(_PARQUET_DIRECTORY_KEYS) and isinstance(value, str) and value
+        ],
     )
     return cleaner.clean_all_files()

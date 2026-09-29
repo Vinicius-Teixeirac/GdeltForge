@@ -198,7 +198,8 @@ would recreate the many-small-files problem.
 directory it's given, `_`- and `.`-prefixed ones included, so an audit
 inside the cleaned directory would be read as rows by
 `pl.read_parquet("data/events/cleaned")`. The stage refuses a runs
-directory that is, or sits inside, any of its input or output directories.
+directory that is, or sits inside, any Parquet directory in `paths`: its
+own inputs and outputs, and every other dataset's too.
 
 ## Normalize: whitespace
 
