@@ -21,6 +21,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from gdeltforge.cleaning.steps import added_columns
 from gdeltforge.scraping.scraper import (
     filter_paths_by_date,
     parse_file_date,
@@ -839,6 +840,17 @@ class FilteredSampler:
     ):
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
+        # Columns the clean stage adds (errata originals, derived columns):
+        # outside the declared schema, but real columns of cleaned files.
+        # Valid in --columns and --filter, and part of the default output
+        # whenever the scanned files have them.
+        clean_added = [c for c in added_columns(list(gdelt_columns)) if c not in self.gdelt_columns]
+        self._clean_added_columns = set(clean_added)
+        self._valid_columns = self.gdelt_columns | self._clean_added_columns
+        # Output column order: the declared schema's, then the clean
+        # stage's columns in the order that stage adds them.
+        self._output_order = self._gdelt_columns_ordered + clean_added
+        self._columns_given = bool(columns)
 
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
@@ -862,7 +874,7 @@ class FilteredSampler:
 
     # ---------- validation ----------
     def _validate_columns(self):
-        invalid = self.columns - self.gdelt_columns
+        invalid = self.columns - self._valid_columns
         if invalid:
             raise ValueError(f"Invalid columns: {invalid}")
 
@@ -877,7 +889,7 @@ class FilteredSampler:
                         raise ValueError(f"{key} must contain a dict")
                     validate_block(val)
                 else:
-                    if key not in self.gdelt_columns:
+                    if key not in self._valid_columns:
                         raise ValueError(f"Invalid filter column: {key}")
                     self._warn_unrecognized_codes(key, val)
 
@@ -1146,8 +1158,11 @@ class FilteredSampler:
 
         available = set(schema.names())
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
+        requested = set(self.columns)
+        if not self._columns_given:
+            requested |= self._clean_added_columns & available
         return narrow_to_available_columns(
-            logger, f"filtered sample dataset in {self.folder}", self.columns, required, available
+            logger, f"filtered sample dataset in {self.folder}", requested, required, available
         )
 
     # ---------- API ----------
@@ -1264,7 +1279,7 @@ class FilteredSampler:
         if reservoir is None or reservoir.is_empty():
             return pl.DataFrame()
 
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in reservoir.columns]
+        keep_cols = [c for c in self._output_order if c in reservoir.columns]
         return reservoir.select(keep_cols)
 
     # ---------- with-replacement sampling (two-pass) ----------
@@ -1347,7 +1362,7 @@ class FilteredSampler:
             return pl.DataFrame()
 
         sample = pl.concat(frames)
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
+        keep_cols = [c for c in self._output_order if c in sample.columns]
         return sample.select(keep_cols)
 
     # ---------- stratified reservoir sampling ----------
@@ -1472,5 +1487,5 @@ class FilteredSampler:
         # one stratify group's reservoir Int64 for a column, a sibling
         # group's Float64 for the same column, both correct on their own.
         sample    = pl.concat(list(reservoirs.values()), how="vertical_relaxed")
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
+        keep_cols = [c for c in self._output_order if c in sample.columns]
         return sample.select(keep_cols)
