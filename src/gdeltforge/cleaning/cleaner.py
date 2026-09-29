@@ -392,15 +392,6 @@ class GDELTCleaner:
         )
         self._refuse_runs_inside_data()
 
-        self.output_folder.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Clean output folder ensured: {self.output_folder}")
-
-        if self.historical_output_folder:
-            self.historical_output_folder.mkdir(parents=True, exist_ok=True)
-            logger.info(
-                f"Historical clean output folder ensured: {self.historical_output_folder}"
-            )
-
     # ======================================================================
     # PUBLIC API
     # ======================================================================
@@ -468,6 +459,16 @@ class GDELTCleaner:
             if self.report:
                 self._dry_run_report(to_process)
             return 0, 0
+
+        # Created only now, so a dry run leaves the filesystem as it found
+        # it, directories included.
+        self.output_folder.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Clean output folder ensured: {self.output_folder}")
+        if self.historical_output_folder:
+            self.historical_output_folder.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                f"Historical clean output folder ensured: {self.historical_output_folder}"
+            )
 
         flat_to_process = sum(1 for _, is_hist in to_process if not is_hist)
         historical_to_process = len(to_process) - flat_to_process
