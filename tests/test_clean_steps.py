@@ -191,6 +191,11 @@ class TestNormalizeStrings:
     def test_is_lossy(self):
         assert NormalizeStrings(trim=True).lossy is True
 
+    def test_settings_use_the_config_names(self):
+        assert NormalizeStrings(trim=True).settings() == {
+            "trim_strings": True, "blank_to_null": False,
+        }
+
     def test_runs_before_the_null_check(self):
         # The reason for the fixed order: a blank becomes null first, so the
         # null check drops its row.

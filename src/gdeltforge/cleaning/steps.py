@@ -347,6 +347,11 @@ class NormalizeStrings(Step):
             exprs.append(value.alias(c))
         return lf.with_columns(exprs) if exprs else lf
 
+    def settings(self) -> dict:
+        # Under the names clean.normalize.<dataset> uses, so a marker reads
+        # like the configuration that produced it.
+        return {"trim_strings": self.trim, "blank_to_null": self.blank_to_null}
+
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         columns = self._string_columns(lf)
         if not columns:
