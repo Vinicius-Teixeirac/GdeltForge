@@ -1157,6 +1157,43 @@ class TestFilteredSamplerReadsCleanStageColumns:
         assert "EventDate" not in out.columns
 
 
+class TestFilteringOnADateColumn:
+    """EventDate is a real date: --filter takes "YYYY-MM-DD" or YYYYMMDD in
+    every operator, the way Day and DATEADDED take YYYYMMDD. An integer used
+    to compare as days since 1970 and select everything or nothing."""
+
+    @pytest.mark.parametrize("filter_dict, expected", [
+        ({"EventDate": "2020-01-02"}, [3]),
+        ({"EventDate": 20200102}, [3]),
+        ({"EventDate": ["2020-01-01"]}, [1, 2]),
+        ({"EventDate": {"op": "in_list", "values": [20200102]}}, [3]),
+        ({"EventDate": {"op": "lt", "value": 20200102}}, [1, 2]),
+        ({"EventDate": {"op": "gt", "value": "2020-01-01"}}, [3]),
+        ({"EventDate": {"op": "between", "min": 20200101, "max": 20200101}}, [1, 2]),
+    ])
+    def test_dates_given_either_way_select_the_right_rows(self, tmp_path, filter_dict, expected):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED, filter_dict=filter_dict
+        ).filter_dataset()
+        assert sorted(out["GlobalEventID"].to_list()) == expected
+
+    def test_sampling_with_replacement_counts_the_same_rows(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED, filter_dict={"EventDate": 20200102},
+            random_state=1,
+        ).get_random_sample(5, replace=True)
+        assert set(out["GlobalEventID"].to_list()) == {3}
+
+    def test_anything_else_is_rejected_with_the_accepted_forms(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            FilteredSampler(
+                str(tmp_path), CLEANED_DECLARED, filter_dict={"EventDate": "01/02/2020"}
+            ).filter_dataset()
+
+
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
         folder = tmp_path / "data"
