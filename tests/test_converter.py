@@ -658,6 +658,16 @@ class TestMaxWorkersByDataset:
                 )
             )
 
+    @pytest.mark.parametrize("by_dataset, message", [
+        ({"gdelt_nope": 3}, r"converter\.max_workers_by_dataset: \['gdelt_nope'\] aren't datasets"),
+        ([1], r"converter\.max_workers_by_dataset must be a mapping of dataset names"),
+    ])
+    def test_a_setting_that_names_no_dataset_fails(self, tmp_path, by_dataset, message):
+        with pytest.raises(ValueError, match=message):
+            GDELTConverter(
+                _make_config(tmp_path, max_workers=4, max_workers_by_dataset=by_dataset)
+            )
+
     def test_a_bad_dataset_override_names_its_own_key(self, tmp_path):
         with pytest.raises(
             ValueError, match=r"converter\.max_workers_by_dataset\.gdelt_event must be"
