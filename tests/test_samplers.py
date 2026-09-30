@@ -1090,6 +1090,117 @@ class TestCalendarStratifiedCrossLayoutReproducibilityUnparseableNames:
         assert sorted(a["GlobalEventID"].to_list()) == sorted(b["GlobalEventID"].to_list())
 
 
+def _make_cleaned_dataset(folder):
+    # The declared columns plus what the clean stage adds: a derived date,
+    # a code label, and a date_1920 original.
+    pl.DataFrame({
+        "GlobalEventID": [1, 2, 3], "Day": [20200101, 20200101, 20200102],
+        "MonthYear": [202001] * 3, "Year": [2020] * 3,
+        "FractionDate": [2020.0027] * 3, "EventRootCode": ["01", "14", "14"],
+        "Day_original": [19200101, None, None], "MonthYear_original": [192001, None, None],
+        "Year_original": [1920, None, None], "FractionDate_original": [1920.0027, None, None],
+        "EventDate": [date(2020, 1, 1), date(2020, 1, 1), date(2020, 1, 2)],
+        "EventRootCode_Label": ["MAKE PUBLIC STATEMENT", "PROTEST", "PROTEST"],
+    }).write_parquet(folder / "20200101.export_cleaned.parquet")
+
+
+CLEANED_DECLARED = ["GlobalEventID", "Day", "MonthYear", "Year", "FractionDate", "EventRootCode"]
+
+
+class TestFilteredSamplerReadsCleanStageColumns:
+    """Columns the clean stage adds aren't in config's declared schema, but
+    filtered sampling accepts and returns them like any other column."""
+
+    def test_default_output_includes_them(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(str(tmp_path), CLEANED_DECLARED).filter_dataset()
+        for column in ("EventDate", "EventRootCode_Label", "Day_original"):
+            assert column in out.columns
+
+    def test_they_are_valid_in_columns_and_filter(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED,
+            columns={"GlobalEventID", "EventDate", "Day_original"},
+            filter_dict={"EventRootCode_Label": ["PROTEST"]},
+        ).filter_dataset()
+        assert sorted(out["GlobalEventID"].to_list()) == [2, 3]
+        # The filter's own column is always read and returned as well.
+        assert set(out.columns) == {
+            "GlobalEventID", "EventDate", "Day_original", "EventRootCode_Label"
+        }
+
+    def test_random_sample_keeps_them_after_the_declared_columns(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(str(tmp_path), CLEANED_DECLARED, random_state=1).get_random_sample(2)
+        assert out.columns[: len(CLEANED_DECLARED)] == CLEANED_DECLARED
+        assert out.columns[len(CLEANED_DECLARED):] == [
+            "Day_original", "MonthYear_original", "Year_original", "FractionDate_original",
+            "EventDate", "EventRootCode_Label",
+        ]
+
+    def test_stratifying_by_a_label_keeps_it_in_the_output(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED, random_state=1
+        ).get_stratified_sample("EventRootCode_Label", n_per_group=1)
+        assert sorted(out["EventRootCode_Label"].to_list()) == ["MAKE PUBLIC STATEMENT", "PROTEST"]
+
+    def test_an_unknown_stratify_column_is_named_as_such(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid stratify column: Nope_Label"):
+            FilteredSampler(str(tmp_path), CLEANED_DECLARED).get_stratified_sample(
+                "Nope_Label", n_per_group=1
+            )
+
+    def test_unknown_names_are_still_rejected(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        with pytest.raises(ValueError, match="Invalid columns"):
+            FilteredSampler(str(tmp_path), CLEANED_DECLARED, columns={"GlobalEventID_Label"})
+
+    def test_absent_from_uncleaned_files_without_complaint(self, tmp_path):
+        _make_dataset(tmp_path)
+        out = FilteredSampler(str(tmp_path), GDELT_COLUMNS).filter_dataset()
+        assert "EventDate" not in out.columns
+
+
+class TestFilteringOnADateColumn:
+    """EventDate is a real date: --filter takes "YYYY-MM-DD" or YYYYMMDD in
+    every operator, the way Day and DATEADDED take YYYYMMDD. An integer used
+    to compare as days since 1970 and select everything or nothing."""
+
+    @pytest.mark.parametrize("filter_dict, expected", [
+        ({"EventDate": "2020-01-02"}, [3]),
+        ({"EventDate": 20200102}, [3]),
+        ({"EventDate": ["2020-01-01"]}, [1, 2]),
+        ({"EventDate": {"op": "in_list", "values": [20200102]}}, [3]),
+        ({"EventDate": {"op": "lt", "value": 20200102}}, [1, 2]),
+        ({"EventDate": {"op": "gt", "value": "2020-01-01"}}, [3]),
+        ({"EventDate": {"op": "between", "min": 20200101, "max": 20200101}}, [1, 2]),
+    ])
+    def test_dates_given_either_way_select_the_right_rows(self, tmp_path, filter_dict, expected):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED, filter_dict=filter_dict
+        ).filter_dataset()
+        assert sorted(out["GlobalEventID"].to_list()) == expected
+
+    def test_sampling_with_replacement_counts_the_same_rows(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        out = FilteredSampler(
+            str(tmp_path), CLEANED_DECLARED, filter_dict={"EventDate": 20200102},
+            random_state=1,
+        ).get_random_sample(5, replace=True)
+        assert set(out["GlobalEventID"].to_list()) == {3}
+
+    def test_anything_else_is_rejected_with_the_accepted_forms(self, tmp_path):
+        _make_cleaned_dataset(tmp_path)
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            FilteredSampler(
+                str(tmp_path), CLEANED_DECLARED, filter_dict={"EventDate": "01/02/2020"}
+            ).filter_dataset()
+
+
 class TestFilteredSamplerValidation:
     def test_rejects_unknown_column_in_columns(self, tmp_path):
         folder = tmp_path / "data"
@@ -2581,3 +2692,37 @@ class TestTqdmInterruptDoesNotLeakATraceback:
                 sampler.get_stratified_sample("QuadClass", n_per_group=1)
 
         assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+
+class TestCalendarWarnsAboutPre1979Dates:
+    """GDELT dated some 2020 events 1920; uncleaned data turns them into
+    false calendar periods, which the sampler says out loud."""
+
+    def test_warns_and_names_the_fix(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(4),
+            "Day": [19200101, 19200102, 20200105, 20200106],
+        }).write_parquet(folder / "a.parquet")
+
+        with caplog.at_level(logging.WARNING):
+            df = CalendarSampler(str(folder), random_state=1).get_calendar_samples(
+                samples_per_period=5
+            )
+
+        # The rows are still sampled: the warning reports, it doesn't drop.
+        assert df.height == 4
+        messages = [r.message for r in caplog.records]
+        assert any("2 row(s) have a Day before 1979" in m and "gdeltforge clean" in m
+                   for m in messages)
+
+    def test_no_warning_for_dates_from_1979_on(self, tmp_path, caplog):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "Day": [19790101]}).write_parquet(
+            folder / "a.parquet"
+        )
+        with caplog.at_level(logging.WARNING):
+            CalendarSampler(str(folder), random_state=1).get_calendar_samples()
+        assert not any("before 1979" in r.message for r in caplog.records)

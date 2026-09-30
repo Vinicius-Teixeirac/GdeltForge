@@ -16,6 +16,7 @@ import pyarrow as pa
 # reportPrivateImportUsage = false.
 from polars._typing import PolarsDataType
 
+from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -280,6 +281,71 @@ def sink_parquet_atomic(lf: pl.LazyFrame, out: str | Path, **sink_parquet_kwargs
         raise
 
 
+# Parquet key/value metadata written into every file the clean stage
+# produces (see cleaning/cleaner.py): the gdeltforge version, the steps and
+# their settings, and the source file, so a cleaned file can never pass for
+# GDELT's own data.
+CLEAN_MARKER_KEY = "gdeltforge:clean"
+
+
+def cleaned_marker(path: str | Path) -> dict | None:
+    """The clean stage's marker in this Parquet file's metadata, or None
+    for a file the stage didn't write (including an unreadable one: this
+    is a best-effort check, never a reason to fail a run)."""
+    try:
+        raw = pl.read_parquet_metadata(path).get(CLEAN_MARKER_KEY)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}
+
+
+def warn_if_cleaned_files(
+    files: list[Path], where: str, logger, sample_size: int = 3, dataset: str | None = None
+) -> bool:
+    """
+    Warn when files expected to hold GDELT's own data (converted output, or
+    the clean stage's input) carry the clean stage's marker. Checks the
+    first, middle and last of `files` (sample_size of them), since reading
+    every footer of a full archive would cost real time for a warning.
+    The warning names the directory and, when the caller knows its dataset,
+    that dataset's own path keys. Returns whether it warned.
+    """
+    if not files:
+        return False
+    picks = sorted({0, len(files) // 2, len(files) - 1})[:sample_size]
+    marked = [files[i] for i in picks if cleaned_marker(files[i]) is not None]
+    if marked:
+        keys = (
+            f"paths.{dataset_path_key(dataset, 'parquet_data_directory')} and "
+            f"paths.{dataset_path_key(dataset, 'cleaned_data_directory')}"
+            if dataset else
+            "paths.parquet_data_directory and paths.cleaned_data_directory (or the "
+            "dataset's own keys)"
+        )
+        logger.warning(
+            f"{where}: {', '.join(f.name for f in marked)} in {marked[0].parent} "
+            f"carr{'ies' if len(marked) == 1 else 'y'} the clean stage's marker, so this "
+            f"directory holds cleaned data, not GDELT's own. Check {keys} point at "
+            f"different directories."
+        )
+    return bool(marked)
+
+
+def warn_if_folder_holds_cleaned_files(
+    folder: str | Path, where: str, logger, dataset: str | None = None
+) -> bool:
+    """warn_if_cleaned_files over a directory's own top-level *.parquet
+    files, for a caller that reads a converted directory by path."""
+    return warn_if_cleaned_files(
+        sorted(Path(folder).glob("*.parquet")), where, logger, dataset=dataset
+    )
+
+
 _EXPORT_FORMATS = ("parquet", "csv")
 
 
@@ -479,7 +545,14 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     if not p.is_dir():
         return pl.read_parquet(p)
 
-    files = sorted(p.rglob("*.parquet"))
+    # A path component starting with "_" or "." marks metadata, not data,
+    # the same Hadoop/Spark/Parquet convention (_SUCCESS, _metadata) this
+    # function already relies on for dot-files, so a recursive glob never
+    # reads such files as rows.
+    files = sorted(
+        f for f in p.rglob("*.parquet")
+        if not any(part.startswith(("_", ".")) for part in f.relative_to(p).parts)
+    )
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
@@ -609,7 +682,7 @@ def warn_if_delete_source_drops_recoverable_data(
     logger, stage: str, delete_source: bool, narrowing: list[str]
 ) -> None:
     """
-    Shared by convert.py's run_converter and filter.py's run_filter, both
+    Shared by convert.py's run_converter and cleaner.py's run_cleaner, both
     of which expose a delete_source knob that removes the input file once
     its output is written successfully, to save the disk a full
     raw-plus-processed archive would otherwise need. Combined with any
@@ -679,7 +752,7 @@ def narrow_to_available_columns(
         raise ValueError(
             f"{label}: required column(s) {sorted(missing_required)} not found in the "
             f"scanned data. This dataset's configured output_columns may have pruned "
-            f"them away at an earlier stage (convert/filter)."
+            f"them away at an earlier stage (convert/clean)."
         )
 
     missing_output = requested - available - required

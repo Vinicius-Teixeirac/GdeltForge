@@ -72,7 +72,7 @@ lint = [
 ]
 
 [project.scripts]
-gdeltforge = "gdeltforge.cli:main"
+gdeltforge = "gdeltforge.launcher:main"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
