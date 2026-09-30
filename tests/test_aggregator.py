@@ -307,6 +307,63 @@ class TestCorruptFileHandling:
         assert not (tmp_path / "out" / "20200102.parquet").exists()
 
 
+class TestWorkerPlan:
+    def test_reads_one_source_file_at_a_time_per_worker(self, tmp_path, monkeypatch):
+        # A period is pure concatenation into one sequential output:
+        # reading several of its files at once only buffers them in
+        # memory, so each worker is planned with a single concurrent scan.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "20200101000000.gkg.parquet", {"GKGRECORDID": [1]})
+        _write_parquet(input_dir / "20200102000000.gkg.parquet", {"GKGRECORDID": [2]})
+
+        plans = []
+        real_plan_workers = aggregator_module.plan_workers
+
+        def recording_plan_workers(*args, **kwargs):
+            plan = real_plan_workers(*args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(aggregator_module, "plan_workers", recording_plan_workers)
+        agg = GDELTAggregator(
+            str(input_dir), str(tmp_path / "out"), period="day", max_workers=4,
+            date_parser=_gdeltv2_date_parser,
+        )
+        assert agg.aggregate_all_periods() == (2, 0)
+
+        assert len(plans) == 1
+        assert plans[0].concurrent_scans == 1
+        # Two periods: never more workers than there is work for.
+        assert plans[0].workers == 2
+
+    def test_max_concurrent_reads_caps_the_worker_count(self, tmp_path, monkeypatch):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        for day in ("01", "02", "03"):
+            _write_parquet(input_dir / f"202001{day}000000.gkg.parquet", {"GKGRECORDID": [1]})
+
+        plans = []
+        real_plan_workers = aggregator_module.plan_workers
+
+        def recording_plan_workers(*args, **kwargs):
+            plan = real_plan_workers(*args, **kwargs)
+            plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(aggregator_module, "plan_workers", recording_plan_workers)
+        agg = GDELTAggregator(
+            str(input_dir), str(tmp_path / "out"), period="day", max_workers=4,
+            max_concurrent_reads=2, date_parser=_gdeltv2_date_parser,
+        )
+        assert agg.aggregate_all_periods() == (3, 0)
+        assert plans[0].workers == 2
+
+    def test_rejects_a_non_positive_max_concurrent_reads(self, tmp_path):
+        with pytest.raises(ValueError, match="io.max_concurrent_reads must be greater than 0"):
+            GDELTAggregator(str(tmp_path), str(tmp_path / "out"), max_concurrent_reads=0)
+
+
 class TestRunAggregatorDatasetEligibility:
     def test_rejects_a_non_15_minute_dataset(self):
         with pytest.raises(ValueError, match="doesn't publish at 15-minute cadence"):
