@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.12.0] - 2026-09-30
 
 ### Added
 - New docs page `docs/data-cleaning.md`: what the `clean` stage does, in what order, and the decision behind each behavior, starting with the boundary between cleaning (is a row usable at all?) and filtered sampling (is it relevant to a study?). The stage now runs as an ordered list of steps (`gdeltforge.cleaning.steps`: require, project, narrow), each declaring whether it is lossy; output is unchanged.
