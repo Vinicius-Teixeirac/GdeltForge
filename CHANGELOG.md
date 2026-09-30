@@ -4,6 +4,16 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- `io.max_concurrent_reads` (default `null`, no cap): how many files one `filter`/`aggregate`/`sample`/`crossref` command may read at once, separate from the CPU-side `max_workers`. `filter` and `aggregate` cap their worker count to it, since each worker reads one file at a time; `sample` and `crossref` cap polars' own concurrent file scans to it. The default leaves local-SSD behavior unchanged. Network storage and shared HDD arrays slow down for every user under many concurrent readers without reading any faster, and `4` kept a shared NFS server's response time at its idle level at 70-90% of the best throughput measured; see the new `docs/configuration.md#io` section, which also covers `convert` on network storage (extract CSVs to local disk through `unzipped_data_directory`, measured 2.5 to 3x faster).
+- New docs page `docs/storage-concurrency-benchmark.md`: the full measurements behind `io.max_concurrent_reads` and the worker-pool changes below, taken on a 32-core Linux server reading a shared, HDD-backed NFS 4.2 share over 1 GbE after a real `aggregate` run slowed that share to about 4 MB/s for every user. Covers raw storage scaling, `aggregate`, `convert`, and `filter`, the method used to keep the benchmark itself from overloading the share, and its limitations.
+
+### Changed
+- `convert`, `filter`, and `aggregate` now size each worker process's polars thread pools to its share of the machine, `ceil(cores / workers)` threads, set through `POLARS_MAX_THREADS` in the worker's environment. Previously every spawned worker sized its pools to the whole machine, so `max_workers` only capped processes: N workers carried roughly N x 2 x cores threads (4,391 for a 32-worker `filter` on 32 cores), and memory grew with it. Measured at 4 workers on a 20-core machine, peak memory fell 35-45% at the same or better speed. The worker count also no longer exceeds the number of files or periods to process, and the startup log line reports both numbers. A `POLARS_MAX_THREADS` exported by the user is left untouched. See `docs/configuration.md#worker-pools-and-polars-threads`.
+- `aggregate` workers read one source file at a time (`POLARS_MAX_CONCURRENT_SCANS=1`), down from polars' default of one per core. A period is pure concatenation into one sequential output, so concurrent reads only buffered files in memory: a single worker with polars' defaults grew past 3.7 GB on one month of Events and ran a 16 GB machine out of memory with a few workers, while one file at a time finished the same month in 2.9s at 1.25 GB. Two files at a time measured the same speed at 60% more memory.
+
 ## [0.11.0] - 2026-09-20
 
 ### Added

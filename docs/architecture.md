@@ -73,6 +73,7 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ │
     │ └── utils/
     │   ├── branding.py # Terminal ANSI colors and the --version banner (brand system's terminal voice)
+    │   ├── concurrency.py # Sizes each worker's polars thread pools to its share of the machine, and caps concurrent reads (io.max_concurrent_reads)
     │   ├── config.py # Config resolution (--config / env var / CWD / bundled default) and YAML loading
     │   ├── io.py # File and chunked-IO helpers
     │   └── logging.py # Central logging system
