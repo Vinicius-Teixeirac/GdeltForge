@@ -631,6 +631,20 @@ clean:
       trim_strings: false   # strip leading/trailing whitespace
       blank_to_null: false  # " " -> null, before the null check
 
+  # Optional place resolution, off by default since it replaces GDELT's
+  # geo values without keeping them. Looks up each geo point's exact
+  # FeatureID, Lat and Long in a table built from the full archive and
+  # bundled with gdeltforge, and writes the place's ID, canonical point,
+  # name and type: one place for "US", "0" and GDELT 1.0's US centre, one
+  # ID per place where two gazetteers share one (Canada stays CA,
+  # California becomes USCA; Kula, Afghanistan becomes gns:449676),
+  # countries moved back to their own point. A point at (0, 0) or without
+  # coordinates resolves by its ID, or becomes no location, which the null
+  # check then sees. See docs/data-cleaning.md#places.
+  places:
+    gdelt_event: # example
+      resolve: false
+
   # Optional added columns, off by default; nothing is replaced. With
   # output_columns set, list the derived columns there too.
   derive:
@@ -639,8 +653,9 @@ clean:
       labels: []         # e.g. [EventRootCode, ActionGeo_CountryCode] -> <column>_Label
 
   # --delete-source removes the converted copy. It refuses to run while a
-  # lossy errata or normalize step is on (event_markers: drop, date_1920
-  # without keep_original, or a normalize switch) unless this is true.
+  # lossy errata, normalize or places step is on (event_markers: drop,
+  # date_1920 without keep_original, a normalize switch, or
+  # places.resolve) unless this is true.
   allow_lossy_delete_source: false
 
   columns_to_check:
