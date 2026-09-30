@@ -74,6 +74,7 @@ from polars._typing import ParquetCompression
 from tqdm import tqdm
 
 from gdeltforge import __version__
+from gdeltforge.cleaning.places import place_table_id
 from gdeltforge.cleaning.steps import (
     ERRATA_VERSION,
     ORIGINAL_COLUMNS,
@@ -85,6 +86,7 @@ from gdeltforge.cleaning.steps import (
     NormalizeStrings,
     ProjectColumns,
     RequireColumns,
+    ResolvePlaces,
     Step,
     ordered,
 )
@@ -146,6 +148,7 @@ _ERRATA_KEYS = ("date_1920", "event_markers", "keep_original")
 _EVENT_MARKER_MODES = ("keep", "drop")
 _NORMALIZE_KEYS = ("trim_strings", "blank_to_null")
 _DERIVE_KEYS = ("event_date", "labels")
+_PLACES_KEYS = ("resolve",)
 
 
 class GDELTCleaner:
@@ -185,6 +188,7 @@ class GDELTCleaner:
         errata: dict | None = None,
         normalize: dict | None = None,
         derive: dict | None = None,
+        places: dict | None = None,
         allow_lossy_delete_source: bool = False,
         report: bool = False,
         runs_folder: str | None = None,
@@ -300,6 +304,9 @@ class GDELTCleaner:
         self.normalize = self._validated_flags(normalize, _NORMALIZE_KEYS, "clean.normalize")
         # Optional derived columns (clean.derive.<dataset>), off by default.
         self.derive = self._validated_derive(derive)
+        # Optional place resolution (clean.places.<dataset>), off by default:
+        # it replaces GDELT's geo values without keeping them.
+        self.places = self._validated_flags(places, _PLACES_KEYS, "clean.places")
         # With --dry-run: read every file in scope and report what each
         # step would change, instead of only counting files.
         self.report = report
@@ -323,6 +330,12 @@ class GDELTCleaner:
             fingerprint_fields["normalize"] = json.dumps(self.normalize, sort_keys=True)
         if self.derive.get("event_date") or self.derive.get("labels"):
             fingerprint_fields["derive"] = json.dumps(self.derive, sort_keys=True)
+        if self.places.get("resolve"):
+            # With the table's identity, so a release that ships a rebuilt
+            # table resolves every file again.
+            fingerprint_fields["places"] = json.dumps(
+                {**self.places, "table": place_table_id()}, sort_keys=True
+            )
         self._config_fingerprint = config_fingerprint(**fingerprint_fields)
 
         # The stage's steps, built once from the settings above and applied
@@ -352,6 +365,8 @@ class GDELTCleaner:
                 trim=self.normalize.get("trim_strings", False),
                 blank_to_null=self.normalize.get("blank_to_null", False),
             ))
+        if self.places.get("resolve"):
+            steps.append(ResolvePlaces(table=place_table_id()))
         if self.derive.get("event_date") or self.derive.get("labels"):
             label_maps = []
             for column in self.derive.get("labels", []):
@@ -406,6 +421,8 @@ class GDELTCleaner:
                     )
                 elif isinstance(st, NormalizeStrings):
                     remedies.append("turn normalize off")
+                elif isinstance(st, ResolvePlaces):
+                    remedies.append("turn places off")
             raise ValueError(
                 f"--delete-source would delete the converted copy of every file, and "
                 f"these steps are lossy: {', '.join(self._describe(st) for st in refused)}. "
@@ -704,9 +721,9 @@ class GDELTCleaner:
         columns_in = len(lf.collect_schema())
         count_frames: list[pl.LazyFrame] = []
         for step in self.steps:
-            exprs = step.counts(lf, ctx)
-            if exprs:
-                count_frames.append(lf.select([e.alias(k) for k, e in exprs.items()]))
+            frame = step.count_frame(lf, ctx)
+            if frame is not None:
+                count_frames.append(frame)
             lf = step.apply(lf, ctx)
 
         unrecognized_exprs = self._unrecognized_code_exprs(lf)
@@ -873,11 +890,13 @@ class GDELTCleaner:
                     totals[key] = totals.get(key, 0) + value
         for key, n in sorted(totals.items()):
             step = key[: -len("_skipped_files")]
+            columns, left = _SKIPPED_STEPS.get(
+                step, ("see docs/data-cleaning.md", "as GDELT wrote them")
+            )
             logger.warning(
                 f"{step} didn't run on {n} file(s): they lack a column it reads "
-                f"({_STEP_COLUMNS.get(step, 'see docs/data-cleaning.md')}), most likely "
-                f"pruned by converter.output_columns. Those files are as GDELT wrote them, "
-                f"without the columns {step} adds."
+                f"({columns}), most likely pruned by converter.output_columns. Those files "
+                f"are {left}."
             )
 
     def _write_audit(
@@ -1073,6 +1092,8 @@ class GDELTCleaner:
                 f"normalize.{key}" for key, on in
                 (("trim_strings", step.trim), ("blank_to_null", step.blank_to_null)) if on
             )
+        if isinstance(step, ResolvePlaces):
+            return "places.resolve"
         return step.name
 
     def _refuse_runs_inside_data(self) -> None:
@@ -1183,11 +1204,19 @@ class GDELTCleaner:
 
 _CLEAN_KEYS = frozenset({
     "max_workers", "columns_to_check", "output_columns", "float32_columns", "compression",
-    "errata", "normalize", "derive", "allow_lossy_delete_source",
+    "errata", "normalize", "places", "derive", "allow_lossy_delete_source",
 })
-# The columns a step that can be skipped needs, for its warning.
-_STEP_COLUMNS = {
-    "errata.date_1920": "Day, MonthYear, Year, FractionDate and DATEADDED",
+# For each step that can be skipped, for its warning: the columns it
+# needs, and what a file it skipped holds.
+_SKIPPED_STEPS = {
+    "errata.date_1920": (
+        "Day, MonthYear, Year, FractionDate and DATEADDED",
+        "as GDELT wrote them, without the columns errata.date_1920 adds",
+    ),
+    "places": (
+        "a geo point's FeatureID, Lat and Long",
+        "as GDELT wrote them, their points unresolved",
+    ),
 }
 
 # Base names of every paths.* key holding Parquet data, for any dataset
@@ -1198,23 +1227,30 @@ _PARQUET_DIRECTORY_KEYS = (
     "aggregated_day_data_directory", "aggregated_month_data_directory",
     "aggregated_year_data_directory",
 )
+
+
 def _empty_block_hint(section: str) -> str:
     if section == "errata":
         return ("Remove the key to keep the defaults, write {} for the same, or give the "
                 "settings; to turn a default rule off, say so (date_1920: false).")
     return f"Remove the key, or write the {section} settings you want ({{}} for none)."
+
+
 # The datasets GDELT's known errors (errata) are in.
 _ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
+# The datasets whose geo points the place table was built from: the daily
+# export and the 15-minute feed write the same points.
+_PLACES_DATASETS = ("gdelt_event", "gdelt_event_15min")
 
 
 def _validate_clean_section(config: dict, dataset: str) -> None:
     """
     Catch clean settings that would otherwise be ignored without a word or
     fail only once files are being read: an unknown key under clean:, a
-    name under errata/normalize/derive that isn't a dataset, a dataset's
-    settings that aren't a mapping, errata for a dataset GDELT's known
-    errors aren't in, and derive columns the dataset being cleaned doesn't
-    declare.
+    name under errata/normalize/places/derive that isn't a dataset, a
+    dataset's settings that aren't a mapping, errata for a dataset GDELT's
+    known errors aren't in, places for a dataset without Events geo points,
+    and derive columns the dataset being cleaned doesn't declare.
     """
     clean = config["clean"]
     unknown = sorted(set(clean) - _CLEAN_KEYS)
@@ -1222,7 +1258,7 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
         logger.warning(
             f"clean: unknown setting(s) {unknown} are ignored; known: {sorted(_CLEAN_KEYS)}"
         )
-    for section in ("errata", "normalize", "derive"):
+    for section in ("errata", "normalize", "places", "derive"):
         per_dataset = clean.get(section)
         # A block whose lines are all commented out loads as null. For
         # errata that used to switch the default repair off without a
@@ -1252,6 +1288,12 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
                 raise ValueError(
                     f"clean.errata.{name}: the known GDELT errors this stage repairs are "
                     f"in {' and '.join(_ERRATA_DATASETS)} only"
+                )
+            if section == "places" and settings and name not in _PLACES_DATASETS:
+                raise ValueError(
+                    f"clean.places.{name}: places are resolved in "
+                    f"{' and '.join(_PLACES_DATASETS)} only, whose geo points the place "
+                    f"table was built from"
                 )
 
     # Checked against the declared schema of the dataset being cleaned,
@@ -1347,6 +1389,7 @@ def run_cleaner(
     errata = get_dict(get_dict(config["clean"], "errata"), dataset)
     normalize = get_dict(get_dict(config["clean"], "normalize"), dataset)
     derive = get_dict(get_dict(config["clean"], "derive"), dataset)
+    places = get_dict(get_dict(config["clean"], "places"), dataset)
     allow_lossy_delete_source = config["clean"].get("allow_lossy_delete_source")
     if allow_lossy_delete_source is None:
         allow_lossy_delete_source = False
@@ -1374,6 +1417,7 @@ def run_cleaner(
         errata=errata,
         normalize=normalize,
         derive=derive,
+        places=places,
         allow_lossy_delete_source=allow_lossy_delete_source,
         report=report,
         runs_folder=config["paths"].get(dataset_path_key(dataset, "clean_runs_directory")),
@@ -1396,6 +1440,7 @@ def run_cleaner(
                 ("errata.date_1920 without keep_original",
                  errata.get("date_1920") and errata.get("keep_original") is False),
                 ("normalize", any(normalize.values())),
+                ("places", places.get("resolve")),
             )
             if value
         ],
