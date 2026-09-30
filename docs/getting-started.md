@@ -54,28 +54,28 @@ gdeltforge --help
 
     GdeltForge falls back to a conservative built-in default (real `./data/...` paths, no row/column filtering) if there's no config file, and writes that default to `config/settings.yaml` on first run. A fresh environment (a Colab session, say) works with nothing configured.
 
-Worth doing anyway for a real project, so you're deciding `paths:` and `filter.columns_to_check` deliberately rather than accepting the defaults:
+Worth doing anyway for a real project, so you're deciding `paths:` and `clean.columns_to_check` deliberately rather than accepting the defaults:
 
 ```bash
 cp config/settings.example.yaml config/settings.yaml
 ```
 
-At minimum, review `paths:` (where downloaded/converted/filtered data will live) and `filter.columns_to_check` (which columns must be non-null for a row to survive filtering). See the full [Configuration](configuration.md) reference for every option, including what the built-in fallback actually sets.
+At minimum, review `paths:` (where downloaded/converted/cleaned data will live) and `clean.columns_to_check` (which columns must be non-null for a row to survive the clean stage; the built-in default lists none, so every row survives). See the full [Configuration](configuration.md) reference for every option, including what the built-in fallback actually sets.
 
 ## Your first pipeline run
 
-![The five pipeline stages: scrape, convert, filter, sample, crossref](assets/pipeline-diagram.svg)
+![The five pipeline stages: scrape, convert, clean, sample, crossref](assets/pipeline-diagram.svg)
 
 Each stage is a separate command, run in order. A small, date-restricted run is the fastest way to confirm everything is wired up correctly:
 
 ```bash
 gdeltforge scrape --dataset events --start-date 2024-01-01 --end-date 2024-01-07
 gdeltforge convert --dataset events
-gdeltforge filter --dataset events
+gdeltforge clean --dataset events
 gdeltforge sample --dataset events --mode indexed -n 1000 --out sample.parquet
 ```
 
-This downloads one week of daily GDELT files, converts them to Parquet, drops rows missing your configured columns, and writes a 1,000-row random sample to `sample.parquet`.
+This downloads one week of daily GDELT files, converts them to Parquet, cleans them, and writes a 1,000-row random sample to `sample.parquet`. With the built-in defaults, `clean` repairs known GDELT errors, keeping GDELT's own values in `*_original` columns, and keeps every row; it drops rows only for the columns you list under `clean.columns_to_check`. It also marks every file it writes as cleaned and writes an audit of the run (see [Data Cleaning](data-cleaning.md)).
 
 Once that works, drop the date flags to work with the full archive (1979-present).
 

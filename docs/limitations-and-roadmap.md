@@ -14,7 +14,7 @@ You can run multiple stages at once with a shell script of your own: see [Recipe
 
 ## Format
 
-Only CSV -> Parquet is supported. The schema is preserved as-is, with no additional transformations beyond numeric coercion (see [Configuration](configuration.md#columns)).
+Only CSV -> Parquet is supported. `convert` preserves the schema as-is, with no additional transformations beyond numeric coercion (see [Configuration](configuration.md#columns)). Everything that changes a value or adds a column happens in `clean`, one documented step at a time (see [Data Cleaning](data-cleaning.md)). Its defaults lose nothing: they repair GDELT's own errors while keeping its values, keep every row, mark every cleaned file and audit every run; dropping rows or columns, or narrowing types, is opt-in.
 
 ## Sampling
 

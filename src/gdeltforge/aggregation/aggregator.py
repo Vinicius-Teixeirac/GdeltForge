@@ -62,6 +62,7 @@ from gdeltforge.utils.io import (
     mark_done,
     scan_dataset_reconciled,
     sink_parquet_atomic,
+    warn_if_folder_holds_cleaned_files,
 )
 from gdeltforge.utils.logging import get_logger
 
@@ -74,7 +75,7 @@ class GDELTAggregator:
     encodes (day/month/year) and writes each period's concatenated rows
     to one output file, resumably.
 
-    Unlike GDELTConverter/GDELTFilter, whose resumability marker is keyed
+    Unlike GDELTConverter/GDELTCleaner, whose resumability marker is keyed
     one-per-source-file, this is many-sources-in-one-output: the marker
     is keyed to the OUTPUT file, fingerprinted on both the run's own
     settings (compression, source, delete_source) and the sorted set of
@@ -92,7 +93,7 @@ class GDELTAggregator:
         input_folder: str,
         output_folder: str,
         period: str = "day",
-        source: str = "filtered",
+        source: str = "cleaned",
         max_workers: int | None = None,
         max_concurrent_reads: int | None = None,
         compression: str = "zstd",
@@ -161,9 +162,6 @@ class GDELTAggregator:
             logger.setLevel(logging.WARNING)
         self.force = force
         self.dry_run = dry_run
-
-        self.output_folder.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Aggregation output folder ensured: {self.output_folder}")
 
     # ------------------------------------------------------------
     # PERIOD GROUPING
@@ -262,6 +260,11 @@ class GDELTAggregator:
                 )
             return 0, 0
 
+        # Created only now, so a dry run leaves the filesystem as it found
+        # it, directories included.
+        self.output_folder.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Aggregation output folder ensured: {self.output_folder}")
+
         # One source file read at a time per worker: a period is pure
         # concatenation into one sequential output, so reading several of
         # its files at once only buffers them in memory. Measured on real
@@ -280,7 +283,7 @@ class GDELTAggregator:
         # Each period is aggregated independently (its own source files,
         # own output path), so period-level parallelism across processes
         # is safe. mp_context forced to spawn, matching converter.py's/
-        # filter.py's identical fix for polars' Rayon thread pool not
+        # cleaner.py's identical fix for polars' Rayon thread pool not
         # surviving fork() on Linux. polars_worker_env sizes each worker's
         # own polars pools to its share of the machine; see utils.
         # concurrency for why max_workers alone doesn't.
@@ -380,7 +383,7 @@ class GDELTAggregator:
         here (permissions, the file already gone) is logged and
         swallowed rather than counted as an aggregation failure: the
         aggregation itself already succeeded, this is best-effort
-        cleanup on top of it, matching convert.py's/filter.py's own
+        cleanup on top of it, matching convert.py's/cleaner.py's own
         identical _delete_source.
         """
         try:
@@ -399,7 +402,7 @@ def run_aggregator(
     config: dict,
     dataset: str = "gdelt_gkg_v2",
     period: str = "day",
-    source: str = "filtered",
+    source: str = "cleaned",
     start_date: date | None = None,
     end_date: date | None = None,
     order: str = "asc",
@@ -433,9 +436,13 @@ def run_aggregator(
     from gdeltforge.scraping.scraper import date_parser_for
 
     input_base_key = (
-        "filtered_data_directory" if source == "filtered" else "parquet_data_directory"
+        "cleaned_data_directory" if source == "cleaned" else "parquet_data_directory"
     )
     input_folder = config["paths"][dataset_path_key(dataset, input_base_key)]
+    if source == "converted":
+        warn_if_folder_holds_cleaned_files(
+            input_folder, "aggregate --source converted", logger, dataset=dataset
+        )
     output_base_key = f"aggregated_{period}_data_directory"
     output_folder = config["paths"][dataset_path_key(dataset, output_base_key)]
 

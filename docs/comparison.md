@@ -59,8 +59,8 @@ The other is `crossref`: GKG 2.1 carries no event ID at all, only the source art
 ## What GdeltForge deliberately doesn't do
 
 - **No VGKG, or any GDELT table beyond Events, GKG, and Mentions.** Those three cover what `crossref` needs to join Events to GKG; a fourth table would be a separate, unscoped addition. `gdelt-py` and `gdeltr2` cover more tables if you need them.
-- **No data-quality curation beyond null-dropping.** GDELT Events are documented in the academic literature as high-recall, low-precision: a real, nontrivial false-positive rate. `filter` removes rows missing required fields; it doesn't second-guess events GDELT miscategorized in the first place. That's a distinct, harder problem, not something that belongs bolted onto a null-check.
-- **No pipeline orchestration.** `scrape`/`convert`/`filter`/`sample` are four separate, explicit commands by design; chaining them is your shell script's job (see [Recipes](recipes.md)), not GdeltForge's.
+- **No curation of GDELT's coding decisions.** GDELT Events are documented in the academic literature as high-recall, low-precision: a real, nontrivial false-positive rate. `clean` repairs errors that are demonstrably GDELT's own (such as the events dated 1920 for 2020), keeping GDELT's values beside the repair, and by default keeps every row: it removes rows missing a value only in the columns you list as required. Every file it writes is marked and every run audited. It doesn't second-guess events GDELT miscategorized in the first place. That's a distinct, harder problem, not something that belongs bolted onto a data-quality pass. See [Data Cleaning](data-cleaning.md) for what `clean` does and doesn't do.
+- **No pipeline orchestration.** `scrape`/`convert`/`clean`/`sample` are four separate, explicit commands by design; chaining them is your shell script's job (see [Recipes](recipes.md)), not GdeltForge's.
 - **No hosted infrastructure, and no API wrapping.** GdeltForge never talks to the DOC/GEO/TV APIs at all, only the raw bulk archive; SQL-at-scale with nothing to install is BigQuery's job, not this one's.
 
 ## For temporal knowledge-graph / event-forecasting work

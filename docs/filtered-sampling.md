@@ -8,11 +8,14 @@
 - relational operators (`>`, `<`)
 - nested `AND` / `OR` logical blocks
 
+!!! note "Filtered sampling vs the `clean` stage"
+    Filtered sampling selects rows that are *relevant* to your study, per run, without writing anything but the sample. The [`clean`](data-cleaning.md) stage decides whether rows are *usable* at all, once, for the whole dataset. Row selection by content lives only here; see [Data Cleaning](data-cleaning.md#quality-not-relevance) for why.
+
 Below is the complete specification. For runnable end-to-end examples built on it, see [Recipes](recipes.md); to check that a filter value is a valid code before running, see [`gdeltforge codes`](cli-reference.md#gdeltforge-codes).
 
 !!! note "Which columns you can filter on depends on your dataset"
 
-    `--dataset events` reads GDELT's daily archive, still exported in the older, 58-column, GDELT-1.0-compatible schema for backward compatibility. `--dataset events-15min` reads the same underlying events in GDELT 2.0's native 61-column format instead, adding `Actor1Geo_ADM2Code`/`Actor2Geo_ADM2Code`/`ActionGeo_ADM2Code`, finer administrative-region geocoding than the `ADM1Code` both schemas already carry. `--mode filtered`'s own `--filter` and `--columns` both reject one of those three fields against `events` at startup, before any file is even scanned: `--filter` with `Invalid filter column: ...`, `--columns` with `Invalid columns: {...}`, since filtered sampling validates both against the dataset's own declared schema up front. `--mode indexed`/`calendar`'s `--columns` behaves differently: it isn't validated against a declared schema at all, so naming one of those three fields against `events` there just warns that it wasn't found in the scanned data and drops it, the same graceful handling any other absent-but-non-essential column already gets; those two modes don't take a `--filter` condition at all. See [Configuration](configuration.md#datasets-and-dataset) for the full schema comparison.
+    `--dataset events` reads GDELT's daily archive, still exported in the older, 58-column, GDELT-1.0-compatible schema for backward compatibility. `--dataset events-15min` reads the same underlying events in GDELT 2.0's native 61-column format instead, adding `Actor1Geo_ADM2Code`/`Actor2Geo_ADM2Code`/`ActionGeo_ADM2Code`, finer administrative-region geocoding than the `ADM1Code` both schemas already carry. `--mode filtered`'s own `--filter` and `--columns` both reject one of those three fields against `events` at startup, before any file is even scanned: `--filter` with `Invalid filter column: ...`, `--columns` with `Invalid columns: {...}`, since filtered sampling validates both against the dataset's own declared schema up front, plus the columns the clean stage adds to cleaned files (the `*_original` columns, `EventDate`, `<column>_Label`; see [Data Cleaning](data-cleaning.md)). `--mode indexed`/`calendar`'s `--columns` behaves differently: it isn't validated against a declared schema at all, so naming one of those three fields against `events` there just warns that it wasn't found in the scanned data and drops it, the same graceful handling any other absent-but-non-essential column already gets; those two modes don't take a `--filter` condition at all. See [Configuration](configuration.md#datasets-and-dataset) for the full schema comparison.
 
 ## Basic filter types (single column)
 
@@ -59,6 +62,8 @@ All operator forms:
 | `between` / `range` | `{ "GoldsteinScale": { "op": "between", "min": -2, "max": 2 } }` | `-2 ≤ GoldsteinScale ≤ 2` |
 
 All of the above apply to any numeric or categorical GDELT column.
+
+**Dates.** GDELT's own date columns are numbers: `Day` and `DATEADDED` compare as `YYYYMMDD` (`{"Day": {"op": "between", "min": 20200101, "max": 20200131}}`). `EventDate`, the real date [`clean.derive`](data-cleaning.md#derive-added-columns) adds, takes a date in either form, the string `"2020-01-02"` (exactly `YYYY-MM-DD`) or the number `20200102`, in every operator above; anything else, the string `"20200102"` included, fails with a message naming both forms.
 
 ## Logical groups
 

@@ -280,7 +280,7 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
-    { name = "polars", specifier = ">=1.34" },
+    { name = "polars", specifier = ">=1.34,<2" },
     { name = "pyarrow", specifier = ">=14.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.28" },

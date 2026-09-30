@@ -31,6 +31,10 @@ class TestResolveMaxConcurrentReads:
         with pytest.raises(ValueError, match="io.max_concurrent_reads must be greater than 0"):
             resolve_max_concurrent_reads({"io": {"max_concurrent_reads": 0}})
 
+    def test_rejects_a_quoted_number(self):
+        with pytest.raises(ValueError, match="io.max_concurrent_reads must be a whole number"):
+            resolve_max_concurrent_reads({"io": {"max_concurrent_reads": "4"}})
+
     def test_bundled_default_ships_no_cap(self):
         # SSD-first default: a config that never mentions io still gets the
         # section from the bundled default, with no cap in it.
@@ -52,8 +56,8 @@ class TestDatasetPathKey:
         assert dataset_path_key("gdelt_gkg_v2", "parquet_data_directory") == (
             "gkg_v2_parquet_data_directory"
         )
-        assert dataset_path_key("gdelt_mentions", "filtered_data_directory") == (
-            "mentions_filtered_data_directory"
+        assert dataset_path_key("gdelt_mentions", "cleaned_data_directory") == (
+            "mentions_cleaned_data_directory"
         )
 
     def test_unknown_dataset_raises(self):
@@ -122,29 +126,29 @@ class TestDeepMergeDefaults:
 
     def test_missing_nested_key_is_filled_in(self):
         merged = config_module._deep_merge_defaults(
-            {"filter": {"max_workers": 4}},
-            {"filter": {"max_workers": None, "columns_to_check": {"gdelt_event": []}}},
+            {"clean": {"max_workers": 4}},
+            {"clean": {"max_workers": None, "columns_to_check": {"gdelt_event": []}}},
         )
-        assert merged["filter"] == {"max_workers": 4, "columns_to_check": {"gdelt_event": []}}
+        assert merged["clean"] == {"max_workers": 4, "columns_to_check": {"gdelt_event": []}}
 
     def test_a_users_list_value_is_never_merged_element_by_element(self):
         # A user's own (possibly empty) columns_to_check list for a dataset
         # must win outright, not get padded with the default's entries for
         # that same dataset: only dict values recurse, never lists.
         merged = config_module._deep_merge_defaults(
-            {"filter": {"columns_to_check": {"gdelt_event": []}}},
-            {"filter": {"columns_to_check": {"gdelt_event": ["Actor1Name"]}}},
+            {"clean": {"columns_to_check": {"gdelt_event": []}}},
+            {"clean": {"columns_to_check": {"gdelt_event": ["Actor1Name"]}}},
         )
-        assert merged["filter"]["columns_to_check"]["gdelt_event"] == []
+        assert merged["clean"]["columns_to_check"]["gdelt_event"] == []
 
     def test_original_dicts_are_not_mutated(self):
-        config = {"filter": {"max_workers": 4}}
-        defaults = {"filter": {"max_workers": None, "columns_to_check": {}}}
+        config = {"clean": {"max_workers": 4}}
+        defaults = {"clean": {"max_workers": None, "columns_to_check": {}}}
 
         config_module._deep_merge_defaults(config, defaults)
 
-        assert config == {"filter": {"max_workers": 4}}
-        assert defaults == {"filter": {"max_workers": None, "columns_to_check": {}}}
+        assert config == {"clean": {"max_workers": 4}}
+        assert defaults == {"clean": {"max_workers": None, "columns_to_check": {}}}
 
 
 class TestValidateMaxWorkers:
@@ -171,6 +175,13 @@ class TestValidateMaxWorkers:
     def test_negative_raises_the_same_way_as_zero(self):
         with pytest.raises(ValueError, match="filter.max_workers must be greater than 0"):
             validate_max_workers(-1, "filter.max_workers")
+
+    @pytest.mark.parametrize("value", [True, False, 2.5, 4.0, "4"])
+    def test_a_value_that_isnt_an_int_raises_naming_the_given_label(self, value):
+        # true would otherwise run as one worker, "4" failed with a bare
+        # TypeError, and 2.5 failed inside the pool after being logged.
+        with pytest.raises(ValueError, match="clean.max_workers must be a whole number"):
+            validate_max_workers(value, "clean.max_workers")
 
 
 class TestModuleLoggerIsProperlyConfigured:
@@ -299,7 +310,7 @@ class TestLoadConfig:
             config = load_config()
 
         assert set(config) == {
-            "columns", "columns_numeric", "paths", "scraping", "converter", "filter",
+            "columns", "columns_numeric", "paths", "scraping", "converter", "clean",
             "aggregation", "io",
         }
         assert any("built-in default" in r.message for r in caplog.records)
@@ -309,7 +320,7 @@ class TestLoadConfig:
         # zero-config run must never silently drop rows or columns.
         config = load_config()
 
-        for columns in config["filter"]["columns_to_check"].values():
+        for columns in config["clean"]["columns_to_check"].values():
             assert columns == []
         assert "output_columns" not in config.get("filter", {})
         assert "output_columns" not in config.get("converter", {})
@@ -371,10 +382,34 @@ class TestLoadConfig:
 
         defaults = config_module._bundled_default_dict()
         assert config["converter"] == defaults["converter"]
-        assert config["filter"] == defaults["filter"]
+        assert config["clean"] == defaults["clean"]
         # And the .get() chains real call sites use no longer raise:
         assert config["converter"].get("max_workers") is None
-        assert config["filter"].get("output_columns", {}).get("gdelt_event") is None
+        assert config["clean"].get("output_columns", {}).get("gdelt_event") is None
+
+    @pytest.mark.parametrize("section", ["paths", "clean", "io", "converter"])
+    def test_an_empty_top_level_section_is_warned_about(self, section, caplog):
+        custom = self.tmp_path / "custom.yaml"
+        custom.write_text(f"columns: {{gdelt_event: [GlobalEventID]}}\n{section}:\n")
+
+        with caplog.at_level(logging.WARNING):
+            load_config(str(custom))
+
+        messages = [r.message for r in caplog.records if "is empty (null)" in r.message]
+        assert len(messages) == 1
+        assert messages[0].startswith(f"{section} is empty (null) in {custom}")
+        assert ("relative to the directory gdeltforge runs in" in messages[0]) == (
+            section == "paths"
+        )
+
+    def test_sections_with_content_or_left_out_are_not_warned_about(self, caplog):
+        custom = self.tmp_path / "custom.yaml"
+        custom.write_text("columns: {gdelt_event: [GlobalEventID]}\nconverter: {}\n")
+
+        with caplog.at_level(logging.WARNING):
+            load_config(str(custom))
+
+        assert not any("is empty (null)" in r.message for r in caplog.records)
 
     def test_sections_with_real_content_keep_the_users_values(self):
         custom = self.tmp_path / "custom.yaml"
@@ -412,7 +447,7 @@ class TestLoadConfig:
         defaults = config_module._bundled_default_dict()
         assert config["columns"] == defaults["columns"]
         assert config["columns_numeric"] == defaults["columns_numeric"]
-        assert config["filter"]["columns_to_check"] == defaults["filter"]["columns_to_check"]
+        assert config["clean"]["columns_to_check"] == defaults["clean"]["columns_to_check"]
         assert config["scraping"]["timeout"] == 60
         # Untouched scraping keys still come from the default alongside it.
         assert config["scraping"]["retries"] == defaults["scraping"]["retries"]
@@ -434,10 +469,125 @@ class TestLoadConfig:
             config = load_config()
 
         assert set(config) == {
-            "columns", "columns_numeric", "paths", "scraping", "converter", "filter",
+            "columns", "columns_numeric", "paths", "scraping", "converter", "clean",
             "aggregation", "io",
         }
         assert any(
             "in memory only" in r.message and "read-only filesystem" in r.message
             for r in caplog.records
+        )
+
+
+class TestDeprecatedCleanNames:
+    """The clean stage was called `filter` before 0.12: an existing
+    settings.yaml using the old section and path-key names keeps loading,
+    translated, with a warning per name."""
+
+    def test_filter_section_and_path_keys_are_translated(self, tmp_path, caplog):
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "filter:\n"
+            "  columns_to_check:\n"
+            "    gdelt_event: [Actor1Code]\n"
+            "paths:\n"
+            "  filtered_data_directory: ./old/events/filtered\n"
+            "  gkg_v2_filtered_historical_directory: ./old/gkg/hist\n",
+            encoding="utf-8",
+        )
+        with caplog.at_level(logging.WARNING):
+            config = load_config(str(path))
+        assert "filter" not in config
+        assert config["clean"]["columns_to_check"]["gdelt_event"] == ["Actor1Code"]
+        assert config["paths"]["cleaned_data_directory"] == "./old/events/filtered"
+        assert config["paths"]["gkg_v2_cleaned_historical_directory"] == "./old/gkg/hist"
+        assert "filtered_data_directory" not in config["paths"]
+        messages = " ".join(r.message for r in caplog.records)
+        assert "`filter:` section is deprecated" in messages
+        assert "paths.filtered_data_directory is deprecated" in messages
+
+    def test_old_and_new_section_together_is_an_error(self, tmp_path):
+        path = tmp_path / "settings.yaml"
+        path.write_text("filter: {max_workers: 2}\nclean: {max_workers: 4}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="sets both `filter:` and `clean:`"):
+            load_config(str(path))
+
+    def test_old_and_new_path_key_together_is_an_error(self, tmp_path):
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "paths:\n  filtered_data_directory: a\n  cleaned_data_directory: b\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="paths.filtered_data_directory and"):
+            load_config(str(path))
+
+
+class TestMovedDefaultDirectories:
+    """0.12.0 moved the bundled default's clean-stage directories from
+    data/<dataset>/filtered to data/<dataset>/cleaned; a config leaving them
+    to the default, next to output from an earlier version, gets a warning
+    naming both for as long as the old directory holds Parquet files."""
+
+    @staticmethod
+    def _old_output(folder):
+        folder.mkdir(parents=True)
+        (folder / "20200101000000.mentions_filtered.parquet").write_bytes(b"")
+
+    def _load(self, tmp_path, monkeypatch, caplog, text="clean: {max_workers: 2}\n"):
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / "settings.yaml"
+        path.write_text(text, encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            load_config(str(path))
+        return [r.message for r in caplog.records if "holds clean-stage output" in r.message]
+
+    def test_warns_when_only_the_old_default_directory_exists(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        self._old_output(tmp_path / "data" / "mentions" / "filtered")
+        hist = tmp_path / "data" / "events" / "filtered_historical" / "Year=2005"
+        hist.mkdir(parents=True)
+        (hist / "2005_filtered.parquet").write_bytes(b"")
+        messages = self._load(tmp_path, monkeypatch, caplog)
+        assert len(messages) == 2
+        mentions = next(m for m in messages if "mentions" in m)
+        assert "paths.mentions_cleaned_data_directory" in mentions
+        assert str(Path("data/mentions/filtered")) in mentions
+        assert str(Path("data/mentions/cleaned")) in mentions
+        assert "move what" in mentions
+        assert any("paths.cleaned_historical_directory" in m for m in messages)
+
+    def test_keeps_warning_after_a_clean_creates_the_new_directory(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # Any clean run creates the new directory and may put newly
+        # cleaned files there; the old files still aren't read.
+        self._old_output(tmp_path / "data" / "mentions" / "filtered")
+        (tmp_path / "data" / "mentions" / "cleaned").mkdir(parents=True)
+        messages = self._load(tmp_path, monkeypatch, caplog)
+        assert len(messages) == 1
+        # A rename would nest the old directory inside the new one, and
+        # pointing the path back would hide what clean wrote there.
+        assert "move what" in messages[0]
+        assert "rename" not in messages[0]
+        assert "set paths" not in messages[0]
+
+    def test_quiet_once_the_old_directory_holds_no_parquet(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        (tmp_path / "data" / "mentions" / "filtered").mkdir(parents=True)
+        assert self._load(tmp_path, monkeypatch, caplog) == []
+
+    def test_quiet_when_the_config_sets_the_path(self, tmp_path, monkeypatch, caplog):
+        self._old_output(tmp_path / "data" / "mentions" / "filtered")
+        text = "paths:\n  mentions_filtered_data_directory: ./data/mentions/filtered\n"
+        assert self._load(tmp_path, monkeypatch, caplog, text) == []
+
+    def test_the_bundled_default_fallback_warns_too(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+        self._old_output(tmp_path / "data" / "gkg_v2" / "filtered")
+        with caplog.at_level(logging.WARNING):
+            load_config()
+        assert any(
+            "paths.gkg_v2_cleaned_data_directory" in r.message for r in caplog.records
         )

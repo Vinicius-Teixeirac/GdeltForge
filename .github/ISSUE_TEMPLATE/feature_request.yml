@@ -10,7 +10,7 @@ body:
       description: |
         A clear and concise description of what the limitation is. Example:
 
-        > Everytime I want to {scrape, convert, filter, sample, ...} I have '...'
+        > Everytime I want to {scrape, convert, clean, sample, ...} I have '...'
     validations:
       required: true
 

@@ -531,10 +531,11 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
 
     This matches the raw .zip form (20150218.export.CSV.zip, 200601.zip,
     2005.zip), the converted .parquet form (20150218.export.parquet,
-    200601.parquet, 2005.parquet), and filter's own
-    <stem>_filtered.parquet form (20150218.export_filtered.parquet,
-    200601_filtered.parquet) alike, since none of those change the length
-    of the leading digit run, only what comes after it.
+    200601.parquet, 2005.parquet), and the clean stage's own
+    <stem>_cleaned.parquet form (20150218.export_cleaned.parquet,
+    200601_cleaned.parquet; <stem>_filtered.parquet before 0.12) alike,
+    since none of those change the length of the leading digit run, only
+    what comes after it.
 
     An earlier version of this function matched the raw and converted
     suffixes explicitly instead of just the leading digit run's length.
@@ -542,7 +543,7 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
     as unparseable, and filter_paths_by_date's "keep what can't be parsed"
     fallback (a deliberate choice for genuinely unparseable pre-daily
     archives) then silently kept every filtered-stage file regardless of
-    --start-date/--end-date: sample's default source is filtered output,
+    --start-date/--end-date: sample's default source is that stage's output,
     so this made date narrowing a silent no-op for the single most common
     invocation. Found via a live comprehensive QA pass.
 

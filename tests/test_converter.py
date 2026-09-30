@@ -658,6 +658,26 @@ class TestMaxWorkersByDataset:
                 )
             )
 
+    @pytest.mark.parametrize("by_dataset, message", [
+        ({"gdelt_nope": 3}, r"converter\.max_workers_by_dataset: \['gdelt_nope'\] aren't datasets"),
+        ([1], r"converter\.max_workers_by_dataset must be a mapping of dataset names"),
+    ])
+    def test_a_setting_that_names_no_dataset_fails(self, tmp_path, by_dataset, message):
+        with pytest.raises(ValueError, match=message):
+            GDELTConverter(
+                _make_config(tmp_path, max_workers=4, max_workers_by_dataset=by_dataset)
+            )
+
+    def test_a_bad_dataset_override_names_its_own_key(self, tmp_path):
+        with pytest.raises(
+            ValueError, match=r"converter\.max_workers_by_dataset\.gdelt_event must be"
+        ):
+            GDELTConverter(
+                _make_config(
+                    tmp_path, max_workers=4, max_workers_by_dataset={"gdelt_event": "8"}
+                )
+            )
+
 
 class TestOutputColumnsConfig:
     def test_defaults_to_none_so_every_column_is_parsed(self, tmp_path):
@@ -791,6 +811,15 @@ class TestRunConverterWarnsAboutCrossrefJoinKey:
         assert any(
             "GlobalEventID" in r.message and "crossref" in r.message for r in caplog.records
         )
+
+    @pytest.mark.parametrize("value", [2.5, 0, "4", True])
+    def test_an_invalid_read_cap_fails_here_too(self, tmp_path, value):
+        # convert doesn't use io.max_concurrent_reads, but a broken value
+        # fails at the first stage, not at the next one that reads it.
+        cfg = _make_config(tmp_path)
+        cfg["io"] = {"max_concurrent_reads": value}
+        with pytest.raises(ValueError, match="io.max_concurrent_reads"):
+            run_converter(cfg)
 
     def test_explicit_null_output_columns_does_not_crash_config_resolution(self, tmp_path):
         # run_converter reads converter.output_columns independently from
@@ -2075,6 +2104,14 @@ class TestDryRun:
         assert failed == []
         assert not converter._is_done(zip_path)
         assert list((tmp_path / "parquet").glob("*.parquet")) == []
+
+    def test_dry_run_creates_no_directory(self, tmp_path):
+        # A dry run leaves the filesystem as it found it: no output or CSV
+        # directory either.
+        _write_flat_zip(tmp_path / "raw")
+        before = sorted(p for p in tmp_path.rglob("*"))
+        GDELTConverter(_make_config(tmp_path), dry_run=True).process_all_files()
+        assert sorted(p for p in tmp_path.rglob("*")) == before
 
     def test_dry_run_reports_the_would_be_processed_count_at_info(self, tmp_path, caplog):
         _write_flat_zip(tmp_path / "raw")

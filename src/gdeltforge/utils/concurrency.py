@@ -1,7 +1,7 @@
 """
 concurrency.py
 
-Sizes the polars thread pools inside convert/filter/aggregate's worker
+Sizes the polars thread pools inside convert/clean/aggregate's worker
 processes, and bounds how many files one command reads at once
 (io.max_concurrent_reads).
 
@@ -11,7 +11,8 @@ threads, async I/O threads, and max_concurrent_scans (files a multi-file
 scan reads at once) all equal the core count. max_workers alone
 therefore only caps processes. N workers on a C-core machine used to
 carry roughly N x 2C threads, and each worker's memory grew with its
-own pool size, above all with how many files it read at once. See
+own pool size, above all with how many files it read at once. pyarrow,
+imported in every worker too, sizes its CPU pool the same way. See
 docs/configuration.md's "Worker pools and polars threads" section for
 the measurements behind this module.
 
@@ -22,6 +23,8 @@ Provides:
       ProcessPoolExecutor spawns inside it
     - polars_scan_limit: bound concurrent file reads for polars work
       running in this process (sample, crossref)
+    - exported_scan_limit: the POLARS_MAX_CONCURRENT_SCANS the user
+      exported, checked before polars reads anything
 """
 
 from __future__ import annotations
@@ -38,6 +41,9 @@ logger = get_logger(__name__)
 
 POLARS_MAX_THREADS = "POLARS_MAX_THREADS"
 POLARS_MAX_CONCURRENT_SCANS = "POLARS_MAX_CONCURRENT_SCANS"
+# Read by Arrow, when pyarrow first loads, to size its CPU thread pool;
+# unset, that pool has one thread per core in every process.
+OMP_NUM_THREADS = "OMP_NUM_THREADS"
 
 
 @dataclass(frozen=True)
@@ -54,14 +60,25 @@ class WorkerPlan:
     concurrent_scans: int | None = None
 
     def describe(self) -> str:
-        scans = (
-            f", {self.concurrent_scans} file read(s) at once"
-            if self.concurrent_scans is not None else ""
-        )
-        return (
-            f"{self.workers} worker process(es), "
-            f"{self.polars_threads} polars thread(s) each{scans}"
-        )
+        """
+        The plan as the workers will run it: a POLARS_MAX_THREADS or
+        POLARS_MAX_CONCURRENT_SCANS the user exported wins over the
+        planned value (polars_worker_env leaves it in place), so the line
+        reports that one. Call it before entering polars_worker_env, where
+        the environment holds only what the user exported.
+        """
+        threads = _exported_int(POLARS_MAX_THREADS) or self.polars_threads
+        scans = _exported_int(POLARS_MAX_CONCURRENT_SCANS) or self.concurrent_scans
+        reads = f", {scans} file read(s) at once" if scans is not None else ""
+        return f"{self.workers} worker process(es), {threads} polars thread(s) each{reads}"
+
+
+def _exported_int(name: str) -> int | None:
+    """An exported variable's value as a positive number, or None when it
+    isn't exported or isn't one (left for polars or exported_scan_limit
+    to reject)."""
+    value = os.environ.get(name, "").removeprefix("+")
+    return int(value) if value.isascii() and value.isdigit() and int(value) > 0 else None
 
 
 def plan_workers(
@@ -77,7 +94,7 @@ def plan_workers(
     max_workers None means one worker per core, the same default
     ProcessPoolExecutor applies on its own. The worker count never
     exceeds n_tasks (a pool never runs more processes than it has tasks
-    for), nor max_concurrent_reads when that is set: every filter/
+    for), nor max_concurrent_reads when that is set: every clean/
     aggregate worker reads its own input file, so capping how many files
     the command reads at once means capping workers.
 
@@ -89,15 +106,26 @@ def plan_workers(
     scans_per_worker, when given, becomes each worker's concurrent_scans.
     None leaves polars' own default, which follows the worker's thread
     count once POLARS_MAX_THREADS is set.
+
+    A worker given scans_per_worker scans many files at once (aggregate:
+    a whole period). POLARS_MAX_CONCURRENT_SCANS bounds its data reads,
+    but polars fetches the files' footers on its thread pool. Under
+    max_concurrent_reads the workers' threads therefore share the cap
+    too, max_concurrent_reads // workers each, so footer reads stay
+    within it. A worker that reads one file (clean, convert) fetches one
+    footer at a time whatever its thread count.
     """
     cores = cpu_count or os.cpu_count() or 1
     workers = max_workers if max_workers is not None else cores
     workers = min(workers, max(1, n_tasks))
     if max_concurrent_reads is not None:
         workers = min(workers, max_concurrent_reads)
+    threads = max(1, math.ceil(cores / workers))
+    if max_concurrent_reads is not None and scans_per_worker is not None:
+        threads = max(1, min(threads, max_concurrent_reads // workers))
     return WorkerPlan(
         workers=workers,
-        polars_threads=max(1, math.ceil(cores / workers)),
+        polars_threads=threads,
         concurrent_scans=scans_per_worker,
     )
 
@@ -138,12 +166,48 @@ def polars_worker_env(plan: WorkerPlan) -> Generator[None, None, None]:
     moment it starts, and ProcessPoolExecutor starts workers lazily, on
     submit(), so the variables have to stay set for as long as the pool
     may start one. They are removed from this process again afterwards.
+
+    pyarrow's CPU pool gets the same size through OMP_NUM_THREADS, which
+    Arrow reads when pyarrow loads. Every worker imports pyarrow, and
+    left alone each one carried a thread per core on top of its polars
+    pool. OpenMP libraries in the worker, if any, follow the same value.
     """
     with _env_overrides({
         POLARS_MAX_THREADS: plan.polars_threads,
         POLARS_MAX_CONCURRENT_SCANS: plan.concurrent_scans,
+        OMP_NUM_THREADS: plan.polars_threads,
     }):
         yield
+
+
+# The largest exported POLARS_MAX_CONCURRENT_SCANS accepted. polars takes
+# a leading "+" and numbers up to an internal limit (2**61 in polars
+# 1.44) and panics above it; 2**32 files read at once is far beyond any
+# real use and well inside what every supported polars accepts.
+_MAX_SCAN_LIMIT = 2**32
+
+
+def exported_scan_limit() -> int | None:
+    """
+    The POLARS_MAX_CONCURRENT_SCANS exported in this environment, or None
+    when it isn't. polars accepts only a whole number greater than 0 there,
+    and on anything else panics at its first Parquet read, in this process
+    or in a worker that inherits the variable, with a raw traceback: a
+    pyo3 PanicException, which no `except Exception` catches. Such a value
+    fails here instead, naming the variable.
+    """
+    value = os.environ.get(POLARS_MAX_CONCURRENT_SCANS)
+    if value is None:
+        return None
+    digits = value[1:] if value.startswith("+") else value
+    if not (digits.isascii() and digits.isdigit() and 0 < int(digits) <= _MAX_SCAN_LIMIT):
+        raise ValueError(
+            f"{POLARS_MAX_CONCURRENT_SCANS}={value!r} is exported, but polars stops at the "
+            f"first Parquet file it reads on anything other than a whole number greater "
+            f"than 0, and on numbers too large for it. Unset it, or export a whole number "
+            f"from 1 to {_MAX_SCAN_LIMIT}."
+        )
+    return int(digits)
 
 
 @contextmanager

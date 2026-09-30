@@ -55,9 +55,11 @@ from gdeltforge.crossref.crossref import warn_if_output_columns_drops_join_key
 from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, sort_paths_by_date
 from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
+    DATASET_NAMES,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
+    resolve_max_concurrent_reads,
     validate_max_workers,
 )
 from gdeltforge.utils.io import (
@@ -351,11 +353,28 @@ class GDELTConverter:
         # depends on peak per-worker memory, which output_columns above
         # changes a lot for wide datasets like GKG 2.1), so a value safe
         # for one dataset isn't necessarily safe for another.
-        self.max_workers: int | None = validate_max_workers(
-            get_dict(config["converter"], "max_workers_by_dataset").get(
-                dataset, config["converter"].get("max_workers")
-            ),
-            "converter.max_workers",
+        by_dataset = get_dict(config["converter"], "max_workers_by_dataset")
+        # A typo in a dataset name would otherwise leave that dataset at the
+        # scalar default without a word.
+        if not isinstance(by_dataset, dict):
+            raise ValueError(
+                f"converter.max_workers_by_dataset must be a mapping of dataset names to "
+                f"worker counts, got {by_dataset!r}"
+            )
+        unknown = sorted(str(k) for k in by_dataset if k not in DATASET_NAMES)
+        if unknown:
+            raise ValueError(
+                f"converter.max_workers_by_dataset: {unknown} aren't datasets; known: "
+                f"{', '.join(DATASET_NAMES)}"
+            )
+        self.max_workers: int | None = (
+            validate_max_workers(
+                by_dataset[dataset], f"converter.max_workers_by_dataset.{dataset}"
+            )
+            if dataset in by_dataset
+            else validate_max_workers(
+                config["converter"].get("max_workers"), "converter.max_workers"
+            )
         )
 
         self.COLUMN_NAMES    = config["columns"][dataset]
@@ -455,7 +474,10 @@ class GDELTConverter:
             output_columns=self.output_columns, compression=self.compression
         )
 
-        self._create_folders()
+        # Not for a dry run, which leaves the filesystem as it found it:
+        # nothing it does reads or writes these folders.
+        if not self.dry_run:
+            self._create_folders()
 
     def _create_folders(self):
         for folder in [self.unzip_folder, self.parquet_folder]:
@@ -1396,6 +1418,10 @@ def run_converter(
     downloaded_data_directory: see GDELTConverter.recover_unzipped_files
     for when this is for.
     """
+    # convert reads no Parquet, so io.max_concurrent_reads doesn't apply to
+    # it, but it is checked here all the same: an invalid value fails at
+    # the first stage, before hours of conversion, not at the next one.
+    resolve_max_concurrent_reads(config)
     output_columns = get_dict(config["converter"], "output_columns").get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(

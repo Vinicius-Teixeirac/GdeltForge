@@ -5,9 +5,11 @@ from concurrent.futures import ProcessPoolExecutor
 import pytest
 
 from gdeltforge.utils.concurrency import (
+    OMP_NUM_THREADS,
     POLARS_MAX_CONCURRENT_SCANS,
     POLARS_MAX_THREADS,
     WorkerPlan,
+    exported_scan_limit,
     plan_workers,
     polars_scan_limit,
     polars_worker_env,
@@ -20,6 +22,13 @@ def _report_polars_threads() -> tuple[str | None, int]:
     import polars as pl
 
     return os.environ.get(POLARS_MAX_THREADS), pl.thread_pool_size()
+
+
+def _report_pyarrow_threads() -> int:
+    # Runs inside a spawned worker, where pyarrow loads fresh.
+    import pyarrow as pa
+
+    return pa.cpu_count()
 
 
 class TestPlanWorkers:
@@ -50,6 +59,24 @@ class TestPlanWorkers:
             workers=4, polars_threads=8
         )
 
+    @pytest.mark.parametrize("max_workers, n_tasks, expected", [
+        (None, 1, WorkerPlan(workers=1, polars_threads=4, concurrent_scans=1)),
+        (None, 10, WorkerPlan(workers=4, polars_threads=1, concurrent_scans=1)),
+        (2, 10, WorkerPlan(workers=2, polars_threads=2, concurrent_scans=1)),
+    ])
+    def test_multi_file_workers_share_the_cap_among_their_threads(
+        self, max_workers, n_tasks, expected
+    ):
+        # An aggregate worker fetches a period's footers on its thread
+        # pool, so under a read cap its threads count toward the cap.
+        plan = plan_workers(
+            max_workers, n_tasks, scans_per_worker=1, max_concurrent_reads=4, cpu_count=32
+        )
+        assert plan == expected
+
+    def test_multi_file_workers_keep_their_threads_without_a_cap(self):
+        assert plan_workers(None, 1, scans_per_worker=1, cpu_count=32).polars_threads == 32
+
     def test_max_concurrent_reads_above_the_worker_count_changes_nothing(self):
         assert plan_workers(2, 100, max_concurrent_reads=4, cpu_count=32).workers == 2
 
@@ -59,6 +86,11 @@ class TestPlanWorkers:
     def test_scans_default_to_polars_own(self):
         assert plan_workers(4, 100, cpu_count=32).concurrent_scans is None
 
+    @pytest.fixture(autouse=True)
+    def _nothing_exported(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_THREADS, raising=False)
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+
     def test_describe_names_both_numbers(self):
         assert WorkerPlan(workers=4, polars_threads=8).describe() == (
             "4 worker process(es), 8 polars thread(s) each"
@@ -67,6 +99,18 @@ class TestPlanWorkers:
     def test_describe_names_the_scan_limit_when_set(self):
         assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
             "4 worker process(es), 8 polars thread(s) each, 1 file read(s) at once"
+        )
+
+    def test_describe_reports_what_the_user_exported(self, monkeypatch):
+        # Exported values win over the plan in the workers, so the log line
+        # says what they will really run with.
+        monkeypatch.setenv(POLARS_MAX_THREADS, "3")
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, "8")
+        assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
+            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
+        )
+        assert WorkerPlan(workers=4, polars_threads=8).describe() == (
+            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
         )
 
 
@@ -112,6 +156,23 @@ class TestPolarsWorkerEnv:
         assert env_value == "2"
         assert pool_size == 2
 
+    def test_spawned_worker_pyarrow_pool_follows_the_plan(self, monkeypatch):
+        # pyarrow sizes its CPU pool from OMP_NUM_THREADS when it loads;
+        # unset, every worker carried one thread per core besides polars'.
+        monkeypatch.delenv(OMP_NUM_THREADS, raising=False)
+        plan = WorkerPlan(workers=1, polars_threads=2)
+        with polars_worker_env(plan), ProcessPoolExecutor(
+            max_workers=plan.workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            assert executor.submit(_report_pyarrow_threads).result() == 2
+        assert OMP_NUM_THREADS not in os.environ
+
+    def test_keeps_an_exported_omp_num_threads(self, monkeypatch):
+        monkeypatch.setenv(OMP_NUM_THREADS, "1")
+        with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
+            assert os.environ[OMP_NUM_THREADS] == "1"
+
 
 class TestPolarsScanLimit:
     def test_sets_and_restores(self, monkeypatch):
@@ -129,3 +190,26 @@ class TestPolarsScanLimit:
         monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, "2")
         with polars_scan_limit(4):
             assert os.environ[POLARS_MAX_CONCURRENT_SCANS] == "2"
+
+
+class TestExportedScanLimit:
+    # What polars itself accepts: a leading "+", leading zeros, and large
+    # numbers up to an internal limit (2**61 in 1.44); 2**32 is the bound.
+    @pytest.mark.parametrize("value, expected", [
+        ("4", 4), ("+4", 4), ("004", 4), (str(2**32), 2**32),
+    ])
+    def test_accepts_what_polars_accepts(self, monkeypatch, value, expected):
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, value)
+        assert exported_scan_limit() == expected
+
+    @pytest.mark.parametrize(
+        "value", ["abc", "0", "+0", "-1", "2.5", "", " 4", "++4", str(2**32 + 1), str(2**64)]
+    )
+    def test_rejects_what_polars_panics_on(self, monkeypatch, value):
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, value)
+        with pytest.raises(ValueError, match="from 1 to 4294967296"):
+            exported_scan_limit()
+
+    def test_none_when_not_exported(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+        assert exported_scan_limit() is None

@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import os
 import re
 import signal
@@ -557,52 +558,53 @@ class TestRunConvertCmd:
         assert captured == {"recover_unzipped": True}
 
 
-class TestRunFilterCmd:
+class TestRunCleanCmd:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
             dataset="events", start_date=None, end_date=None, order="asc",
             delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            report=False,
         )
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
 
-    def test_raises_when_filtering_failed(self, monkeypatch):
+    def test_raises_when_cleaning_failed(self, monkeypatch):
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (8, 2),
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (8, 2),
         )
         args = self._args()
 
-        with pytest.raises(RuntimeError, match="2 failed file"):
-            cli.run_filter_cmd({}, args)
+        with pytest.raises(RuntimeError, match="2 failed file.*\"Failed:\" lines above"):
+            cli.run_clean_cmd({}, args)
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (10, 0),
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (10, 0),
         )
         args = self._args()
 
-        cli.run_filter_cmd({}, args)  # should not raise
+        cli.run_clean_cmd({}, args)  # should not raise
 
     def test_date_strings_are_parsed_and_passed_through(self, monkeypatch):
         captured = {}
 
-        def fake_run_filter(
+        def fake_run_cleaner(
             config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False,
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
             return 0, 0
 
-        monkeypatch.setattr(cli, "run_filter", fake_run_filter)
+        monkeypatch.setattr(cli, "run_cleaner", fake_run_cleaner)
         args = self._args(start_date="2020-01-01", end_date="2020-12-31")
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"start_date": date(2020, 1, 1), "end_date": date(2020, 12, 31)}
 
@@ -610,104 +612,119 @@ class TestRunFilterCmd:
         args = self._args(start_date="2020-12-31", end_date="2020-01-01")
 
         with pytest.raises(ValueError, match="must not be after"):
-            cli.run_filter_cmd({}, args)
+            cli.run_clean_cmd({}, args)
 
     def test_delete_source_is_forwarded(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(delete_source=delete_source) or (0, 0)
             ),
         )
         args = self._args(delete_source=True)
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"delete_source": True}
 
     def test_verbose_is_forwarded(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(verbose=verbose) or (0, 0)
             ),
         )
         args = self._args(verbose=True)
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"verbose": True}
 
     def test_quiet_is_forwarded(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(quiet=quiet) or (0, 0)
             ),
         )
         args = self._args(quiet=True)
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"quiet": True}
 
     def test_force_is_forwarded(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(force=force) or (0, 0)
             ),
         )
         args = self._args(force=True)
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"force": True}
 
     def test_order_is_forwarded(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(order=order) or (0, 0)
             ),
         )
         args = self._args(order="desc")
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"order": "desc"}
 
     def test_dry_run_is_forwarded(self, monkeypatch):
         captured = {}
         monkeypatch.setattr(
-            cli, "run_filter",
+            cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
                 captured.update(dry_run=dry_run) or (0, 0)
             ),
         )
         args = self._args(dry_run=True)
 
-        cli.run_filter_cmd({}, args)
+        cli.run_clean_cmd({}, args)
 
         assert captured == {"dry_run": True}
+
+    def test_report_is_forwarded_with_dry_run(self, monkeypatch):
+        captured = {}
+
+        def fake_run_cleaner(config, dataset, **kwargs):
+            captured.update(report=kwargs["report"], dry_run=kwargs["dry_run"])
+            return 0, 0
+
+        monkeypatch.setattr(cli, "run_cleaner", fake_run_cleaner)
+        cli.run_clean_cmd({}, self._args(dry_run=True, report=True))
+        assert captured == {"report": True, "dry_run": True}
+
+    def test_report_without_dry_run_is_rejected(self):
+        with pytest.raises(ValueError, match="--report only applies with --dry-run"):
+            cli.run_clean_cmd({}, self._args(report=True))
 
 
 class TestRunAggregateCmd:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
-            dataset="gkg-v2", period="day", source="filtered",
+            dataset="gkg-v2", period="day", source="cleaned",
             start_date=None, end_date=None, order="asc",
             delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
         )
@@ -846,10 +863,10 @@ class TestAggregateArgparseWiring:
         args = parser.parse_args(["aggregate", "--dataset", "gkg-v2"])
         assert args.period == "day"
 
-    def test_source_defaults_to_filtered(self):
+    def test_source_defaults_to_cleaned(self):
         parser = cli.build_parser()
         args = parser.parse_args(["aggregate", "--dataset", "gkg-v2"])
-        assert args.source == "filtered"
+        assert args.source == "cleaned"
 
 
 class TestRunSamplingCmdSource:
@@ -861,8 +878,8 @@ class TestRunSamplingCmdSource:
     def _config():
         return {
             "paths": {
-                "filtered_data_directory": "/filtered",
-                "filtered_historical_directory": "/filtered_hist",
+                "cleaned_data_directory": "/filtered",
+                "cleaned_historical_directory": "/filtered_hist",
                 "parquet_data_directory": "/converted",
                 "parquet_historical_directory": "/converted_hist",
             },
@@ -898,7 +915,7 @@ class TestRunSamplingCmdSource:
         return captured
 
     def test_default_source_is_filtered(self, tmp_path, monkeypatch):
-        captured = self._run(tmp_path, monkeypatch, source="filtered")
+        captured = self._run(tmp_path, monkeypatch, source="cleaned")
         assert captured["folder_path"] == "/filtered"
         # historical_folder is None here since partitioning isn't enabled
         # in the test config; _historical_folder's own gating is covered
@@ -1022,7 +1039,7 @@ class TestRunSamplingCmdSource:
         config = self._config()
         config["converter"] = {"partitioning": None}
         args = argparse.Namespace(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1100,7 +1117,7 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
             export_format="parquet", start_date=None, end_date=None,
@@ -1174,7 +1191,7 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "CalendarSampler", FakeCalendarSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="calendar", source="filtered",
+            dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
             replace=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
@@ -1204,7 +1221,7 @@ class TestRunSamplingCmdSource:
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="csv",
             start_date=None, end_date=None,
@@ -1229,8 +1246,8 @@ class TestRunSamplingCmdReplace:
     def _config():
         return {
             "paths": {
-                "filtered_data_directory": "/filtered",
-                "filtered_historical_directory": "/filtered_hist",
+                "cleaned_data_directory": "/filtered",
+                "cleaned_historical_directory": "/filtered_hist",
             },
             "columns": {"gdelt_event": ["GlobalEventID"]},
         }
@@ -1254,7 +1271,7 @@ class TestRunSamplingCmdReplace:
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=True, stratify=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1279,7 +1296,7 @@ class TestRunSamplingCmdReplace:
         monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
             replace=True, filter='{"QuadClass": [1]}', stratify=None, n_per_group=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1290,7 +1307,7 @@ class TestRunSamplingCmdReplace:
 
     def test_replace_rejected_for_calendar_mode(self, tmp_path):
         args = argparse.Namespace(
-            dataset="events", mode="calendar", source="filtered",
+            dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
             replace=True, stratify=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
@@ -1301,7 +1318,7 @@ class TestRunSamplingCmdReplace:
 
     def test_replace_rejected_alongside_stratify(self, tmp_path):
         args = argparse.Namespace(
-            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
             replace=True, filter=None, stratify="QuadClass", n_per_group=50,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1327,7 +1344,7 @@ class TestRunSamplingCmdReplace:
         monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
 
         args = argparse.Namespace(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1347,8 +1364,8 @@ class TestStrataSidecar:
     def _config():
         return {
             "paths": {
-                "filtered_data_directory": "/filtered",
-                "filtered_historical_directory": "/filtered_hist",
+                "cleaned_data_directory": "/filtered",
+                "cleaned_historical_directory": "/filtered_hist",
             },
             "columns": {"gdelt_event": ["GlobalEventID"]},
         }
@@ -1370,7 +1387,7 @@ class TestStrataSidecar:
 
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
-            dataset="events", mode="calendar", source="filtered",
+            dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=2, period=None, date_column=None, seed=42,
             replace=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
@@ -1403,7 +1420,7 @@ class TestStrataSidecar:
 
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
-            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
             replace=False, filter=None, stratify="QuadClass", n_per_group=4,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1440,7 +1457,7 @@ class TestStrataSidecar:
 
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
-            dataset="events", mode="calendar", source="filtered",
+            dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=2, period=None, date_column=None, seed=42,
             replace=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
@@ -1473,7 +1490,7 @@ class TestStrataSidecar:
 
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
-            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
             replace=False, filter=None, stratify="QuadClass", n_per_group=4,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1499,7 +1516,7 @@ class TestStrataSidecar:
 
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=False,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -1536,7 +1553,7 @@ class TestStrataSidecar:
 
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
-            dataset="events", mode="calendar", source="filtered",
+            dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=2, period=None, date_column=None, seed=42,
             replace=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
@@ -1560,8 +1577,8 @@ class TestRunSamplingCmdDateFiltering:
     def _config():
         return {
             "paths": {
-                "filtered_data_directory": "/filtered",
-                "filtered_historical_directory": "/filtered_hist",
+                "cleaned_data_directory": "/filtered",
+                "cleaned_historical_directory": "/filtered_hist",
             },
             "columns": {"gdelt_event": ["GlobalEventID"]},
         }
@@ -1569,7 +1586,7 @@ class TestRunSamplingCmdDateFiltering:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
-            dataset="events", mode="indexed", source="filtered", n=10, seed=42,
+            dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
             replace=False,
             out="o.parquet", columns=None, export_format="parquet",
             filter=None, stratify=None, n_per_group=None,
@@ -1705,8 +1722,8 @@ class TestRunSamplingCmdStratifyWithoutFilter:
     def _config():
         return {
             "paths": {
-                "filtered_data_directory": "/filtered",
-                "filtered_historical_directory": "/filtered_hist",
+                "cleaned_data_directory": "/filtered",
+                "cleaned_historical_directory": "/filtered_hist",
             },
             "columns": {"gdelt_event": ["GlobalEventID"]},
         }
@@ -1714,7 +1731,7 @@ class TestRunSamplingCmdStratifyWithoutFilter:
     @staticmethod
     def _args(**overrides):
         defaults = dict(
-            dataset="events", mode="filtered", source="filtered", n=10, seed=42,
+            dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
             replace=False,
             out="o.parquet", columns=None, export_format="parquet",
             filter=None, stratify=None, n_per_group=None,
@@ -1808,8 +1825,8 @@ class TestStratifyWithoutFilterThroughRealArgparse:
     def _config():
         return {
             "paths": {
-                "filtered_data_directory": "/filtered",
-                "filtered_historical_directory": "/filtered_hist",
+                "cleaned_data_directory": "/filtered",
+                "cleaned_historical_directory": "/filtered_hist",
             },
             "columns": {"gdelt_event": ["GlobalEventID"]},
         }
@@ -1894,11 +1911,11 @@ class TestRunCrossrefCmd:
     def _config():
         return {
             "paths": {
-                "gkg_v1_filtered_data_directory": "/gkg_v1_filtered",
+                "gkg_v1_cleaned_data_directory": "/gkg_v1_filtered",
                 "gkg_v1_parquet_data_directory": "/gkg_v1_converted",
-                "gkg_v1_counts_filtered_data_directory": "/gkg_v1_counts_filtered",
-                "gkg_v2_filtered_data_directory": "/gkg_v2_filtered",
-                "mentions_filtered_data_directory": "/mentions_filtered",
+                "gkg_v1_counts_cleaned_data_directory": "/gkg_v1_counts_filtered",
+                "gkg_v2_cleaned_data_directory": "/gkg_v2_filtered",
+                "mentions_cleaned_data_directory": "/mentions_filtered",
             },
             "columns": {
                 "gdelt_gkg_v1": ["Date", "EventIds"],
@@ -1915,7 +1932,7 @@ class TestRunCrossrefCmd:
 
     def _args(self, tmp_path, **overrides):
         defaults = dict(
-            events=self._events_path(tmp_path), gkg_version="v1", source="filtered",
+            events=self._events_path(tmp_path), gkg_version="v1", source="cleaned",
             columns=None, out=str(tmp_path / "o.parquet"), export_format="parquet",
             on_duplicate_document="all", collapse_duplicate_mentions=False,
             start_date=None, end_date=None,
@@ -2358,6 +2375,73 @@ class TestRunCodesCmd:
             cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))
 
 
+class TestInvalidExportedScanLimit:
+    """polars panics on an invalid POLARS_MAX_CONCURRENT_SCANS at its first
+    Parquet read, with a raw traceback. Every command that reads Parquet
+    fails up front instead, naming the variable."""
+
+    @pytest.mark.parametrize(
+        "value", ["abc", "0", "-1", "2.5", "", " 4", "+0", "18446744073709551616", "4294967297"]
+    )
+    @pytest.mark.parametrize("command", [
+        ["clean", "--dataset", "events"],
+        ["aggregate", "--dataset", "mentions"],
+        ["sample", "--dataset", "events", "--mode", "indexed", "-n", "1"],
+        ["crossref", "--events", "x.parquet", "--gkg-version", "v2"],
+    ])
+    def test_fails_with_a_clean_message(self, monkeypatch, capsys, value, command):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", *command])
+        monkeypatch.setattr(cli, "_log_to_file", lambda args: None)
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", value)
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith(f"Error: POLARS_MAX_CONCURRENT_SCANS={value!r} is exported")
+
+    def test_a_valid_value_and_commands_without_parquet_reads_go_ahead(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
+        monkeypatch.setattr(cli, "_log_to_file", lambda args: None)
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setattr(cli, "run_convert_cmd", lambda config, args: None)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "abc")
+        cli.main()  # convert reads no Parquet: returns normally
+
+
+class TestLogFile:
+    """logs/pipeline.log is opened only for a command that may write: a dry
+    run leaves the filesystem as it found it, logs/ included."""
+
+    @pytest.fixture
+    def no_file_handler(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli.logger, "handlers", [
+            h for h in cli.logger.handlers if not isinstance(h, logging.FileHandler)
+        ])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setattr(cli, "run_clean_cmd", lambda config, args: None)
+        yield tmp_path
+        for h in cli.logger.handlers:
+            if isinstance(h, logging.FileHandler):
+                h.close()
+
+    @pytest.mark.parametrize("argv", [
+        ["clean", "--dataset", "events", "--dry-run"],
+        ["clean", "--dataset", "events", "--dry-run", "--report"],
+        ["codes", "EventRootCode"],
+    ])
+    def test_dry_runs_and_codes_create_no_log_directory(self, monkeypatch, no_file_handler, argv):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", *argv])
+        cli.main()
+        assert not (no_file_handler / "logs").exists()
+
+    def test_a_real_run_logs_to_the_file(self, monkeypatch, no_file_handler):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "clean", "--dataset", "events"])
+        cli.main()
+        assert (no_file_handler / "logs" / "pipeline.log").exists()
+
+
 class TestMainErrorHandling:
     """main() used to let any exception propagate as a raw traceback.
     It should now print a clean one-line message to stderr and exit
@@ -2559,11 +2643,22 @@ class TestCliReferenceDocsSync:
 
     @classmethod
     def _subcommands(cls):
+        # argparse registers a subcommand's aliases (clean's deprecated
+        # `filter`) as extra keys pointing at the same parser; each parser
+        # is documented once, under its primary name, which comes first.
         parser = cli.build_parser()
         subparsers_action = next(
             a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
         )
-        return parser, subparsers_action.choices
+        primary: dict[str, argparse.ArgumentParser] = {}
+        for name, sub in subparsers_action.choices.items():
+            if not any(sub is seen for seen in primary.values()):
+                primary[name] = sub
+        return parser, primary
+
+    def test_deprecated_filter_alias_is_mentioned_in_the_clean_section(self):
+        section = self._section(self._docs_text(), "`gdeltforge clean`")
+        assert "gdeltforge filter" in section
 
     def test_every_subcommand_has_its_own_section(self):
         _, subcommands = self._subcommands()
@@ -2802,3 +2897,27 @@ class TestIoMaxConcurrentReads:
         cli.main()
 
         assert seen["value"] is None
+
+
+class TestDeprecatedFilterNames:
+    """The clean stage's pre-0.12 names keep working through 0.12.x, each
+    with a deprecation warning: the `filter` command and `--source filtered`."""
+
+    def test_filter_command_still_runs_the_clean_stage(self, monkeypatch, caplog):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "filter", "--dataset", "events"])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        ran = {}
+        monkeypatch.setattr(cli, "run_clean_cmd", lambda config, args: ran.setdefault("yes", True))
+        with caplog.at_level("WARNING"):
+            cli.main()
+        assert ran == {"yes": True}
+        assert any("`gdeltforge filter` is deprecated" in r.message for r in caplog.records)
+
+    def test_source_filtered_is_read_as_cleaned(self, caplog):
+        args = cli.build_parser().parse_args(
+            ["aggregate", "--dataset", "gkg-v2", "--source", "filtered"]
+        )
+        with caplog.at_level("WARNING"):
+            cli._migrate_deprecated_args(args)
+        assert args.source == "cleaned"
+        assert any("--source filtered is deprecated" in r.message for r in caplog.records)
