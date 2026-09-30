@@ -374,14 +374,14 @@ paths:
   downloaded_data_directory: "./data/events/raw"
   unzipped_data_directory: "./data/events/csv"
   parquet_data_directory: "./data/events/parquet"
-  filtered_data_directory: "./data/events/filtered"
+  cleaned_data_directory: "./data/events/cleaned"
   parquet_historical_directory: "./data/events/historical"
-  filtered_historical_directory: "./data/events/filtered_historical"
+  cleaned_historical_directory: "./data/events/cleaned_historical"
 
   gkg_v2_downloaded_data_directory: "./data/gkg_v2/raw"
   gkg_v2_unzipped_data_directory: "./data/gkg_v2/csv"
   gkg_v2_parquet_data_directory: "./data/gkg_v2/parquet"
-  gkg_v2_filtered_data_directory: "./data/gkg_v2/filtered"
+  gkg_v2_cleaned_data_directory: "./data/gkg_v2/cleaned"
   # Only used by `gdeltforge aggregate`/`sample --source aggregated`: see
   # docs/configuration.md#aggregation. gkg-v2/mentions/events-15min are
   # the only datasets with a many-small-files problem to solve.
@@ -392,7 +392,7 @@ paths:
   mentions_downloaded_data_directory: "./data/mentions/raw"
   mentions_unzipped_data_directory: "./data/mentions/csv"
   mentions_parquet_data_directory: "./data/mentions/parquet"
-  mentions_filtered_data_directory: "./data/mentions/filtered"
+  mentions_cleaned_data_directory: "./data/mentions/cleaned"
   mentions_aggregated_day_data_directory: "./data/mentions/aggregated_day"
   mentions_aggregated_month_data_directory: "./data/mentions/aggregated_month"
   mentions_aggregated_year_data_directory: "./data/mentions/aggregated_year"
@@ -400,7 +400,7 @@ paths:
   event_15min_downloaded_data_directory: "./data/events_15min/raw"
   event_15min_unzipped_data_directory: "./data/events_15min/csv"
   event_15min_parquet_data_directory: "./data/events_15min/parquet"
-  event_15min_filtered_data_directory: "./data/events_15min/filtered"
+  event_15min_cleaned_data_directory: "./data/events_15min/cleaned"
   event_15min_aggregated_day_data_directory: "./data/events_15min/aggregated_day"
   event_15min_aggregated_month_data_directory: "./data/events_15min/aggregated_month"
   event_15min_aggregated_year_data_directory: "./data/events_15min/aggregated_year"
@@ -409,24 +409,24 @@ paths:
   # populated unconditionally, regardless of converter.partitioning.enabled
   # (see utils.config.dataset_is_always_historical): a single static file
   # with no flat/daily mode to fall back to, so its converted output lives
-  # entirely under the historical pair below. The flat parquet/filtered
+  # entirely under the historical pair below. The flat parquet/cleaned
   # directories still get created but stay empty for this dataset.
   event_reduced_downloaded_data_directory: "./data/events_reduced/raw"
   event_reduced_unzipped_data_directory: "./data/events_reduced/csv"
   event_reduced_parquet_data_directory: "./data/events_reduced/parquet"
-  event_reduced_filtered_data_directory: "./data/events_reduced/filtered"
+  event_reduced_cleaned_data_directory: "./data/events_reduced/cleaned"
   event_reduced_parquet_historical_directory: "./data/events_reduced/historical"
-  event_reduced_filtered_historical_directory: "./data/events_reduced/filtered_historical"
+  event_reduced_cleaned_historical_directory: "./data/events_reduced/cleaned_historical"
 
   gkg_v1_downloaded_data_directory: "./data/gkg_v1/raw"
   gkg_v1_unzipped_data_directory: "./data/gkg_v1/csv"
   gkg_v1_parquet_data_directory: "./data/gkg_v1/parquet"
-  gkg_v1_filtered_data_directory: "./data/gkg_v1/filtered"
+  gkg_v1_cleaned_data_directory: "./data/gkg_v1/cleaned"
 
   gkg_v1_counts_downloaded_data_directory: "./data/gkg_v1_counts/raw"
   gkg_v1_counts_unzipped_data_directory: "./data/gkg_v1_counts/csv"
   gkg_v1_counts_parquet_data_directory: "./data/gkg_v1_counts/parquet"
-  gkg_v1_counts_filtered_data_directory: "./data/gkg_v1_counts/filtered"
+  gkg_v1_counts_cleaned_data_directory: "./data/gkg_v1_counts/cleaned"
 
 # ================================
 #          STAGE SETTINGS
@@ -454,12 +454,12 @@ converter:
         by: ["Year", "MonthYear"]
 
 # Conservative on purpose: no columns_to_check means every row survives
-# `filter` (dropna against an empty column list is a documented no-op,
+# `clean` (dropna against an empty column list is a documented no-op,
 # not "check nothing and drop everything"), and no output_columns/
 # float32_columns means every column stays too, at full precision. If
 # you want the storage/row-filtering wins settings.example.yaml
 # demonstrates, add those sections back in deliberately.
-filter:
+clean:
   max_workers: null
   columns_to_check:
     gdelt_event: []
@@ -469,15 +469,32 @@ filter:
     gdelt_mentions: []
     gdelt_gkg_v1: []
     gdelt_gkg_v1_counts: []
+  # Repairs of known GDELT errors, on by default and losing nothing: the
+  # 1920-for-2020 dates are repaired with GDELT's values kept in
+  # *_original columns, and the non-CAMEO event markers are kept (only
+  # counted). See docs/data-cleaning.md#errata.
+  errata:
+    gdelt_event:
+      date_1920: true
+      keep_original: true
+      event_markers: keep
+    gdelt_event_15min:
+      date_1920: true
+      keep_original: true
+      event_markers: keep
+  # --delete-source refuses to run while a lossy errata step is on
+  # (event_markers: drop, or date_1920 without keep_original) unless this
+  # is true.
+  allow_lossy_delete_source: false
 
 # Only relevant for gkg-v2/mentions/events-15min (see paths above);
 # concatenates a period's worth of their ~96-files/day cadence into one
 # larger file per day/month/year. null max_workers = os.cpu_count(), same
-# as converter/filter above.
+# as converter/clean above.
 aggregation:
   max_workers: null
 
-# How many files one filter/aggregate/sample/crossref command may read at
+# How many files one clean/aggregate/sample/crossref command may read at
 # once. null = no cap beyond each stage's own worker count, the right
 # choice for local SSDs. Set a small number (4 is a measured starting
 # point) when the data lives on network storage (NFS, SMB) or a shared

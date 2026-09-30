@@ -387,8 +387,8 @@ columns_numeric:
 
 paths:
   # Every dataset gets its own directory, with the same four/six stage
-  # names nested underneath (raw / csv / parquet / filtered, plus
-  # historical / filtered_historical for Events). Events used to live
+  # names nested underneath (raw / csv / parquet / cleaned, plus
+  # historical / cleaned_historical for Events). Events used to live
   # unprefixed at the top level while GKG/Mentions each got their own
   # directory; nesting Events the same way keeps the layout uniform,
   # e.g. data/events/raw next to data/gkg_v2/raw instead of a bare
@@ -403,19 +403,24 @@ paths:
   # Directory for Parquet output
   parquet_data_directory: "./path_example/events/parquet"
 
-  # Directory for filtered Parquet files
-  filtered_data_directory: "./path_example/events/filtered"
+  # Directory for cleaned Parquet files (the clean stage's output)
+  cleaned_data_directory: "./path_example/events/cleaned"
+
+  # Where each clean run writes its audit. Unset, it's the cleaned
+  # directory's sibling with "_runs" added (here ./path_example/events/
+  # cleaned_runs). Must sit outside every data directory.
+  # clean_runs_directory: "./path_example/events/clean_runs"
 
   # Hive-partitioned Parquet for historical files (yearly / monthly ZIPs).
   # Only used when converter.partitioning.enabled is true.
   parquet_historical_directory: "./path_example/events/historical"
 
-  # Filtered version of the historical Hive dataset.
+  # Cleaned version of the historical Hive dataset.
   # Only used when converter.partitioning.enabled is true.
-  filtered_historical_directory: "./path_example/events/filtered_historical"
+  cleaned_historical_directory: "./path_example/events/cleaned_historical"
 
   # GKG 2.1 and Mentions: same four stages as Events (download / unzip /
-  # convert / filter), but their own directories; these publish at
+  # convert / clean), but their own directories; these publish at
   # 15-minute granularity, not daily, so keeping them separate from
   # Events' paths avoids ever mixing the two archives' files together.
   # No Hive-partitioned historical variant: unlike Events, GKG 2.1 and
@@ -423,12 +428,12 @@ paths:
   gkg_v2_downloaded_data_directory: "./path_example/gkg_v2/raw"
   gkg_v2_unzipped_data_directory: "./path_example/gkg_v2/csv"
   gkg_v2_parquet_data_directory: "./path_example/gkg_v2/parquet"
-  gkg_v2_filtered_data_directory: "./path_example/gkg_v2/filtered"
+  gkg_v2_cleaned_data_directory: "./path_example/gkg_v2/cleaned"
 
   # Only used by `gdeltforge aggregate`/`sample --source aggregated`
   # (see the aggregation: section below): one directory per granularity,
   # always written to regardless of which of --source
-  # converted/filtered `aggregate` itself read from when building it.
+  # converted/cleaned `aggregate` itself read from when building it.
   # GKG 2.1/Mentions/events-15min are the only datasets with a many-
   # small-files problem to solve; no other dataset gets these keys.
   gkg_v2_aggregated_day_data_directory: "./path_example/gkg_v2/aggregated_day"
@@ -438,7 +443,7 @@ paths:
   mentions_downloaded_data_directory: "./path_example/mentions/raw"
   mentions_unzipped_data_directory: "./path_example/mentions/csv"
   mentions_parquet_data_directory: "./path_example/mentions/parquet"
-  mentions_filtered_data_directory: "./path_example/mentions/filtered"
+  mentions_cleaned_data_directory: "./path_example/mentions/cleaned"
   mentions_aggregated_day_data_directory: "./path_example/mentions/aggregated_day"
   mentions_aggregated_month_data_directory: "./path_example/mentions/aggregated_month"
   mentions_aggregated_year_data_directory: "./path_example/mentions/aggregated_year"
@@ -453,7 +458,7 @@ paths:
   event_15min_downloaded_data_directory: "./path_example/events_15min/raw"
   event_15min_unzipped_data_directory: "./path_example/events_15min/csv"
   event_15min_parquet_data_directory: "./path_example/events_15min/parquet"
-  event_15min_filtered_data_directory: "./path_example/events_15min/filtered"
+  event_15min_cleaned_data_directory: "./path_example/events_15min/cleaned"
   event_15min_aggregated_day_data_directory: "./path_example/events_15min/aggregated_day"
   event_15min_aggregated_month_data_directory: "./path_example/events_15min/aggregated_month"
   event_15min_aggregated_year_data_directory: "./path_example/events_15min/aggregated_year"
@@ -462,14 +467,14 @@ paths:
   # populated unconditionally, regardless of converter.partitioning.enabled
   # (see utils.config.dataset_is_always_historical): a single static file
   # with no flat/daily mode to fall back to, so its converted output lives
-  # entirely under the historical pair below. The flat parquet/filtered
+  # entirely under the historical pair below. The flat parquet/cleaned
   # directories still get created but stay empty for this dataset.
   event_reduced_downloaded_data_directory: "./path_example/events_reduced/raw"
   event_reduced_unzipped_data_directory: "./path_example/events_reduced/csv"
   event_reduced_parquet_data_directory: "./path_example/events_reduced/parquet"
-  event_reduced_filtered_data_directory: "./path_example/events_reduced/filtered"
+  event_reduced_cleaned_data_directory: "./path_example/events_reduced/cleaned"
   event_reduced_parquet_historical_directory: "./path_example/events_reduced/historical"
-  event_reduced_filtered_historical_directory: "./path_example/events_reduced/filtered_historical"
+  event_reduced_cleaned_historical_directory: "./path_example/events_reduced/cleaned_historical"
 
   # GKG 1.0 (legacy) and its separate Counts file: same four stages, own
   # directories. Unlike GKG 2.1/Mentions, GKG 1.0 publishes daily, the same
@@ -478,12 +483,12 @@ paths:
   gkg_v1_downloaded_data_directory: "./path_example/gkg_v1/raw"
   gkg_v1_unzipped_data_directory: "./path_example/gkg_v1/csv"
   gkg_v1_parquet_data_directory: "./path_example/gkg_v1/parquet"
-  gkg_v1_filtered_data_directory: "./path_example/gkg_v1/filtered"
+  gkg_v1_cleaned_data_directory: "./path_example/gkg_v1/cleaned"
 
   gkg_v1_counts_downloaded_data_directory: "./path_example/gkg_v1_counts/raw"
   gkg_v1_counts_unzipped_data_directory: "./path_example/gkg_v1_counts/csv"
   gkg_v1_counts_parquet_data_directory: "./path_example/gkg_v1_counts/parquet"
-  gkg_v1_counts_filtered_data_directory: "./path_example/gkg_v1_counts/filtered"
+  gkg_v1_counts_cleaned_data_directory: "./path_example/gkg_v1_counts/cleaned"
 
 # ================================
 #          STAGE SETTINGS
@@ -511,7 +516,7 @@ scraping:
   # Concurrent download workers. Downloads are I/O-bound (network wait),
   # so this can comfortably exceed CPU core count; raise/lower based on
   # your connection and how politely you want to hit data.gdeltproject.org.
-  # Unlike converter.max_workers/filter.max_workers below, null is not a
+  # Unlike converter.max_workers/clean.max_workers below, null is not a
   # valid "auto" value here: it falls all the way into requests' connection
   # pool sizing and fails every download. Set a real number.
   max_workers: 8
@@ -550,7 +555,7 @@ converter:
   # (gdelt_gkg_v1 / gdelt_gkg_v1_counts), V2DOCUMENTIDENTIFIER
   # (gdelt_gkg_v2), or GLOBALEVENTID + MentionIdentifier (gdelt_mentions).
   # convert warns if one of these is missing from a configured
-  # output_columns list, same as filter does for its own output_columns
+  # output_columns list, same as clean does for its own output_columns
   # below; see configuration.md for the full explanation.
   output_columns:
     gdelt_gkg_v2: # example: keep only the crossref join key + ML-relevant fields
@@ -566,9 +571,9 @@ converter:
       - V1.5TONE
 
   # Write codec per dataset, same setting and same zstd default as
-  # filter.compression below. Overriding it here changes converter's own
+  # clean.compression below. Overriding it here changes converter's own
   # intermediate parquet output (parquet_data_directory), independent of
-  # whatever filter.compression is set to for the filtered output that
+  # whatever clean.compression is set to for the cleaned output that
   # follows it.
   compression:
     gdelt_gkg_v2: snappy # example override away from the zstd default
@@ -586,15 +591,57 @@ converter:
         by: ["Year", "MonthYear"]
 
 # The user should customize this.
-# Provide columns so the filter drops instances with NaN values on them.
+# Provide columns so the clean stage drops rows with a null in any of them.
 # One list per dataset (matching columns: / columns_numeric: above).
-filter:
-  # Concurrent filter worker processes, same tradeoffs as converter.max_workers
+clean:
+  # Concurrent clean worker processes, same tradeoffs as converter.max_workers
   # above: CPU-bound (per-file polars null drop + parquet write), so this
-  # defaults to the machine's core count. Lower it if filtering competes
+  # defaults to the machine's core count. Lower it if cleaning competes
   # with other work, or if you've had to lower converter.max_workers for
   # the same reason.
   max_workers: null  # null = os.cpu_count()
+
+  # Repairs of known GDELT errors, applied before every other step. The
+  # defaults below repair without losing any value: see
+  # docs/data-cleaning.md#errata for each rule and its evidence.
+  errata:
+    gdelt_event:
+      # GDELT wrote year 1920 for 2020 in events it added between
+      # 2019-12-31 23:00 and 2020-01-05 15:00 UTC (536,074 daily-archive
+      # rows). Adds 100 years to Day, MonthYear, Year and FractionDate.
+      date_1920: true
+      # Keep GDELT's own values in Day_original, MonthYear_original,
+      # Year_original and FractionDate_original (repaired rows only).
+      # false makes the repair lossy.
+      keep_original: true
+      # Rows coded "---"/"--" (CAMEO null code) or "X" (undocumented):
+      # keep (counted in the run audit) or drop (lossy).
+      event_markers: keep
+    gdelt_event_15min:
+      date_1920: true
+      keep_original: true
+      event_markers: keep
+
+  # Optional whitespace normalization, off by default since it changes
+  # GDELT's values without keeping them. Around 2013 GDELT padded 11.3M
+  # Actor2Code values (" USA") and wrote 3.2M as a single space; no code
+  # table recognizes those. Recommended for analysis on codes or names.
+  normalize:
+    gdelt_event: # example
+      trim_strings: false   # strip leading/trailing whitespace
+      blank_to_null: false  # " " -> null, before the null check
+
+  # Optional added columns, off by default; nothing is replaced. With
+  # output_columns set, list the derived columns there too.
+  derive:
+    gdelt_event: # example
+      event_date: false  # EventDate: a real date parsed from Day
+      labels: []         # e.g. [EventRootCode, ActionGeo_CountryCode] -> <column>_Label
+
+  # --delete-source removes the converted copy. It refuses to run while a
+  # lossy errata or normalize step is on (event_markers: drop, date_1920
+  # without keep_original, or a normalize switch) unless this is true.
+  allow_lossy_delete_source: false
 
   columns_to_check:
     gdelt_event: # example
@@ -655,7 +702,7 @@ filter:
   # matter what else you prune: GlobalEventID (gdelt_event), EventIds
   # (gdelt_gkg_v1 / gdelt_gkg_v1_counts), V2DOCUMENTIDENTIFIER
   # (gdelt_gkg_v2), or GLOBALEVENTID + MentionIdentifier (gdelt_mentions).
-  # filter warns if one of these is missing from a configured
+  # clean warns if one of these is missing from a configured
   # output_columns list; see configuration.md for the full explanation,
   # including why SOURCEURL is not on this list despite looking related.
   output_columns:
@@ -706,20 +753,20 @@ filter:
 aggregation:
   # Worker processes for aggregation, one period per worker. null (the
   # default) uses os.cpu_count(), same tradeoffs as converter.max_workers/
-  # filter.max_workers above. Each worker reads one source file at a
+  # clean.max_workers above. Each worker reads one source file at a
   # time and needs roughly 0.8 GB for a month of Events, so size this to
   # your RAM on a machine with many cores and little memory.
   max_workers: null
 
   # Write codec per dataset, same setting and same zstd default as
-  # converter.compression/filter.compression above.
+  # converter.compression/clean.compression above.
   compression:
     gdelt_gkg_v2: snappy # example override away from the zstd default
 
 # Storage-side concurrency, separate from the CPU-side max_workers above.
 io:
-  # How many files one filter/aggregate/sample/crossref command may read
-  # at once. filter/aggregate cap their worker count to it (each worker
+  # How many files one clean/aggregate/sample/crossref command may read
+  # at once. clean/aggregate cap their worker count to it (each worker
   # reads one file at a time); sample/crossref cap polars' own concurrent
   # file scans to it. null (the default) means no cap beyond the worker
   # counts above, the right choice for local SSDs.
