@@ -31,6 +31,8 @@ config/settings.yaml
 *.zip
 *.csv
 *.parquet
+# The place table the clean stage's places step reads, shipped in the package
+!src/gdeltforge/data/places.parquet
 
 # Logs
 logs/

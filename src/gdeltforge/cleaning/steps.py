@@ -23,6 +23,7 @@ Provides:
     - Date1920Repair, EventMarkers: repairs of known GDELT errors
       (the errata step)
     - NormalizeStrings: optional whitespace normalization
+    - ResolvePlaces: optional resolution of each geo point to its place
     - DeriveColumns: optional derived columns (a real event date, code
       labels)
     - ordered: sort steps into STEP_ORDER
@@ -37,15 +38,19 @@ from functools import reduce
 
 import polars as pl
 
+from gdeltforge.cleaning import places
 from gdeltforge.sampling import cameo_codes
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 # errata: repairs of known GDELT errors. normalize: optional value
-# normalization. require: drop rows missing a required value. derive:
-# add columns. project: keep a column subset. narrow: smaller encodings.
-STEP_ORDER = ("errata", "normalize", "require", "derive", "project", "narrow")
+# normalization. places: resolve geo points to places. require: drop rows
+# missing a required value. derive: add columns. project: keep a column
+# subset. narrow: smaller encodings.
+STEP_ORDER = (
+    "errata", "normalize", "places", "require", "derive", "project", "narrow",
+)
 
 # Bumped whenever an errata rule is added or changed, and recorded in the
 # resumability fingerprint, so data cleaned under an older rule set is
@@ -72,7 +77,9 @@ class Step:
     --delete-source must refuse it when lossy. apply() receives the frame
     as every earlier step left it and returns the frame for the next step.
     counts() returns named expressions over that same input frame, summed
-    into the run audit and the dry-run report.
+    into the run audit and the dry-run report; count_frame() evaluates them,
+    and a step whose counts need more than expressions over its input (a
+    join) overrides it.
     """
 
     name = ""
@@ -84,6 +91,12 @@ class Step:
 
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         return {}
+
+    def count_frame(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame | None:
+        """The step's counts as a one-row frame, or None when it counts
+        nothing."""
+        exprs = self.counts(lf, ctx)
+        return lf.select([e.alias(k) for k, e in exprs.items()]) if exprs else None
 
     def settings(self) -> dict:
         """The step's settings as JSON-ready values, for the cleaned-file
@@ -382,6 +395,221 @@ class NormalizeStrings(Step):
                 (pl.col(c).str.strip_chars() == "").sum() for c in columns
             ])
         return out
+
+
+# GDELT's three geo points per event, each written as <role>_Type,
+# _FullName, _CountryCode, _ADM1Code (and _ADM2Code in the 15-minute feed),
+# _Lat, _Long and _FeatureID.
+GEO_ROLES = ("Actor1Geo", "Actor2Geo", "ActionGeo")
+# What _joined adds per role: the resolved place (null for none), the
+# FeatureID for a point with a location the table doesn't know, and
+# whether the point has a location at all.
+_RESOLVED = (*places.PLACE_COLUMNS, "new_id", "located")
+
+
+@dataclass(frozen=True)
+class ResolvePlaces(Step):
+    """
+    Resolve each geo point to the place it names (see places.py and
+    docs/data-cleaning.md#places). Every point ends as a place, under one
+    unambiguous ID, or as no location, the way GDELT writes a point it
+    couldn't locate (FeatureID, Lat, Long and FullName null, Type 0):
+
+    - a point with a location is looked up by the exact FeatureID, Lat and
+      Long GDELT wrote; found, it takes the place's ID, canonical point,
+      name and type in <role>_FeatureID, _Lat, _Long, _FullName and _Type;
+    - a point without a location (no coordinates, or (0, 0), which is the
+      same thing) is looked up by its FeatureID alone, and is no location
+      when that names no place;
+    - a point with a location the table doesn't know takes the place its
+      FeatureID names in the gazetteer its Type says, when there is one
+      (a known place at a new point); otherwise it is a place the table
+      doesn't have yet, kept as GDELT wrote it, with its FeatureID in the
+      same scheme: a different place's ID gets its own gazetteer's form,
+      and the placeholder 0 becomes null.
+
+    CountryCode and the ADM codes are never touched. Lossy: GDELT's own
+    values are replaced. `table` is places.place_table_id(), for the marker.
+    """
+
+    table: str = ""
+    name = "places"
+    lossy = True
+
+    @staticmethod
+    def _roles(lf: pl.LazyFrame) -> list[str]:
+        names = lf.collect_schema().names()
+        return [
+            r for r in GEO_ROLES
+            if all(f"{r}_{c}" in names for c in places.KEY_COLUMNS)
+        ]
+
+    @staticmethod
+    def _joined(lf: pl.LazyFrame, roles: list[str]) -> pl.LazyFrame:
+        """lf with, per role, __<role>_<column> for every _RESOLVED column.
+        Row order is kept."""
+        names = lf.collect_schema().names()
+        table = places.place_table().lazy()
+        readings = places.place_readings().lazy()
+        ids = places.place_ids().lazy()
+        for r in roles:
+            p = f"__{r}_"
+            fid = pl.col(f"{r}_FeatureID").cast(pl.String)
+            lat = pl.col(f"{r}_Lat").cast(pl.Float64)
+            lon = pl.col(f"{r}_Long").cast(pl.Float64)
+            located = lat.is_not_null() & lon.is_not_null() & ~((lat == 0) & (lon == 0))
+            gazetteer = (
+                pl.col(f"{r}_Type").cast(pl.Int64, strict=False)
+                .replace_strict(places.GAZETTEERS, default=None, return_dtype=pl.String)
+                if f"{r}_Type" in names else pl.lit(None, pl.String)
+            )
+            lf = lf.with_columns(
+                # The table writes a missing FeatureID as "", and a point
+                # without a location with Lat and Long null.
+                fid.fill_null("").alias(p + "k_id"),
+                pl.when(located).then(lat).alias(p + "k_lat"),
+                pl.when(located).then(lon).alias(p + "k_lon"),
+                # The fallback, for a point with a location only.
+                pl.when(located).then(fid).alias(p + "f_id"),
+                gazetteer.alias(p + "gazetteer"),
+                located.alias(p + "located"),
+            )
+
+            def prefixed(frame: pl.LazyFrame, tag: str, p: str = p) -> pl.LazyFrame:
+                return frame.select(
+                    *[c for c in frame.collect_schema().names() if c not in places.PLACE_COLUMNS],
+                    *[pl.col(c).alias(f"{p}{tag}{c}") for c in places.PLACE_COLUMNS],
+                )
+
+            lf = (
+                lf.join(
+                    prefixed(table, "t_").rename(
+                        {c: f"{p}k_{k}" for c, k in zip(
+                            places.KEY_COLUMNS, ("id", "lat", "lon"), strict=True)}
+                    ),
+                    on=[p + "k_id", p + "k_lat", p + "k_lon"], how="left",
+                    nulls_equal=True, maintain_order="left",
+                )
+                .join(
+                    prefixed(readings, "r_").rename(
+                        {"FeatureID": p + "f_id", "gazetteer": p + "gazetteer"}),
+                    on=[p + "f_id", p + "gazetteer"], how="left", maintain_order="left",
+                )
+                .join(
+                    prefixed(ids, "u_").rename(
+                        {"FeatureID": p + "f_id", "readings": p + "readings"}),
+                    on=p + "f_id", how="left", maintain_order="left",
+                )
+            )
+            typed = pl.col(p + "gazetteer").is_not_null()
+            one = pl.col(p + "readings") == 1
+            resolved = [
+                pl.coalesce(
+                    pl.col(f"{p}t_{c}"),
+                    pl.when(typed).then(pl.col(f"{p}r_{c}"))
+                    .when(one).then(pl.col(f"{p}u_{c}")),
+                ).alias(p + c)
+                for c in places.PLACE_COLUMNS
+            ]
+            f_id, gaz = pl.col(p + "f_id"), pl.col(p + "gazetteer")
+            own_form = (
+                pl.when((gaz == "state") & f_id.str.contains(r"^[A-Z]{2}$"))
+                .then(pl.lit("US") + f_id)
+                .otherwise(gaz + pl.lit(":") + f_id)
+            )
+            new_id = (
+                pl.when(f_id.is_null() | f_id.is_in(["", "0"])).then(None)
+                .when(pl.col(p + "readings").is_null()).then(f_id)
+                .when(~typed).then(None)
+                .otherwise(own_form)
+            )
+            keep = {p + c for c in _RESOLVED}
+            lf = lf.with_columns(*resolved, new_id.alias(p + "new_id"))
+            lf = lf.drop([c for c in lf.collect_schema().names()
+                          if c.startswith(p) and c not in keep])
+        return lf
+
+    @staticmethod
+    def _temporary(roles: list[str]) -> list[str]:
+        return [f"__{r}_{c}" for r in roles for c in _RESOLVED]
+
+    def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
+        roles = self._roles(lf)
+        if not roles:
+            return lf
+        schema = lf.collect_schema()
+        lf = self._joined(lf, roles)
+        exprs = []
+        for r in roles:
+            p = f"__{r}_"
+            found = pl.col(p + "place").is_not_null()
+            located = pl.col(p + "located")
+
+            def pick(
+                column: str, resolved: pl.Expr, cleared: pl.Expr, unknown: pl.Expr,
+                found: pl.Expr = found, located: pl.Expr = located,
+            ) -> pl.Expr:
+                return (
+                    pl.when(found).then(resolved)
+                    .when(~located).then(cleared)
+                    .otherwise(unknown)
+                    .cast(schema[column]).alias(column)
+                )
+
+            exprs += [
+                pick(f"{r}_FeatureID", pl.col(p + "place"), pl.lit(None),
+                     pl.col(p + "new_id")),
+                pick(f"{r}_Lat", pl.col(p + "place_lat"), pl.lit(None), pl.col(f"{r}_Lat")),
+                pick(f"{r}_Long", pl.col(p + "place_lon"), pl.lit(None), pl.col(f"{r}_Long")),
+            ]
+            if f"{r}_FullName" in schema:
+                exprs.append(pick(
+                    f"{r}_FullName",
+                    # A place with no usable name keeps the point's own.
+                    pl.coalesce(pl.col(p + "place_name"), pl.col(f"{r}_FullName")),
+                    pl.lit(None), pl.col(f"{r}_FullName"),
+                ))
+            if f"{r}_Type" in schema:
+                exprs.append(pick(
+                    f"{r}_Type", pl.col(p + "place_type"), pl.lit(0), pl.col(f"{r}_Type")
+                ))
+        return lf.with_columns(exprs).drop(self._temporary(roles))
+
+    def count_frame(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame | None:
+        roles = self._roles(lf)
+        if not roles:
+            # No geo point with its FeatureID, Lat and Long, most likely
+            # pruned by converter.output_columns: the cleaner warns once
+            # per run with the count.
+            return lf.select(pl.lit(1).alias("places_skipped_files"))
+        names = lf.collect_schema().names()
+        counts: dict[str, list[pl.Expr]] = {
+            "places.resolved": [], "places.changed": [], "places.cleared": [],
+            "places.unresolved": [],
+        }
+        for r in roles:
+            p = f"__{r}_"
+            fid, lat, lon = pl.col(f"{r}_FeatureID"), pl.col(f"{r}_Lat"), pl.col(f"{r}_Long")
+            found = pl.col(p + "place").is_not_null()
+            located = pl.col(p + "located")
+            # A point without a location GDELT already wrote as one (no ID,
+            # no point, no name, Type 0) isn't cleared again.
+            written = [fid.is_not_null(), lat.is_not_null(), lon.is_not_null()]
+            if f"{r}_FullName" in names:
+                written.append(pl.col(f"{r}_FullName").is_not_null())
+            if f"{r}_Type" in names:
+                written.append(pl.col(f"{r}_Type").cast(pl.Int64, strict=False).ne_missing(0))
+            counts["places.resolved"].append(found.sum())
+            counts["places.changed"].append((found & (
+                pl.col(p + "place").ne_missing(fid.cast(pl.String))
+                | pl.col(p + "place_lat").ne_missing(lat.cast(pl.Float64))
+                | pl.col(p + "place_lon").ne_missing(lon.cast(pl.Float64))
+            )).sum())
+            counts["places.cleared"].append((~found & ~located & pl.any_horizontal(written)).sum())
+            counts["places.unresolved"].append((~found & located).sum())
+        return self._joined(lf, roles).select(
+            reduce(operator.add, parts).alias(key) for key, parts in counts.items()
+        )
 
 
 @dataclass(frozen=True)

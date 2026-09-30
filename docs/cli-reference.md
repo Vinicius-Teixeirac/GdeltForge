@@ -179,7 +179,7 @@ By default `clean` shows the same setup line, progress bar, and end-of-run summa
 
 `--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything; add `--report` to also measure what each step would change, which reads every file in scope. `--report` without `--dry-run` is an error.
 
-With the default settings, `clean` also repairs known GDELT errors (the events dated 1920 instead of 2020) while keeping GDELT's own values, and counts the rows that aren't CAMEO events; see [Data Cleaning](data-cleaning.md#errata-known-gdelt-errors). `--delete-source` refuses to run while a lossy step added in 0.12.0 is configured (`event_markers: drop`, `date_1920` without `keep_original`, or either `normalize` switch) unless `clean.allow_lossy_delete_source` is `true`.
+With the default settings, `clean` also repairs known GDELT errors (the events dated 1920 instead of 2020) while keeping GDELT's own values, and counts the rows that aren't CAMEO events; see [Data Cleaning](data-cleaning.md#errata-known-gdelt-errors). `--delete-source` refuses to run while a lossy step added in 0.12.0 is configured (`event_markers: drop`, `date_1920` without `keep_original`, either `normalize` switch, or `places.resolve`) unless `clean.allow_lossy_delete_source` is `true`.
 
 ## `gdeltforge aggregate`
 
