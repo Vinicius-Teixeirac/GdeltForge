@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import zlib
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from gdeltforge.cleaning.steps import added_columns
 from gdeltforge.scraping.scraper import (
     filter_paths_by_date,
     parse_file_date,
@@ -589,6 +590,23 @@ class CalendarSampler:
                 lf = lf.select(needed_columns)
             yield from lf.collect_batches(chunk_size=64_000)
 
+    def _warn_before_1979(self, n_rows: int) -> None:
+        """
+        Rows dated before 1979 form calendar periods of their own, each
+        drawing a full quota. In GDELT's archive they are the events GDELT
+        dated 1920 instead of 2020 (added 2019-12-31 to 2020-01-05), whose
+        real days then come out nearly empty. The clean stage repairs them
+        by default; data read with --source converted, or cleaned before
+        0.12, still has them.
+        """
+        logger.warning(
+            f"{n_rows:,} row(s) have a {self.date_column} before 1979, GDELT's first "
+            f"year, and are sampled as periods of their own. In GDELT's archive these "
+            f"are events it dated 1920 instead of 2020 (added 2019-12-31 to "
+            f"2020-01-05). Run `gdeltforge clean` (errata.date_1920 repairs them by "
+            f"default) and sample --source cleaned; see docs/data-cleaning.md."
+        )
+
     def get_calendar_samples(self, samples_per_period: int = 10) -> pl.DataFrame:
         # A negative value used to reach the reservoir machinery below
         # unchecked, same as 0, producing a nonsensical but "successful"
@@ -657,6 +675,7 @@ class CalendarSampler:
         total_seen:       dict[Any, int]                     = {}
         group_rngs:       dict[Any, np.random.Generator]     = {}
         n_unparseable = 0
+        n_before_1979 = 0
 
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why a
@@ -686,6 +705,11 @@ class CalendarSampler:
                 # groupby's dropna=True default, keeps a null key as its own
                 # group, so this has to be explicit rather than assumed.
                 keyed_batch = keyed_batch.drop_nulls(subset=[self._PERIOD_KEY])
+                # GDELT's data starts in 1979. An earlier period is almost
+                # always its 1920-for-2020 error (see _warn_before_1979).
+                n_before_1979 += int(
+                    (keyed_batch[self._PERIOD_KEY].str.slice(0, 4) < "1979").sum()
+                )
 
                 # maintain_order=True, not False: each group now draws from
                 # its own dedicated _group_rng (see that function's own
@@ -751,6 +775,8 @@ class CalendarSampler:
                 f"{n_unparseable} row(s) with an unparseable {self.date_column} "
                 f"were dropped from calendar sampling."
             )
+        if n_before_1979:
+            self._warn_before_1979(n_before_1979)
 
         reservoirs: dict[Any, pl.DataFrame] = {
             g: _reservoir_to_dataframe(cols, reservoir_schema[g])
@@ -814,6 +840,17 @@ class FilteredSampler:
     ):
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
+        # Columns the clean stage adds (errata originals, derived columns):
+        # outside the declared schema, but real columns of cleaned files.
+        # Valid in --columns and --filter, and part of the default output
+        # whenever the scanned files have them.
+        clean_added = [c for c in added_columns(list(gdelt_columns)) if c not in self.gdelt_columns]
+        self._clean_added_columns = set(clean_added)
+        self._valid_columns = self.gdelt_columns | self._clean_added_columns
+        # Output column order: the declared schema's, then the clean
+        # stage's columns in the order that stage adds them.
+        self._output_order = self._gdelt_columns_ordered + clean_added
+        self._columns_given = bool(columns)
 
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
@@ -837,7 +874,7 @@ class FilteredSampler:
 
     # ---------- validation ----------
     def _validate_columns(self):
-        invalid = self.columns - self.gdelt_columns
+        invalid = self.columns - self._valid_columns
         if invalid:
             raise ValueError(f"Invalid columns: {invalid}")
 
@@ -852,7 +889,7 @@ class FilteredSampler:
                         raise ValueError(f"{key} must contain a dict")
                     validate_block(val)
                 else:
-                    if key not in self.gdelt_columns:
+                    if key not in self._valid_columns:
                         raise ValueError(f"Invalid filter column: {key}")
                     self._warn_unrecognized_codes(key, val)
 
@@ -908,8 +945,57 @@ class FilteredSampler:
         return cols
 
     # ---------- convert simple condition -> polars expression ----------
-    def _expr_for_condition(self, column: str, cond: Any) -> pl.Expr:
+    @staticmethod
+    def _as_date(value: Any, column: str) -> date:
+        """
+        A --filter value for a Date column (EventDate), as a date: an ISO
+        "YYYY-MM-DD" string, or a YYYYMMDD integer, the form every other
+        GDELT date column (Day, DATEADDED) takes. Left as given, a string
+        fails to compare with a date, and an integer compares as days
+        since 1970, silently selecting everything or nothing.
+        """
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                pass
+        if isinstance(value, int) and not isinstance(value, bool):
+            try:
+                return datetime.strptime(str(value), "%Y%m%d").date()
+            except ValueError:
+                pass
+        raise ValueError(
+            f"--filter: column {column!r} holds dates; give each date as "
+            f'"YYYY-MM-DD" or as a YYYYMMDD number, got {value!r}'
+        )
+
+    @classmethod
+    def _dates_in(cls, cond: Any, column: str) -> Any:
+        """cond with every operand converted by _as_date, same shape."""
+        if isinstance(cond, list):
+            return [cls._as_date(v, column) for v in cond]
+        if isinstance(cond, tuple) and len(cond) == 2:
+            return tuple(cls._as_date(v, column) for v in cond)
+        if isinstance(cond, dict):
+            converted = dict(cond)
+            for key in ("value", "min", "max"):
+                if key in converted:
+                    converted[key] = cls._as_date(converted[key], column)
+            if "values" in converted:
+                converted["values"] = [cls._as_date(v, column) for v in converted["values"]]
+            return converted
+        return cls._as_date(cond, column)
+
+    def _expr_for_condition(
+        self, column: str, cond: Any, is_date: bool = False
+    ) -> pl.Expr:
         f = pl.col(column)
+        if is_date:
+            cond = self._dates_in(cond, column)
+        if isinstance(cond, date):
+            return f == cond
 
         if isinstance(cond, (str, int, float, bool)):
             return f == cond
@@ -1013,6 +1099,9 @@ class FilteredSampler:
                             f"the filter value(s) {bad} are string(s). Check the "
                             f"--filter argument."
                         )
+                elif dtype == pl.Date:
+                    for v in operands:
+                        self._as_date(v, key)
                 elif dtype == pl.Utf8:
                     bad = [
                         v for v in operands
@@ -1029,7 +1118,8 @@ class FilteredSampler:
 
     # ---------- recursive builder: filter_dict -> polars expression ----------
     def _build_expression(
-        self, block: dict[str, Any], _join_with: str = "AND"
+        self, block: dict[str, Any], _join_with: str = "AND",
+        date_columns: frozenset[str] = frozenset(),
     ) -> pl.Expr | None:
         """
         Return a polars Expr or None if block is empty.
@@ -1047,19 +1137,19 @@ class FilteredSampler:
 
         for key, val in block.items():
             if key == "AND":
-                sub = self._build_expression(val, _join_with="AND")
+                sub = self._build_expression(val, _join_with="AND", date_columns=date_columns)
                 if sub is None:
                     continue
                 expr = _combine(expr, sub)
 
             elif key == "OR":
-                sub = self._build_expression(val, _join_with="OR")
+                sub = self._build_expression(val, _join_with="OR", date_columns=date_columns)
                 if sub is None:
                     continue
                 expr = _combine(expr, sub)
 
             else:
-                sub = self._expr_for_condition(key, val)
+                sub = self._expr_for_condition(key, val, is_date=key in date_columns)
                 expr = _combine(expr, sub)
 
         return expr
@@ -1084,7 +1174,9 @@ class FilteredSampler:
         # happens to land.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
             lf = self._dataset()
-            expr = self._build_expression(self.filter_dict)
+            schema = lf.collect_schema()
+            date_columns = frozenset(c for c in schema.names() if schema[c] == pl.Date)
+            expr = self._build_expression(self.filter_dict, date_columns=date_columns)
             if expr is not None:
                 lf = lf.filter(expr)
             lf = lf.select(needed_columns)
@@ -1121,8 +1213,11 @@ class FilteredSampler:
 
         available = set(schema.names())
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
+        requested = set(self.columns)
+        if not self._columns_given:
+            requested |= self._clean_added_columns & available
         return narrow_to_available_columns(
-            logger, f"filtered sample dataset in {self.folder}", self.columns, required, available
+            logger, f"filtered sample dataset in {self.folder}", requested, required, available
         )
 
     # ---------- API ----------
@@ -1239,7 +1334,7 @@ class FilteredSampler:
         if reservoir is None or reservoir.is_empty():
             return pl.DataFrame()
 
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in reservoir.columns]
+        keep_cols = [c for c in self._output_order if c in reservoir.columns]
         return reservoir.select(keep_cols)
 
     # ---------- with-replacement sampling (two-pass) ----------
@@ -1322,7 +1417,7 @@ class FilteredSampler:
             return pl.DataFrame()
 
         sample = pl.concat(frames)
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
+        keep_cols = [c for c in self._output_order if c in sample.columns]
         return sample.select(keep_cols)
 
     # ---------- stratified reservoir sampling ----------
@@ -1343,6 +1438,11 @@ class FilteredSampler:
         # "sample nothing" request.
         if n_per_group < 0:
             raise ValueError(f"n_per_group must be non-negative, got {n_per_group}")
+        # Checked like --columns and --filter names: without it, an unknown
+        # name reached the available-columns check, whose message blames
+        # output_columns pruning.
+        if stratify_col not in self._valid_columns:
+            raise ValueError(f"Invalid stratify column: {stratify_col}")
         if n_per_group == 0:
             return pl.DataFrame()
 
@@ -1447,5 +1547,5 @@ class FilteredSampler:
         # one stratify group's reservoir Int64 for a column, a sibling
         # group's Float64 for the same column, both correct on their own.
         sample    = pl.concat(list(reservoirs.values()), how="vertical_relaxed")
-        keep_cols = [c for c in self._gdelt_columns_ordered if c in sample.columns]
+        keep_cols = [c for c in self._output_order if c in sample.columns]
         return sample.select(keep_cols)

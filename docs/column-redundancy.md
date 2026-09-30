@@ -8,7 +8,7 @@ redundant, measured against real GDELT data rather than assumed from the
 codebook, and which looks redundant but isn't.
 
 Nothing here is synthetic. Every number below comes from either the local
-converted dataset or a fresh `scrape` + `convert` + `filter` run against
+converted dataset or a fresh `scrape` + `convert` + `clean` run against
 `data.gdeltproject.org`, using the pipeline's own code paths, not ad hoc
 parsing.
 
@@ -49,9 +49,9 @@ re-run twice more, at increasing scale, against data pulled fresh from
 GDELT for each:
 
 1. **12 single-file snapshots**: the first 15-minute batch of one day per
-   year, 2015 to 2026, scraped, converted, and filtered independently.
+   year, 2015 to 2026, scraped, converted, and cleaned independently.
 2. **11 full days**: every 15-minute batch (96/day) of one day per year,
-   2015 to 2026, same pipeline. 1,054 files, 2,146,256 filtered rows,
+   2015 to 2026, same pipeline. 1,054 files, 2,146,256 cleaned rows,
    1,917,585 rows with both theme fields present, 51,724,547 individual
    `V1THEMES` tag instances checked.
 
@@ -126,7 +126,7 @@ sets. `V2ENHANCEDTHEMES`, `V2ENHANCEDPERSONS`, and
 `V2ENHANCEDORGANIZATIONS` trade some of that completeness, themes
 especially, for character-offset data nothing in this codebase uses.
 
-Within `converter.output_columns.gdelt_gkg_v2` / `filter.output_columns.gdelt_gkg_v2`
+Within `converter.output_columns.gdelt_gkg_v2` / `clean.output_columns.gdelt_gkg_v2`
 as currently configured, the three `V2ENHANCED*` fields account for **60%
 of the pruned dataset's size** (107.7 of 178.4 MB in a compressed-size
 sample), so dropping them and keeping only the `V1*` fields more than
@@ -233,11 +233,11 @@ Only worth dropping for schema simplicity, if at all.
 
 The GKG 2.1 theme comparisons were run by calling this pipeline's own
 `collect_gdelt_links`, `download_gdelt_files`, `GDELTConverter`, and
-`run_filter` directly (not through the `gdeltforge` CLI, to select
+`run_cleaner` (then called `run_filter`) directly (not through the `gdeltforge` CLI, to select
 individual 15-minute files rather than whole days or date ranges),
 against a config pointed at scratch paths so the run never touched a
 locally cached `data/` directory or its resumability markers. Row/tag
 counts were then computed by loading `V1THEMES` and `V2ENHANCEDTHEMES`
-from the resulting filtered Parquet and comparing them as sets per row.
+from the resulting cleaned Parquet and comparing them as sets per row.
 None of the downloaded or intermediate files from these runs are kept in
 this repository; only the aggregate numbers above are.
