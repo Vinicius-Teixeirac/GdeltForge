@@ -346,9 +346,12 @@ errata repairs. Nothing needs doing by hand:
   default, next to output from an earlier version, would read an empty
   directory, since files already cleaned aren't written again. Loading the
   config warns for as long as the old directory holds Parquet files: move
-  them into the new directory (or rename the old one if the new one doesn't
-  exist yet), or set `paths.cleaned_data_directory` (or the dataset's own
-  key) to the old one.
+  them into the new directory, creating it if needed. Setting
+  `paths.cleaned_data_directory` (or the dataset's own key) to the old
+  directory works too, but only before any `clean` run: a run creates the
+  new directory and writes newly cleaned files there, which that setting
+  would then hide, and renaming the old directory would nest it inside the
+  new one.
 - `gdeltforge clean --force` re-cleans files in scope regardless of their
   fingerprint.
 

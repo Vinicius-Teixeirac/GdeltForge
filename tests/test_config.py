@@ -553,7 +553,7 @@ class TestMovedDefaultDirectories:
         assert "paths.mentions_cleaned_data_directory" in mentions
         assert str(Path("data/mentions/filtered")) in mentions
         assert str(Path("data/mentions/cleaned")) in mentions
-        assert "rename it to" in mentions
+        assert "move what" in mentions
         assert any("paths.cleaned_historical_directory" in m for m in messages)
 
     def test_keeps_warning_after_a_clean_creates_the_new_directory(
@@ -565,7 +565,11 @@ class TestMovedDefaultDirectories:
         (tmp_path / "data" / "mentions" / "cleaned").mkdir(parents=True)
         messages = self._load(tmp_path, monkeypatch, caplog)
         assert len(messages) == 1
-        assert "move its files into" in messages[0]
+        # A rename would nest the old directory inside the new one, and
+        # pointing the path back would hide what clean wrote there.
+        assert "move what" in messages[0]
+        assert "rename" not in messages[0]
+        assert "set paths" not in messages[0]
 
     def test_quiet_once_the_old_directory_holds_no_parquet(
         self, tmp_path, monkeypatch, caplog

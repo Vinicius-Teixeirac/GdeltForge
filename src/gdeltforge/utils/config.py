@@ -281,6 +281,12 @@ def _warn_about_moved_default_directories(config: dict, user_paths: dict) -> Non
     it, and it can hold part of the data. The check stops at the first
     file found, so it costs a directory stat and one entry even on a
     large network share.
+
+    The advice is the one action that stays right after the run that
+    prints it: moving the old files into the new directory. Renaming the
+    old directory fails, or nests it inside the new one, once a clean run
+    has created that; pointing the path back at the old directory hides
+    whatever a clean run already wrote to the new one.
     """
     suffixes = tuple(_DEPRECATED_PATH_SUFFIXES.values())
     for key, value in get_dict(config, "paths").items():
@@ -292,12 +298,12 @@ def _warn_about_moved_default_directories(config: dict, user_paths: dict) -> Non
         old = new.with_name("filtered" + new.name[len("cleaned"):])
         if not old.is_dir() or next(old.rglob("*.parquet"), None) is None:
             continue
-        fix = f"move its files into {new}" if new.exists() else f"rename it to {new}"
         logger.warning(
             f"{old} holds clean-stage output from before 0.12.0, but "
-            f"paths.{key} now defaults to {new}: {fix}, or set paths.{key}: {old}. "
-            f"Until then sample and aggregate don't read those files, and clean "
-            f"doesn't rewrite files it already cleaned under the same settings."
+            f"paths.{key} now defaults to {new}: move what {old} holds into {new}, "
+            f"creating it if needed. Until then sample and aggregate don't read those "
+            f"files, and clean doesn't rewrite files it already cleaned under the same "
+            f"settings."
         )
 
 
