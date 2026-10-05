@@ -52,7 +52,9 @@ from gdeltforge.utils.logging import get_logger
 # Utilities
 # ======================================================================
 
-logger = get_logger(__name__, log_to_file=True)
+# Console only at import: main() adds logs/pipeline.log once it knows
+# the command may write anything (see _log_to_file).
+logger = get_logger(__name__)
 
 
 class _Terminated(KeyboardInterrupt):
@@ -1397,6 +1399,17 @@ def _report_scan_threads(cap: int | None) -> None:
         logger.info(f"Reading at most {cap} file(s) at once, on {threads} polars thread(s)")
 
 
+def _log_to_file(args: argparse.Namespace) -> None:
+    """
+    Also log to logs/pipeline.log, creating logs/ when it's missing, for
+    every command except a dry run and `codes`. A dry run leaves the
+    filesystem as it found it, and `codes` only prints a lookup. Opening
+    the log at import used to create logs/ for those too, and for --help.
+    """
+    if args.command != "codes" and not getattr(args, "dry_run", False):
+        get_logger(__name__, log_to_file=True)
+
+
 # ======================================================================
 # Entrypoint
 # ======================================================================
@@ -1422,6 +1435,7 @@ def main() -> None:
         safe_print(compact_emblem(__version__))
 
     args = parser.parse_args()
+    _log_to_file(args)
 
     try:
         if args.command == "codes":

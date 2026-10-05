@@ -6,9 +6,10 @@ from gdeltforge.utils.logging import get_logger
 
 class TestGetLoggerUnwritableLogDirectory:
     """
-    cli.py calls get_logger(__name__, log_to_file=True) unconditionally
-    at module import time, before argparse or main()'s own try/except
-    ever run. get_logger() used to do Path("logs").mkdir(exist_ok=True)
+    cli.py calls get_logger(__name__, log_to_file=True) for every command
+    except a dry run and `codes`, before main()'s own try/except runs (it
+    used to, unconditionally, at module import time). get_logger() used
+    to do Path("logs").mkdir(exist_ok=True)
     with no error handling at all, so any command, including --help,
     crashed with a raw, unhandled PermissionError in a working directory
     the process can't write to (a read-only container, some CI runners,

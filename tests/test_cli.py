@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import os
 import re
 import signal
@@ -2372,6 +2373,39 @@ class TestRunCodesCmd:
     def test_unknown_column_raises(self):
         with pytest.raises(ValueError, match="no CAMEO code reference list"):
             cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))
+
+
+class TestLogFile:
+    """logs/pipeline.log is opened only for a command that may write: a dry
+    run leaves the filesystem as it found it, logs/ included."""
+
+    @pytest.fixture
+    def no_file_handler(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(cli.logger, "handlers", [
+            h for h in cli.logger.handlers if not isinstance(h, logging.FileHandler)
+        ])
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setattr(cli, "run_clean_cmd", lambda config, args: None)
+        yield tmp_path
+        for h in cli.logger.handlers:
+            if isinstance(h, logging.FileHandler):
+                h.close()
+
+    @pytest.mark.parametrize("argv", [
+        ["clean", "--dataset", "events", "--dry-run"],
+        ["clean", "--dataset", "events", "--dry-run", "--report"],
+        ["codes", "EventRootCode"],
+    ])
+    def test_dry_runs_and_codes_create_no_log_directory(self, monkeypatch, no_file_handler, argv):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", *argv])
+        cli.main()
+        assert not (no_file_handler / "logs").exists()
+
+    def test_a_real_run_logs_to_the_file(self, monkeypatch, no_file_handler):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "clean", "--dataset", "events"])
+        cli.main()
+        assert (no_file_handler / "logs" / "pipeline.log").exists()
 
 
 class TestMainErrorHandling:
