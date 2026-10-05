@@ -118,7 +118,7 @@ The pipeline follows a **single-responsibility, single-stage execution model**. 
 |-------|------|
 | `scrape` | download raw GDELT CSV files (Events, GKG 2.1, GKG 1.0, or Mentions) |
 | `convert` | transform CSV -> Parquet |
-| `clean` | repair known GDELT errors, drop rows missing required values, shape the output |
+| `clean` | repair known GDELT errors and keep every row by default (rows missing a value are dropped only for the columns listed in `clean.columns_to_check`), shape the output, mark every file and audit every run |
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 

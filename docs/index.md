@@ -31,7 +31,7 @@ hide:
   <div class="gf-grid gf-grid--5">
     <div class="gf-card"><img src="assets/brand/icons/icon-scrape.svg" alt=""><h3>scrape</h3><p>Checksum-verified, concurrent download of the raw archive.</p><span class="gf-card__io">→ CSV</span></div>
     <div class="gf-card"><img src="assets/brand/icons/icon-convert.svg" alt=""><h3>convert</h3><p>CSV → Parquet, with optional Hive partitioning for historical data.</p><span class="gf-card__io">→ Parquet</span></div>
-    <div class="gf-card"><img src="assets/brand/icons/icon-filter.svg" alt=""><h3>clean</h3><p>Repair known GDELT errors, drop unusable rows, shape the output.</p><span class="gf-card__io">→ Cleaned</span></div>
+    <div class="gf-card"><img src="assets/brand/icons/icon-filter.svg" alt=""><h3>clean</h3><p>Repair known GDELT errors, keeping every row by default. Every file marked, every run audited.</p><span class="gf-card__io">→ Cleaned</span></div>
     <div class="gf-card gf-card--hot"><img src="assets/brand/icons/icon-sample.svg" alt=""><h3>sample</h3><p>Seeded reservoir sampling in a single streaming pass.</p><span class="gf-card__io">→ Sample</span></div>
     <div class="gf-card gf-card--hot"><img src="assets/brand/icons/icon-crossref.svg" alt=""><h3>crossref</h3><p>Join a sampled Events output back onto GKG.</p><span class="gf-card__io">→ Sample + GKG</span></div>
   </div>

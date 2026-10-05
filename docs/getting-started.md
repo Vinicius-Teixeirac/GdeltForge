@@ -60,7 +60,7 @@ Worth doing anyway for a real project, so you're deciding `paths:` and `clean.co
 cp config/settings.example.yaml config/settings.yaml
 ```
 
-At minimum, review `paths:` (where downloaded/converted/cleaned data will live) and `clean.columns_to_check` (which columns must be non-null for a row to survive the clean stage). See the full [Configuration](configuration.md) reference for every option, including what the built-in fallback actually sets.
+At minimum, review `paths:` (where downloaded/converted/cleaned data will live) and `clean.columns_to_check` (which columns must be non-null for a row to survive the clean stage; the built-in default lists none, so every row survives). See the full [Configuration](configuration.md) reference for every option, including what the built-in fallback actually sets.
 
 ## Your first pipeline run
 
@@ -75,7 +75,7 @@ gdeltforge clean --dataset events
 gdeltforge sample --dataset events --mode indexed -n 1000 --out sample.parquet
 ```
 
-This downloads one week of daily GDELT files, converts them to Parquet, repairs known GDELT errors and drops rows missing your configured columns, and writes a 1,000-row random sample to `sample.parquet`.
+This downloads one week of daily GDELT files, converts them to Parquet, cleans them, and writes a 1,000-row random sample to `sample.parquet`. With the built-in defaults, `clean` repairs known GDELT errors, keeping GDELT's own values in `*_original` columns, and keeps every row; it drops rows only for the columns you list under `clean.columns_to_check`. It also marks every file it writes as cleaned and writes an audit of the run (see [Data Cleaning](data-cleaning.md)).
 
 Once that works, drop the date flags to work with the full archive (1979-present).
 
