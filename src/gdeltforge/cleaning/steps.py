@@ -85,6 +85,12 @@ class Step:
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
         return {}
 
+    def missing_columns(self, lf: pl.LazyFrame) -> list[str]:
+        """Columns this step must read that the file lacks. A step that
+        returns any doesn't run on the file at all, and the file's marker
+        says so."""
+        return []
+
     def settings(self) -> dict:
         """The step's settings as JSON-ready values, for the cleaned-file
         marker and the run audit."""
@@ -195,6 +201,8 @@ class NarrowFloat32(Step):
 # 1979 to 2026 archive, so the rule is exact.
 _DATE_1920_WINDOW = (date(2019, 12, 31), date(2020, 1, 5))
 _DATE_1920_OFFSETS = {"Day": 1_000_000, "MonthYear": 10_000, "Year": 100, "FractionDate": 100}
+# Every column the rule reads.
+_DATE_1920_READS = (*_DATE_1920_OFFSETS, "DATEADDED")
 # Where date_1920 keeps GDELT's values (keep_original).
 ORIGINAL_COLUMNS = tuple(f"{c}_original" for c in _DATE_1920_OFFSETS)
 
@@ -206,11 +214,13 @@ class Date1920Repair(Step):
     before 1979 and DATEADDED falls from 2019-12-31 to 2020-01-05.
     keep_original also writes each repaired column's GDELT value to
     <column>_original on repaired rows, null elsewhere; with it the repair
-    is not lossy. Those four columns go into every file that has the date
-    columns, null throughout in files outside the window, so a cleaned
-    directory has one schema: polars refuses a multi-file read whose files
-    disagree on columns, and pandas and pyarrow silently drop the extra
-    ones.
+    is not lossy. Those four columns go into every file the rule can read,
+    null throughout in files outside the window, so a cleaned directory
+    has one schema: polars refuses a multi-file read whose files disagree
+    on columns, and pandas and pyarrow silently drop the extra ones. A
+    file lacking one of the columns the rule reads (pruned by
+    converter.output_columns) is left exactly as it is, without the four
+    columns.
     """
 
     keep_original: bool = True
@@ -223,15 +233,12 @@ class Date1920Repair(Step):
     def lossy(self) -> bool:  # type: ignore[override]
         return not self.keep_original or self.originals_left_out
 
-    @staticmethod
-    def _has_date_columns(lf: pl.LazyFrame) -> bool:
-        schema = lf.collect_schema().names()
-        return all(c in schema for c in _DATE_1920_OFFSETS)
+    def missing_columns(self, lf: pl.LazyFrame) -> list[str]:
+        names = lf.collect_schema().names()
+        return [c for c in _DATE_1920_READS if c not in names]
 
-    @classmethod
-    def _applies(cls, lf: pl.LazyFrame, ctx: FileContext) -> bool:
-        if not cls._has_date_columns(lf) or "DATEADDED" not in lf.collect_schema().names():
-            return False
+    @staticmethod
+    def _applies(ctx: FileContext) -> bool:
         # A file whose name puts it wholly outside the window can't hold
         # the bug: its rows were added in its own period.
         start, end = ctx.period_start, ctx.period_end
@@ -248,9 +255,9 @@ class Date1920Repair(Step):
         return (pl.col("Day") < 19790101) & added_day.is_between(lo, hi)
 
     def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
-        if not self._has_date_columns(lf):
+        if self.missing_columns(lf):
             return lf
-        applies = self._applies(lf, ctx)
+        applies = self._applies(ctx)
         exprs = []
         if self.keep_original:
             schema = lf.collect_schema()
@@ -275,12 +282,11 @@ class Date1920Repair(Step):
         return {"rule": "date_1920", **super().settings()}
 
     def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
-        names = lf.collect_schema().names()
-        if not all(c in names for c in (*_DATE_1920_OFFSETS, "DATEADDED")):
+        if self.missing_columns(lf):
             # A converted file pruned by converter.output_columns: the rule
             # can't run, and the cleaner warns once per run with the count.
             return {"errata.date_1920_skipped_files": pl.lit(1)}
-        if not self._applies(lf, ctx):
+        if not self._applies(ctx):
             return {}
         return {"errata.date_1920": self._condition().sum()}
 

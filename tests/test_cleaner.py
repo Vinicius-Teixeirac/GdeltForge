@@ -1964,6 +1964,32 @@ class TestErrata:
             "errata.date_1920 didn't run on 1 file(s)" in r.message for r in caplog.records
         )
 
+    @pytest.mark.parametrize("dropped", ["DATEADDED", "MonthYear"])
+    def test_a_skipped_files_marker_says_the_repair_didnt_run(self, tmp_path, dropped):
+        from gdeltforge.utils.io import cleaned_marker
+
+        _write_new_year_2020(tmp_path / "in")
+        path = tmp_path / "in" / "20200102.export.parquet"
+        pl.read_parquet(path).write_parquet(tmp_path / "in" / "20200103.export.parquet")
+        pl.read_parquet(path).drop(dropped).write_parquet(path)
+        GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            errata=DEFAULT_ERRATA,
+        ).clean_all_files()
+        skipped = tmp_path / "out" / "20200102.export_cleaned.parquet"
+        marker = cleaned_marker(skipped)
+        assert marker is not None
+        step = next(s for s in marker["steps"] if s.get("rule") == "date_1920")
+        assert step["skipped"] is True
+        assert step["missing_columns"] == [dropped]
+        assert step["lossy"] is False
+        assert not any(c.endswith("_original") for c in pl.read_parquet_schema(skipped))
+        # The file the repair did read keeps the ordinary entry.
+        repaired = cleaned_marker(tmp_path / "out" / "20200103.export_cleaned.parquet")
+        assert repaired is not None
+        step = next(s for s in repaired["steps"] if s.get("rule") == "date_1920")
+        assert "skipped" not in step
+
     def test_no_warning_when_every_file_has_the_columns(self, tmp_path, caplog):
         _write_new_year_2020(tmp_path / "in")
         with caplog.at_level(logging.WARNING):

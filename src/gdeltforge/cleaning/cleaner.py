@@ -703,7 +703,14 @@ class GDELTCleaner:
         ctx = FileContext(file_path.name, period_start, period_end)
         columns_in = len(lf.collect_schema())
         count_frames: list[pl.LazyFrame] = []
-        for step in self.steps:
+        # Steps that can't read this file, by their index in self.steps,
+        # with the columns they lack: they don't run here, and this file's
+        # marker says so (see _file_marker).
+        skipped: dict[int, list[str]] = {}
+        for i, step in enumerate(self.steps):
+            missing = step.missing_columns(lf)
+            if missing:
+                skipped[i] = missing
             exprs = step.counts(lf, ctx)
             if exprs:
                 count_frames.append(lf.select([e.alias(k) for k, e in exprs.items()]))
@@ -748,7 +755,7 @@ class GDELTCleaner:
             lf.sink_parquet(
                 tmp_path,
                 compression=cast(ParquetCompression, self.compression),
-                metadata={CLEAN_MARKER_KEY: json.dumps({**self._marker, "source": file_path.name})},
+                metadata={CLEAN_MARKER_KEY: json.dumps(self._file_marker(file_path.name, skipped))},
             )
             os.replace(tmp_path, output_path)
         except Exception:
@@ -771,6 +778,21 @@ class GDELTCleaner:
             columns_in=columns_in,
             columns_out=columns_out,
         )
+
+    def _file_marker(self, source: str, skipped: dict[int, list[str]]) -> dict:
+        """
+        The marker written into one cleaned file: the run's marker, the
+        source file's name, and, on each step that couldn't read this file,
+        `"skipped": true` with the columns it lacks. Such a step changed
+        nothing here, so it is not lossy for this file. Without that entry
+        a file the date repair skipped would read as repaired.
+        """
+        steps = [
+            {**entry, "lossy": False, "skipped": True, "missing_columns": skipped[i]}
+            if i in skipped else entry
+            for i, entry in enumerate(self._marker["steps"])
+        ]
+        return {**self._marker, "steps": steps, "source": source}
 
     @staticmethod
     def _unrecognized_code_exprs(lf: pl.LazyFrame) -> list[pl.Expr]:

@@ -116,9 +116,11 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   repair is exact, and `DATEADDED` confirms every repaired row.
 - **When it can't run**: the rule reads `Day`, `MonthYear`, `Year`,
   `FractionDate` and `DATEADDED`. A converted file missing one of them
-  (pruned by `converter.output_columns`) is cleaned without the repair, and
-  the run warns once, with the number of such files; the audit counts them
-  as `errata.date_1920_skipped_files`.
+  (pruned by `converter.output_columns`) is cleaned without the repair and
+  without the `*_original` columns, so its dates are as GDELT wrote them.
+  The run warns once, with the number of such files; the audit counts them
+  as `errata.date_1920_skipped_files`, and each such file's marker lists the
+  step with `"skipped": true` and the columns it lacks.
 - **Without it**: calendar sampling treats 1920-01-01 to 01-06 as six real
   days, each drawing its full quota, while the real 2020-01-01 to 01-05
   come out almost empty. `sample --mode calendar` warns whenever it meets
@@ -163,7 +165,10 @@ Each cleaned file's Parquet metadata holds a `gdeltforge:clean` entry: the
 gdeltforge version, every step with its settings and whether it is lossy,
 the configuration fingerprint, and the source file's name. The two errata
 steps name their `rule` (`date_1920`, `event_markers`), and a step the
-configuration leaves empty (a `columns_to_check` of `[]`) isn't listed.
+configuration leaves empty (a `columns_to_check` of `[]`) isn't listed. A
+step that couldn't run on the file, because the file lacks a column it
+reads, carries `"skipped": true` and `"missing_columns"`, and counts as not
+lossy there, since it changed nothing.
 Read it with:
 
 ```python

@@ -115,6 +115,17 @@ class TestDate1920Repair:
         outside = Date1920Repair().apply(_events([20210101], [20210101]), ctx).collect()
         assert inside.schema == outside.schema
 
+    @pytest.mark.parametrize("dropped", ["DATEADDED", "MonthYear"])
+    def test_a_file_lacking_a_column_it_reads_is_left_as_it_is(self, dropped):
+        # Without the originals too, whichever column is missing: the file
+        # comes out as GDELT wrote it, as the run's warning says.
+        lf = _events([19200101], [20200101]).drop(dropped)
+        step = Date1920Repair()
+        assert step.missing_columns(lf) == [dropped]
+        out = step.apply(lf, CTX).collect()
+        assert out.columns == lf.collect_schema().names()
+        assert out.equals(lf.collect())
+
     def test_without_keep_original_no_column_is_added(self):
         ctx = FileContext("20210101.export.parquet", date(2021, 1, 1), date(2021, 1, 1))
         lf = _events([20210101], [20210101])
