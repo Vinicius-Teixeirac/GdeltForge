@@ -330,9 +330,14 @@ errata repairs. Nothing needs doing by hand:
 
 - **Datasets with errata rules** (`events`, `events-15min`): the errata
   settings are part of the resumability fingerprint, so the first `clean`
-  run after upgrading cleans every file again. To repair the affected days
-  first, run `gdeltforge clean --dataset events --start-date 2019-12-31
-  --end-date 2020-01-05`; the rest follows on the next full run.
+  run after upgrading cleans every file again, and the cleaned directory
+  ends up with one schema. To repair the affected days first, run
+  `gdeltforge clean --dataset events --start-date 2019-12-31 --end-date
+  2020-01-05`, then the full run. In between, the directory holds 62-column
+  `_cleaned` files beside 58-column `_filtered` ones: gdeltforge's own
+  `sample`, `aggregate` and `crossref` read it, but polars refuses it as one
+  dataset and pandas and pyarrow drop the `*_original` columns. The
+  date-limited run warns about it, naming the directory.
 - **Other datasets**: their fingerprint is unchanged, so their files aren't
   cleaned again. Existing `<stem>_filtered.parquet` files stay valid and
   are read as before.
@@ -354,7 +359,9 @@ errata repairs. Nothing needs doing by hand:
 - **Re-clean after changing settings**: files already cleaned under the
   current settings are skipped. Changing a setting that affects the output
   makes the next run reprocess every file; `gdeltforge clean --force`
-  reprocesses regardless.
+  reprocesses regardless. A run limited by `--start-date`/`--end-date`
+  reprocesses only its own days, so a change that adds or removes columns
+  leaves the directory with two schemas until a run covers the rest.
 - **Read a repaired value's original**: with `keep_original: true`, the
   `*_original` columns hold GDELT's values on repaired rows.
 - **Keep the converted copy** unless disk space forces otherwise:

@@ -1990,6 +1990,51 @@ class TestErrata:
         step = next(s for s in repaired["steps"] if s.get("rule") == "date_1920")
         assert "skipped" not in step
 
+    @staticmethod
+    def _upgrade_setup(tmp_path):
+        # Two converted days, and the second one's pre-0.12 output (the
+        # filter stage wrote GDELT's columns as they were).
+        _write_new_year_2020(tmp_path / "in")
+        day = pl.read_parquet(tmp_path / "in" / "20200102.export.parquet")
+        day.write_parquet(tmp_path / "in" / "20200103.export.parquet")
+        (tmp_path / "out").mkdir()
+        day.write_parquet(tmp_path / "out" / "20200103.export_filtered.parquet")
+
+    def test_a_partial_run_beside_pre_012_output_warns_about_two_schemas(
+        self, tmp_path, caplog
+    ):
+        self._upgrade_setup(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA,
+                start_date=datetime.date(2020, 1, 2), end_date=datetime.date(2020, 1, 2),
+            ).clean_all_files()
+        messages = [r.message for r in caplog.records if "pre-0.12 output" in r.message]
+        assert len(messages) == 1
+        assert "1 file(s)" in messages[0]
+        assert "20200103.export_filtered.parquet lacks ['Day_original'" in messages[0]
+
+    def test_no_two_schema_warning_once_every_day_is_cleaned_again(self, tmp_path, caplog):
+        self._upgrade_setup(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA,
+            ).clean_all_files()
+        assert not list((tmp_path / "out").glob("*_filtered.parquet"))
+        assert not any("pre-0.12 output" in r.message for r in caplog.records)
+
+    def test_no_two_schema_warning_when_the_columns_match(self, tmp_path, caplog):
+        # Without errata (Mentions, GKG) old and new files share columns.
+        self._upgrade_setup(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                start_date=datetime.date(2020, 1, 2), end_date=datetime.date(2020, 1, 2),
+            ).clean_all_files()
+        assert not any("pre-0.12 output" in r.message for r in caplog.records)
+
     def test_no_warning_when_every_file_has_the_columns(self, tmp_path, caplog):
         _write_new_year_2020(tmp_path / "in")
         with caplog.at_level(logging.WARNING):
