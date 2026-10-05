@@ -419,7 +419,8 @@ def run_clean_cmd(config: dict, args: argparse.Namespace) -> None:
     if files_failed:
         raise RuntimeError(
             f"Cleaning finished with {files_failed} failed file(s) out of "
-            f"{files_processed + files_failed}."
+            f"{files_processed + files_failed}. The \"Failed:\" lines above name each "
+            f"one and why it failed."
         )
 
 

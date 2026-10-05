@@ -28,6 +28,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - `clean --dry-run` (with or without `--report`) and `aggregate --dry-run` no longer create their output directories, and no dry run (`scrape`, `convert`, `clean`, `aggregate`) creates `logs/pipeline.log` any more; a dry run now leaves the filesystem as it found it. `codes` and `--help` no longer create `logs/` either: the log file is opened once the command is known, not when the CLI module loads.
+- A `clean` run with failed files lists each one with its reason (`Failed: <file>: <reason>`) after its summary, at every verbosity, and its closing error message points there. Logged only while the progress bar ran, a failure shared the bar's line and scrolled away above the summary, and the error message gave only the count.
 - `converter.max_workers` (and `max_workers_by_dataset`), `clean.max_workers`, `aggregation.max_workers` and `io.max_concurrent_reads` reject a value that isn't a whole number, naming the setting. `true` used to run as one worker, logged as "True worker process(es)"; a quoted `"4"` failed with a bare `TypeError`; `2.5` was logged as the worker count and then failed inside the worker pool. A `max_workers_by_dataset` that isn't a mapping, or names something that isn't a dataset, fails the same way; a misspelled dataset used to leave that dataset at the default worker count without a word.
 
 ## [0.11.0] - 2026-09-20

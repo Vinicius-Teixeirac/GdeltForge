@@ -577,7 +577,7 @@ class TestRunCleanCmd:
         )
         args = self._args()
 
-        with pytest.raises(RuntimeError, match="2 failed file"):
+        with pytest.raises(RuntimeError, match="2 failed file.*\"Failed:\" lines above"):
             cli.run_clean_cmd({}, args)
 
     def test_no_raise_when_nothing_failed(self, monkeypatch):

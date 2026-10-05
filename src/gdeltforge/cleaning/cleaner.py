@@ -531,6 +531,7 @@ class GDELTCleaner:
         files_failed      = 0
         reports: list[FileReport] = []
         failed_files: list[str] = []
+        failure_reasons: list[str] = []
         started_at = datetime.now(timezone.utc)
 
         # Each file is filtered independently (its own read, own output
@@ -599,6 +600,7 @@ class GDELTCleaner:
                         except Exception as e:
                             files_failed += 1
                             failed_files.append(parquet_path.name)
+                            failure_reasons.append(str(e))
                             logger.error(f"Failed to clean {parquet_path.name}: {e}")
                         pbar.update(1)
             except KeyboardInterrupt:
@@ -637,6 +639,11 @@ class GDELTCleaner:
         self._warn_skipped(reports)
         self._warn_legacy_schema(reports)
         self._write_audit(reports, failed_files, started_at)
+        # Listed again once the progress bar is gone: logged while it runs,
+        # each failure shares a line with the bar and scrolls away above
+        # the summary. ERROR, so --quiet shows them too.
+        for name, reason in zip(failed_files, failure_reasons, strict=True):
+            logger.error(f"Failed: {name}: {reason}")
         return files_processed, files_failed
 
     # ======================================================================

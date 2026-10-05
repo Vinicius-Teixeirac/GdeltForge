@@ -28,7 +28,7 @@ The CLI intentionally does not chain stages automatically: you run each one expl
 
 !!! info "Exit codes"
 
-    `scrape`, `convert`, and `clean` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. The failed filenames are included in the error message; the per-file reason is in the log output above it.
+    `scrape`, `convert`, and `clean` all exit non-zero if any individual file failed, even though the ones that succeeded are kept, so a partial failure never gets missed in a `&&`-chained or scripted run. `scrape` and `convert` name the failed files in the error message, with each file's reason in the log output above it; `clean` lists each failed file with its reason in `Failed: <file>: <reason>` lines just above the error message, at every verbosity.
 
     Any command that fails prints `Error: <message>` to stderr and exits with status 1, rather than a raw Python traceback; interrupting a command with Ctrl+C prints `Interrupted.` and exits with status 130. A `scrape`/`convert`/`clean` run backed by a worker pool cancels every not-yet-started file immediately on either signal, rather than draining the whole remaining queue first; the handful of files already in flight are still allowed to finish. A plain `kill` (SIGTERM, no `-9`) behaves the same way, printing `Terminated.` and exiting with status 143, since that's what most process managers (systemd, Docker, Kubernetes) send by convention before escalating.
 

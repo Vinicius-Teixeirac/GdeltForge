@@ -235,6 +235,25 @@ class TestFilterAllFiles:
         out = pl.read_parquet(tmp_path / "out" / "good_cleaned.parquet")
         assert out["GlobalEventID"].to_list() == [1]
 
+    def test_failed_files_are_listed_with_their_reason_after_the_summary(
+        self, tmp_path, caplog
+    ):
+        # Logged while the progress bar runs, a failure shares the bar's line
+        # and scrolls away; listed again at the end it can't be missed.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "good.parquet", {"GlobalEventID": [1], "QuadClass": [1]})
+        (input_dir / "bad.parquet").write_bytes(b"not a real parquet file")
+        with caplog.at_level(logging.INFO):
+            GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).clean_all_files()
+        messages = [r.message for r in caplog.records]
+        listed = [i for i, m in enumerate(messages) if m.startswith("Failed: bad.parquet: ")]
+        assert len(listed) == 1
+        summary = messages.index("Files failed: 1")
+        assert listed[0] > summary
+        assert caplog.records[listed[0]].levelno == logging.ERROR
+        assert len(messages[listed[0]]) > len("Failed: bad.parquet: ")
+
     def test_preserves_historical_directory_structure(self, tmp_path):
         flat_in = tmp_path / "flat_in"
         hist_in = tmp_path / "hist_in"
