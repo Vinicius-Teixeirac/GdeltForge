@@ -59,6 +59,7 @@ from gdeltforge.utils.config import (
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
+    resolve_max_concurrent_reads,
     validate_max_workers,
 )
 from gdeltforge.utils.io import (
@@ -1414,6 +1415,10 @@ def run_converter(
     downloaded_data_directory: see GDELTConverter.recover_unzipped_files
     for when this is for.
     """
+    # convert reads no Parquet, so io.max_concurrent_reads doesn't apply to
+    # it, but it is checked here all the same: an invalid value fails at
+    # the first stage, before hours of conversion, not at the next one.
+    resolve_max_concurrent_reads(config)
     output_columns = get_dict(config["converter"], "output_columns").get(dataset)
     warn_if_output_columns_drops_join_key(logger, "convert", dataset, output_columns)
     warn_if_delete_source_drops_recoverable_data(

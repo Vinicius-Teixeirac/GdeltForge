@@ -812,6 +812,15 @@ class TestRunConverterWarnsAboutCrossrefJoinKey:
             "GlobalEventID" in r.message and "crossref" in r.message for r in caplog.records
         )
 
+    @pytest.mark.parametrize("value", [2.5, 0, "4", True])
+    def test_an_invalid_read_cap_fails_here_too(self, tmp_path, value):
+        # convert doesn't use io.max_concurrent_reads, but a broken value
+        # fails at the first stage, not at the next one that reads it.
+        cfg = _make_config(tmp_path)
+        cfg["io"] = {"max_concurrent_reads": value}
+        with pytest.raises(ValueError, match="io.max_concurrent_reads"):
+            run_converter(cfg)
+
     def test_explicit_null_output_columns_does_not_crash_config_resolution(self, tmp_path):
         # run_converter reads converter.output_columns independently from
         # GDELTConverter.__init__ (its own warn-before-processing check);
