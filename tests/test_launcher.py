@@ -97,7 +97,7 @@ class TestReportScanThreads:
             for r in caplog.records
         )
 
-    @pytest.mark.parametrize("exported, warned", [("8", True), ("x", True), ("4", False)])
+    @pytest.mark.parametrize("exported, warned", [("8", True), ("4", False), ("1", False)])
     def test_an_exported_scan_limit_above_the_cap_is_warned_about(
         self, monkeypatch, caplog, exported, warned
     ):

@@ -30,7 +30,7 @@ from gdeltforge.sampling.samplers import (
 # Pipeline stages
 from gdeltforge.scraping.scraper import date_parser_for, parse_file_date, run_scraping_pipeline
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
-from gdeltforge.utils.concurrency import polars_scan_limit
+from gdeltforge.utils.concurrency import exported_scan_limit, polars_scan_limit
 from gdeltforge.utils.config import (
     dataset_is_aggregation_eligible,
     dataset_is_always_historical,
@@ -1363,6 +1363,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# The commands that read Parquet with polars, in this process or in its
+# workers: an invalid exported POLARS_MAX_CONCURRENT_SCANS stops them all.
+_PARQUET_READING_COMMANDS = frozenset({"clean", "filter", "aggregate", "sample", "crossref"})
+
+
 def _report_scan_threads(cap: int | None) -> None:
     """
     With io.max_concurrent_reads set, say how many files sample/crossref
@@ -1378,8 +1383,8 @@ def _report_scan_threads(cap: int | None) -> None:
     if cap is None:
         return
     exceeded = False
-    exported = os.environ.get("POLARS_MAX_CONCURRENT_SCANS")
-    if exported is not None and not (exported.isdigit() and int(exported) <= cap):
+    exported = exported_scan_limit()
+    if exported is not None and exported > cap:
         exceeded = True
         logger.warning(
             f"io.max_concurrent_reads is {cap}, but POLARS_MAX_CONCURRENT_SCANS={exported} "
@@ -1445,6 +1450,8 @@ def main() -> None:
 
         config = load_config(args.config)
         _migrate_deprecated_args(args)
+        if args.command in _PARQUET_READING_COMMANDS:
+            exported_scan_limit()
 
         logger.info(f"Running command: {args.command}")
 

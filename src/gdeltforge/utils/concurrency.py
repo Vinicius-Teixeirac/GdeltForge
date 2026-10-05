@@ -22,6 +22,8 @@ Provides:
       ProcessPoolExecutor spawns inside it
     - polars_scan_limit: bound concurrent file reads for polars work
       running in this process (sample, crossref)
+    - exported_scan_limit: the POLARS_MAX_CONCURRENT_SCANS the user
+      exported, checked before polars reads anything
 """
 
 from __future__ import annotations
@@ -155,6 +157,27 @@ def polars_worker_env(plan: WorkerPlan) -> Generator[None, None, None]:
         POLARS_MAX_CONCURRENT_SCANS: plan.concurrent_scans,
     }):
         yield
+
+
+def exported_scan_limit() -> int | None:
+    """
+    The POLARS_MAX_CONCURRENT_SCANS exported in this environment, or None
+    when it isn't. polars accepts only a whole number greater than 0 there,
+    and on anything else panics at its first Parquet read, in this process
+    or in a worker that inherits the variable, with a raw traceback: a
+    pyo3 PanicException, which no `except Exception` catches. Such a value
+    fails here instead, naming the variable.
+    """
+    value = os.environ.get(POLARS_MAX_CONCURRENT_SCANS)
+    if value is None:
+        return None
+    if not (value.isascii() and value.isdigit() and int(value) > 0):
+        raise ValueError(
+            f"{POLARS_MAX_CONCURRENT_SCANS}={value!r} is exported, but polars accepts "
+            f"only a whole number greater than 0 there and stops at the first Parquet "
+            f"file it reads. Unset it, or export a whole number."
+        )
+    return int(value)
 
 
 @contextmanager

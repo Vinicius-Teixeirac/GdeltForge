@@ -2375,6 +2375,38 @@ class TestRunCodesCmd:
             cli.run_codes_cmd(argparse.Namespace(column="NotAColumn", search=None))
 
 
+class TestInvalidExportedScanLimit:
+    """polars panics on an invalid POLARS_MAX_CONCURRENT_SCANS at its first
+    Parquet read, with a raw traceback. Every command that reads Parquet
+    fails up front instead, naming the variable."""
+
+    @pytest.mark.parametrize("value", ["abc", "0", "-1", "2.5", ""])
+    @pytest.mark.parametrize("command", [
+        ["clean", "--dataset", "events"],
+        ["aggregate", "--dataset", "mentions"],
+        ["sample", "--dataset", "events", "--mode", "indexed", "-n", "1"],
+        ["crossref", "--events", "x.parquet", "--gkg-version", "v2"],
+    ])
+    def test_fails_with_a_clean_message(self, monkeypatch, capsys, value, command):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", *command])
+        monkeypatch.setattr(cli, "_log_to_file", lambda args: None)
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", value)
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert err.startswith(f"Error: POLARS_MAX_CONCURRENT_SCANS={value!r} is exported")
+
+    def test_a_valid_value_and_commands_without_parquet_reads_go_ahead(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "convert", "--dataset", "events"])
+        monkeypatch.setattr(cli, "_log_to_file", lambda args: None)
+        monkeypatch.setattr(cli, "load_config", lambda path: {})
+        monkeypatch.setattr(cli, "run_convert_cmd", lambda config, args: None)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "abc")
+        cli.main()  # convert reads no Parquet: returns normally
+
+
 class TestLogFile:
     """logs/pipeline.log is opened only for a command that may write: a dry
     run leaves the filesystem as it found it, logs/ included."""
