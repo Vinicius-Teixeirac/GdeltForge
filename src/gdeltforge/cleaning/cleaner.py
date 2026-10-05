@@ -192,6 +192,11 @@ class GDELTCleaner:
         other_data_folders: list[str] | None = None,
         dataset: str | None = None,
     ):
+        # Names the dataset's own setting and path keys in messages
+        # (clean.errata.gdelt_event..., paths.mentions_...); nothing the
+        # cleaner does depends on it. None (a direct caller) names the
+        # section only.
+        self.dataset = dataset
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
         self.columns_to_check = columns_to_check
@@ -295,12 +300,14 @@ class GDELTCleaner:
         # steps.py and docs/data-cleaning.md#errata). None or {} repairs
         # nothing; run_cleaner passes the bundled default's settings,
         # which repair without losing any value.
-        self.errata = self._validated_errata(errata)
+        self.errata = self._validated_errata(errata, self._setting("errata"))
         # Optional whitespace normalization (clean.normalize.<dataset>),
         # off by default: it changes GDELT's values without keeping them.
-        self.normalize = self._validated_flags(normalize, _NORMALIZE_KEYS, "clean.normalize")
+        self.normalize = self._validated_flags(
+            normalize, _NORMALIZE_KEYS, self._setting("normalize")
+        )
         # Optional derived columns (clean.derive.<dataset>), off by default.
-        self.derive = self._validated_derive(derive)
+        self.derive = self._validated_derive(derive, self._setting("derive"))
         # With --dry-run: read every file in scope and report what each
         # step would change, instead of only counting files.
         self.report = report
@@ -434,9 +441,6 @@ class GDELTCleaner:
         # dataset's data just the same.
         self.other_data_folders = [Path(f) for f in other_data_folders or []]
         self._refuse_runs_inside_data()
-        # Only names the dataset's own path keys in warnings; nothing the
-        # cleaner does depends on it.
-        self.dataset = dataset
 
     # ======================================================================
     # PUBLIC API
@@ -1076,23 +1080,27 @@ class GDELTCleaner:
             / f"{parquet_path.stem}_cleaned.parquet"
         )
 
+    def _setting(self, section: str) -> str:
+        """The full key of a clean section's settings for this dataset,
+        clean.<section>.<dataset>, as messages name it."""
+        return f"clean.{section}.{self.dataset}" if self.dataset else f"clean.{section}"
+
     @staticmethod
-    def _validated_errata(errata: dict | None) -> dict:
-        """clean.errata.<dataset>, checked before anything runs: unknown
-        keys and invalid values fail the run up front, naming the key."""
+    def _validated_errata(errata: dict | None, label: str = "clean.errata") -> dict:
+        """clean.errata.<dataset> (label), checked before anything runs:
+        unknown keys and invalid values fail the run up front, naming the
+        key."""
         errata = dict(errata or {})
         unknown = sorted(set(errata) - set(_ERRATA_KEYS))
         if unknown:
-            raise ValueError(
-                f"clean.errata: unknown setting(s) {unknown}; known: {list(_ERRATA_KEYS)}"
-            )
+            raise ValueError(f"{label}: unknown setting(s) {unknown}; known: {list(_ERRATA_KEYS)}")
         for key in ("date_1920", "keep_original"):
             if key in errata and not isinstance(errata[key], bool):
-                raise ValueError(f"clean.errata.{key} must be true or false, got {errata[key]!r}")
+                raise ValueError(f"{label}.{key} must be true or false, got {errata[key]!r}")
         markers = errata.get("event_markers")
         if markers is not None and markers not in _EVENT_MARKER_MODES:
             raise ValueError(
-                f"clean.errata.event_markers must be one of {list(_EVENT_MARKER_MODES)}, "
+                f"{label}.event_markers must be one of {list(_EVENT_MARKER_MODES)}, "
                 f"got {markers!r}"
             )
         return errata
@@ -1110,29 +1118,28 @@ class GDELTCleaner:
         return settings
 
     @staticmethod
-    def _validated_derive(derive: dict | None) -> dict:
-        """clean.derive.<dataset>: event_date true/false, labels a list of
-        CAMEO-coded columns (see `gdeltforge codes`), checked up front."""
+    def _validated_derive(derive: dict | None, label: str = "clean.derive") -> dict:
+        """clean.derive.<dataset> (label): event_date true/false, labels a
+        list of CAMEO-coded columns (see `gdeltforge codes`), checked up
+        front."""
         derive = dict(derive or {})
         unknown = sorted(set(derive) - set(_DERIVE_KEYS))
         if unknown:
-            raise ValueError(
-                f"clean.derive: unknown setting(s) {unknown}; known: {list(_DERIVE_KEYS)}"
-            )
+            raise ValueError(f"{label}: unknown setting(s) {unknown}; known: {list(_DERIVE_KEYS)}")
         if "event_date" in derive and not isinstance(derive["event_date"], bool):
             raise ValueError(
-                f"clean.derive.event_date must be true or false, got {derive['event_date']!r}"
+                f"{label}.event_date must be true or false, got {derive['event_date']!r}"
             )
         labels = derive.get("labels") or []
         if not isinstance(labels, list) or not all(isinstance(c, str) for c in labels):
-            raise ValueError(f"clean.derive.labels must be a list of column names, got {labels!r}")
+            raise ValueError(f"{label}.labels must be a list of column names, got {labels!r}")
         repeated = sorted({c for c in labels if labels.count(c) > 1})
         if repeated:
-            raise ValueError(f"clean.derive.labels lists {repeated} more than once")
+            raise ValueError(f"{label}.labels lists {repeated} more than once")
         uncoded = [c for c in labels if cameo_codes.code_family_for_column(c) is None]
         if uncoded:
             raise ValueError(
-                f"clean.derive.labels: {uncoded} aren't CAMEO-coded columns; "
+                f"{label}.labels: {uncoded} aren't CAMEO-coded columns; "
                 f"`gdeltforge codes` lists the ones that are."
             )
         derive["labels"] = labels
@@ -1152,6 +1159,14 @@ class GDELTCleaner:
                 (("trim_strings", step.trim), ("blank_to_null", step.blank_to_null)) if on
             )
         return step.name
+
+    def _path_key(self, base_key: str) -> str:
+        """The dataset's own paths.* key for base_key, as messages name it;
+        without a dataset, the base key and a note that a dataset's own key
+        may apply."""
+        if self.dataset:
+            return f"paths.{dataset_path_key(self.dataset, base_key)}"
+        return f"paths.{base_key} (or the dataset's own key)"
 
     def _refuse_runs_inside_data(self) -> None:
         """
@@ -1174,8 +1189,8 @@ class GDELTCleaner:
                 raise ValueError(
                     f"The run audit directory {self.runs_folder} is, or sits inside, "
                     f"data directory {folder}, so reading that directory would read "
-                    f"the audits as data. Point paths.clean_runs_directory (or the "
-                    f"dataset's own key) at a directory outside the data directories."
+                    f"the audits as data. Point {self._path_key('clean_runs_directory')} "
+                    f"at a directory outside the data directories."
                 )
 
     def _refuse_output_inside_input(self) -> None:
@@ -1203,9 +1218,10 @@ class GDELTCleaner:
                     raise ValueError(
                         f"The clean stage would write into its own input: output "
                         f"directory {out} is, or sits inside, input directory {inp}. "
-                        f"Point paths.cleaned_data_directory (and "
-                        f"cleaned_historical_directory) at a directory of their own, "
-                        f"outside parquet_data_directory and parquet_historical_directory."
+                        f"Point {self._path_key('cleaned_data_directory')} (and "
+                        f"{self._path_key('cleaned_historical_directory')}) at a directory "
+                        f"of their own, outside {self._path_key('parquet_data_directory')} "
+                        f"and {self._path_key('parquet_historical_directory')}."
                     )
 
     @staticmethod

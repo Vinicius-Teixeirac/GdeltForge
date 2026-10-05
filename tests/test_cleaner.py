@@ -1882,9 +1882,26 @@ class TestRunAudit:
         cfg["paths"]["mentions_cleaned_data_directory"] = str(tmp_path / "mentions_clean")
         cfg["paths"]["parquet_data_directory"] = str(tmp_path / "events")
         cfg["paths"]["mentions_clean_runs_directory"] = str(tmp_path / "events" / "audits")
-        with pytest.raises(ValueError, match="run audit directory"):
+        # Named by the dataset's own key, the one to change.
+        with pytest.raises(
+            ValueError, match=r"run audit directory.*Point paths\.mentions_clean_runs_directory at"
+        ):
             run_cleaner(cfg, dataset="gdelt_mentions")
         assert not (tmp_path / "events").exists()
+
+    def test_output_inside_input_names_the_datasets_own_keys(self, tmp_path):
+        from gdeltforge.utils.config import _bundled_default_dict
+
+        cfg = _bundled_default_dict()
+        (tmp_path / "mentions").mkdir()
+        cfg["paths"]["mentions_parquet_data_directory"] = str(tmp_path / "mentions")
+        cfg["paths"]["mentions_cleaned_data_directory"] = str(tmp_path / "mentions" / "out")
+        with pytest.raises(
+            ValueError,
+            match=r"Point paths\.mentions_cleaned_data_directory \(and "
+                  r"paths\.mentions_cleaned_historical_directory\)",
+        ):
+            run_cleaner(cfg, dataset="gdelt_mentions")
 
     def test_run_cleaner_reads_the_dataset_runs_key(self, tmp_path, monkeypatch):
         captured = {}
@@ -2180,6 +2197,19 @@ class TestMisappliedCleanSettings:
          r"clean\.derive\.gdelt_event\.labels: \['GlobalEventID'\] aren't CAMEO-coded"),
         ({"derive": {"gdelt_event": {"labels": [1]}}}, "gdelt_event",
          r"clean\.derive\.gdelt_event\.labels must be a list of column names"),
+        # Settings below the dataset level name the dataset too.
+        ({"derive": {"gdelt_event": {"event_date": "yes"}}}, "gdelt_event",
+         r"clean\.derive\.gdelt_event\.event_date must be true or false, got 'yes'"),
+        ({"derive": {"gdelt_event": {"event_dates": True}}}, "gdelt_event",
+         r"clean\.derive\.gdelt_event: unknown setting\(s\) \['event_dates'\]"),
+        ({"errata": {"gdelt_event": {"date_1920": "no"}}}, "gdelt_event",
+         r"clean\.errata\.gdelt_event\.date_1920 must be true or false, got 'no'"),
+        ({"errata": {"gdelt_event": {"event_markers": "remove"}}}, "gdelt_event",
+         r"clean\.errata\.gdelt_event\.event_markers must be one of"),
+        ({"errata": {"gdelt_event": {"keep_originals": True}}}, "gdelt_event",
+         r"clean\.errata\.gdelt_event: unknown setting\(s\)"),
+        ({"normalize": {"gdelt_mentions": {"trim_strings": 1}}}, "gdelt_mentions",
+         r"clean\.normalize\.gdelt_mentions\.trim_strings must be true or false"),
     ])
     def test_fails_before_reading_any_file(self, tmp_path, clean, dataset, message):
         with pytest.raises(ValueError, match=message):
