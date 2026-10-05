@@ -63,7 +63,7 @@ All operator forms:
 
 All of the above apply to any numeric or categorical GDELT column.
 
-**Dates.** GDELT's own date columns are numbers: `Day` and `DATEADDED` compare as `YYYYMMDD` (`{"Day": {"op": "between", "min": 20200101, "max": 20200131}}`). `EventDate`, the real date [`clean.derive`](data-cleaning.md#derive-added-columns) adds, takes a date in either form, `"2020-01-02"` or `20200102`, in every operator above; anything else fails with a message naming both forms.
+**Dates.** GDELT's own date columns are numbers: `Day` and `DATEADDED` compare as `YYYYMMDD` (`{"Day": {"op": "between", "min": 20200101, "max": 20200131}}`). `EventDate`, the real date [`clean.derive`](data-cleaning.md#derive-added-columns) adds, takes a date in either form, the string `"2020-01-02"` (exactly `YYYY-MM-DD`) or the number `20200102`, in every operator above; anything else, the string `"20200102"` included, fails with a message naming both forms.
 
 ## Logical groups
 

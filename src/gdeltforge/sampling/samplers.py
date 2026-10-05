@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import re
 import zlib
 from collections.abc import Callable
 from datetime import date, datetime
@@ -39,6 +40,9 @@ from gdeltforge.utils.logging import get_logger
 from . import cameo_codes
 from .indexer import FileIndex
 from .rng import ReproducibleRNG
+
+# The only string form a --filter on a Date column takes.
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 logger = get_logger(__name__)
 
@@ -952,11 +956,14 @@ class FilteredSampler:
         "YYYY-MM-DD" string, or a YYYYMMDD integer, the form every other
         GDELT date column (Day, DATEADDED) takes. Left as given, a string
         fails to compare with a date, and an integer compares as days
-        since 1970, silently selecting everything or nothing.
+        since 1970, silently selecting everything or nothing. A string must
+        be exactly YYYY-MM-DD: date.fromisoformat also accepts "20200102"
+        and week dates from Python 3.11 on, a third form the docs don't
+        give and Python 3.10 rejects.
         """
         if isinstance(value, date):
             return value
-        if isinstance(value, str):
+        if isinstance(value, str) and _ISO_DATE.fullmatch(value):
             try:
                 return date.fromisoformat(value)
             except ValueError:

@@ -1193,11 +1193,17 @@ class TestFilteringOnADateColumn:
         ).get_random_sample(5, replace=True)
         assert set(out["GlobalEventID"].to_list()) == {3}
 
-    def test_anything_else_is_rejected_with_the_accepted_forms(self, tmp_path):
+    # "20200102" and the week date are what date.fromisoformat also takes
+    # from Python 3.11 on; the docs give two forms, so a third fails.
+    @pytest.mark.parametrize("value", [
+        "01/02/2020", "20200102", "2020-W01-4", " 2020-01-02", "2020-1-2",
+        {"op": "gt", "value": "20240101"},
+    ])
+    def test_anything_else_is_rejected_with_the_accepted_forms(self, tmp_path, value):
         _make_cleaned_dataset(tmp_path)
         with pytest.raises(ValueError, match="YYYY-MM-DD"):
             FilteredSampler(
-                str(tmp_path), CLEANED_DECLARED, filter_dict={"EventDate": "01/02/2020"}
+                str(tmp_path), CLEANED_DECLARED, filter_dict={"EventDate": value}
             ).filter_dataset()
 
 
