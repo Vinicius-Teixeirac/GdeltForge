@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor
 import pytest
 
 from gdeltforge.utils.concurrency import (
+    OMP_NUM_THREADS,
     POLARS_MAX_CONCURRENT_SCANS,
     POLARS_MAX_THREADS,
     WorkerPlan,
@@ -20,6 +21,13 @@ def _report_polars_threads() -> tuple[str | None, int]:
     import polars as pl
 
     return os.environ.get(POLARS_MAX_THREADS), pl.thread_pool_size()
+
+
+def _report_pyarrow_threads() -> int:
+    # Runs inside a spawned worker, where pyarrow loads fresh.
+    import pyarrow as pa
+
+    return pa.cpu_count()
 
 
 class TestPlanWorkers:
@@ -129,6 +137,23 @@ class TestPolarsWorkerEnv:
             env_value, pool_size = executor.submit(_report_polars_threads).result()
         assert env_value == "2"
         assert pool_size == 2
+
+    def test_spawned_worker_pyarrow_pool_follows_the_plan(self, monkeypatch):
+        # pyarrow sizes its CPU pool from OMP_NUM_THREADS when it loads;
+        # unset, every worker carried one thread per core besides polars'.
+        monkeypatch.delenv(OMP_NUM_THREADS, raising=False)
+        plan = WorkerPlan(workers=1, polars_threads=2)
+        with polars_worker_env(plan), ProcessPoolExecutor(
+            max_workers=plan.workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            assert executor.submit(_report_pyarrow_threads).result() == 2
+        assert OMP_NUM_THREADS not in os.environ
+
+    def test_keeps_an_exported_omp_num_threads(self, monkeypatch):
+        monkeypatch.setenv(OMP_NUM_THREADS, "1")
+        with polars_worker_env(WorkerPlan(workers=2, polars_threads=3)):
+            assert os.environ[OMP_NUM_THREADS] == "1"
 
 
 class TestPolarsScanLimit:

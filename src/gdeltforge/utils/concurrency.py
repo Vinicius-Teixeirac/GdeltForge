@@ -11,7 +11,8 @@ threads, async I/O threads, and max_concurrent_scans (files a multi-file
 scan reads at once) all equal the core count. max_workers alone
 therefore only caps processes. N workers on a C-core machine used to
 carry roughly N x 2C threads, and each worker's memory grew with its
-own pool size, above all with how many files it read at once. See
+own pool size, above all with how many files it read at once. pyarrow,
+imported in every worker too, sizes its CPU pool the same way. See
 docs/configuration.md's "Worker pools and polars threads" section for
 the measurements behind this module.
 
@@ -40,6 +41,9 @@ logger = get_logger(__name__)
 
 POLARS_MAX_THREADS = "POLARS_MAX_THREADS"
 POLARS_MAX_CONCURRENT_SCANS = "POLARS_MAX_CONCURRENT_SCANS"
+# Read by Arrow, when pyarrow first loads, to size its CPU thread pool;
+# unset, that pool has one thread per core in every process.
+OMP_NUM_THREADS = "OMP_NUM_THREADS"
 
 
 @dataclass(frozen=True)
@@ -151,10 +155,16 @@ def polars_worker_env(plan: WorkerPlan) -> Generator[None, None, None]:
     moment it starts, and ProcessPoolExecutor starts workers lazily, on
     submit(), so the variables have to stay set for as long as the pool
     may start one. They are removed from this process again afterwards.
+
+    pyarrow's CPU pool gets the same size through OMP_NUM_THREADS, which
+    Arrow reads when pyarrow loads. Every worker imports pyarrow, and
+    left alone each one carried a thread per core on top of its polars
+    pool. OpenMP libraries in the worker, if any, follow the same value.
     """
     with _env_overrides({
         POLARS_MAX_THREADS: plan.polars_threads,
         POLARS_MAX_CONCURRENT_SCANS: plan.concurrent_scans,
+        OMP_NUM_THREADS: plan.polars_threads,
     }):
         yield
 
