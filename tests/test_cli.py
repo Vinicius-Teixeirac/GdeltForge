@@ -1957,6 +1957,46 @@ class TestRunCrossrefCmd:
         assert captured["folder"] == "/gkg_v1_filtered"
         assert captured["gkg_columns"] == ["Date", "EventIds"]
 
+    @pytest.mark.parametrize("period, folder", [
+        (None, "day"), ("day", "day"), ("month", "month"), ("year", "year"),
+    ])
+    def test_aggregated_source_reads_the_aggregated_folders(
+        self, tmp_path, monkeypatch, period, folder
+    ):
+        captured = {}
+        config = self._config()
+        for p in ("day", "month", "year"):
+            config["paths"][f"mentions_aggregated_{p}_data_directory"] = f"/mentions_{p}"
+            config["paths"][f"gkg_v2_aggregated_{p}_data_directory"] = f"/gkg_v2_{p}"
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        def fake_v2(events_df, mentions, gkg, cols, **kwargs):
+            captured.update(mentions=mentions, gkg=gkg, **kwargs)
+            return pl.DataFrame()
+
+        monkeypatch.setattr(cli, "crossref_events_gkg_v2", fake_v2)
+        cli.run_crossref_cmd(config, self._args(
+            tmp_path, gkg_version="v2", source="aggregated", period=period
+        ))
+        assert captured["mentions"] == f"/mentions_{folder}"
+        assert captured["gkg"] == f"/gkg_v2_{folder}"
+        # Aggregated files are named 20200101.parquet, not the 15-minute form.
+        assert captured["date_parser"] is cli.parse_file_date
+
+    @pytest.mark.parametrize("version", ["v1", "v1-counts", "auto"])
+    def test_aggregated_source_is_v2_only(self, tmp_path, version):
+        with pytest.raises(ValueError, match="--source aggregated applies to --gkg-version v2"):
+            cli.run_crossref_cmd(self._config(), self._args(
+                tmp_path, gkg_version=version, source="aggregated"
+            ))
+
+    def test_period_needs_the_aggregated_source(self, tmp_path):
+        with pytest.raises(ValueError, match="--period only applies with --source aggregated"):
+            cli.run_crossref_cmd(self._config(), self._args(
+                tmp_path, gkg_version="v2", source="cleaned", period="month"
+            ))
+
     def test_v1_counts_reads_its_own_filtered_folder(self, tmp_path, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
