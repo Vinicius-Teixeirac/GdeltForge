@@ -9,6 +9,7 @@ from gdeltforge.utils.concurrency import (
     POLARS_MAX_CONCURRENT_SCANS,
     POLARS_MAX_THREADS,
     WorkerPlan,
+    exported_scan_limit,
     plan_workers,
     polars_scan_limit,
     polars_worker_env,
@@ -172,3 +173,26 @@ class TestPolarsScanLimit:
         monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, "2")
         with polars_scan_limit(4):
             assert os.environ[POLARS_MAX_CONCURRENT_SCANS] == "2"
+
+
+class TestExportedScanLimit:
+    # What polars itself accepts: a leading "+", leading zeros, and large
+    # numbers up to an internal limit (2**61 in 1.44); 2**32 is the bound.
+    @pytest.mark.parametrize("value, expected", [
+        ("4", 4), ("+4", 4), ("004", 4), (str(2**32), 2**32),
+    ])
+    def test_accepts_what_polars_accepts(self, monkeypatch, value, expected):
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, value)
+        assert exported_scan_limit() == expected
+
+    @pytest.mark.parametrize(
+        "value", ["abc", "0", "+0", "-1", "2.5", "", " 4", "++4", str(2**32 + 1), str(2**64)]
+    )
+    def test_rejects_what_polars_panics_on(self, monkeypatch, value):
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, value)
+        with pytest.raises(ValueError, match="from 1 to 4294967296"):
+            exported_scan_limit()
+
+    def test_none_when_not_exported(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+        assert exported_scan_limit() is None

@@ -169,6 +169,13 @@ def polars_worker_env(plan: WorkerPlan) -> Generator[None, None, None]:
         yield
 
 
+# The largest exported POLARS_MAX_CONCURRENT_SCANS accepted. polars takes
+# a leading "+" and numbers up to an internal limit (2**61 in polars
+# 1.44) and panics above it; 2**32 files read at once is far beyond any
+# real use and well inside what every supported polars accepts.
+_MAX_SCAN_LIMIT = 2**32
+
+
 def exported_scan_limit() -> int | None:
     """
     The POLARS_MAX_CONCURRENT_SCANS exported in this environment, or None
@@ -181,13 +188,15 @@ def exported_scan_limit() -> int | None:
     value = os.environ.get(POLARS_MAX_CONCURRENT_SCANS)
     if value is None:
         return None
-    if not (value.isascii() and value.isdigit() and int(value) > 0):
+    digits = value[1:] if value.startswith("+") else value
+    if not (digits.isascii() and digits.isdigit() and 0 < int(digits) <= _MAX_SCAN_LIMIT):
         raise ValueError(
-            f"{POLARS_MAX_CONCURRENT_SCANS}={value!r} is exported, but polars accepts "
-            f"only a whole number greater than 0 there and stops at the first Parquet "
-            f"file it reads. Unset it, or export a whole number."
+            f"{POLARS_MAX_CONCURRENT_SCANS}={value!r} is exported, but polars stops at the "
+            f"first Parquet file it reads on anything other than a whole number greater "
+            f"than 0, and on numbers too large for it. Unset it, or export a whole number "
+            f"from 1 to {_MAX_SCAN_LIMIT}."
         )
-    return int(value)
+    return int(digits)
 
 
 @contextmanager

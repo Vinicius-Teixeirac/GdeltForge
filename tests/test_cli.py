@@ -2380,7 +2380,9 @@ class TestInvalidExportedScanLimit:
     Parquet read, with a raw traceback. Every command that reads Parquet
     fails up front instead, naming the variable."""
 
-    @pytest.mark.parametrize("value", ["abc", "0", "-1", "2.5", ""])
+    @pytest.mark.parametrize(
+        "value", ["abc", "0", "-1", "2.5", "", " 4", "+0", "18446744073709551616", "4294967297"]
+    )
     @pytest.mark.parametrize("command", [
         ["clean", "--dataset", "events"],
         ["aggregate", "--dataset", "mentions"],
