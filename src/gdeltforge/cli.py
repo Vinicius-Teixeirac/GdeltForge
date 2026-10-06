@@ -346,9 +346,11 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
         verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run,
     )
-    logger.info("Scraping completed.")
-
     failed = result["failed"]
+    # "completed" only for a run without failures: a failed one ends with
+    # its Error: line, and a "completed" just above it read as success.
+    if not failed:
+        logger.info("Scraping completed.")
     if failed:
         raise RuntimeError(
             f"Scraping finished with {len(failed)} failed download(s): {', '.join(failed)}. "
@@ -369,6 +371,8 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
         force=args.force, dry_run=args.dry_run, recover_unzipped=args.recover_unzipped,
     )
     logger.info(f"Created {len(outputs)} parquet files.")
+    if not failed:
+        logger.info("Conversion completed.")
 
     if failed:
         raise RuntimeError(
@@ -414,7 +418,8 @@ def run_clean_cmd(config: dict, args: argparse.Namespace) -> None:
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run, report=args.report,
     )
-    logger.info("Cleaning completed.")
+    if not files_failed:
+        logger.info("Cleaning completed.")
 
     if files_failed:
         raise RuntimeError(
@@ -436,7 +441,8 @@ def run_aggregate_cmd(config: dict, args: argparse.Namespace) -> None:
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run,
     )
-    logger.info("Aggregation completed.")
+    if not periods_failed:
+        logger.info("Aggregation completed.")
 
     if periods_failed:
         raise RuntimeError(

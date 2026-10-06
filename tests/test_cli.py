@@ -580,6 +580,20 @@ class TestRunCleanCmd:
         with pytest.raises(RuntimeError, match="2 failed file.*\"Failed:\" lines above"):
             cli.run_clean_cmd({}, args)
 
+    @pytest.mark.parametrize("failed, completed", [(2, False), (0, True)])
+    def test_completed_is_logged_only_without_failures(
+        self, monkeypatch, caplog, failed, completed
+    ):
+        # A failed run ends with its Error: line; "Cleaning completed."
+        # just above it read as success.
+        monkeypatch.setattr(cli, "run_cleaner", lambda *a, **k: (8, failed))
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            try:
+                cli.run_clean_cmd({}, self._args())
+            except RuntimeError:
+                pass
+        assert any("Cleaning completed." in r.message for r in caplog.records) is completed
+
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_cleaner",
