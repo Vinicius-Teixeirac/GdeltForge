@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `crossref --source aggregated` (with `--period {day,month,year}`, default `day`) reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output for `--gkg-version v2`, as `sample --source aggregated` already did. It used to need a direct call to `crossref_events_gkg_v2` pointed at the aggregated directories. `crossref_events_gkg_v2` takes a `date_parser` for the files' names, so `--start-date`/`--end-date` read aggregated names (`20200101.parquet`) correctly. The other GKG versions reject it, since GKG 1.0 has no 15-minute files to aggregate.
 
 ### Fixed
+- `clean`'s and `convert`'s worker startup line no longer shows an exported `POLARS_MAX_CONCURRENT_SCANS` as "N file read(s) at once": each of their workers reads one file, so the number described nothing. `aggregate`'s line keeps it.
 - `crossref --events <dir>` reads a directory whose files type a column differently, widening it to a type every file fits. Converted monthly Events files store `Actor1Geo_Type` and `ActionGeo_Type` as Float64 and daily ones as Int64, and a directory holding both failed on whichever file disagreed with the first.
 - `sample --mode calendar` keeps each column's own type. An integer column came back as Float64 for every period whose sample drew a null in it (numpy, which held the sample, has no nullable integers), so the same column could change type between runs; it now keeps its type, nulls included.
 

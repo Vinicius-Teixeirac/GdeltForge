@@ -109,8 +109,10 @@ class TestPlanWorkers:
         assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
             "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
         )
+        # A plan without a scan limit (clean, convert: one file per
+        # worker) names no file reads, exported or not.
         assert WorkerPlan(workers=4, polars_threads=8).describe() == (
-            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
+            "4 worker process(es), 3 polars thread(s) each"
         )
 
 
