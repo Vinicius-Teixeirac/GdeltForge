@@ -886,9 +886,14 @@ class GDELTCleaner:
                 continue
             logger.info(f"[dry run] {key}: {totals[key]:,}")
         if reports:
+            def span(values: set[int]) -> str:
+                # A range when files differ (a file the date repair can't
+                # read keeps its own column count), one number otherwise.
+                return str(min(values)) if len(values) == 1 else f"{min(values)} to {max(values)}"
+
             logger.info(
-                f"[dry run] columns: {max(r.columns_in for r in reports)} in, "
-                f"{max(r.columns_out for r in reports)} out"
+                f"[dry run] columns: {span({r.columns_in for r in reports})} in, "
+                f"{span({r.columns_out for r in reports})} out"
             )
         lossy = [self._describe(st) for st in self.steps if st.lossy]
         logger.info(f"[dry run] lossy steps: {', '.join(lossy) if lossy else 'none'}")
