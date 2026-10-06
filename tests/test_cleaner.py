@@ -1725,7 +1725,10 @@ class TestRefusesToWriteIntoItsInput:
             GDELTCleaner(str(tmp_path), str(tmp_path / "cleaned"), columns_to_check=[])
 
     def test_historical_output_inside_flat_input_is_rejected(self, tmp_path):
-        with pytest.raises(ValueError, match="would write into its own input"):
+        # A run with historical directories names their keys too.
+        with pytest.raises(
+            ValueError, match=r"would write into its own input.*cleaned_historical_directory"
+        ):
             GDELTCleaner(
                 str(tmp_path / "parquet"), str(tmp_path / "cleaned"), columns_to_check=[],
                 historical_input_folder=str(tmp_path / "hist"),
@@ -1896,10 +1899,11 @@ class TestRunAudit:
         (tmp_path / "mentions").mkdir()
         cfg["paths"]["mentions_parquet_data_directory"] = str(tmp_path / "mentions")
         cfg["paths"]["mentions_cleaned_data_directory"] = str(tmp_path / "mentions" / "out")
+        # Mentions has no historical directories, so no historical keys.
         with pytest.raises(
             ValueError,
-            match=r"Point paths\.mentions_cleaned_data_directory \(and "
-                  r"paths\.mentions_cleaned_historical_directory\)",
+            match=r"Point paths\.mentions_cleaned_data_directory at a directory of its "
+                  r"own, outside paths\.mentions_parquet_data_directory\.$",
         ):
             run_cleaner(cfg, dataset="gdelt_mentions")
 

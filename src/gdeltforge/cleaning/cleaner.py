@@ -1215,13 +1215,26 @@ class GDELTCleaner:
                     continue
                 inp_resolved = inp.resolve()
                 if out_resolved == inp_resolved or inp_resolved in out_resolved.parents:
+                    # The historical keys only when this run has historical
+                    # directories: Mentions, GKG and events-15min have none.
+                    if self.historical_input_folder or self.historical_output_folder:
+                        advice = (
+                            f"Point {self._path_key('cleaned_data_directory')} (and "
+                            f"{self._path_key('cleaned_historical_directory')}) at a "
+                            f"directory of their own, outside "
+                            f"{self._path_key('parquet_data_directory')} and "
+                            f"{self._path_key('parquet_historical_directory')}."
+                        )
+                    else:
+                        advice = (
+                            f"Point {self._path_key('cleaned_data_directory')} at a "
+                            f"directory of its own, outside "
+                            f"{self._path_key('parquet_data_directory')}."
+                        )
                     raise ValueError(
                         f"The clean stage would write into its own input: output "
                         f"directory {out} is, or sits inside, input directory {inp}. "
-                        f"Point {self._path_key('cleaned_data_directory')} (and "
-                        f"{self._path_key('cleaned_historical_directory')}) at a directory "
-                        f"of their own, outside {self._path_key('parquet_data_directory')} "
-                        f"and {self._path_key('parquet_historical_directory')}."
+                        f"{advice}"
                     )
 
     @staticmethod
