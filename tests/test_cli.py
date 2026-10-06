@@ -2463,6 +2463,16 @@ class TestInvalidExportedScanLimit:
         cli.main()  # convert reads no Parquet: returns normally
 
 
+class TestUnsupportedPolars:
+    @pytest.mark.parametrize("version, warned", [
+        ("1.44.2", False), ("1.34.0", False), ("2.0.0", True), ("2.1.0rc1", True),
+    ])
+    def test_warns_under_polars_2(self, caplog, version, warned):
+        with caplog.at_level(logging.WARNING, logger=cli.logger.name):
+            cli._warn_if_unsupported_polars(version)
+        assert any("supports polars below 2.0" in r.message for r in caplog.records) is warned
+
+
 class TestLogFile:
     """logs/pipeline.log is opened only for a command that may write: a dry
     run leaves the filesystem as it found it, logs/ included."""

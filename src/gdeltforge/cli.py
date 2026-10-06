@@ -1402,6 +1402,23 @@ def build_parser() -> argparse.ArgumentParser:
 _PARQUET_READING_COMMANDS = frozenset({"clean", "filter", "aggregate", "sample", "crossref"})
 
 
+def _warn_if_unsupported_polars(version: str) -> None:
+    """
+    gdeltforge requires polars below 2.0 (pyproject.toml), but an
+    installer that doesn't recheck installed packages (uv pip install
+    polars==2.0.0 into an existing environment) can still put polars 2
+    beside it. Under polars 2, io.max_concurrent_reads no longer bounds
+    how many file footers are read at once, so say so.
+    """
+    major = version.split(".", 1)[0]
+    if major.isdigit() and int(major) >= 2:
+        logger.warning(
+            f"polars {version} is installed, but this gdeltforge supports polars below "
+            f"2.0: under polars 2, io.max_concurrent_reads no longer bounds how many "
+            f"files are read at once. Install polars>=1.34,<2."
+        )
+
+
 def _report_scan_threads(cap: int | None) -> None:
     """
     With io.max_concurrent_reads set, say how many files sample/crossref
@@ -1488,6 +1505,7 @@ def main() -> None:
         _migrate_deprecated_args(args)
         if args.command in _PARQUET_READING_COMMANDS:
             exported_scan_limit()
+            _warn_if_unsupported_polars(pl.__version__)
 
         logger.info(f"Running command: {args.command}")
 
