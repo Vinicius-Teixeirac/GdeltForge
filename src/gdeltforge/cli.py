@@ -1402,7 +1402,9 @@ def _report_scan_threads(cap: int | None) -> None:
             f"{cap} thread(s)."
         )
     if not exceeded:
-        logger.info(f"Reading at most {cap} file(s) at once, on {threads} polars thread(s)")
+        # An exported value at or below the cap is the one polars uses.
+        reads = exported if exported is not None else cap
+        logger.info(f"Reading at most {reads} file(s) at once, on {threads} polars thread(s)")
 
 
 def _log_to_file(args: argparse.Namespace) -> None:

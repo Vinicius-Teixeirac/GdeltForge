@@ -60,14 +60,25 @@ class WorkerPlan:
     concurrent_scans: int | None = None
 
     def describe(self) -> str:
-        scans = (
-            f", {self.concurrent_scans} file read(s) at once"
-            if self.concurrent_scans is not None else ""
-        )
-        return (
-            f"{self.workers} worker process(es), "
-            f"{self.polars_threads} polars thread(s) each{scans}"
-        )
+        """
+        The plan as the workers will run it: a POLARS_MAX_THREADS or
+        POLARS_MAX_CONCURRENT_SCANS the user exported wins over the
+        planned value (polars_worker_env leaves it in place), so the line
+        reports that one. Call it before entering polars_worker_env, where
+        the environment holds only what the user exported.
+        """
+        threads = _exported_int(POLARS_MAX_THREADS) or self.polars_threads
+        scans = _exported_int(POLARS_MAX_CONCURRENT_SCANS) or self.concurrent_scans
+        reads = f", {scans} file read(s) at once" if scans is not None else ""
+        return f"{self.workers} worker process(es), {threads} polars thread(s) each{reads}"
+
+
+def _exported_int(name: str) -> int | None:
+    """An exported variable's value as a positive number, or None when it
+    isn't exported or isn't one (left for polars or exported_scan_limit
+    to reject)."""
+    value = os.environ.get(name, "").removeprefix("+")
+    return int(value) if value.isascii() and value.isdigit() and int(value) > 0 else None
 
 
 def plan_workers(

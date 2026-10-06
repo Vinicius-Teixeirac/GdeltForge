@@ -107,8 +107,17 @@ class TestReportScanThreads:
             cli._report_scan_threads(4)
         messages = [r.message for r in caplog.records]
         assert any("POLARS_MAX_CONCURRENT_SCANS" in m for m in messages) is warned
-        # The "at most N" line only when nothing exceeds the cap.
-        assert any("Reading at most 4" in m for m in messages) is not warned
+        # The "at most N" line only when nothing exceeds the cap, naming the
+        # exported value polars uses.
+        assert any(f"Reading at most {exported} " in m for m in messages) is not warned
+
+    def test_reports_an_exported_scan_limit_below_the_cap(self, monkeypatch, caplog):
+        # polars reads at most the exported number, so the line says that.
+        monkeypatch.setattr(cli.pl, "thread_pool_size", lambda: 4)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "2")
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            cli._report_scan_threads(4)
+        assert any("at most 2 file(s) at once, on 4 polars" in r.message for r in caplog.records)
 
     def test_reports_the_bound_when_the_pool_fits(self, monkeypatch, caplog):
         monkeypatch.setattr(cli.pl, "thread_pool_size", lambda: 4)

@@ -86,6 +86,11 @@ class TestPlanWorkers:
     def test_scans_default_to_polars_own(self):
         assert plan_workers(4, 100, cpu_count=32).concurrent_scans is None
 
+    @pytest.fixture(autouse=True)
+    def _nothing_exported(self, monkeypatch):
+        monkeypatch.delenv(POLARS_MAX_THREADS, raising=False)
+        monkeypatch.delenv(POLARS_MAX_CONCURRENT_SCANS, raising=False)
+
     def test_describe_names_both_numbers(self):
         assert WorkerPlan(workers=4, polars_threads=8).describe() == (
             "4 worker process(es), 8 polars thread(s) each"
@@ -94,6 +99,18 @@ class TestPlanWorkers:
     def test_describe_names_the_scan_limit_when_set(self):
         assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
             "4 worker process(es), 8 polars thread(s) each, 1 file read(s) at once"
+        )
+
+    def test_describe_reports_what_the_user_exported(self, monkeypatch):
+        # Exported values win over the plan in the workers, so the log line
+        # says what they will really run with.
+        monkeypatch.setenv(POLARS_MAX_THREADS, "3")
+        monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, "8")
+        assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
+            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
+        )
+        assert WorkerPlan(workers=4, polars_threads=8).describe() == (
+            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
         )
 
 
