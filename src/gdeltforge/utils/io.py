@@ -766,8 +766,14 @@ def narrow_to_available_columns(
     return sorted((requested & available) | required)
 
 
-def _file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
+def read_file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
+    """Every file's own schema, one footer read per file. A caller that
+    scans the same files more than once reads them here once and passes
+    the result on (scan_dataset_reconciled's file_schemas)."""
     return {f: dict(pl.read_parquet_schema(f).items()) for f in files}
+
+
+_file_schemas = read_file_schemas
 
 
 def _widen_conflicting_dtypes(dtypes: set[pl.DataType], column: str) -> pl.DataType:
@@ -916,7 +922,11 @@ def scan_file_against_schema(
             if real_dtype.is_integer() and target_dtype == pl.Float64():
                 unsafe_widenings.append(name)
 
-    lf = pl.scan_parquet(file, schema=per_file_schema, missing_columns="insert")
+    # extra_columns="ignore": target_schema may name only some of the
+    # file's columns (a scan that reads one column of every file).
+    lf = pl.scan_parquet(
+        file, schema=per_file_schema, missing_columns="insert", extra_columns="ignore"
+    )
     for name in unsafe_widenings:
         _verify_int_to_float64_widening_is_safe(lf, file, name)
     return lf.with_columns(casts) if casts else lf
@@ -940,7 +950,10 @@ def detach(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def scan_dataset_reconciled(
-    files: list[Path], target_schema: dict[str, pl.DataType] | None = None
+    files: list[Path],
+    target_schema: dict[str, pl.DataType] | None = None,
+    file_schemas: dict[Path, dict[str, pl.DataType]] | None = None,
+    include_file_paths: str | None = None,
 ) -> pl.LazyFrame:
     """
     Lazily scan every file in `files` as one dataset, reconciling both a
@@ -973,9 +986,18 @@ def scan_dataset_reconciled(
     the one reconciled from `files` alone: a caller reading a subset of a
     dataset (crossref's second pass, which reads only the files that
     matched) passes the whole dataset's reconciled schema, so a column's
-    dtype doesn't depend on which files happened to match.
+    dtype doesn't depend on which files happened to match. It may also
+    name only some columns: the scan then reads just those.
+
+    file_schemas, when given, holds the files' own schemas already read
+    (read_file_schemas), saving a second footer read per file.
+    include_file_paths names a column to add holding each row's file
+    path, as pl.scan_parquet's parameter of that name does.
     """
-    file_schemas = _file_schemas(files)
+    if file_schemas is None:
+        file_schemas = read_file_schemas(files)
+    else:
+        file_schemas = {f: file_schemas[f] for f in files}
     if target_schema is None:
         target_schema = reconcile_file_schemas(file_schemas)
 
@@ -986,11 +1008,17 @@ def scan_dataset_reconciled(
     )
 
     if not conflicting:
-        return pl.scan_parquet(files, schema=target_schema, missing_columns="insert")
+        return pl.scan_parquet(
+            files, schema=target_schema, missing_columns="insert", extra_columns="ignore",
+            include_file_paths=include_file_paths,
+        )
 
-    lazy_frames = [
-        scan_file_against_schema(f, target_schema, real_schema=file_schemas[f]) for f in files
-    ]
+    lazy_frames = []
+    for f in files:
+        lf = scan_file_against_schema(f, target_schema, real_schema=file_schemas[f])
+        if include_file_paths:
+            lf = lf.with_columns(pl.lit(str(f)).alias(include_file_paths))
+        lazy_frames.append(lf)
     return pl.concat(lazy_frames, how="vertical_relaxed")
 
 
