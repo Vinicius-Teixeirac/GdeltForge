@@ -922,7 +922,9 @@ def scan_file_against_schema(
     return lf.with_columns(casts) if casts else lf
 
 
-def scan_dataset_reconciled(files: list[Path]) -> pl.LazyFrame:
+def scan_dataset_reconciled(
+    files: list[Path], target_schema: dict[str, pl.DataType] | None = None
+) -> pl.LazyFrame:
     """
     Lazily scan every file in `files` as one dataset, reconciling both a
     column missing entirely from some files (pre-existing: comes back
@@ -949,15 +951,22 @@ def scan_dataset_reconciled(files: list[Path]) -> pl.LazyFrame:
     already relies on elsewhere for the identical Int64/Float64 shape).
     That fallback only costs the files actually affected, in practice a
     small minority sitting right at a real historical dtype boundary.
+
+    target_schema, when given, is the schema to scan toward in place of
+    the one reconciled from `files` alone: a caller reading a subset of a
+    dataset (crossref's second pass, which reads only the files that
+    matched) passes the whole dataset's reconciled schema, so a column's
+    dtype doesn't depend on which files happened to match.
     """
     file_schemas = _file_schemas(files)
-    target_schema = reconcile_file_schemas(file_schemas)
+    if target_schema is None:
+        target_schema = reconcile_file_schemas(file_schemas)
 
-    conflicting = {
-        name
-        for name in target_schema
-        if len({schema[name] for schema in file_schemas.values() if name in schema}) > 1
-    }
+    conflicting = any(
+        name in schema and schema[name] != dtype
+        for schema in file_schemas.values()
+        for name, dtype in target_schema.items()
+    )
 
     if not conflicting:
         return pl.scan_parquet(files, schema=target_schema, missing_columns="insert")

@@ -1302,6 +1302,74 @@ class TestCrossrefEventsGkgV2:
             )
 
 
+class TestCrossrefEventsGkgV2TwoPass:
+    """GKG 2.1 is read in two passes: the URL column of every file, then
+    every requested column of the files that matched only."""
+
+    @staticmethod
+    def _setup(tmp_path, unmatched_date_dtype: type[pl.DataType] = pl.Int64):
+        mentions = tmp_path / "mentions"
+        mentions.mkdir()
+        pl.DataFrame({
+            "GLOBALEVENTID": [2001, 2002],
+            "MentionIdentifier": ["http://a.com/article1", "http://a.com/article2"],
+        }).write_parquet(mentions / "20200101120000.mentions.parquet")
+        gkg = tmp_path / "gkg_v2"
+        gkg.mkdir()
+        for name, url, stamp in [
+            ("20200101000000", "http://a.com/article1", 20200101000000),
+            ("20200101001500", "http://b.com/nothing", 20200101001500),
+            ("20200101003000", "http://a.com/article2", 20200101003000),
+        ]:
+            dtype = unmatched_date_dtype if "nothing" in url else pl.Int64
+            pl.DataFrame({
+                "V2DOCUMENTIDENTIFIER": [url],
+                "GKGRECORDID": [f"REC-{name}"],
+                "V2.1DATE": pl.Series([stamp], dtype=pl.Int64).cast(dtype),
+            }).write_parquet(gkg / f"{name}.gkg.parquet")
+        events = pl.DataFrame({"GlobalEventID": [2001, 2002]})
+        return events, str(mentions), str(gkg)
+
+    def test_the_second_pass_reads_only_the_matching_files(self, tmp_path, monkeypatch):
+        events, mentions, gkg = self._setup(tmp_path)
+        seen = []
+        real = crossref_module.scan_dataset_reconciled
+
+        def spy(files, target_schema=None):
+            if target_schema is not None:
+                seen.append([Path(f).name for f in files])
+            return real(files, target_schema=target_schema)
+
+        monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
+        )
+        assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
+        # In the archive's own order; the unmatched file never reaches it.
+        assert seen == [["20200101000000.gkg.parquet", "20200101003000.gkg.parquet"]]
+
+    def test_dtypes_follow_the_whole_dataset_not_the_matched_files(self, tmp_path):
+        # Only the unmatched file stores V2.1DATE as Float64 (older
+        # converters did), so the matched files alone would say Int64.
+        events, mentions, gkg = self._setup(tmp_path, unmatched_date_dtype=pl.Float64)
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
+        )
+        assert result["GKG_V2.1DATE"].dtype == pl.Float64
+        assert sorted(result["GKG_V2.1DATE"].to_list()) == [20200101000000.0, 20200101003000.0]
+
+    def test_no_matching_file_returns_the_empty_result(self, tmp_path):
+        events, mentions, gkg = self._setup(tmp_path)
+        for f in Path(gkg).glob("*.parquet"):
+            if "001500" not in f.name:
+                f.unlink()
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
+        )
+        assert result.is_empty()
+        assert "GKG_GKGRECORDID" in result.columns
+
+
 class TestCrossrefEventsGkgV2ColumnNarrowing:
     """
     Same real gap as TestCrossrefEventsGkgV1ColumnNarrowing, for the

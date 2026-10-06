@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Changed
+- `crossref --gkg-version v2` (and `auto`) reads GKG 2.1 in two passes: first only the article URL column of every file in range, then the requested columns of only the files holding a matching URL. A single scan used to decode every requested column of every file to find a few rows, since URLs are effectively random and row-group statistics can't skip any; over a quarter of a real archive whose files disagree on `V2.1DATE`'s type it peaked above 100 GB. Output is unchanged, column types included: the second pass casts to the types reconciled across every file in range.
+
 ## [0.12.0] - 2026-09-30
 
 ### Added

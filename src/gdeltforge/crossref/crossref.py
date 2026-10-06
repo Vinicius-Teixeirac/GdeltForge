@@ -539,6 +539,30 @@ def warn_if_directory_is_large(
 _MAX_EXPLODED_ROWS_PER_STEP = 200_000
 
 
+def _files_with_matches(files: list[Path], column: str, values: set[str]) -> list[Path]:
+    """
+    The first pass of a two-pass lookup: the files in `files` holding a
+    row whose `column` (a string column every file has) is in `values`,
+    in their original order. It reads that one column of every file and
+    nothing else, so a lookup's second pass decodes the other columns of
+    the matching files only. One column, with one dtype everywhere, also
+    keeps the scan on polars' single multi-file path even when other
+    columns' dtypes differ across files (see scan_dataset_reconciled).
+    """
+    hits = (
+        pl.scan_parquet(
+            files, schema={column: pl.String}, extra_columns="ignore",
+            include_file_paths="__gdeltforge_file",
+        )
+        .filter(pl.col(column).is_in(values))
+        .select("__gdeltforge_file")
+        .unique()
+        .collect()
+    )
+    matched = {Path(f) for f in hits["__gdeltforge_file"].to_list()}
+    return [f for f in files if Path(f) in matched]
+
+
 def _iter_row_slices_bounded_by_explosion(
     df: pl.DataFrame, list_col: str, max_exploded: int
 ):
@@ -922,16 +946,25 @@ def crossref_events_gkg_v2(
     if not urls:
         return empty_result()
 
-    # Hop 2: GKG 2.1, filter-pushdown on the document URL: again a real
-    # predicate pushed down into the scan, so only rows for articles
-    # actually mentioning one of these events get read off disk.
-    # gkg_lf/read_gkg_columns were already resolved above, alongside
-    # mentions' own schema, so this reuses them rather than re-opening
-    # the dataset and re-narrowing the same column list a second time.
+    # Hop 2: GKG 2.1, by document URL, in two passes (see
+    # _files_with_matches). The URLs are effectively random strings, so
+    # row-group statistics can't skip anything: a single scan decoded
+    # every requested column of every file to find a few rows, and over
+    # a quarter of a real archive whose files disagree on V2.1DATE's
+    # dtype it peaked above 100 GB. read_gkg_columns and gkg_schema were
+    # resolved above, over every file, so the second pass casts the
+    # matched files to the whole dataset's dtypes.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
+        matched_files = _files_with_matches(gkg_v2_files, "V2DOCUMENTIDENTIFIER", urls)
+        if not matched_files:
+            return empty_result()
+        logger.info(
+            f"{len(matched_files)} of {len(gkg_v2_files)} GKG 2.1 file(s) hold a match; "
+            f"reading their rows."
+        )
         gkg_df = (
-            gkg_lf
+            scan_dataset_reconciled(matched_files, target_schema=dict(gkg_schema))
             .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
             .select(read_gkg_columns)
             .collect()
