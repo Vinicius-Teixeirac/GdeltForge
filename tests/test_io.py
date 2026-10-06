@@ -698,6 +698,21 @@ class TestDetach:
 
 
 class TestReadParquetPath:
+    def test_a_directory_mixing_monthly_and_daily_types_reads(self, tmp_path):
+        # Converted monthly Events files store Actor1Geo_Type as Float64,
+        # daily ones as Int64; a directory with both failed on whichever
+        # file disagreed with the first.
+        pl.DataFrame({"GlobalEventID": [1], "Actor1Geo_Type": [3.0]}).write_parquet(
+            tmp_path / "200806.parquet"
+        )
+        pl.DataFrame({"GlobalEventID": [2], "Actor1Geo_Type": [4]}).write_parquet(
+            tmp_path / "20200101.export.parquet"
+        )
+        df = read_parquet_path(tmp_path)
+        assert df["GlobalEventID"].to_list() == [1, 2]
+        assert df["Actor1Geo_Type"].dtype == pl.Float64
+        assert df["Actor1Geo_Type"].to_list() == [3.0, 4.0]
+
     def test_reads_a_single_file_directly(self, tmp_path):
         f = tmp_path / "sample.parquet"
         pl.DataFrame({"GlobalEventID": [1, 2, 3]}).write_parquet(f)
