@@ -962,6 +962,24 @@ class GDELTCleaner:
                 f"dates replaces them; remove any whose converted file is gone."
             )
 
+    def _reserve_audit_path(self, started_at: datetime) -> Path:
+        """
+        A runs-folder path no other run uses: the UTC start time to the
+        microsecond, claimed by creating the file exclusively, with a -2,
+        -3, ... suffix if another run already holds the name. Second
+        resolution let runs started in the same second (small inputs, a
+        per-day loop, two runs at once) overwrite each other's audit.
+        """
+        stem = f"{started_at:%Y%m%dT%H%M%S.%fZ}"
+        n = 1
+        while True:
+            path = self.runs_folder / (f"{stem}.parquet" if n == 1 else f"{stem}-{n}.parquet")
+            try:
+                with open(path, "x"):
+                    return path
+            except FileExistsError:
+                n += 1
+
     def _write_audit(
         self, reports: list[FileReport], failed: list[str], started_at: datetime
     ) -> Path | None:
@@ -993,8 +1011,8 @@ class GDELTCleaner:
         if count_cols:
             df = df.with_columns(pl.col(count_cols).fill_null(0))
         unrecognized_cols = [c for c in count_cols if c.startswith("unrecognized.")]
-        path = self.runs_folder / f"{started_at:%Y%m%dT%H%M%SZ}.parquet"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.runs_folder.mkdir(parents=True, exist_ok=True)
+        path = self._reserve_audit_path(started_at)
         run = {
             **self._marker,
             "started": started_at.isoformat(),

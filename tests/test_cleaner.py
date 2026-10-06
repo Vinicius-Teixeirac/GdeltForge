@@ -14,7 +14,7 @@ import pytest
 from tqdm import tqdm
 
 import gdeltforge.cleaning.cleaner as cleaner_module
-from gdeltforge.cleaning.cleaner import GDELTCleaner, run_cleaner
+from gdeltforge.cleaning.cleaner import FileReport, GDELTCleaner, run_cleaner
 from gdeltforge.cleaning.steps import Date1920Repair
 
 
@@ -1860,6 +1860,23 @@ class TestRunAudit:
         # included, so the audit must sit outside the cleaned directory.
         assert pl.read_parquet(out).height == 2
         assert pl.scan_parquet(out).select(pl.len()).collect().item() == 2
+
+    def test_runs_started_together_keep_separate_audits(self, tmp_path):
+        # Names used to stop at the second, so runs started in the same
+        # second replaced each other's audit.
+        cleaner = GDELTCleaner(
+            str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+            runs_folder=str(tmp_path / "runs"),
+        )
+        started = datetime.datetime(2026, 10, 5, 22, 5, 6, 123456, tzinfo=datetime.timezone.utc)
+        report = FileReport("a.parquet", "a_cleaned.parquet", 1, 1)
+        paths = [cleaner._write_audit([report], [], started) for _ in range(3)]
+        assert [p.name for p in paths if p] == [
+            "20261005T220506.123456Z.parquet",
+            "20261005T220506.123456Z-2.parquet",
+            "20261005T220506.123456Z-3.parquet",
+        ]
+        assert all(pl.read_parquet(p).height == 1 for p in paths if p)
 
     def test_configured_runs_folder_is_used(self, tmp_path):
         runs = tmp_path / "audits" / "events"

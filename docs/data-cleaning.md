@@ -188,7 +188,9 @@ warning):
 
 ## The run audit
 
-Each run writes `<runs directory>/<UTC start time>.parquet`, one row per
+Each run writes `<runs directory>/<UTC start time>.parquet` (for example
+`20261005T220506.123456Z.parquet`, to the microsecond, so no run overwrites
+another's), one row per
 cleaned file. The runs directory is `paths.clean_runs_directory` for
 Events and the prefixed key for every other dataset
 (`gkg_v2_clean_runs_directory`, `mentions_clean_runs_directory`, ...), the
