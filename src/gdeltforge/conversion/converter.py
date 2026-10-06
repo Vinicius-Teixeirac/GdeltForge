@@ -474,7 +474,10 @@ class GDELTConverter:
             output_columns=self.output_columns, compression=self.compression
         )
 
-        self._create_folders()
+        # Not for a dry run, which leaves the filesystem as it found it:
+        # nothing it does reads or writes these folders.
+        if not self.dry_run:
+            self._create_folders()
 
     def _create_folders(self):
         for folder in [self.unzip_folder, self.parquet_folder]:

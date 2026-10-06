@@ -2105,6 +2105,14 @@ class TestDryRun:
         assert not converter._is_done(zip_path)
         assert list((tmp_path / "parquet").glob("*.parquet")) == []
 
+    def test_dry_run_creates_no_directory(self, tmp_path):
+        # A dry run leaves the filesystem as it found it: no output or CSV
+        # directory either.
+        _write_flat_zip(tmp_path / "raw")
+        before = sorted(p for p in tmp_path.rglob("*"))
+        GDELTConverter(_make_config(tmp_path), dry_run=True).process_all_files()
+        assert sorted(p for p in tmp_path.rglob("*")) == before
+
     def test_dry_run_reports_the_would_be_processed_count_at_info(self, tmp_path, caplog):
         _write_flat_zip(tmp_path / "raw")
 
