@@ -11,9 +11,11 @@ import polars as pl
 import pytest
 
 from gdeltforge.utils.io import (
+    _int_bounds_from_statistics,
     _pid_exists,
     _schema_from_json,
     _schema_to_json,
+    _verify_int_to_float64_widening_is_safe,
     clearer_dataset_errors,
     config_fingerprint,
     delete_done_marker,
@@ -1312,7 +1314,8 @@ class TestScanDatasetReconciled:
 
 
 class TestSchemaReadsAndWideningChecks:
-    """Footers are read a few at a time."""
+    """Footers are read a few at a time, and the Int64 -> Float64 check
+    reads the file's statistics, scanning only when they're missing."""
 
     def test_schemas_keep_the_files_order(self, tmp_path, monkeypatch):
         monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "4")
@@ -1324,6 +1327,37 @@ class TestSchemaReadsAndWideningChecks:
         schemas = read_file_schemas(files)
         assert list(schemas) == files
         assert [list(s) for s in schemas.values()] == [[f"c{i}"] for i in range(10)]
+
+    def test_statistics_answer_without_scanning(self, tmp_path, monkeypatch):
+        f = tmp_path / "a.parquet"
+        pl.DataFrame({"n": [1, None, 5]}).write_parquet(f)
+        assert _int_bounds_from_statistics(f, "n") == (1, 5)
+
+        def no_collect(self, *args, **kwargs):
+            raise AssertionError("scanned although statistics were there")
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", no_collect)
+        _verify_int_to_float64_widening_is_safe(pl.scan_parquet(f), f, "n")
+
+    def test_statistics_catch_a_value_too_large(self, tmp_path):
+        f = tmp_path / "a.parquet"
+        pl.DataFrame({"n": [1, 2**53 + 2]}).write_parquet(f)
+        with pytest.raises(pl.exceptions.SchemaError, match="too large"):
+            _verify_int_to_float64_widening_is_safe(pl.scan_parquet(f), f, "n")
+
+    def test_missing_statistics_fall_back_to_scanning(self, tmp_path):
+        f = tmp_path / "a.parquet"
+        pl.DataFrame({"n": [1, 2**53 + 2]}).write_parquet(f, statistics=False)
+        assert _int_bounds_from_statistics(f, "n") is None
+        with pytest.raises(pl.exceptions.SchemaError, match="too large"):
+            _verify_int_to_float64_widening_is_safe(pl.scan_parquet(f), f, "n")
+
+    def test_a_reconciled_scan_still_refuses_an_unsafe_widening(self, tmp_path):
+        pl.DataFrame({"n": [1.5]}).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame({"n": [2**53 + 2]}).write_parquet(tmp_path / "b.parquet")
+        with pytest.raises(pl.exceptions.SchemaError, match="too large"):
+            scan_dataset_reconciled([tmp_path / "a.parquet", tmp_path / "b.parquet"])
+
 
 class TestScanFileAgainstSchema:
     def test_a_file_matching_the_target_schema_reads_unmodified(self, tmp_path):

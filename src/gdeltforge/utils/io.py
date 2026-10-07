@@ -10,6 +10,7 @@ from pathlib import Path
 
 import polars as pl
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 # polars genuinely exports this type alias at runtime, under a
 # private-looking module name; matches converter.py's own identical
@@ -874,6 +875,32 @@ def reconcile_file_schemas(
 _FLOAT64_SAFE_INT_BOUND = 2**53
 
 
+def _int_bounds_from_statistics(file: Path, column: str) -> tuple[int, int] | None:
+    """The column's min and max over the file, from its Parquet row-group
+    statistics alone (footer only, no data read), or None when any row
+    group lacks them."""
+    metadata = pq.ParquetFile(file).metadata
+    names = [metadata.schema.column(i).name for i in range(metadata.num_columns)]
+    if column not in names:
+        return None
+    index = names.index(column)
+    lows, highs = [], []
+    for group in range(metadata.num_row_groups):
+        chunk = metadata.row_group(group).column(index)
+        if chunk.statistics is None:
+            if metadata.row_group(group).num_rows == 0:
+                continue
+            return None
+        stats = chunk.statistics
+        if stats.null_count == metadata.row_group(group).num_rows:
+            continue
+        if not stats.has_min_max:
+            return None
+        lows.append(int(stats.min))
+        highs.append(int(stats.max))
+    return (min(lows), max(highs)) if lows else (0, 0)
+
+
 def _verify_int_to_float64_widening_is_safe(lf: pl.LazyFrame, file: Path, column: str) -> None:
     """
     Raises if column's real values in file exceed what Float64 can
@@ -884,10 +911,18 @@ def _verify_int_to_float64_widening_is_safe(lf: pl.LazyFrame, file: Path, column
     full column, so this stays cheap on a real, large file: confirmed
     directly, the same order of cost as the footer-only schema read
     already paid elsewhere in this reconciliation.
+
+    In practice polars scanned the column file by file (a lab measurement
+    counted a data read per file), so the bounds come from the file's own
+    Parquet statistics first, and the column is scanned only when a row
+    group has none.
     """
-    bounds = lf.select(pl.col(column).min().alias("_min"), pl.col(column).max().alias("_max"))
-    row = bounds.collect().row(0, named=True)
-    values = [v for v in (row["_min"], row["_max"]) if v is not None]
+    bounds = _int_bounds_from_statistics(file, column)
+    if bounds is None:
+        query = lf.select(pl.col(column).min().alias("_min"), pl.col(column).max().alias("_max"))
+        row = query.collect().row(0, named=True)
+        bounds = (row["_min"], row["_max"])
+    values = [v for v in bounds if v is not None]
     max_abs = max((abs(v) for v in values), default=0)
     if max_abs > _FLOAT64_SAFE_INT_BOUND:
         raise pl.exceptions.SchemaError(
@@ -904,6 +939,7 @@ def scan_file_against_schema(
     file: Path,
     target_schema: dict[str, pl.DataType],
     real_schema: dict[str, pl.DataType] | None = None,
+    widening_checked: bool = False,
 ) -> pl.LazyFrame:
     """
     Scan a single file toward a schema reconciled across a wider set of
@@ -927,7 +963,9 @@ def scan_file_against_schema(
 
     real_schema lets a caller that already read this file's own schema
     (scan_dataset_reconciled) pass it straight through instead of paying
-    for a second footer read.
+    for a second footer read. widening_checked says the caller already ran
+    the Int64 -> Float64 checks for this file (scan_dataset_reconciled does,
+    for every file, a few at a time).
     """
     if real_schema is None:
         real_schema = dict(pl.read_parquet_schema(file).items())
@@ -948,8 +986,9 @@ def scan_file_against_schema(
     lf = pl.scan_parquet(
         file, schema=per_file_schema, missing_columns="insert", extra_columns="ignore"
     )
-    for name in unsafe_widenings:
-        _verify_int_to_float64_widening_is_safe(lf, file, name)
+    if not widening_checked:
+        for name in unsafe_widenings:
+            _verify_int_to_float64_widening_is_safe(lf, file, name)
     return lf.with_columns(casts) if casts else lf
 
 
@@ -1034,9 +1073,21 @@ def scan_dataset_reconciled(
             include_file_paths=include_file_paths,
         )
 
+    # Every file widening an integer column to Float64 is checked first,
+    # a few at a time, from its statistics (see
+    # _verify_int_to_float64_widening_is_safe).
+    def check(f: Path) -> None:
+        for name, dtype in target_schema.items():
+            real = file_schemas[f].get(name)
+            if real is not None and real.is_integer() and dtype == pl.Float64():
+                _verify_int_to_float64_widening_is_safe(pl.scan_parquet(f), f, name)
+
+    _map_files(check, files)
     lazy_frames = []
     for f in files:
-        lf = scan_file_against_schema(f, target_schema, real_schema=file_schemas[f])
+        lf = scan_file_against_schema(
+            f, target_schema, real_schema=file_schemas[f], widening_checked=True
+        )
         if include_file_paths:
             lf = lf.with_columns(pl.lit(str(f)).alias(include_file_paths))
         lazy_frames.append(lf)
