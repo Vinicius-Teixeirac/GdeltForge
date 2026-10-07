@@ -98,8 +98,10 @@ from gdeltforge.scraping.scraper import (
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
+from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
     clearer_dataset_errors,
+    detach,
     narrow_to_available_columns,
     scan_dataset_reconciled,
 )
@@ -539,6 +541,16 @@ def warn_if_directory_is_large(
 _MAX_EXPLODED_ROWS_PER_STEP = 200_000
 
 
+def _files_per_batch() -> int:
+    """
+    How many files a lookup's second pass reads at once: the scan limit
+    sample/crossref run under (POLARS_MAX_CONCURRENT_SCANS, set from
+    io.max_concurrent_reads), else 4. Each batch's row groups are held
+    until its matches are copied out, so this bounds the pass's memory.
+    """
+    return exported_scan_limit() or 4
+
+
 def _files_with_matches(files: list[Path], column: str, values: set[str]) -> list[Path]:
     """
     The first pass of a two-pass lookup: the files in `files` holding a
@@ -963,12 +975,23 @@ def crossref_events_gkg_v2(
             f"{len(matched_files)} of {len(gkg_v2_files)} GKG 2.1 file(s) hold a match; "
             f"reading their rows."
         )
-        gkg_df = (
-            scan_dataset_reconciled(matched_files, target_schema=dict(gkg_schema))
-            .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
-            .select(read_gkg_columns)
-            .collect()
-        )
+        # A few files at a time, each batch's matches copied out (detach)
+        # before the next batch is read: kept rows otherwise hold the whole
+        # row group they came from, and a realistic sample matches nearly
+        # every file, so memory followed every matched file's row groups.
+        batch = _files_per_batch()
+        parts = [
+            detach(
+                scan_dataset_reconciled(
+                    matched_files[i:i + batch], target_schema=dict(gkg_schema)
+                )
+                .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
+                .select(read_gkg_columns)
+                .collect()
+            )
+            for i in range(0, len(matched_files), batch)
+        ]
+        gkg_df = pl.concat(parts, how="vertical_relaxed")
 
     if gkg_df.is_empty():
         return empty_result()

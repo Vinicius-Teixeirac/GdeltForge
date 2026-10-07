@@ -922,6 +922,23 @@ def scan_file_against_schema(
     return lf.with_columns(casts) if casts else lf
 
 
+def detach(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    A copy of `df` that shares no buffer with the data it was read from.
+
+    polars (1.x) keeps the rows a filter or an index selects as views into
+    the decoded row group they came from, string columns above all, so a
+    few rows kept from a scan hold the whole row group's memory for as long
+    as they live: on a real GKG 2.1 archive, 1,210 rows (18.5 MiB) held
+    12.6 GiB. rechunk(), shrink_to_fit() and dtype round-trips keep the
+    views; an Arrow round-trip writes the values out and drops them. Call
+    it on every small result kept while a large scan goes on.
+    """
+    out = pl.from_arrow(df.to_arrow())
+    assert isinstance(out, pl.DataFrame)
+    return out
+
+
 def scan_dataset_reconciled(
     files: list[Path], target_schema: dict[str, pl.DataType] | None = None
 ) -> pl.LazyFrame:

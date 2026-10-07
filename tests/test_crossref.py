@@ -1348,6 +1348,27 @@ class TestCrossrefEventsGkgV2TwoPass:
         # In the archive's own order; the unmatched file never reaches it.
         assert seen == [["20200101000000.gkg.parquet", "20200101003000.gkg.parquet"]]
 
+    def test_the_second_pass_reads_in_batches_of_the_scan_limit(self, tmp_path, monkeypatch):
+        # Each batch's matches are copied out before the next is read; the
+        # batches follow the archive's order, so "latest" still means the
+        # last file.
+        events, mentions, gkg = self._setup(tmp_path)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "1")
+        seen = []
+        real = crossref_module.scan_dataset_reconciled
+
+        def spy(files, target_schema=None):
+            if target_schema is not None:
+                seen.append([Path(f).name for f in files])
+            return real(files, target_schema=target_schema)
+
+        monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
+        )
+        assert seen == [["20200101000000.gkg.parquet"], ["20200101003000.gkg.parquet"]]
+        assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
+
     def test_dtypes_follow_the_whole_dataset_not_the_matched_files(self, tmp_path):
         # Only the unmatched file stores V2.1DATE as Float64 (older
         # converters did), so the matched files alone would say Int64.
