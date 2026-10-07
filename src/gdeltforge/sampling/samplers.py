@@ -31,6 +31,7 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.io import (
     clearer_dataset_errors,
+    detach,
     narrow_to_available_columns,
     read_file_schemas,
     reconcile_file_schemas,
@@ -529,7 +530,8 @@ def _read_rows(
     toward target_schema. Parquet decodes a row group at a time, so this
     reads only the row groups holding a requested row, one after another:
     memory follows one row group of the requested columns, never the
-    whole file.
+    whole file. Each row group's chosen rows are copied out (detach):
+    kept as they are, they would hold the whole decoded row group.
     """
     lf = scan_file_against_schema(file, target_schema, real_schema=real_schema)
     metadata = pq.ParquetFile(file).metadata
@@ -541,7 +543,8 @@ def _read_rows(
         if upto > taken:
             chunk = lf.slice(start, end - start).collect()
             # Bracket indexing: DataFrame.gather() postdates polars 1.34.
-            parts.append(chunk[rows[taken:upto] - start])
+            parts.append(detach(chunk[rows[taken:upto] - start]))
+            del chunk
             taken = upto
         if taken == len(rows):
             break
