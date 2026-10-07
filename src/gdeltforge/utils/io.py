@@ -4,6 +4,7 @@ import re
 import sys
 import zipfile
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -16,6 +17,7 @@ import pyarrow as pa
 # reportPrivateImportUsage = false.
 from polars._typing import PolarsDataType
 
+from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
@@ -764,11 +766,32 @@ def narrow_to_available_columns(
     return sorted((requested & available) | required)
 
 
+def _footer_reads_at_once() -> int:
+    """How many files' footers to read at once: the scan limit sample and
+    crossref run under (POLARS_MAX_CONCURRENT_SCANS, set from
+    io.max_concurrent_reads), else polars' own default of one per core."""
+    return exported_scan_limit() or min(32, os.cpu_count() or 1)
+
+
+def _map_files(fn, files: list):
+    """fn over files, a few at a time (_footer_reads_at_once), results in
+    the files' order. Reading footers one by one cost about 24 ms each on
+    a network share: 12 minutes for one quarter's 15-minute files before
+    any data was read."""
+    workers = min(_footer_reads_at_once(), max(1, len(files)))
+    if workers == 1:
+        return [fn(f) for f in files]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fn, files))
+
+
 def read_file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
-    """Every file's own schema, one footer read per file. A caller that
-    scans the same files more than once reads them here once and passes
-    the result on (scan_dataset_reconciled's file_schemas)."""
-    return {f: dict(pl.read_parquet_schema(f).items()) for f in files}
+    """Every file's own schema, one footer read per file, a few files at a
+    time (_map_files). A caller that scans the same files more than once
+    reads them here once and passes the result on (scan_dataset_reconciled's
+    file_schemas)."""
+    schemas = _map_files(lambda f: dict(pl.read_parquet_schema(f).items()), files)
+    return dict(zip(files, schemas, strict=True))
 
 
 _file_schemas = read_file_schemas
@@ -814,7 +837,7 @@ def reconcile_parquet_schema(files: list[Path]) -> dict[str, pl.DataType]:
     silently casting between those would risk corrupting real data
     instead of merely widening its numeric range.
     """
-    return reconcile_file_schemas(_file_schemas(files))
+    return reconcile_file_schemas(read_file_schemas(files))
 
 
 def reconcile_file_schemas(

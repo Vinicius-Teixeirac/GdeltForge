@@ -22,6 +22,7 @@ from gdeltforge.utils.io import (
     mark_done,
     narrow_to_available_columns,
     read_csv_export,
+    read_file_schemas,
     read_parquet_path,
     reconcile_parquet_schema,
     scan_dataset_reconciled,
@@ -1309,6 +1310,20 @@ class TestScanDatasetReconciled:
         assert df["n"].dtype == pl.Float64
         assert sorted(df["n"].to_list()) == [1.0, 2.0, 3.0]
 
+
+class TestSchemaReadsAndWideningChecks:
+    """Footers are read a few at a time."""
+
+    def test_schemas_keep_the_files_order(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "4")
+        files = []
+        for i in range(10):
+            f = tmp_path / f"{i:02d}.parquet"
+            pl.DataFrame({f"c{i}": [i]}).write_parquet(f)
+            files.append(f)
+        schemas = read_file_schemas(files)
+        assert list(schemas) == files
+        assert [list(s) for s in schemas.values()] == [[f"c{i}"] for i in range(10)]
 
 class TestScanFileAgainstSchema:
     def test_a_file_matching_the_target_schema_reads_unmodified(self, tmp_path):
