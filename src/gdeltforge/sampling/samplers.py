@@ -29,6 +29,7 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
+from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
     clearer_dataset_errors,
     detach,
@@ -528,27 +529,38 @@ def _read_rows(
     """
     The rows at positions `rows` (sorted, ascending) of one file, scanned
     toward target_schema. Parquet decodes a row group at a time, so this
-    reads only the row groups holding a requested row, one after another:
-    memory follows one row group of the requested columns, never the
-    whole file. Each row group's chosen rows are copied out (detach):
-    kept as they are, they would hold the whole decoded row group.
+    reads only the row groups holding a requested row, a few at a time
+    (the scan limit sample runs under, io.max_concurrent_reads, else 4):
+    memory follows those few row groups of the requested columns, never
+    the whole file. Read strictly one at a time, they left a network share
+    with a single request stream, and day-aggregated GKG 2.1 sampled no
+    faster than a full scan. Each row group's chosen rows are copied out
+    (detach): kept as they are, they would hold the whole decoded row
+    group.
     """
     lf = scan_file_against_schema(file, target_schema, real_schema=real_schema)
     metadata = pq.ParquetFile(file).metadata
-    parts = []
+    # (first row, row count, chosen positions within it) per row group read.
+    wanted: list[tuple[int, int, np.ndarray]] = []
     start = taken = 0
     for group in range(metadata.num_row_groups):
         end = start + metadata.row_group(group).num_rows
         upto = int(np.searchsorted(rows, end, side="left"))
         if upto > taken:
-            chunk = lf.slice(start, end - start).collect()
-            # Bracket indexing: DataFrame.gather() postdates polars 1.34.
-            parts.append(detach(chunk[rows[taken:upto] - start]))
-            del chunk
+            wanted.append((start, end - start, rows[taken:upto] - start))
             taken = upto
         if taken == len(rows):
             break
         start = end
+    at_once = exported_scan_limit() or 4
+    parts = []
+    for i in range(0, len(wanted), at_once):
+        batch = wanted[i:i + at_once]
+        chunks = pl.collect_all([lf.slice(first, count) for first, count, _ in batch])
+        for chunk, (_, _, positions) in zip(chunks, batch, strict=True):
+            # Bracket indexing: DataFrame.gather() postdates polars 1.34.
+            parts.append(detach(chunk[positions]))
+        del chunks
     return pl.concat(parts)
 
 

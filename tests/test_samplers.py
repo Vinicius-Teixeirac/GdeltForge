@@ -744,6 +744,34 @@ class TestCalendarSamplerTwoPass:
         for column in ("Day", "Actor1Name", "NumArticles"):
             assert joined[column].equals(joined[f"{column}_src"], null_equal=True)
 
+    def test_row_groups_are_read_a_few_at_a_time(self, tmp_path, monkeypatch):
+        # One row group at a time left a network share with a single
+        # request stream; batches of the scan limit read several at once.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        folder = tmp_path / "data"
+        folder.mkdir()
+        source = pl.DataFrame({
+            "GlobalEventID": list(range(1, 41)),
+            "Day": [20200101] * 40,
+            "Actor1Name": [f"actor{i}" for i in range(1, 41)],
+        })
+        source.write_parquet(folder / "a.parquet", row_group_size=4)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "3")
+        batches = []
+        real = samplers_module.pl.collect_all
+
+        def spy(frames, *args, **kwargs):
+            batches.append(len(frames))
+            return real(frames, *args, **kwargs)
+
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        df = CalendarSampler(str(folder), random_state=5).get_calendar_samples(40)
+        assert df.height == 40
+        assert batches == [3, 3, 3, 1]  # 10 row groups of 4 rows
+        joined = df.join(source, on="GlobalEventID", how="left", suffix="_src")
+        assert joined["Actor1Name"].equals(joined["Actor1Name_src"])
+
     def test_columns_restrict_what_the_second_pass_reads(self, tmp_path):
         folder = tmp_path / "data"
         folder.mkdir()
