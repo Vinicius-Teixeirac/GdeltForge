@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Changed
-- `crossref --gkg-version v2` (and `auto`) reads GKG 2.1 in two passes: first only the article URL column of every file in range, then the requested columns of only the files holding a matching URL, a few files at a time (`io.max_concurrent_reads`, else 4), each batch's matching rows copied out before the next batch is read. polars kept the few rows matched in a row group as views into the whole decoded row group, so memory followed every matched file's row groups: on a real archive's day-aggregated GKG 2.1, about 3.6 GiB per GB of matching files, 55 GiB for one month and beyond 60 GiB for a quarter, with Python's own heap under 0.5 GiB. Output is unchanged, column types included: the second pass casts to the types reconciled across every file in range.
+- `crossref --gkg-version v2` (and `auto`) reads GKG 2.1 in two passes: first only the article URL column of every file in range (500 files per scan), then the requested columns of only the files holding a matching URL, a few files at a time (`io.max_concurrent_reads`, else 4), each batch's matching rows copied out before the next batch is read. polars kept the few rows matched in a row group as views into the whole decoded row group, so memory followed every matched file's row groups: on a real archive's day-aggregated GKG 2.1, about 3.6 GiB per GB of matching files, 55 GiB for one month and beyond 60 GiB for a quarter, with Python's own heap under 0.5 GiB. Output is unchanged, column types included: the second pass casts to the types reconciled across every file in range.
 
 ## [0.12.0] - 2026-09-30
 

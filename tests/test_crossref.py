@@ -1369,6 +1369,30 @@ class TestCrossrefEventsGkgV2TwoPass:
         assert seen == [["20200101000000.gkg.parquet"], ["20200101003000.gkg.parquet"]]
         assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
 
+    def test_the_first_pass_scans_in_batches(self, tmp_path, monkeypatch):
+        # One scan over every file held memory per file read until it
+        # finished; batches bound it. Matches in any batch are found, in
+        # the archive's order.
+        monkeypatch.setattr(crossref_module, "_FIRST_PASS_FILES", 2)
+        files = []
+        for i in range(5):
+            f = tmp_path / f"2020010100{i:02d}00.gkg.parquet"
+            pl.DataFrame({"V2DOCUMENTIDENTIFIER": [f"u{i}"]}).write_parquet(f)
+            files.append(f)
+        scanned = []
+        real = pl.scan_parquet
+
+        def spy(source, *args, **kwargs):
+            scanned.append(len(source))
+            return real(source, *args, **kwargs)
+
+        monkeypatch.setattr(crossref_module.pl, "scan_parquet", spy)
+        found = crossref_module._files_with_matches(
+            files, "V2DOCUMENTIDENTIFIER", {"u4", "u0", "u3"}
+        )
+        assert found == [files[0], files[3], files[4]]
+        assert scanned == [2, 2, 1]
+
     def test_dtypes_follow_the_whole_dataset_not_the_matched_files(self, tmp_path):
         # Only the unmatched file stores V2.1DATE as Float64 (older
         # converters did), so the matched files alone would say Int64.

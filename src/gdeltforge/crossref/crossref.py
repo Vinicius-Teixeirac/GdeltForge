@@ -551,6 +551,13 @@ def _files_per_batch() -> int:
     return exported_scan_limit() or 4
 
 
+# Files per scan in a lookup's first pass (_files_with_matches). It reads
+# one string column, so a batch's memory is small; 500 files held about
+# 0.8 GB in a lab measurement's growth rate, against 14 GiB for a quarter
+# of 15-minute files in one scan.
+_FIRST_PASS_FILES = 500
+
+
 def _files_with_matches(files: list[Path], column: str, values: set[str]) -> list[Path]:
     """
     The first pass of a two-pass lookup: the files in `files` holding a
@@ -560,18 +567,25 @@ def _files_with_matches(files: list[Path], column: str, values: set[str]) -> lis
     the matching files only. One column, with one dtype everywhere, also
     keeps the scan on polars' single multi-file path even when other
     columns' dtypes differ across files (see scan_dataset_reconciled).
+
+    The files are scanned _FIRST_PASS_FILES at a time: one scan over every
+    file held about 1.65 MB per file read until it finished (14 GiB over a
+    quarter's 8,725 15-minute GKG 2.1 files), so memory grew with the
+    period. Each batch keeps only the names of its matching files.
     """
-    hits = (
-        pl.scan_parquet(
-            files, schema={column: pl.String}, extra_columns="ignore",
-            include_file_paths="__gdeltforge_file",
+    matched: set[Path] = set()
+    for i in range(0, len(files), _FIRST_PASS_FILES):
+        hits = (
+            pl.scan_parquet(
+                files[i:i + _FIRST_PASS_FILES], schema={column: pl.String},
+                extra_columns="ignore", include_file_paths="__gdeltforge_file",
+            )
+            .filter(pl.col(column).is_in(values))
+            .select("__gdeltforge_file")
+            .unique()
+            .collect()
         )
-        .filter(pl.col(column).is_in(values))
-        .select("__gdeltforge_file")
-        .unique()
-        .collect()
-    )
-    matched = {Path(f) for f in hits["__gdeltforge_file"].to_list()}
+        matched.update(Path(f) for f in hits["__gdeltforge_file"].to_list())
     return [f for f in files if Path(f) in matched]
 
 
