@@ -408,24 +408,65 @@ Same speed or slightly faster, with 35-45% less memory. The old behavior bought 
 
 "Killed" means a memory watchdog stopped the run once free RAM fell below a safety floor; the unguarded default run exhausted the machine's 16 GB outright. Even at one file at a time, plan on roughly 0.8 GB per `aggregate` worker for month periods of Events and set `aggregation.max_workers` to fit your RAM: the default of one worker per core assumes more memory per core than a typical laptop has.
 
-### Aggregation: what `gdeltforge aggregate` actually buys, measured
+### Aggregation: what it buys, measured
 
-The motivation for `aggregate` was "drastically reduce I/O and memory" for sampling against GKG 2.1/Mentions/`events-15min`'s ~96-files/day cadence. Measured directly (no GKG 2.1/Mentions/`events-15min` data was locally available to benchmark against; this uses `IndexedSampler`'s `FileIndex` and `scan_dataset_reconciled`, the actual mechanisms this feature targets, against a real 1,920-file/32.7GB slice of this project's own `events` archive as a file-count-scaling proxy):
+`aggregate` concatenates GKG 2.1's, Mentions' and `events-15min`'s 15-minute
+files (about 96 a day) into one file per day, month or year. Measured on a
+lab server (32 cores, 125 GiB RAM) reading GDELT's archive over a shared,
+HDD-backed NFS share on 1 GbE, against GKG 2.1 and Mentions from 2015-02-18
+to 2025-12-31 aggregated by day (373,501 files of each into 3,953):
 
-| Files | Data | Rows | `FileIndex` build | Full scan+count |
-|-------|------|------|--------------------|------------------|
-| 96 | 7.36 GB | 164.1M | 0.136s | 0.275s |
-| 384 | 11.77 GB | 239.7M | 0.492s | 2.076s |
-| 960 | 18.66 GB | 324.8M | 1.161s | 6.049s |
-| 1,920 | 32.70 GB | 506.9M | 2.186s | 11.427s |
+| What | 15-minute files | Day files |
+|------|-----------------|-----------|
+| GKG 2.1 on disk | about 2.0 TB | about 1.4 TB (larger row groups compress better) |
+| `FileIndex` build, GKG 2.1 (`sample --mode indexed`) | 9,027 s | 50 s (181x) |
+| `FileIndex` build, Mentions | 776 s | 18 s (44x) |
 
-`FileIndex` build time is ~1.1-1.4ms per file and roughly *independent of file size*: 16x more files cost ~16x more time, while bytes only grew 4.4x over the same range. That's a direct confirmation that this cost is dominated by file count (opening every footer), not bytes moved, exactly the mechanism aggregation targets.
+A file footer costs about 24 ms to read cold over that share (1.1 to 1.4 ms
+on a local disk), and `FileIndex` reads one per file, so the file count
+dominates: the gain is largest wherever a command opens every file. A full
+scan still reads every row; aggregation removes the per-file cost, plus the
+bytes the better compression saves, and nothing more.
 
-Extrapolating that per-file cost (not measured directly on GKG 2.1 itself) to the real full-archive file count this page already measured above (395,788 `gdelt_gkg_v2` files): `FileIndex` construction alone would cost roughly **8 minutes**, paid on every single `sample --mode indexed` invocation, since it's never cached across runs. Aggregating to daily (~4,123 files at the ~96-files/day cadence) cuts that to roughly **5 seconds**; to monthly (~135 files), roughly **0.2 seconds**.
+**Memory, and the row-group size.** A day file holds a few row groups of
+about 80,000 GKG 2.1 rows each, about 600 MB decoded per group, where a
+15-minute file holds one of about 15 MB. polars decodes a whole row group to
+read any row of it. Up to 0.12.0, rows kept from a scan stayed tied to the
+row group they came from, so sampling and crossref over day files used far
+more memory than over the same rows in 15-minute files (calendar sampling
+about 2.4x, crossref past 60 GiB for a quarter). Since 0.13.0 crossref and
+calendar sampling copy the rows they keep out of their row groups and read
+a few files or row groups at a time, so memory follows those few, not the
+period. Measured on a quarter (2016-01-01 to 03-31) of GKG 2.1 day files on
+the share, 5,000 events for crossref and `--per-period 5` for calendar:
 
-**Honest scope of the benefit:** the win above is dramatic for anything whose cost is file-*count*-dominated, above all `IndexedSampler`'s `FileIndex` build. It's real but more modest for a full-archive scan (`calendar`/`filtered` modes): once total bytes moved dominates wall-clock (the `scan+count` column above grows faster than file count alone once file count is already in the hundreds, per-file schema/scheduling overhead stacking on top of raw transfer time), aggregation removes that per-file overhead but can't reduce the bytes themselves, since it's concatenation, not compression or pruning; the docs' own ~220GB-2.9TB GKG 2.1 footprint doesn't shrink.
+| Command | 0.12.0 | 0.13.0 |
+|---------|--------|--------|
+| `crossref --gkg-version v2`, one month (1,700 events) | 55.6 GiB | 9.8 GiB |
+| `crossref --gkg-version v2`, the quarter | killed at 60 GiB | 11.8 GiB |
+| `sample --mode calendar` | 6.9 GiB | 4.5 GiB |
 
-The "memory" half of the original motivation is **not** supported by sampling-side evidence: `FileIndex`, `scan_dataset_reconciled`, and every sampler already stream (`collect_batches`, lazy scans) regardless of file count, true today independent of aggregation. The real memory risk this investigation surfaced sits on the aggregation step's *own* write path instead: concatenating many large source files eagerly (a plain per-file `read_parquet` + `concat` + `write_parquet`) reproduced a real Rust-level allocator abort on a multi-GB group, not a catchable Python exception, the same failure mode `FilteredSampler._get_random_sample_with_replacement`'s own docstring already documents for a bare `.collect()` over a large multi-file plan. `aggregate`'s own implementation avoids this by streaming through `scan_dataset_reconciled(...).sink_parquet(...)` instead (see `utils.io.sink_parquet_atomic`), never materializing a period's full concatenated rows in memory at once.
+Calendar sampling reads the row groups holding its chosen rows
+`io.max_concurrent_reads` at a time (4 here), each about 600 MB decoded, so
+its memory follows that setting, not `--per-period`: 4.7 GiB at
+`--per-period 200`. Reading them one at a time peaked at 1.7 GiB but took
+789 s on the share, against 469 s.
+
+`aggregate` keeps writing polars' default row groups. Smaller ones lower
+crossref's peak further, at a storage cost. Measured on 7 day files of GKG
+2.1 rewritten with each `row_group_size`:
+
+| Rows per row group | Storage | crossref peak (300 events) |
+|--------------------|---------|----------------------------|
+| default (about 80,000) | 3.46 GB | 9.3 GiB |
+| 50,000 | +8.3% | 7.2 GiB |
+| 20,000 | +21.5% | 4.1 GiB |
+
+**Writing.** `aggregate` itself streams each period to disk
+(`utils.io.sink_parquet_atomic`) and never holds a period's rows in memory:
+concatenating large source files eagerly reproduced a Rust-level allocator
+abort on a multi-GB period. Each worker reads one source file at a time;
+see "Worker pools and polars threads" above.
 
 ### Dtype narrowing: where it does and doesn't pay off
 
