@@ -852,8 +852,8 @@ def run_codes_cmd(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="GdeltForge: Forges the raw GDELT archive into clean, "
-                     "reproducibly-sampled, cross-referenced Parquet"
+        description="GdeltForge: Reproducible sampling and cross-referencing of "
+                     "the full GDELT archive, on one machine"
     )
     parser.add_argument("--version", action=_VersionAction)
     parser.add_argument(

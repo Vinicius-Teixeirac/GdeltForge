@@ -2,8 +2,7 @@
   <img src="https://raw.githubusercontent.com/Vinicius-Teixeirac/GdeltForge/main/docs/assets/brand/lockup-a-horizontal.png" alt="GdeltForge: Global Event Data Pipeline" width="640">
 </p>
 
-<h3 align="center">Global event data, forged.</h3>
-<p align="center">Forges the raw GDELT archive into clean, reproducibly-sampled, cross-referenced Parquet.</p>
+<p align="center">Reproducible sampling and cross-referencing of the full GDELT archive, on one machine.</p>
 
 <p align="center">
   <a href="https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml"><img src="https://github.com/Vinicius-Teixeirac/GdeltForge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -31,19 +30,21 @@ pip install gdeltforge
 gdeltforge --help
 ```
 
-GDELT's Events archive spans hundreds of millions of rows across 50+ years, but the official API caps queries at ~250 rows and BigQuery's free tier can't cover a full historical pull. GdeltForge downloads, converts, cleans, and reproducibly samples the whole archive locally: checksum-verified downloads, concurrent I/O, and reservoir sampling built for a single pass over the full history. It also scrapes the Global Knowledge Graph (both current GKG 2.1 and legacy GKG 1.0) and Mentions, and can cross-reference a sampled Events output back onto GKG (themes, tone, people, organizations) with `crossref`.
+GDELT publishes its full archive (Events since 1979, GKG 1.0 since 2013, GKG 2.1 and Mentions since 2015) as hundreds of thousands of raw files. Drawing a sample from it that another researcher can reproduce, and whose relation to the archive is known, is harder than it should be: GDELT's search APIs answer bounded queries (the DOC API, for instance, returns up to 250 articles from the last three months), and BigQuery's tables stay in Google's warehouse, not on your own disk.
 
-- Full historical archive, not just the last 3 months the API allows
-- Events enriched with GKG via `crossref`, preserving the real many-to-many structure instead of collapsing it
-- Efficient columnar storage (**Parquet**) instead of raw CSV/ZIP
-- A data-quality stage, `clean`, that repairs known GDELT errors by default without losing GDELT's own values, marks every file it writes, and audits every run
-- Reproducible sampling: indexed, calendar, and filtered modes, filtered mode also supports stratified sampling (fixed N per group)
-- Each stage (`scrape`/`convert`/`clean`/`sample`/`crossref`) runs independently and inspectably
+GdeltForge is a command-line pipeline that downloads that archive, converts it to Parquet, repairs GDELT's documented errors, and draws seeded samples whose design (simple random, stratified by period or by column) is stated explicitly, on a single machine. It was written for research on representation learning over GDELT events; see [Background and citing](#background-and-citing).
+
+- Downloads the full archive: Events since 1979, GKG 1.0 since 2013, GKG 2.1 and Mentions since 2015
+- Stores it as Parquet, as published (`convert`) and repaired (`clean`) in separate directories
+- Repairs documented GDELT errors, keeping every row by default; audits every run
+- Seeded sampling: simple random, by period, filtered, stratified
+- Joins sampled Events to GKG, keeping the many-to-many structure
+- Runs each stage (`scrape`/`convert`/`clean`/`sample`/`crossref`) as its own command
 
 ## Contents
 
-- [Challenges with Official Access Methods](#challenges-with-official-access-methods)
-- [Comparison to Other GDELT Tools](#comparison-to-other-gdelt-tools)
+- [Why the Raw Archive](#why-the-raw-archive)
+- [Related Work](#related-work)
 - [Pipeline Design Principles](#pipeline-design-principles)
 - [Installation](#installation)
 - [Project Structure](#project-structure)
@@ -53,6 +54,7 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 - [Limitations and Roadmap](#limitations-and-roadmap)
 - [Contributing](#contributing)
 - [License](#license)
+- [Background and Citing](#background-and-citing)
 - [Data Attribution](#data-attribution)
 
 ---
@@ -67,44 +69,40 @@ GDELT's Events archive spans hundreds of millions of rows across 50+ years, but 
 [![Requests](https://img.shields.io/badge/Requests-web_scraping-000000?style=for-the-badge&logo=python&logoColor=white)](https://requests.readthedocs.io/)
 [![Selenium](https://img.shields.io/badge/Selenium-optional_fallback-43B02A?style=for-the-badge&logo=selenium&logoColor=white)](https://selenium-python.readthedocs.io/)
 
-## Challenges with Official Access Methods
+## Why the Raw Archive
 
-The GDELT Events Database is extremely rich, but extracting the full archive through official methods is difficult. This pipeline solves the following issues:
+Of the ways GDELT offers its data (see [Related Work](https://vinicius-teixeirac.github.io/GdeltForge/comparison/) for others), three matter here: its search APIs, BigQuery, and the raw archive, the one published as files to download.
 
 ### GDELT API Limitations
 
-The standard GDELT APIs are optimized for *recent* and *small* queries. They impose strict limits on:
+GDELT's search APIs answer bounded queries about news coverage:
 
-- time windows (often only the last 3 months)
-- maximum rows per query (≈ 250)
-- request rate limits
+- the DOC API searches the last 3 months by default and returns up to 250 results per query
+- the GEO API covers the last 15 minutes to 7 days
+- the TV API reaches back to 2009, over television coverage
 
-These constraints make it effectively impossible to retrieve the **full historical dataset**.
+None of them returns the Events, Mentions or GKG tables themselves.
 
 ### Google BigQuery Mirror Constraints
 
-While BigQuery provides full access, it suffers from practical issues:
+BigQuery holds the full history and answers SQL over it, within a free tier of 1 TiB of queries a month. Its tables are hosted by Google, not kept on your own disk, and some research workflows need a local, offline copy.
 
-- free-tier quotas (1TB/month query, 10GB storage, 1GB egress) are far too small for the ~hundreds of GB required
-- full-table scans are expensive without billing
-- some researchers prefer *local* offline workflows
+### The Raw Bulk Archive
 
-### Raw Bulk Downloads Are Available, But Hard to Use
-
-The [raw GDELT archives](https://data.gdeltproject.org/events/) contain **thousands of files**. Processing them requires:
+The [raw GDELT archives](https://data.gdeltproject.org/events/) contain **hundreds of thousands of files** (the Events directory alone about 5,000). Processing them requires:
 
 - automated downloading
 - streaming or chunked processing
 - efficient columnar storage (Parquet)
 - memory-safe filtering and sampling
 
-This pipeline automates these steps end-to-end.
+GdeltForge performs these steps, one command per stage.
 
-## Comparison to Other GDELT Tools
+## Related Work
 
-GdeltForge's genuinely distinguishing feature is treating **reproducible sampling as a first-class pipeline stage**, not download-and-convert alone: seeded indexed, calendar, and filtered reservoir sampling over the full archive in a single streaming pass, filtered mode also supports stratified sampling. The other is `crossref`: GKG 2.1 carries no event ID at all, only the source article's URL, so joining it to Events means a two-hop trip through Mentions that's easy to get subtly wrong; `crossref` does that join with filter pushdown and keeps the real many-to-many structure intact instead of silently collapsing it.
+Several other tools work with GDELT, each the better choice for some questions (a recent window, an analysis that fits in memory, SQL over the whole archive). GdeltForge focuses on two things. It treats sampling as a stage of its own: seeded designs that stream over the full archive on one machine and can be stated in a methods section. And it joins Events to GKG 2.1, which carries no event identifier, through Mentions, keeping the many-to-many relation between events and articles.
 
-See [Comparison to Other Tools](https://vinicius-teixeirac.github.io/GdeltForge/comparison/) for an honest breakdown of when GdeltForge fits and when a DOC API client, BigQuery, or an existing Spark/DuckDB pipeline is the better choice.
+See [Related Work](https://vinicius-teixeirac.github.io/GdeltForge/comparison/) for the other tools, what each is designed for, and when each fits better.
 
 ## Pipeline Design Principles
 
@@ -122,7 +120,7 @@ The pipeline follows a **single-responsibility, single-stage execution model**. 
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 
-This design is intentionally **transparent and low-magic**:
+Each stage is explicit:
 
 - every operation is explicit
 - no hidden steps
@@ -282,7 +280,7 @@ By default the config is read from `./config/settings.yaml` (relative to whereve
 
 ## Usage Examples
 
-Below are practical, beginner-friendly examples covering all common workflows.
+Examples of the common workflows, one stage at a time.
 
 ### Scrape Raw Data
 
@@ -622,6 +620,14 @@ Found a security issue? See [SECURITY.md](.github/SECURITY.md) rather than openi
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
+
+## Background and Citing
+
+GdeltForge was written for research on representation learning for structured events, comparing tabular, graph and text representations of GDELT events with a multi-domain geometric model. Its first use was the chapter "Multi-domain Geometric Representation Learning for Structured Events" (Freitas, Sakiyama and Marcacini, BRACIS 2026, Springer LNAI 17107, [doi:10.1007/978-3-032-39895-6_13](https://doi.org/10.1007/978-3-032-39895-6_13)). [About](https://vinicius-teixeirac.github.io/GdeltForge/about/) describes what that research needed and the design decisions that followed.
+
+If GdeltForge contributes to published work, please cite it: see [CITATION.cff](CITATION.cff), or GitHub's "Cite this repository". Please also cite the GDELT Project, below.
+
+Author: Vinícius Teixeira Carvalho Freitas, Instituto de Ciências Matemáticas e de Computação (ICMC), Universidade de São Paulo, São Carlos, Brazil.
 
 ## Data Attribution
 

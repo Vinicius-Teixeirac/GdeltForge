@@ -37,7 +37,7 @@ A section your file leaves out takes every one of its settings from the built-in
 | `events-15min` | `gdelt_event_15min` | Full support (Events at native GDELT 2.0 granularity; genuinely a different, 61-column schema from `events`' 58, not just finer granularity, see below) |
 | `events-reduced` | `gdelt_event_reduced` | Full support (a single static 1979-2013 historical dump, pre-aggregated and structurally unlike every other dataset here, see below) |
 | `gkg-v2` | `gdelt_gkg_v2` | Full support (GKG 2.1, the current format, live since Feb 2015) |
-| `mentions` | `gdelt_mentions` | Full support (the bridge table between Events and GKG; see [Comparison](comparison.md) for why) |
+| `mentions` | `gdelt_mentions` | Full support (the bridge table between Events and GKG; see [Related Work](comparison.md#where-gdeltforge-differs) for why) |
 | `gkg-v1` | `gdelt_gkg_v1` | Full support (legacy format, April 2013 through February 2015 as the primary feed, still published daily since) |
 | `gkg-v1-counts` | `gdelt_gkg_v1_counts` | Full support (GKG 1.0's separate, narrower "Counts" file, one row per count mention rather than per document) |
 
