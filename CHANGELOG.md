@@ -21,6 +21,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `scrape`, `convert`, `clean` and `aggregate` log "... completed." only for a run without failures. A failed run printed it just before its `Error:` line, which read as success.
 - `clean`'s and `convert`'s worker startup line no longer shows an exported `POLARS_MAX_CONCURRENT_SCANS` as "N file read(s) at once": each of their workers reads one file, so the number described nothing. `aggregate`'s line keeps it.
 - `crossref --events <dir>` reads a directory whose files type a column differently, widening it to a type every file fits. Converted monthly Events files store `Actor1Geo_Type` and `ActionGeo_Type` as Float64 and daily ones as Int64, and a directory holding both failed on whichever file disagreed with the first.
+- `sample --mode filtered` keeps each integer column's own type, with and without `--stratify`. Its reservoir held the sample in numpy, which has no nullable integers, so a column that drew a null came back Float64 (`Year_original`, `MonthYear_original` and `Day_original` from cleaned Events, for instance); it is cast back, nulls kept.
 - `sample --mode calendar` keeps each column's own type. An integer column came back as Float64 for every period whose sample drew a null in it (numpy, which held the sample, has no nullable integers), so the same column could change type between runs; it now keeps its type, nulls included.
 
 ## [0.12.0] - 2026-09-30

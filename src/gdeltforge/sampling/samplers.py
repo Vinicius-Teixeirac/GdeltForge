@@ -209,6 +209,25 @@ def _apply_reservoir_replacements(
         reservoir_cols[col] = _assign_column(arr, target_slots, accepted[col].to_numpy())
 
 
+def _restore_integer_dtypes(
+    df: pl.DataFrame, schema: dict[str, pl.DataType]
+) -> pl.DataFrame:
+    """
+    df with every integer column the reservoir turned into Float64 cast
+    back to its own type from `schema` (the dataset's, captured when the
+    reservoir filled). numpy, which holds the reservoir, has no nullable
+    integers, so a column that drew a null comes back Float64 with NaN:
+    NaN goes back to null, and the values, integers below 2**53, convert
+    exactly.
+    """
+    exprs = [
+        pl.col(c).fill_nan(None).cast(dtype)
+        for c, dtype in schema.items()
+        if c in df.columns and dtype.is_integer() and df.schema[c].is_float()
+    ]
+    return df.with_columns(exprs) if exprs else df
+
+
 def _group_rng(
     seed: int, key: Any, cache: dict[Any, np.random.Generator]
 ) -> np.random.Generator:
@@ -1443,7 +1462,9 @@ class FilteredSampler:
                 pbar.update(1)
 
         reservoir = (
-            _reservoir_to_dataframe(reservoir_cols, reservoir_schema)
+            _restore_integer_dtypes(
+                _reservoir_to_dataframe(reservoir_cols, reservoir_schema), reservoir_schema
+            )
             if reservoir_cols is not None and reservoir_schema is not None
             else pl.concat(fill_chunks) if fill_chunks
             else None
@@ -1642,7 +1663,9 @@ class FilteredSampler:
                 pbar.update(1)
 
         reservoirs: dict[Any, pl.DataFrame] = {
-            g: _reservoir_to_dataframe(cols, reservoir_schema[g])
+            g: _restore_integer_dtypes(
+                _reservoir_to_dataframe(cols, reservoir_schema[g]), reservoir_schema[g]
+            )
             for g, cols in reservoir_cols.items()
         }
         for g, chunks in fill_chunks.items():

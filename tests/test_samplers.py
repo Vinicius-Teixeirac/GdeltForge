@@ -2278,7 +2278,9 @@ class TestStratifiedSampling:
         # a numeric column upcasts to Float64 only within whichever
         # group's own reservoir actually drew a null; a sibling group
         # with no null stays Int64. Plain vertical concat raised on that
-        # disagreement instead of reconciling it.
+        # disagreement instead of reconciling it. Each group's reservoir
+        # is now cast back to the dataset's type, so the column stays
+        # Int64, null included.
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({
@@ -2293,10 +2295,31 @@ class TestStratifiedSampling:
         df = sampler.get_stratified_sample("QuadClass", n_per_group=2)
 
         assert len(df) == 4
-        assert df["NumArticles"].dtype == pl.Float64
-        assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1.0, 2.0, 3.0]
+        assert df["NumArticles"].dtype == pl.Int64
+        assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1, 2, 3]
         assert df["NumArticles"].null_count() == 1
 
+    def test_a_random_sample_keeps_integer_types_with_nulls(self, tmp_path):
+        # The reservoir's replacement phase writes nulls as NaN, which made
+        # an Int64 column Float64 (Year_original in cleaned Events).
+        folder = tmp_path / "data"
+        folder.mkdir()
+        values = [None if i % 3 == 0 else i for i in range(1, 201)]
+        pl.DataFrame({
+            "GlobalEventID": list(range(1, 201)),
+            "QuadClass": [1] * 200,
+            "NumArticles": values,
+        }).write_parquet(folder / "a.parquet")
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass", "NumArticles"], random_state=7
+        )
+        df = sampler.get_random_sample(20)
+        assert df.schema["NumArticles"] == pl.Int64
+        assert df.schema["GlobalEventID"] == pl.Int64
+        source = dict(zip(range(1, 201), values, strict=True))
+        assert all(
+            source[g] == n for g, n in df.select("GlobalEventID", "NumArticles").iter_rows()
+        )
 
 class TestStratifiedSamplingSeedReproducibility:
     """--stratify's own version of TestCalendarSamplerSeedReproducibility
