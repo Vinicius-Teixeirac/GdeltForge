@@ -580,6 +580,20 @@ class TestRunCleanCmd:
         with pytest.raises(RuntimeError, match="2 failed file.*\"Failed:\" lines above"):
             cli.run_clean_cmd({}, args)
 
+    @pytest.mark.parametrize("failed, completed", [(2, False), (0, True)])
+    def test_completed_is_logged_only_without_failures(
+        self, monkeypatch, caplog, failed, completed
+    ):
+        # A failed run ends with its Error: line; "Cleaning completed."
+        # just above it read as success.
+        monkeypatch.setattr(cli, "run_cleaner", lambda *a, **k: (8, failed))
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            try:
+                cli.run_clean_cmd({}, self._args())
+            except RuntimeError:
+                pass
+        assert any("Cleaning completed." in r.message for r in caplog.records) is completed
+
     def test_no_raise_when_nothing_failed(self, monkeypatch):
         monkeypatch.setattr(
             cli, "run_cleaner",
@@ -2447,6 +2461,16 @@ class TestInvalidExportedScanLimit:
         monkeypatch.setattr(cli, "run_convert_cmd", lambda config, args: None)
         monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "abc")
         cli.main()  # convert reads no Parquet: returns normally
+
+
+class TestUnsupportedPolars:
+    @pytest.mark.parametrize("version, warned", [
+        ("1.44.2", False), ("1.34.0", False), ("2.0.0", True), ("2.1.0rc1", True),
+    ])
+    def test_warns_under_polars_2(self, caplog, version, warned):
+        with caplog.at_level(logging.WARNING, logger=cli.logger.name):
+            cli._warn_if_unsupported_polars(version)
+        assert any("supports polars below 2.0" in r.message for r in caplog.records) is warned
 
 
 class TestLogFile:

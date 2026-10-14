@@ -2354,6 +2354,20 @@ class TestDryRunReport:
         assert list(out_dir.glob("*.parquet")) == []
         assert not (out_dir.parent / f"{out_dir.name}_runs").exists()
 
+    def test_columns_show_a_range_when_files_differ(self, tmp_path, caplog):
+        # A file the date repair can't read keeps its own columns, so files
+        # differ; one pair of numbers would describe only some of them.
+        _write_new_year_2020(tmp_path / "in")
+        path = tmp_path / "in" / "20200102.export.parquet"
+        pl.read_parquet(path).write_parquet(tmp_path / "in" / "20200103.export.parquet")
+        pl.read_parquet(path).drop("DATEADDED").write_parquet(path)
+        with caplog.at_level(logging.INFO):
+            GDELTCleaner(
+                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
+                errata=DEFAULT_ERRATA, dry_run=True, report=True,
+            ).clean_all_files()
+        assert "[dry run] columns: 8 to 9 in, 8 to 13 out" in [r.message for r in caplog.records]
+
     def test_plain_dry_run_does_not_read_the_data(self, tmp_path, caplog):
         _write_new_year_2020(tmp_path / "in")
         with caplog.at_level(logging.INFO):

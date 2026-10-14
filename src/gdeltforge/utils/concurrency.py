@@ -68,7 +68,13 @@ class WorkerPlan:
         the environment holds only what the user exported.
         """
         threads = _exported_int(POLARS_MAX_THREADS) or self.polars_threads
-        scans = _exported_int(POLARS_MAX_CONCURRENT_SCANS) or self.concurrent_scans
+        # Only for a plan that sets a scan limit (aggregate, whose workers
+        # each read many files): a clean or convert worker reads one file,
+        # so its concurrency is the worker count, whatever is exported.
+        scans = (
+            _exported_int(POLARS_MAX_CONCURRENT_SCANS) or self.concurrent_scans
+            if self.concurrent_scans is not None else None
+        )
         reads = f", {scans} file read(s) at once" if scans is not None else ""
         return f"{self.workers} worker process(es), {threads} polars thread(s) each{reads}"
 

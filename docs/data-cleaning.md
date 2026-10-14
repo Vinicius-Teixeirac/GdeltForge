@@ -155,6 +155,9 @@ clean:
 ```
 
 An unknown key or an invalid value fails the run before anything is read.
+`allow_lossy_delete_source` takes `true` or `false` only (a quoted `"no"` is
+refused); left out, or written with nothing after it (null), it means
+`false`, as every unset setting means its default.
 The settings, and a version number bumped whenever a rule changes, are part
 of each file's resumability fingerprint: changing them, or upgrading to a
 release with a changed rule, cleans the affected datasets again.
