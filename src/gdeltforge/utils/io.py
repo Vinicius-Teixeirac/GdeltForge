@@ -533,7 +533,12 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     later), and a plain per-file pl.read_parquet followed by pl.concat
     has no way to tolerate that, raising a raw "unable to append to a
     DataFrame of width X with a DataFrame of width Y" the moment two
-    such files are both pulled into --events.
+    such files are both pulled into --events. A column typed
+    differently across files is widened to a type every file fits
+    (scan_dataset_reconciled): converted monthly Events files store
+    Actor1Geo_Type and ActionGeo_Type as Float64, daily ones as Int64,
+    and a directory holding both used to fail on whichever file
+    disagreed with the first.
     """
     # A path that names neither a file nor a directory used to reach
     # pl.read_parquet below unchecked, surfacing polars' own raw,
@@ -556,14 +561,7 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
-        schema: dict[str, PolarsDataType] = {}
-        for f in files:
-            for name, dtype in pl.read_parquet_schema(f).items():
-                schema.setdefault(name, dtype)
-        return pl.concat(
-            pl.scan_parquet(f, schema=schema, missing_columns="insert").collect()
-            for f in files
-        )
+        return scan_dataset_reconciled(files).collect()
 
 
 def _fingerprint_value(value: object) -> str:
