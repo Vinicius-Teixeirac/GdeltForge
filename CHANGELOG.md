@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 - `crossref --gkg-version v2` (and `auto`) reads GKG 2.1 in two passes: first only the article URL column of every file in range (500 files per scan), then the requested columns of only the files holding a matching URL, a few files at a time (`io.max_concurrent_reads`, else 4), each batch's matching rows copied out before the next batch is read. polars kept the few rows matched in a row group as views into the whole decoded row group, so memory followed every matched file's row groups: on a real archive's day-aggregated GKG 2.1, about 3.6 GiB per GB of matching files, 55 GiB for one month and beyond 60 GiB for a quarter, with Python's own heap under 0.5 GiB. Output is unchanged, column types included: the second pass casts to the types reconciled across every file in range.
+- `sample --mode calendar` runs in two passes. The reservoir draw streams only the date column, with each row's file and position; a second pass reads the chosen rows' columns from the row groups holding them, a few row groups at a time (`io.max_concurrent_reads`, else 4), copying each one's chosen rows out before the next batch is read (kept as they were, they held the whole decoded row group: a quarter of day-aggregated GKG 2.1 ran out of 60 GiB). It used to stream every column of every row, so memory followed whole row groups of many files at once, which on aggregated files (row groups of several hundred MB for GKG 2.1) used about 2.4x the memory of the 15-minute files. Every file's footer is now read once per run; it was read twice. A given `--seed` picks the same rows, in the same order.
+
+### Fixed
+- `sample --mode calendar` keeps each column's own type. An integer column came back as Float64 for every period whose sample drew a null in it (numpy, which held the sample, has no nullable integers), so the same column could change type between runs; it now keeps its type, nulls included.
 
 ## [0.12.0] - 2026-09-30
 

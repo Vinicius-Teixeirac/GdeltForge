@@ -702,7 +702,9 @@ class TestCalendarSampler:
         # disagree on the same column's dtype this way, with nothing
         # wrong in either reservoir on its own; concatenating them with a
         # plain vertical concat raised ("type Int64 is incompatible with
-        # expected type Float64") instead of reconciling them.
+        # expected type Float64") instead of reconciling them. The sampled
+        # rows are now read back from the files, so the column keeps its
+        # own type in every period: Int64, null included.
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({
@@ -715,9 +717,71 @@ class TestCalendarSampler:
         df = sampler.get_calendar_samples(samples_per_period=2)
 
         assert len(df) == 4
-        assert df["NumArticles"].dtype == pl.Float64
-        assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1.0, 2.0, 3.0]
+        assert df["NumArticles"].dtype == pl.Int64
+        assert sorted(df["NumArticles"].drop_nulls().to_list()) == [1, 2, 3]
         assert df["NumArticles"].null_count() == 1
+
+
+class TestCalendarSamplerTwoPass:
+    """The draw runs over row identities; a second pass reads the chosen
+    rows, one row group at a time."""
+
+    def test_rows_come_back_whole_from_many_row_groups(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        source = pl.DataFrame({
+            "GlobalEventID": list(range(1, 41)),
+            "Day": [20200101] * 20 + [20200102] * 20,
+            "Actor1Name": [f"actor{i}" for i in range(1, 41)],
+            "NumArticles": [None if i % 7 == 0 else i for i in range(1, 41)],
+        })
+        source.write_parquet(folder / "a.parquet", row_group_size=3)
+        df = CalendarSampler(str(folder), random_state=3).get_calendar_samples(5)
+        assert df.height == 10
+        assert df.schema == source.schema
+        # Each sampled row is a real source row, every column intact.
+        joined = df.join(source, on="GlobalEventID", how="left", suffix="_src")
+        for column in ("Day", "Actor1Name", "NumArticles"):
+            assert joined[column].equals(joined[f"{column}_src"], null_equal=True)
+
+    def test_row_groups_are_read_a_few_at_a_time(self, tmp_path, monkeypatch):
+        # One row group at a time left a network share with a single
+        # request stream; batches of the scan limit read several at once.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        folder = tmp_path / "data"
+        folder.mkdir()
+        source = pl.DataFrame({
+            "GlobalEventID": list(range(1, 41)),
+            "Day": [20200101] * 40,
+            "Actor1Name": [f"actor{i}" for i in range(1, 41)],
+        })
+        source.write_parquet(folder / "a.parquet", row_group_size=4)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "3")
+        batches = []
+        real = samplers_module.pl.collect_all
+
+        def spy(frames, *args, **kwargs):
+            batches.append(len(frames))
+            return real(frames, *args, **kwargs)
+
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        df = CalendarSampler(str(folder), random_state=5).get_calendar_samples(40)
+        assert df.height == 40
+        assert batches == [3, 3, 3, 1]  # 10 row groups of 4 rows
+        joined = df.join(source, on="GlobalEventID", how="left", suffix="_src")
+        assert joined["Actor1Name"].equals(joined["Actor1Name_src"])
+
+    def test_columns_restrict_what_the_second_pass_reads(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3], "Day": [20200101] * 3, "Actor1Name": ["a", "b", "c"],
+        }).write_parquet(folder / "a.parquet")
+        df = CalendarSampler(
+            str(folder), random_state=1, columns={"GlobalEventID"}
+        ).get_calendar_samples(2)
+        assert set(df.columns) == {"GlobalEventID", "Day"}
 
 
 class TestCalendarSamplerSeedReproducibility:
@@ -2599,7 +2663,7 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         # The interrupt must originate from inside the loop BODY (where
         # tqdm's own generator is suspended at its yield, the same place
         # a real signal actually lands), not from the underlying
-        # _batches generator itself (still running its own frame, which
+        # _key_batches generator itself (still running its own frame, which
         # propagates normally either way and would prove nothing).
         # is_empty() is this body's own first call on each batch.
         folder = tmp_path / "data"
@@ -2608,10 +2672,10 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         sampler = CalendarSampler(str(folder), random_state=1)
         _patch_tqdm_close_to_raise_once(monkeypatch)
 
-        def fake_batches(needed_columns):
-            yield pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+        def fake_key_batches(files, file_schemas, target_schema):
+            yield pl.DataFrame({"Day": [20200101]})
 
-        monkeypatch.setattr(sampler, "_batches", fake_batches)
+        monkeypatch.setattr(sampler, "_key_batches", fake_key_batches)
 
         def is_empty_and_interrupt(self):
             raise KeyboardInterrupt("first interrupt, mid-loop")

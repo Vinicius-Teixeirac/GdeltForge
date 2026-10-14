@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 import polars as pl
+import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gdeltforge.cleaning.steps import added_columns
@@ -28,9 +29,13 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
+from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
     clearer_dataset_errors,
+    detach,
     narrow_to_available_columns,
+    read_file_schemas,
+    reconcile_file_schemas,
     reconcile_parquet_schema,
     scan_dataset_reconciled,
     scan_file_against_schema,
@@ -515,6 +520,50 @@ class IndexedSampler:
         return pl.concat(sampled)
 
 
+def _read_rows(
+    file: Path,
+    rows: np.ndarray,
+    target_schema: dict[str, pl.DataType],
+    real_schema: dict[str, pl.DataType],
+) -> pl.DataFrame:
+    """
+    The rows at positions `rows` (sorted, ascending) of one file, scanned
+    toward target_schema. Parquet decodes a row group at a time, so this
+    reads only the row groups holding a requested row, a few at a time
+    (the scan limit sample runs under, io.max_concurrent_reads, else 4):
+    memory follows those few row groups of the requested columns, never
+    the whole file. Read strictly one at a time, they left a network share
+    with a single request stream, and day-aggregated GKG 2.1 sampled no
+    faster than a full scan. Each row group's chosen rows are copied out
+    (detach): kept as they are, they would hold the whole decoded row
+    group.
+    """
+    lf = scan_file_against_schema(file, target_schema, real_schema=real_schema)
+    metadata = pq.ParquetFile(file).metadata
+    # (first row, row count, chosen positions within it) per row group read.
+    wanted: list[tuple[int, int, np.ndarray]] = []
+    start = taken = 0
+    for group in range(metadata.num_row_groups):
+        end = start + metadata.row_group(group).num_rows
+        upto = int(np.searchsorted(rows, end, side="left"))
+        if upto > taken:
+            wanted.append((start, end - start, rows[taken:upto] - start))
+            taken = upto
+        if taken == len(rows):
+            break
+        start = end
+    at_once = exported_scan_limit() or 4
+    parts = []
+    for i in range(0, len(wanted), at_once):
+        batch = wanted[i:i + at_once]
+        chunks = pl.collect_all([lf.slice(first, count) for first, count, _ in batch])
+        for chunk, (_, _, positions) in zip(chunks, batch, strict=True):
+            # Bracket indexing: DataFrame.gather() postdates polars 1.34.
+            parts.append(detach(chunk[positions]))
+        del chunks
+    return pl.concat(parts)
+
+
 # ----------------------------------------------------------
 # Calendar Sampler
 # ----------------------------------------------------------
@@ -522,8 +571,15 @@ class CalendarSampler:
     """
     Groups rows by a calendar period (day, month, or year) derived from a
     real date column, then reservoir-samples a fixed number of rows per
-    period across the flat + historical file union in a single streamed
-    scan.
+    period across the flat + historical file union, in two passes. The
+    first streams only the date column, with each row's file and
+    position, and draws every period's reservoir; the second reads the
+    chosen rows' columns from the row groups holding them. Memory then
+    follows the date column and one row group, not whole rows of every
+    file, which on aggregated files (row groups of several hundred MB)
+    is the difference that matters. The draws depend only on the order
+    rows are read in and on each period's own random stream, so the
+    first pass picks exactly the rows a single full scan would.
 
     Replaces the old DailySampler, which capped samples_per_day per
     (file, day) independently, then concatenated across files -- correct
@@ -542,6 +598,12 @@ class CalendarSampler:
     """
 
     _PERIOD_KEY = "__calendar_period_key__"
+    # The first pass's row identity: file (index into the scanned file
+    # list) and position within that file.
+    _FILE_PATH = "__calendar_file__"
+    _FILE_INDEX = "__calendar_file_index__"
+    _ROW = "__calendar_row__"
+    _ORDER = "__calendar_order__"
     # Length of the YYYYMMDD.../YYYYMMDDHHMMSS... date-column prefix that
     # identifies each period: works for both GDELT's 8-digit plain-date
     # columns (Day, GKG 1.0's Date) and 14-digit timestamp columns (GKG
@@ -583,16 +645,64 @@ class CalendarSampler:
         # from "ran and every period happened to be empty."
         self.period_row_counts_: dict[str, int] | None = None
 
-    def _batches(self, needed_columns: list[str] | None):
+    def _key_batches(
+        self,
+        files: list[Path],
+        file_schemas: dict[Path, dict[str, pl.DataType]],
+        target_schema: dict[str, pl.DataType],
+    ):
+        """
+        The first pass: batches of the date column and each row's identity
+        (file index, position within the file), in the order a full scan
+        reads them, so the draws match a full scan's exactly.
+        """
+        index = {Path(f): i for i, f in enumerate(files)}
+        rows_read = [0] * len(files)
         with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
-            files = _discover_dataset_files(
-                self.folder, self.historical_folder,
-                self.start_date, self.end_date, self.date_parser,
+            lf = scan_dataset_reconciled(
+                files,
+                target_schema={self.date_column: target_schema[self.date_column]},
+                file_schemas=file_schemas,
+                include_file_paths=self._FILE_PATH,
             )
-            lf = _scan_dataset(files)
-            if needed_columns is not None:
-                lf = lf.select(needed_columns)
-            yield from lf.collect_batches(chunk_size=64_000)
+            for batch in lf.collect_batches(chunk_size=64_000):
+                paths = batch[self._FILE_PATH]
+                to_index = {p: index[Path(p)] for p in paths.unique().to_list()}
+                file_index = paths.replace_strict(to_index, return_dtype=pl.Int64)
+                offsets = {i: rows_read[i] for i in to_index.values()}
+                keyed = batch.select(self.date_column).with_columns(
+                    file_index.alias(self._FILE_INDEX)
+                ).with_columns(
+                    (
+                        pl.int_range(pl.len()).over(self._FILE_INDEX)
+                        + pl.col(self._FILE_INDEX).replace_strict(offsets, return_dtype=pl.Int64)
+                    ).alias(self._ROW)
+                )
+                for i, n in keyed.group_by(self._FILE_INDEX).len().iter_rows():
+                    rows_read[i] += n
+                yield keyed
+
+    def _gather(
+        self,
+        files: list[Path],
+        file_schemas: dict[Path, dict[str, pl.DataType]],
+        target_schema: dict[str, pl.DataType],
+        chosen: pl.DataFrame,
+        columns: list[str],
+    ) -> pl.DataFrame:
+        """
+        The second pass: the chosen rows' `columns`, file by file, in the
+        order of `chosen`.
+        """
+        target = {c: target_schema[c] for c in columns}
+        chosen = chosen.with_row_index(self._ORDER).sort(self._FILE_INDEX, self._ROW)
+        parts = []
+        with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
+            for (file_index,), rows in chosen.group_by(self._FILE_INDEX, maintain_order=True):
+                f = files[int(file_index)]  # type: ignore[arg-type]
+                df = _read_rows(f, rows[self._ROW].to_numpy(), target, file_schemas[f])
+                parts.append(df.with_columns(rows[self._ORDER]))
+        return pl.concat(parts, how="vertical_relaxed").sort(self._ORDER).drop(self._ORDER)
 
     def _warn_before_1979(self, n_rows: int) -> None:
         """
@@ -645,7 +755,10 @@ class CalendarSampler:
                 self.folder, self.historical_folder,
                 self.start_date, self.end_date, self.date_parser,
             )
-            available = set(_scan_dataset(files).collect_schema().names())
+            # Every footer read once, for both passes.
+            file_schemas = read_file_schemas(files)
+            target_schema = reconcile_file_schemas(file_schemas)
+        available = set(target_schema)
         if self.date_column not in available:
             raise ValueError(
                 f"{self.date_column!r} is not a column in any file under {self.folder}"
@@ -661,9 +774,8 @@ class CalendarSampler:
         # way as a genuine required column for that reason (already
         # confirmed present just above, so this can never raise on it).
         # self.columns being unset (no explicit --columns) needs no
-        # narrowing at all: _batches leaves the projection off entirely
-        # and just reads whatever a file actually has, the same as it
-        # always did before this existed.
+        # narrowing at all: the second pass then reads every column of
+        # the dataset's reconciled schema.
         needed = (
             narrow_to_available_columns(
                 logger, f"calendar sample dataset in {self.folder}",
@@ -686,10 +798,11 @@ class CalendarSampler:
         # bare "for x in tqdm(...):" can leak a stray KeyboardInterrupt
         # traceback fragment to stderr on a real interrupt, and why an
         # outer "with tqdm(...) as pbar:" alone doesn't fix it either.
-        # total=None (self._batches is a generator with no cheap upfront
-        # count): the bar still shows a live count/rate, just no percent.
+        # total=None (the batches come from a generator with no cheap
+        # upfront count): the bar still shows a live count/rate, just no
+        # percent.
         with tqdm(total=None, desc="Sampling (calendar)") as pbar:
-            for df_batch in self._batches(needed):
+            for df_batch in self._key_batches(files, file_schemas, target_schema):
                 if df_batch.is_empty() or self.date_column not in df_batch.columns:
                     pbar.update(1)
                     continue
@@ -730,7 +843,9 @@ class CalendarSampler:
                 for (period_key,), group_df in keyed_batch.group_by(
                     self._PERIOD_KEY, maintain_order=True
                 ):
-                    group_df   = group_df.drop([self._PERIOD_KEY])
+                    # The reservoir holds row identities; the second pass
+                    # reads the rows themselves.
+                    group_df   = group_df.select(self._FILE_INDEX, self._ROW)
                     group_size = len(group_df)
 
                     if period_key not in total_seen:
@@ -801,19 +916,15 @@ class CalendarSampler:
         if not reservoirs:
             return pl.DataFrame()
 
-        # vertical_relaxed, not the plain vertical default: each period's
-        # reservoir is typed independently by _reservoir_to_dataframe, and
-        # _apply_reservoir_replacements/_assign_column upcasts a numeric
-        # column from Int64 to Float64 the moment a null lands in THAT
-        # period's own reservoir. Two periods can legitimately disagree on
-        # the same column's dtype this way, one Int64 (no null ever drawn
-        # into it), the other Float64 (one was), with nothing wrong in
-        # either reservoir on its own; plain vertical concat then raises
-        # ("type Int64 is incompatible with expected type Float64")
-        # instead of reconciling them. Confirmed directly against
-        # events-reduced's SourceGeoType/TargetGeoType columns, which hit
-        # this deterministically at real scale.
-        return pl.concat(list(reservoirs.values()), how="vertical_relaxed")
+        # The reservoirs hold row identities, in period order and, within
+        # a period, in reservoir slot order; the second pass reads those
+        # rows, in that order, with the dataset's own column types (a
+        # numeric column with a null keeps its type: the old reservoir of
+        # data columns turned it into Float64 for the periods that drew a
+        # null).
+        chosen = pl.concat(list(reservoirs.values()))
+        columns = needed if needed is not None else list(target_schema)
+        return self._gather(files, file_schemas, target_schema, chosen, columns)
 
 
 # ----------------------------------------------------------
