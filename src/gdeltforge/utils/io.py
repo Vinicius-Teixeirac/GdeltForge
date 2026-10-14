@@ -922,7 +922,26 @@ def scan_file_against_schema(
     return lf.with_columns(casts) if casts else lf
 
 
-def scan_dataset_reconciled(files: list[Path]) -> pl.LazyFrame:
+def detach(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    A copy of `df` that shares no buffer with the data it was read from.
+
+    polars (1.x) keeps the rows a filter or an index selects as views into
+    the decoded row group they came from, string columns above all, so a
+    few rows kept from a scan hold the whole row group's memory for as long
+    as they live: on a real GKG 2.1 archive, 1,210 rows (18.5 MiB) held
+    12.6 GiB. rechunk(), shrink_to_fit() and dtype round-trips keep the
+    views; an Arrow round-trip writes the values out and drops them. Call
+    it on every small result kept while a large scan goes on.
+    """
+    out = pl.from_arrow(df.to_arrow())
+    assert isinstance(out, pl.DataFrame)
+    return out
+
+
+def scan_dataset_reconciled(
+    files: list[Path], target_schema: dict[str, pl.DataType] | None = None
+) -> pl.LazyFrame:
     """
     Lazily scan every file in `files` as one dataset, reconciling both a
     column missing entirely from some files (pre-existing: comes back
@@ -949,15 +968,22 @@ def scan_dataset_reconciled(files: list[Path]) -> pl.LazyFrame:
     already relies on elsewhere for the identical Int64/Float64 shape).
     That fallback only costs the files actually affected, in practice a
     small minority sitting right at a real historical dtype boundary.
+
+    target_schema, when given, is the schema to scan toward in place of
+    the one reconciled from `files` alone: a caller reading a subset of a
+    dataset (crossref's second pass, which reads only the files that
+    matched) passes the whole dataset's reconciled schema, so a column's
+    dtype doesn't depend on which files happened to match.
     """
     file_schemas = _file_schemas(files)
-    target_schema = reconcile_file_schemas(file_schemas)
+    if target_schema is None:
+        target_schema = reconcile_file_schemas(file_schemas)
 
-    conflicting = {
-        name
-        for name in target_schema
-        if len({schema[name] for schema in file_schemas.values() if name in schema}) > 1
-    }
+    conflicting = any(
+        name in schema and schema[name] != dtype
+        for schema in file_schemas.values()
+        for name, dtype in target_schema.items()
+    )
 
     if not conflicting:
         return pl.scan_parquet(files, schema=target_schema, missing_columns="insert")

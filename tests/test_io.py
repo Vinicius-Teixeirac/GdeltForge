@@ -17,6 +17,7 @@ from gdeltforge.utils.io import (
     clearer_dataset_errors,
     config_fingerprint,
     delete_done_marker,
+    detach,
     is_marked_done,
     mark_done,
     narrow_to_available_columns,
@@ -681,6 +682,19 @@ class TestOrphanedTempFileCleanup:
             "the orphan should be cleaned up by the later run"
         )
         assert pl.read_parquet(tmp_path / "out.parquet")["GlobalEventID"].to_list() == [1, 2, 3]
+
+
+class TestDetach:
+    def test_keeps_values_and_types(self):
+        import datetime
+
+        df = pl.DataFrame({
+            "i": [1, None], "s": ["a", None], "d": [datetime.date(2020, 1, 1), None],
+            "l": [[1], [2, 3]], "c": pl.Series(["x", "y"], dtype=pl.Categorical),
+        })
+        out = detach(df)
+        assert out.schema == df.schema
+        assert out.equals(df)
 
 
 class TestReadParquetPath:

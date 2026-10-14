@@ -98,8 +98,10 @@ from gdeltforge.scraping.scraper import (
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
+from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
     clearer_dataset_errors,
+    detach,
     narrow_to_available_columns,
     scan_dataset_reconciled,
 )
@@ -539,6 +541,54 @@ def warn_if_directory_is_large(
 _MAX_EXPLODED_ROWS_PER_STEP = 200_000
 
 
+def _files_per_batch() -> int:
+    """
+    How many files a lookup's second pass reads at once: the scan limit
+    sample/crossref run under (POLARS_MAX_CONCURRENT_SCANS, set from
+    io.max_concurrent_reads), else 4. Each batch's row groups are held
+    until its matches are copied out, so this bounds the pass's memory.
+    """
+    return exported_scan_limit() or 4
+
+
+# Files per scan in a lookup's first pass (_files_with_matches). It reads
+# one string column, so a batch's memory is small; 500 files held about
+# 0.8 GB in a lab measurement's growth rate, against 14 GiB for a quarter
+# of 15-minute files in one scan.
+_FIRST_PASS_FILES = 500
+
+
+def _files_with_matches(files: list[Path], column: str, values: set[str]) -> list[Path]:
+    """
+    The first pass of a two-pass lookup: the files in `files` holding a
+    row whose `column` (a string column every file has) is in `values`,
+    in their original order. It reads that one column of every file and
+    nothing else, so a lookup's second pass decodes the other columns of
+    the matching files only. One column, with one dtype everywhere, also
+    keeps the scan on polars' single multi-file path even when other
+    columns' dtypes differ across files (see scan_dataset_reconciled).
+
+    The files are scanned _FIRST_PASS_FILES at a time: one scan over every
+    file held about 1.65 MB per file read until it finished (14 GiB over a
+    quarter's 8,725 15-minute GKG 2.1 files), so memory grew with the
+    period. Each batch keeps only the names of its matching files.
+    """
+    matched: set[Path] = set()
+    for i in range(0, len(files), _FIRST_PASS_FILES):
+        hits = (
+            pl.scan_parquet(
+                files[i:i + _FIRST_PASS_FILES], schema={column: pl.String},
+                extra_columns="ignore", include_file_paths="__gdeltforge_file",
+            )
+            .filter(pl.col(column).is_in(values))
+            .select("__gdeltforge_file")
+            .unique()
+            .collect()
+        )
+        matched.update(Path(f) for f in hits["__gdeltforge_file"].to_list())
+    return [f for f in files if Path(f) in matched]
+
+
 def _iter_row_slices_bounded_by_explosion(
     df: pl.DataFrame, list_col: str, max_exploded: int
 ):
@@ -922,20 +972,40 @@ def crossref_events_gkg_v2(
     if not urls:
         return empty_result()
 
-    # Hop 2: GKG 2.1, filter-pushdown on the document URL: again a real
-    # predicate pushed down into the scan, so only rows for articles
-    # actually mentioning one of these events get read off disk.
-    # gkg_lf/read_gkg_columns were already resolved above, alongside
-    # mentions' own schema, so this reuses them rather than re-opening
-    # the dataset and re-narrowing the same column list a second time.
+    # Hop 2: GKG 2.1, by document URL, in two passes (see
+    # _files_with_matches). The URLs are effectively random strings, so
+    # row-group statistics can't skip anything: a single scan decoded
+    # every requested column of every file to find a few rows, and over
+    # a quarter of a real archive whose files disagree on V2.1DATE's
+    # dtype it peaked above 100 GB. read_gkg_columns and gkg_schema were
+    # resolved above, over every file, so the second pass casts the
+    # matched files to the whole dataset's dtypes.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
-        gkg_df = (
-            gkg_lf
-            .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
-            .select(read_gkg_columns)
-            .collect()
+        matched_files = _files_with_matches(gkg_v2_files, "V2DOCUMENTIDENTIFIER", urls)
+        if not matched_files:
+            return empty_result()
+        logger.info(
+            f"{len(matched_files)} of {len(gkg_v2_files)} GKG 2.1 file(s) hold a match; "
+            f"reading their rows."
         )
+        # A few files at a time, each batch's matches copied out (detach)
+        # before the next batch is read: kept rows otherwise hold the whole
+        # row group they came from, and a realistic sample matches nearly
+        # every file, so memory followed every matched file's row groups.
+        batch = _files_per_batch()
+        parts = [
+            detach(
+                scan_dataset_reconciled(
+                    matched_files[i:i + batch], target_schema=dict(gkg_schema)
+                )
+                .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
+                .select(read_gkg_columns)
+                .collect()
+            )
+            for i in range(0, len(matched_files), batch)
+        ]
+        gkg_df = pl.concat(parts, how="vertical_relaxed")
 
     if gkg_df.is_empty():
         return empty_result()
