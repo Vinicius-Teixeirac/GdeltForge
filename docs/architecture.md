@@ -12,7 +12,7 @@ GdeltForge follows a **single-responsibility, single-stage execution model**: ea
 | `sample` | reproducibly sample from Parquet files |
 | `crossref` | join a sampled Events output back onto GKG |
 
-This is intentionally transparent and low-magic:
+Each stage is explicit:
 
 - every operation is explicit
 - no hidden steps

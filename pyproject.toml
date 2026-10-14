@@ -1,21 +1,23 @@
 [project]
 name = "gdeltforge"
 dynamic = ["version"]
-description = "Forges the raw GDELT archive into clean, reproducibly-sampled, cross-referenced Parquet"
+description = "Reproducible sampling and cross-referencing of the full GDELT archive, on one machine"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
-    { name = "Vinícius Teixeira", email = "vinicius.teixeira.carvalho@usp.br" },
+    { name = "Vinícius Teixeira Carvalho Freitas", email = "vinicius.teixeira.carvalho@usp.br" },
 ]
 keywords = [
     "gdelt",
     "events",
+    "event-data",
+    "political-events",
     "data-pipeline",
-    "etl",
     "parquet",
     "sampling",
-    "data-engineering",
+    "reproducibility",
+    "computational-social-science",
     "web-scraping",
 ]
 classifiers = [

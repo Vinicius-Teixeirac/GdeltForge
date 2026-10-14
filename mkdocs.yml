@@ -1,5 +1,5 @@
 site_name: GdeltForge
-site_description: Forges the raw GDELT archive into clean, reproducibly-sampled, cross-referenced Parquet
+site_description: Reproducible sampling and cross-referencing of the full GDELT archive, on one machine
 site_url: https://vinicius-teixeirac.github.io/GdeltForge/
 repo_url: https://github.com/Vinicius-Teixeirac/GdeltForge
 repo_name: GdeltForge
@@ -77,7 +77,7 @@ nav:
       - Architecture: architecture.md
       - Data Cleaning: data-cleaning.md
       - Sampling Theory: sampling-theory.md
-      - Comparison to Other Tools: comparison.md
+      - Related Work: comparison.md
   - Guides:
       - Recipes: recipes.md
   - Reference:
@@ -90,3 +90,4 @@ nav:
       - Known Absent Files: known-absent-files.md
   - Project:
       - Limitations & Roadmap: limitations-and-roadmap.md
+      - About: about.md

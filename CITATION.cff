@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If GdeltForge contributes to published work, please cite it as below, and cite the GDELT Project, whose data it processes."
+title: "GdeltForge: reproducible sampling and cross-referencing of the full GDELT archive"
+type: software
+authors:
+  - family-names: Freitas
+    given-names: Vinícius Teixeira Carvalho
+    affiliation: "Instituto de Ciências Matemáticas e de Computação (ICMC), Universidade de São Paulo, São Carlos, Brazil"
+repository-code: "https://github.com/Vinicius-Teixeirac/GdeltForge"
+url: "https://vinicius-teixeirac.github.io/GdeltForge/"
+license: Apache-2.0
+keywords:
+  - gdelt
+  - event-data
+  - political-events
+  - sampling
+  - reproducibility
+  - computational-social-science
