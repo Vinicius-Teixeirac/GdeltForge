@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.13.0] - 2026-10-14
 
 ### Changed
 - The documentation describes GdeltForge as the research tool it was written as. The home page and README open with the problem it addresses (reproducible, stated-design samples of the full archive) in place of a product pitch; "Comparison to Other Tools" becomes "Related Work", describing each tool by what it is designed for; a new About page gives the research background and the design decisions that came from it, with how to cite GdeltForge and GDELT. A `CITATION.cff` is added. The package description, keywords and author name are updated to match.
