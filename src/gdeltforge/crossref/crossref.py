@@ -785,6 +785,7 @@ def crossref_events_gkg_v2(
     dedupe_mentions: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
+    date_parser: Callable[[str], tuple[date | None, date | None]] = parse_gdeltv2_file_date,
 ) -> pl.DataFrame:
     """
     Two-hop join for GKG 2.1, which carries no event id:
@@ -860,8 +861,11 @@ def crossref_events_gkg_v2(
     # than each independently re-listing and re-date-filtering the same
     # directory (see warn_if_directory_is_large's own docstring for the
     # doubled-I/O bug this closes).
-    mentions_files = _list_files(mentions_folder, parse_gdeltv2_file_date, start_date, end_date)
-    gkg_v2_files = _list_files(gkg_v2_folder, parse_gdeltv2_file_date, start_date, end_date)
+    # date_parser reads the files' names for --start-date/--end-date:
+    # 15-minute names by default, parse_file_date for `aggregate`'s plain
+    # 20200101.parquet / 202001.parquet / 2020.parquet.
+    mentions_files = _list_files(mentions_folder, date_parser, start_date, end_date)
+    gkg_v2_files = _list_files(gkg_v2_folder, date_parser, start_date, end_date)
     warn_if_directory_is_large(mentions_files, mentions_folder, "Mentions", start_date, end_date)
     warn_if_directory_is_large(gkg_v2_files, gkg_v2_folder, "GKG 2.1", start_date, end_date)
 

@@ -655,11 +655,30 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
 def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     start_date, end_date = _parse_date_range(args)
 
+    if args.source == "aggregated" and args.gkg_version != "v2":
+        raise ValueError(
+            f"--source aggregated applies to --gkg-version v2 only: GKG 1.0 isn't published "
+            f"at 15-minute cadence, so `gdeltforge aggregate` has nothing of it to combine. "
+            f"Use --gkg-version v2, or --source cleaned/converted for {args.gkg_version}."
+        )
+    period = getattr(args, "period", None)
+    if period is not None and args.source != "aggregated":
+        raise ValueError(
+            "--period only applies with --source aggregated: it picks which of the "
+            "day/month/year aggregated directories crossref reads."
+        )
+
     events_df = read_parquet_path(args.events)
     columns = set(args.columns) if args.columns else None
     source_key = (
         "cleaned_data_directory" if args.source == "cleaned" else "parquet_data_directory"
     )
+    date_parser_kwargs = {}
+    if args.source == "aggregated":
+        # Both hops read `gdeltforge aggregate`'s output for --period
+        # (default day), whose files are named plainly (20200101.parquet).
+        source_key = f"aggregated_{period or 'day'}_data_directory"
+        date_parser_kwargs = {"date_parser": parse_file_date}
     if args.source == "converted":
         for joined in ("gdelt_gkg_v1", "gdelt_gkg_v1_counts", "gdelt_mentions", "gdelt_gkg_v2"):
             folder = config["paths"].get(dataset_path_key(joined, source_key))
@@ -723,6 +742,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             dedupe_mentions=args.collapse_duplicate_mentions,
             start_date=start_date,
             end_date=end_date,
+            **date_parser_kwargs,
         )
     else:
         # --on-duplicate-document/--collapse-duplicate-mentions are both
@@ -1282,10 +1302,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     crossref.add_argument(
         "--source",
-        choices=["cleaned", "converted", "filtered"],
+        choices=["cleaned", "converted", "aggregated", "filtered"],
         default="cleaned",
         help="Which stage's GKG/Mentions output to read from (default: cleaned; "
+             "'aggregated' reads `gdeltforge aggregate`'s output, --gkg-version v2 only; "
              "'filtered' is a deprecated alias of 'cleaned')"
+    )
+    crossref.add_argument(
+        "--period",
+        choices=["day", "month", "year"],
+        default=None,
+        help="With --source aggregated: which of the day/month/year aggregated "
+             "directories to read (default day)"
     )
     crossref.add_argument(
         "--columns",

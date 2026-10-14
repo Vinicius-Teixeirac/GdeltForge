@@ -1403,6 +1403,26 @@ class TestCrossrefEventsGkgV2TwoPass:
         assert result["GKG_V2.1DATE"].dtype == pl.Float64
         assert sorted(result["GKG_V2.1DATE"].to_list()) == [20200101000000.0, 20200101003000.0]
 
+    def test_a_date_parser_reads_aggregated_file_names(self, tmp_path):
+        # aggregate writes 20200101.parquet; --start-date/--end-date must
+        # read that name with parse_file_date.
+        from gdeltforge.scraping.scraper import parse_file_date
+
+        events, mentions, gkg = self._setup(tmp_path)
+        for folder in (Path(mentions), Path(gkg)):
+            frames = [pl.read_parquet(f) for f in sorted(folder.glob("*.parquet"))]
+            for f in folder.glob("*.parquet"):
+                f.unlink()
+            pl.concat(frames, how="vertical_relaxed").write_parquet(folder / "20200101.parquet")
+            pl.concat(frames, how="vertical_relaxed").head(0).write_parquet(
+                folder / "20200105.parquet"
+            )
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"],
+            start_date=date(2020, 1, 1), end_date=date(2020, 1, 2), date_parser=parse_file_date,
+        )
+        assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
+
     def test_no_matching_file_returns_the_empty_result(self, tmp_path):
         events, mentions, gkg = self._setup(tmp_path)
         for f in Path(gkg).glob("*.parquet"):
