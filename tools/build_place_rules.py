@@ -11,11 +11,14 @@ and every per-combination decision that can be a join is one; only the
 noise combinations are decided row by row.
 """
 
+import csv
+import hashlib
 import json
 import math
 import os
 import re
 import unicodedata
+from pathlib import Path
 
 import polars as pl
 
@@ -36,7 +39,12 @@ PRECEDENCE = {"country": 0, "state": 1, "gnis": 2, "gns": 3}
 # bump it whenever a rule changes, so data resolved under the old table is
 # cleaned again. A rebuild from a longer archive under the same rules
 # changes the source it records, and the fingerprint with it.
-TABLE_VERSION = 1
+TABLE_VERSION = 2
+# The repairs of the region names GDELT's encoding damaged, decided by
+# build_place_name_repairs.py from NGA's GEOnet Names Server; version 2
+# added them.
+NAME_REPAIRS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "place_name_repairs.csv")
 
 Point = tuple[float, float]
 
@@ -228,6 +236,11 @@ def build_places(combos_path: str, out_dir: str) -> None:
                          pl.coalesce("new_lon", "lon6").alias("place_lon")))
     dom = dom.join(_canonical_names(t), on="root", how="left").with_columns(
         pl.coalesce("canonical_name", "main_name").alias("place_name"))
+    repairs = _name_repairs()
+    repaired_names = dom["place_name"].map_elements(
+        lambda n: _repaired(n, repairs), return_dtype=pl.String)
+    names_repaired = int((repaired_names != dom["place_name"]).fill_null(False).sum())
+    dom = dom.with_columns(repaired_names.alias("place_name"))
 
     # Place ids: GDELT's own FeatureID. Where one ID names places in two
     # gazetteers, the reading first in PRECEDENCE keeps it and the other
@@ -276,6 +289,11 @@ def build_places(combos_path: str, out_dir: str) -> None:
         "geo_values": int(t["values"].sum()),
         "places": places.height,
         "rows": table.height,
+        "name_repairs": {
+            "file": os.path.basename(NAME_REPAIRS),
+            "sha256": repairs_digest(NAME_REPAIRS),
+            "names_repaired": names_repaired,
+        },
     }
     os.makedirs(out_dir, exist_ok=True)
     table.write_parquet(os.path.join(out_dir, "places.parquet"), compression="zstd",
@@ -403,6 +421,42 @@ def _medians(rows: pl.DataFrame, part: pl.Expr) -> dict:
     agg = keyed.group_by("k").agg(pl.col("Lat").median(), pl.col("Long").median(),
                                   pl.len().alias("n"))
     return {k: (la, lo, n) for k, la, lo, n in agg.iter_rows()}
+
+
+def repairs_digest(path: str) -> str:
+    """sha256 of the repair file's text with its line endings read as LF,
+    so a checkout that converts them (git's core.autocrlf) keeps the
+    digest the table records."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _name_repairs() -> dict[tuple[str, str], str]:
+    """(country, damaged region part) -> repaired part, from NAME_REPAIRS."""
+    with open(NAME_REPAIRS, encoding="utf-8", newline="") as f:
+        return {(r["country"], r["damaged"]): r["repaired"] for r in csv.DictReader(f)}
+
+
+def _repaired(name: str | None, repairs: dict[tuple[str, str], str]) -> str | None:
+    """name with each damaged region part replaced by its repair. A damaged
+    part without one, or damage in the place's own name, stops the build:
+    a rebuild from new data has to bring its own reviewed repairs."""
+    from build_place_name_repairs import country_of, damaged_segments, is_damaged  # noqa: PLC0415
+
+    if name is None:
+        return None
+    parts = name.split(", ")
+    if is_damaged(parts[0]):
+        raise SystemExit(f"damaged place name {name!r}: only region names have repairs")
+    damaged = damaged_segments(name)
+    if not damaged:
+        return name
+    country = country_of(name) or parts[-1]
+    for seg in damaged:
+        if (country, seg) not in repairs:
+            raise SystemExit(f"no repair for {seg!r} ({country}) in {NAME_REPAIRS}: run "
+                             f"build_place_name_repairs.py")
+    fixed = [repairs.get((country, p), p) if i else p for i, p in enumerate(parts)]
+    return ", ".join(fixed)
 
 
 def _canonical_names(t: pl.DataFrame) -> pl.DataFrame:

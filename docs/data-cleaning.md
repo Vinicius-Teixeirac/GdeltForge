@@ -387,7 +387,9 @@ used there, as witnesses; the lookup key is the point alone, and no
 7. **The canonical name** is the name written most for the place in the
    latest era it was written in (2015 on, or its own last years if it
    ends earlier), leaving out names with `?` or the Unicode replacement
-   character, which mark a broken encoding.
+   character, which mark a broken encoding. Where every name a place was
+   written with is damaged, its region part is repaired (see
+   [Names GDELT's encoding damaged](#names-gdelts-encoding-damaged)).
 8. **A point without a location** names a place when its `FeatureID` does:
    read in the gazetteer its `Type` says (or, untyped, in the only one that
    has the ID), it is a feature with a real point, and every point of that
@@ -402,6 +404,53 @@ Of all 2.61 billion geo values, 85.7% resolve to a place; 12.8% get a
 different `FeatureID` (mostly `0` becoming its country or state); 3.8% of
 all values (4.5% of those resolved) move more than 1 km. A point GDELT got
 right stays where it is.
+
+### Names GDELT's encoding damaged
+
+GDELT encoded its place names to Windows-1252 and read them back as
+Latin-1. A letter Windows-1252 lacks became `?` ("Ḩalab" is written
+"?alab", "Nghệ An" "Ngh? An"), and one it has outside Latin-1 became an
+invisible control character (`\x9a` for š in "Pre\x9aovský"). In some
+Vietnamese names the letters after a surviving accented one were lost too
+("Bình Thuận" is written "Bì Thu?n"). GDELT never writes these names
+undamaged anywhere in the archive, so no rule above can pick a clean
+spelling: "Ar Riya?" alone is written 1,856,810 times in `ActionGeo`.
+
+The damage is only ever in the region part of a name (the first-level
+administrative division, between the place's own name and its country):
+167 distinct region strings in 24 countries, in the names of 10,506 places
+(25,195,226 geo values, 1.13% of those resolved). The table repairs each
+of them, in this order:
+
+| Repair | Regions | How |
+|---|---|---|
+| Control characters | 87 | Each is read back as its Windows-1252 letter: lossless, no source needed |
+| Exact replay | 35 | A name of one division in NGA's GEOnet Names Server (GNS), written the way GDELT wrote names, equals GDELT's string |
+| One division fits | 37 | GDELT could have written the names of exactly one GNS division so: each `?` a letter Windows-1252 lacks, the other letters equal or without the accents GDELT's source left out |
+| Reviewed by hand | 8 | Two GNS divisions fit (a district and a city both named Lənkəran), or GNS no longer holds the spelling GDELT's source used; each row names the division and the reason |
+
+GNS is the gazetteer GDELT's world place IDs come from. A repaired name
+takes GNS's full spelling, diacritics included ("Ḩalab", "Hà Nội"); where
+the spelling GDELT's source used isn't in GNS any more, it takes the
+division's approved name. The `*` and `**` GDELT ends some division names
+with ("Yerevan*", "Ajaria**") aren't damage, and stay. Repairs change only
+the region part of a name, never the place's own name, its ID or its
+point.
+
+Every repair is listed, with the GNS feature (UFI) it cites, in
+`tools/place_name_repairs.csv` in the repository; the hand-reviewed ones
+also in `tools/place_name_repairs_manual.csv`, with their reasons. The GNS
+files were downloaded on 2026-10-14; `tools/place_name_sources.json`
+records each one's URL and sha256, and the table's metadata records the
+repair file's sha256. `tools/build_place_name_repairs.py` decides the
+repairs again from those files.
+
+> Toponymic information is based on the Geographic Names Database,
+> containing official standard names approved by the United States Board
+> on Geographic Names and maintained by the National Geospatial-Intelligence
+> Agency. More information is available at the Resources link at
+> www.nga.mil. The National Geospatial-Intelligence Agency name, initials,
+> and seal are protected by 10 United States Code § Section 425.
 
 ### What it never does
 
@@ -436,7 +485,8 @@ archive it was built from) is part of the resumability fingerprint, so a
 gdeltforge release with a rebuilt table resolves every file again.
 
 The table is rebuilt from a converted Events archive with
-`tools/build_place_table.py` in the repository, a maintainer tool.
+`tools/build_place_table.py` in the repository, a maintainer tool. A
+rebuild stops at any damaged name without a reviewed repair.
 
 ## Derive: added columns
 

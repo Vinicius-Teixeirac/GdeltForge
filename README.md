@@ -632,3 +632,5 @@ Author: Vinícius Teixeira Carvalho Freitas, Instituto de Ciências Matemáticas
 ## Data Attribution
 
 GdeltForge processes data published by [the GDELT Project](https://www.gdeltproject.org/), which makes it available for unlimited and unrestricted use, provided any use or redistribution includes a citation and a link to their site. GdeltForge itself is an independent, unofficial tool, not affiliated with, endorsed by, or sponsored by the GDELT Project.
+
+The place table's repaired region names (see [Data Cleaning](https://vinicius-teixeirac.github.io/GdeltForge/data-cleaning/#names-gdelts-encoding-damaged)) come from NGA's GEOnet Names Server. Toponymic information is based on the Geographic Names Database, containing official standard names approved by the United States Board on Geographic Names and maintained by the National Geospatial-Intelligence Agency. More information is available at the Resources link at www.nga.mil. The National Geospatial-Intelligence Agency name, initials, and seal are protected by 10 United States Code § Section 425.

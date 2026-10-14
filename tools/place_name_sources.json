@@ -1,0 +1,82 @@
+{
+  "citation": "Toponymic information is based on the Geographic Names Database, containing official standard names approved by the United States Board on Geographic Names and maintained by the National Geospatial-Intelligence Agency. More information is available at the Resources link at www.nga.mil. The National Geospatial-Intelligence Agency name, initials, and seal are protected by 10 United States Code § Section 425.",
+  "files": {
+    "Azerbaijan.zip": {
+      "downloaded": "2026-10-14T22:30:35+00:00",
+      "sha256": "8b383c9ab03233c64665eb6535a7092f39695f0a3cf8d597714f7100ebd517ed",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Azerbaijan.zip"
+    },
+    "Bahrain.zip": {
+      "downloaded": "2026-10-14T22:30:36+00:00",
+      "sha256": "268d1a54b96c916e9b22096c1be496c0c4b1c3cdd88fde3758135c8c5eb72a78",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Bahrain.zip"
+    },
+    "Cambodia.zip": {
+      "downloaded": "2026-10-14T22:30:38+00:00",
+      "sha256": "d6f7f3ac5524200febbbe853cc1254eda29ae3852925767fb04290a80e9ed514",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Cambodia.zip"
+    },
+    "Egypt.zip": {
+      "downloaded": "2026-10-14T22:30:41+00:00",
+      "sha256": "9e8a311c3de11b0973ef6450429d6e3611396690e4878d1b81eee906736cf22d",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Egypt.zip"
+    },
+    "Iran.zip": {
+      "downloaded": "2026-10-14T22:30:55+00:00",
+      "sha256": "4530c4a35e4ee46e46df8333eac95cbd7245578a9417a4091bfd3c2b32ea1861",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Iran.zip"
+    },
+    "Iraq.zip": {
+      "downloaded": "2026-10-14T22:31:10+00:00",
+      "sha256": "c021cc367c7e36449ba8ebb87e413710787f409743cc448789e12ed15c75b676",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Iraq.zip"
+    },
+    "Israel.zip": {
+      "downloaded": "2026-10-14T22:31:13+00:00",
+      "sha256": "4d97b6f173064dbab122f0366ef733127d7a4e8e342b7a22c6dc36d5c30fdfda",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Israel.zip"
+    },
+    "Kuwait.zip": {
+      "downloaded": "2026-10-14T22:31:14+00:00",
+      "sha256": "0fd555a9f65795d060f33c73aa8c845cfd42c7c5cfd0005420fd42948766c282",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Kuwait.zip"
+    },
+    "Qatar.zip": {
+      "downloaded": "2026-10-14T22:31:15+00:00",
+      "sha256": "0c0c91161787ef395b48bd7661e0605142e5f119b68d4351816837bd3c6c5991",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Qatar.zip"
+    },
+    "Saudi Arabia.zip": {
+      "downloaded": "2026-10-14T22:31:18+00:00",
+      "sha256": "7d30c3dd2a877fc0aac3a5b60191f6072e49b6cac5bf0b41ad125a6aa0023b74",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Saudi%20Arabia.zip"
+    },
+    "Sudan.zip": {
+      "downloaded": "2026-10-14T22:31:20+00:00",
+      "sha256": "d914e8d48edba4c367e5f70ac50c54c241760c4e8ecad338d7a676280d7a8d70",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Sudan.zip"
+    },
+    "Syria.zip": {
+      "downloaded": "2026-10-14T22:31:23+00:00",
+      "sha256": "8d795c3e07c6ea5a061fe6c46a4c8540d878473a1bd22291c664db44f3882f94",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Syria.zip"
+    },
+    "Vietnam.zip": {
+      "downloaded": "2026-10-14T22:31:26+00:00",
+      "sha256": "88d32ac100f466158654a79659b1b3579e9cb9228239650b47ecf96130ba24b7",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Vietnam.zip"
+    },
+    "Yemen.zip": {
+      "downloaded": "2026-10-14T22:31:31+00:00",
+      "sha256": "4664b80c5a3ec419f924e01c428bebf6a69cc11765cf32e0145f8a07861c18e2",
+      "url": "https://geonames.nga.mil/geonames/GNSData/Yemen.zip"
+    }
+  },
+  "repairs": {
+    "cp1252": 87,
+    "folded": 37,
+    "manual": 8,
+    "replay": 35
+  },
+  "source": "NGA GEOnet Names Server (GNS)"
+}

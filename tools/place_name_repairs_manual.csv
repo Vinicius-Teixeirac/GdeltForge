@@ -1,0 +1,9 @@
+country,damaged,repaired,gns_ufi,gns_name_type,evidence
+Azerbaijan,?li Bayramli*,Əli Bayramlı*,334312,V,"GNS division 334312, the city approved as Şirvan, lists the variant Əli Bayramlı Şəhəri; GDELT names city divisions without the generic Şəhəri and marks them '*' (Gəncə*, Xankəndi*, Mingəçevir* match GNS city divisions only)"
+Azerbaijan,L?nk?ran,Lənkəran,-2707477,N,"GNS names two divisions Lənkəran: the district (-2707477) and the city (334314); GDELT marks city divisions '*', so the unmarked name is the district"
+Azerbaijan,L?nk?ran*,Lənkəran*,334314,N,"GNS names two divisions Lənkəran: the district (-2707477) and the city (334314); GDELT marks city divisions '*', so the marked name is the city"
+Azerbaijan,Q?x,Qax,-2706463,N,"GNS's only division whose names fit apart from the '?' (Qax, Qax Rayonu); the '?' stands for a letter Windows-1252 lacks, a spelling GNS no longer holds, so the repair takes the approved name"
+Azerbaijan,S?ki,Şəki,-2708529,N,"GNS names two divisions Şəki: the district (-2708529) and the city (334326); GDELT marks city divisions '*', so the unmarked name is the district"
+Azerbaijan,S?ki*,Şəki*,334326,N,"GNS names two divisions Şəki: the district (-2708529) and the city (334326); GDELT marks city divisions '*', so the marked name is the city"
+Iran,Kohgiluyeh va Buyer A?mad,Kohgīlūyeh va Bowyer Aḩmad,-3071733,N,"GNS division -3071733 lists Ostān-e Kohgīlūyeh va Būyer Aḩmad; GDELT's source spelled Būyer without the Ostān-e prefix, a name GNS no longer holds, so the repair takes the approved name"
+"Vietnam, Republic Of",Ðc L?k,Đắk Lắk,-3711947,N,"GNS division -3711947 lists Tỉnh Đắc Lắk and Tỉnh Đắc Lắc; GDELT's source spelled Đắc Lắk without the Tỉnh prefix, a name GNS no longer holds, so the repair takes the approved name"

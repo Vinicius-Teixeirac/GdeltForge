@@ -1,0 +1,168 @@
+country,damaged,repaired,tier,gns_ufi,gns_name_type,gns_file,evidence
+Azerbaijan,?li Bayramli*,Əli Bayramlı*,manual,334312,V,Azerbaijan.zip,"GNS division 334312, the city approved as Şirvan, lists the variant Əli Bayramlı Şəhəri; GDELT names city divisions without the generic Şəhəri and marks them '*' (Gəncə*, Xankəndi*, Mingəçevir* match GNS city divisions only)"
+Azerbaijan,Agcab?di,Ağcabədi,folded,-2704670,N,Azerbaijan.zip,the only GNS division GDELT could have written so
+Azerbaijan,B?rd?,Bərdə,replay,-2705247,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Balak?n,Balakən,replay,-2705309,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Beyl?qan,Beyləqan,replay,-2709320,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Bil?suvar,Biləsuvar,replay,-2708192,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,C?brayil,Cəbrayıl,folded,-2705897,N,Azerbaijan.zip,the only GNS division GDELT could have written so
+Azerbaijan,C?lilabad,Cəlilabad,replay,-2705861,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,D?v?çAJ,Dəvəçi Rayonu,folded,-2705775,V,Azerbaijan.zip,the only GNS division GDELT could have written so
+Azerbaijan,Dask?s?n,Daşkəsən,folded,-2705689,N,Azerbaijan.zip,the only GNS division GDELT could have written so
+Azerbaijan,G?nc?*,Gəncə*,replay,334313,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,K?lb?c?r,Kəlbəcər,replay,-2706817,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,L?nk?ran,Lənkəran,manual,-2707477,N,Azerbaijan.zip,"GNS names two divisions Lənkəran: the district (-2707477) and the city (334314); GDELT marks city divisions '*', so the unmarked name is the district"
+Azerbaijan,L?nk?ran*,Lənkəran*,manual,334314,N,Azerbaijan.zip,"GNS names two divisions Lənkəran: the district (-2707477) and the city (334314); GDELT marks city divisions '*', so the marked name is the city"
+Azerbaijan,Ming?cevir*,Mingəçevir*,folded,334316,N,Azerbaijan.zip,the only GNS division GDELT could have written so
+Azerbaijan,Q?b?l?,Qəbələ,replay,-2707303,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Q?x,Qax,manual,-2706463,N,Azerbaijan.zip,"GNS's only division whose names fit apart from the '?' (Qax, Qax Rayonu); the '?' stands for a letter Windows-1252 lacks, a spelling GNS no longer holds, so the repair takes the approved name"
+Azerbaijan,S?ki,Şəki,manual,-2708529,N,Azerbaijan.zip,"GNS names two divisions Şəki: the district (-2708529) and the city (334326); GDELT marks city divisions '*', so the unmarked name is the district"
+Azerbaijan,S?ki*,Şəki*,manual,334326,N,Azerbaijan.zip,"GNS names two divisions Şəki: the district (-2708529) and the city (334326); GDELT marks city divisions '*', so the marked name is the city"
+Azerbaijan,S?mkir,Şəmkir,folded,-2708489,N,Azerbaijan.zip,the only GNS division GDELT could have written so
+Azerbaijan,Siy?z?n,Siyəzən,replay,334495,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,T?rt?r,Tərtər,replay,-2707721,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Xank?ndi*,Xankəndi*,replay,334499,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Xocav?nd,Xocavənd,replay,334502,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Z?ngilan,Zəngilan,replay,-2709267,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Azerbaijan,Z?rdab,Zərdab,replay,-2709290,N,Azerbaijan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Bahrain,Al Mu?arraq,Al Muḩarraq,replay,-784840,N,Bahrain.zip,GNS name written the way GDELT wrote names equals GDELT's
+Bahrain,Al Asimah,Al ‘Asimah,cp1252,,,,control characters read back as Windows-1252
+Cambodia,St?ng Trê,Stœ̆ng Trêng,folded,-1032941,N,Cambodia.zip,the only GNS division GDELT could have written so
+Chad,Ville de NDjamé,Ville de N’Djamé,cp1252,,,,control characters read back as Windows-1252
+Croatia,Koprivnicko-Krievacka,Koprivnicko-Križevacka,cp1252,,,,control characters read back as Windows-1252
+Croatia,Poeko-Slavonska,Požeško-Slavonska,cp1252,,,,control characters read back as Windows-1252
+Croatia,Varadinska,Varaždinska,cp1252,,,,control characters read back as Windows-1252
+Croatia,ibensko-Kniniska,Šibensko-Kniniska,cp1252,,,,control characters read back as Windows-1252
+Egypt,Al Ba?r al A?mar,Al Baḩr al Aḩmar,replay,-289850,N,Egypt.zip,GNS name written the way GDELT wrote names equals GDELT's
+Egypt,Al Bu?ayrah,Al Buḩayrah,replay,-289949,N,Egypt.zip,GNS name written the way GDELT wrote names equals GDELT's
+Egypt,Al Ismailiyah,Al Isma‘iliyah,cp1252,,,,control characters read back as Windows-1252
+Egypt,Bur Said,Bur Sa‘id,cp1252,,,,control characters read back as Windows-1252
+Egypt,Matru?,Maţrūḩ,folded,-298774,N,Egypt.zip,the only GNS division GDELT could have written so
+Iran,Chahar Ma?all va Bakhtiari,Chahār Maḩall va Bakhtīārī,folded,-3057331,V,Iran.zip,the only GNS division GDELT could have written so
+Iran,Khorasan-e Ra?avi,Khorāsān-e Raẕavī,folded,9237535,N,Iran.zip,the only GNS division GDELT could have written so
+Iran,Kohgiluyeh va Buyer A?mad,Kohgīlūyeh va Bowyer Aḩmad,manual,-3071733,N,Iran.zip,"GNS division -3071733 lists Ostān-e Kohgīlūyeh va Būyer Aḩmad; GDELT's source spelled Būyer without the Ostān-e prefix, a name GNS no longer holds, so the repair takes the approved name"
+Iraq,Sala? ad Din,Şalāḩ ad Dīn,folded,-3110304,N,Iraq.zip,the only GNS division GDELT could have written so
+Israel,Ha?afon,HaẔafon,replay,-780089,V,Israel.zip,GNS name written the way GDELT wrote names equals GDELT's
+Jordan,Al Aqabah,Al ‘Aqabah,cp1252,,,,control characters read back as Windows-1252
+Jordan,Az Zarqa,Az Zarqa’,cp1252,,,,control characters read back as Windows-1252
+Jordan,Maan,Ma‘an,cp1252,,,,control characters read back as Windows-1252
+Jordan,Ajlun,‘Ajlun,cp1252,,,,control characters read back as Windows-1252
+Jordan,Amman,‘Amman,cp1252,,,,control characters read back as Windows-1252
+Kuwait,Al A?madi,Al Aḩmadī,folded,-789494,N,Kuwait.zip,the only GNS division GDELT could have written so
+Kuwait,Al Asimah,Al ‘Asimah,cp1252,,,,control characters read back as Windows-1252
+Lithuania,Paneveio Apskritis,Panevežio Apskritis,cp1252,,,,control characters read back as Windows-1252
+Lithuania,Teliu Apskritis,Telšiu Apskritis,cp1252,,,,control characters read back as Windows-1252
+Lithuania,iauliu Apskritis,Šiauliu Apskritis,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Centar upa,Centar Župa,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Ceinovo,Cešinovo,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Krivogatani,Krivogaštani,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Kruevo,Kruševo,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Probitip,Probištip,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Radovi,Radoviš,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Sopite,Sopište,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Vranetica,Vraneštica,cp1252,,,,control characters read back as Windows-1252
+Macedonia,Vrapcite,Vrapcište,cp1252,,,,control characters read back as Windows-1252
+Macedonia,tip,Štip,cp1252,,,,control characters read back as Windows-1252
+Macedonia,uto Orizari,Šuto Orizari,cp1252,,,,control characters read back as Windows-1252
+Macedonia,elino,Želino,cp1252,,,,control characters read back as Windows-1252
+Qatar,Ad Daw?ah,Ad Dawḩah,replay,116270,N,Qatar.zip,GNS name written the way GDELT wrote names equals GDELT's
+Saudi Arabia,?a'il,Ḩā’il,folded,-3095160,N,Saudi Arabia.zip,the only GNS division GDELT could have written so
+Saudi Arabia,Al ?udud ash Shamaliyah,Al Ḩudūd ash Shamālīyah,folded,-3091829,N,Saudi Arabia.zip,the only GNS division GDELT could have written so
+Saudi Arabia,Al Ba?ah,Al Bāḩah,folded,-3091452,N,Saudi Arabia.zip,the only GNS division GDELT could have written so
+Saudi Arabia,Ar Riya?,Ar Riyāḑ,folded,-3093008,N,Saudi Arabia.zip,the only GNS division GDELT could have written so
+Saudi Arabia,Asir,‘Asir,cp1252,,,,control characters read back as Windows-1252
+Slovak Republic,Preovský,Prešovský,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Ajdovcina,Ajdovšcina,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Breice,Brežice,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Crenovci,Crenšovci,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Crna na Korokem,Crna na Koroškem,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Domale,Domžale,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Gorinica,Gorišnica,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Hodo-Hodos,Hodoš-Hodos,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Krievci,Križevci,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Krko,Krško,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Lako,Laško,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Loka Dolina,Loška Dolina,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Loki Potok,Loški Potok,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Majperk,Majšperk,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Menge,Mengeš,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Meica,Mežica,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Ormo,Ormož,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Ravne na Korokem,Ravne na Koroškem,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Razkrije,Razkrižje,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Rogaka Slatina,Rogaška Slatina,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Rue,Ruše,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Seana,Sežana,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Stare,Starše,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Tiina,Tišina,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Tric,Tržic,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Turnice,Turnišce,cp1252,,,,control characters read back as Windows-1252
+Slovenia,Velike Lace,Velike Lašce,cp1252,,,,control characters read back as Windows-1252
+Slovenia,alovci,Šalovci,cp1252,,,,control characters read back as Windows-1252
+Slovenia,empeter-Vrtojba,Šempeter-Vrtojba,cp1252,,,,control characters read back as Windows-1252
+Slovenia,encur,Šencur,cp1252,,,,control characters read back as Windows-1252
+Slovenia,entilj,Šentilj,cp1252,,,,control characters read back as Windows-1252
+Slovenia,entjernej,Šentjernej,cp1252,,,,control characters read back as Windows-1252
+Slovenia,entjur pri Celju,Šentjur pri Celju,cp1252,,,,control characters read back as Windows-1252
+Slovenia,kocjan,Škocjan,cp1252,,,,control characters read back as Windows-1252
+Slovenia,kofja Loka,Škofja Loka,cp1252,,,,control characters read back as Windows-1252
+Slovenia,kofljica,Škofljica,cp1252,,,,control characters read back as Windows-1252
+Slovenia,marje pri Jelah,Šmarje pri Jelšah,cp1252,,,,control characters read back as Windows-1252
+Slovenia,martno ob Paki,Šmartno ob Paki,cp1252,,,,control characters read back as Windows-1252
+Slovenia,martno pri Litiji,Šmartno pri Litiji,cp1252,,,,control characters read back as Windows-1252
+Slovenia,otanj,Šoštanj,cp1252,,,,control characters read back as Windows-1252
+Slovenia,tore,Štore,cp1252,,,,control characters read back as Windows-1252
+Slovenia,alec,Žalec,cp1252,,,,control characters read back as Windows-1252
+Slovenia,elezniki,Železniki,cp1252,,,,control characters read back as Windows-1252
+Slovenia,etale,Žetale,cp1252,,,,control characters read back as Windows-1252
+Slovenia,iri,Žiri,cp1252,,,,control characters read back as Windows-1252
+Slovenia,irovnica,Žirovnica,cp1252,,,,control characters read back as Windows-1252
+Slovenia,uemberk,Žužemberk,cp1252,,,,control characters read back as Windows-1252
+Sudan,Al Ba?r al A?mar,Al Baḩr al Aḩmar,replay,315324,V,Sudan.zip,GNS name written the way GDELT wrote names equals GDELT's
+Sudan,Al Qa?arif,Al Qaḑārif,folded,315350,V,Sudan.zip,the only GNS division GDELT could have written so
+Sudan,An Nil al Abya?,An Nīl al Abyaḑ,folded,315382,V,Sudan.zip,the only GNS division GDELT could have written so
+Syria,?alab,Ḩalab,replay,-2541858,N,Syria.zip,GNS name written the way GDELT wrote names equals GDELT's
+Syria,?amah,Ḩamāh,folded,-2541905,N,Syria.zip,the only GNS division GDELT could have written so
+Syria,?ims,Ḩimş,folded,-2542350,N,Syria.zip,the only GNS division GDELT could have written so
+Syria,Al ?asakah,Al Ḩasakah,replay,-2538085,N,Syria.zip,GNS name written the way GDELT wrote names equals GDELT's
+Syria,Dara,Dar‘a,cp1252,,,,control characters read back as Windows-1252
+Tonga,Haapai,Ha‘apai,cp1252,,,,control characters read back as Windows-1252
+Tonga,Vavau,Vava‘u,cp1252,,,,control characters read back as Windows-1252
+Tunisia,Bin Arus,Bin ‘Arus,cp1252,,,,control characters read back as Windows-1252
+United Arab Emirates,Ajman,‘Ajman,cp1252,,,,control characters read back as Windows-1252
+"Vietnam, Republic Of",B?c K?n,Bắc Kạn,replay,411213,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",B?c LiêVM,Bạc Liêu,folded,411229,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",B?n Tre,Bến Tre,replay,-3708138,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",Bà?a-Vung TàVM,Bà Rịa-Vũng Tàu,folded,-3711581,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Bì Phu?c,Bình Phước,folded,409916,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Bì Thu?n,Bình Thuận,folded,-3714240,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",C?n Tho,Cần Thơ,folded,-3714935,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Cao B?ng,Cao Bằng,replay,-3709931,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",H? Chíinh,Hồ Chí Minh,folded,-3715547,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",H?i Duong,Hải Dương,folded,411295,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",H?i PhòVM,Hải Phòng,folded,-3714826,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Ha N?i,Hà Nội,folded,-3714994,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Ki?n Giang,Kiến Giang,replay,-3717124,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",L?ng Son,Lạng Sơn,folded,-3719503,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Ngh? An,Nghệ An,replay,-3736202,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",Ninh Thu?n,Ninh Thuận,replay,-3736200,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",Qu?ng Bì,Quảng Bình,folded,-3727314,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Qu?ng Nam,Quảng Nam,replay,410147,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",Qu?ng NgãVM,Quảng Ngãi,folded,-3727384,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Qu?ng Ninh,Quảng Ninh,replay,-3727395,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",Th?a ThiêHu?,Thừa Thiên-Huế,folded,-3731128,V,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Ti?n Giang,Tiền Giang,replay,-3731485,N,Vietnam.zip,GNS name written the way GDELT wrote names equals GDELT's
+"Vietnam, Republic Of",Ð N?ng,Đà Nẵng,folded,409833,N,Vietnam.zip,the only GNS division GDELT could have written so
+"Vietnam, Republic Of",Ðc L?k,Đắk Lắk,manual,-3711947,N,Vietnam.zip,"GNS division -3711947 lists Tỉnh Đắc Lắk and Tỉnh Đắc Lắc; GDELT's source spelled Đắc Lắk without the Tỉnh prefix, a name GNS no longer holds, so the repair takes the approved name"
+Yemen,?a?ramawt,Ḩaḑramawt,replay,-3187120,N,Yemen.zip,GNS name written the way GDELT wrote names equals GDELT's
+Yemen,?ajjah,Ḩajjah,replay,9236594,N,Yemen.zip,GNS name written the way GDELT wrote names equals GDELT's
+Yemen,A? ?ali,Aḑ Ḑāli‘,folded,9236591,N,Yemen.zip,the only GNS division GDELT could have written so
+Yemen,Al ?udaydah,Al Ḩudaydah,replay,-3183074,N,Yemen.zip,GNS name written the way GDELT wrote names equals GDELT's
+Yemen,Al Bay?a',Al Bayḑā’,folded,-3182650,N,Yemen.zip,the only GNS division GDELT could have written so
+Yemen,Al Ma?wit,Al Maḩwīt,folded,-3189359,N,Yemen.zip,the only GNS division GDELT could have written so
+Yemen,La?ij,Laḩij,replay,9236596,N,Yemen.zip,GNS name written the way GDELT wrote names equals GDELT's
+Yemen,Sana',San‘a',cp1252,,,,control characters read back as Windows-1252
+Yemen,Sadah,Sa‘dah,cp1252,,,,control characters read back as Windows-1252
+Yemen,Taizz,Ta‘izz,cp1252,,,,control characters read back as Windows-1252
+Yemen,Adan,‘Adan,cp1252,,,,control characters read back as Windows-1252
+Yemen,Amran,‘Amran,cp1252,,,,control characters read back as Windows-1252
