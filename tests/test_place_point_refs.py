@@ -111,6 +111,16 @@ class TestWrongPoints:
                                          NAVASSA[:2], self.REFS)
         assert not refs.wrong_everywhere([], NAVASSA[:2], self.REFS)
 
+    def test_points_round_trip_through_a_csv_cell(self):
+        points = [(1.4167, 173.0), (1.85, -157.35)]
+        assert refs.parse_points(refs.format_points(points)) == points
+        assert refs.parse_points("") == []
+
+    def test_foreign_points_leave_out_the_reviewed_own_ones(self):
+        written = [(18.4, -75.0), (6.30711, -162.686)]
+        assert refs.foreign_points(written, NAVASSA[:2], self.REFS, []) == [(6.30711, -162.686)]
+        assert refs.foreign_points(written, NAVASSA[:2], self.REFS, [(6.30711, -162.686)]) == []
+
     def test_a_large_countrys_own_point_can_lie_nearer_a_neighbour(self):
         # why a reviewed row decides a place wrong everywhere: Morocco's own
         # point, in central Morocco, is nearer Gibraltar's reference
@@ -140,6 +150,16 @@ class TestTheCommittedReferences:
             assert m["evidence"], m
             assert used[m["feature"]]["tier"] == "manual"
             assert used[m["feature"]]["source_id"] == m["source_id"]
+
+    def test_a_reviewed_own_point_is_never_foreign(self):
+        manual = {m["feature"]: m for m in _rows("place_point_refs_manual.csv")}
+        used = {r["feature"]: r for r in _rows("place_point_refs.csv")}
+        reviewed = {f: refs.parse_points(m["own_points"]) for f, m in manual.items()
+                    if m["own_points"]}
+        assert reviewed  # the United Kingdom, Kiribati, Morocco
+        for feature, own in reviewed.items():
+            foreign = refs.parse_points(used[feature]["foreign_points"])
+            assert not set(own) & set(foreign), feature
 
     def test_every_cited_file_is_recorded_with_its_hash_and_citation(self):
         manifest = json.loads((TOOLS / "place_point_sources.json").read_text("utf-8"))
@@ -181,6 +201,23 @@ class TestTheBundledTable:
     def test_a_country_takes_its_own_point_over_a_more_frequent_wrong_one(self, code, point):
         countries = {p: (la, lo) for p, la, lo in self._countries().iter_rows()}
         assert countries[code] == point
+
+    def test_a_countrys_foreign_points_are_marked_wrong(self):
+        table = places.place_table()
+        checked = 0
+        for r in _rows("place_point_refs.csv"):
+            if not r["feature"].startswith("country:"):
+                continue
+            code = r["feature"].split(":")[1]
+            for la, lo in refs.parse_points(r["foreign_points"]):
+                # foreign_points holds points rounded to 6 decimals, the
+                # build's precision; the table keeps them as GDELT wrote them
+                rows = table.filter((pl.col("FeatureID") == code)
+                                    & (pl.col("Lat").round(6) == la)
+                                    & (pl.col("Long").round(6) == lo))
+                assert rows.height and rows[places.WRONG_POINT].all(), (code, la, lo)
+                checked += 1
+        assert checked >= 10  # 18 in the committed references
 
     def test_its_identity_names_rule_version_3(self):
         assert places.place_table_id().startswith("v3, ")

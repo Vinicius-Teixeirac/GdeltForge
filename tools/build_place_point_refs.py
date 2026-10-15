@@ -99,7 +99,7 @@ US_TERRITORIES = ("American Samoa", "Commonwealth of the Northern Mariana Island
                   "Puerto Rico", "U.S. Minor Outlying Islands", "United States Virgin Islands")
 POINTS = ("nearest", "reference")
 FIELDS = ["feature", "gdelt_name", "source", "source_id", "source_name", "lat", "lon", "point",
-          "tier", "source_file", "evidence"]
+          "foreign_points", "tier", "source_file", "evidence"]
 
 
 # --- matching (pure functions, tested in tests/test_place_point_refs.py) -------
@@ -149,6 +149,27 @@ def nearer_another(point: tuple[float, float], own: tuple[str, str],
         if d < best_d:
             best, best_d = feature, d
     return best
+
+
+def format_points(points: list[tuple[float, float]]) -> str:
+    """Points as a CSV cell: "lat lon" pairs joined by ';'."""
+    return ";".join(f"{la!r} {lo!r}" for la, lo in points)
+
+
+def parse_points(cell: str) -> list[tuple[float, float]]:
+    """format_points read back."""
+    return [(float(la), float(lo)) for la, lo in (p.split() for p in cell.split(";") if p)]
+
+
+def foreign_points(points: list[tuple[float, float]], own: tuple[str, str],
+                   refs: dict[str, tuple[str, str, float, float]],
+                   reviewed_own: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """The points GDELT wrote a place at that are another place's: nearer
+    another place's reference than its own, unless a review found the
+    point to be the place's own (the United Kingdom's older centre, in the
+    Irish Sea nearer the Isle of Man)."""
+    return [p for p in points
+            if p not in reviewed_own and nearer_another(p, own, refs) is not None]
 
 
 def wrong_everywhere(points: list[tuple[float, float]], own: tuple[str, str],
@@ -298,6 +319,10 @@ def match(combos_path: str, src_dir: str, out_dir: str) -> None:
                    "source_id": m["source_id"], "source_name": "", "lat": "", "lon": "",
                    "point": m["point"] or "nearest", "tier": "manual", "source_file": "",
                    "evidence": m["evidence"]}
+            for p in parse_points(m.get("own_points") or ""):
+                if p not in feats[feature][1]:
+                    sys.exit(f"{manual_path}: own point {p} of {feature} isn't a point "
+                             f"GDELT writes it at")
             if m["source"] != "none":
                 found = ids.get(m["source"], {}).get(m["source_id"])
                 if found is None:
@@ -330,6 +355,20 @@ def match(combos_path: str, src_dir: str, out_dir: str) -> None:
             print(f"WRONG EVERYWHERE {r['feature']} | {r['gdelt_name']} | written at "
                   f"{feats[r['feature']][1]}, reference {r['source']} {r['source_id']} "
                   f"({r['lat']}, {r['lon']})")
+    # The points the clean step's audit counts as wrong when it moves a
+    # value off them; listed for review, the reviewed own points excepted.
+    for r in rows:
+        written = feats[r["feature"]][1]
+        if r["source"] == "none":
+            foreign = []
+        elif r["point"] == "reference":
+            foreign = written
+        else:
+            reviewed = parse_points(manual.get(r["feature"], {}).get("own_points") or "")
+            foreign = foreign_points(written, (r["source"], r["source_id"]), refs, reviewed)
+        r["foreign_points"] = format_points(foreign)
+        if foreign and r["point"] != "reference":
+            print(f"FOREIGN POINTS {r['feature']} | {r['gdelt_name']} | {foreign}")
     bad_points = [r["feature"] for r in rows if r["point"] not in POINTS]
     if undecided or wrong or bad_points:
         sys.exit(f"{len(undecided)} unmatched, {len(wrong)} wrong everywhere and "

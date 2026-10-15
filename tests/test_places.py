@@ -50,7 +50,8 @@ def _place(place_id):
 class TestPlaceTable:
     def test_one_row_per_combination_gdelt_wrote(self):
         table = places.place_table()
-        assert table.columns == [*places.KEY_COLUMNS, *places.PLACE_COLUMNS]
+        assert table.columns == [*places.KEY_COLUMNS, *places.PLACE_COLUMNS, places.WRONG_POINT]
+        assert table[places.WRONG_POINT].null_count() == 0
         assert table.select(places.KEY_COLUMNS).is_unique().all()
         assert table.height == places.place_table_info()["rows"]
         assert table.select(places.PLACE_COLUMNS).null_count().row(0) == (0,) * len(
@@ -226,6 +227,36 @@ class TestResolvePlaces:
         assert frame.collect().row(0, named=True) == {
             "places.resolved": 9, "places.changed": 6, "places.cleared": 3,
             "places.unresolved": 3,
+            # "0" at the US centre: a placeholder ID, at the place's own
+            # older point; GA at (0, 0): Georgia, the state, named by its ID,
+            # which takes its own form (USGA, since GA is Gambia)
+            "places.id.placeholder": 3, "places.id.shared": 3, "places.id.merged": 0,
+            "places.point.moved": 3, "places.point.wrong": 0, "places.point.new": 0,
+            "places.name.damaged": 0, "places.no_location.named": 3,
+        }
+
+    def test_counts_each_correction_by_gdelts_defect(self):
+        # Aleppo written at its canonical point, under its own ID
+        aleppo = places.place_table().filter(
+            (pl.col("place_name") == "Aleppo, Ḩalab, Syria")
+            & (pl.col("FeatureID") == pl.col("place"))
+            & (pl.col("Lat") == pl.col("place_lat")) & (pl.col("Long") == pl.col("place_lon"))
+        ).row(0, named=True)
+        written = _points([
+            ("449676", 34.6767, 69.0073, None, 4),  # Kula: id.shared
+            ("531723", 38.8951, -77.0364, None, 3),  # the White House: id.merged
+            ("EU", 47.0, 8.0, "Europa Island", 1),  # at Switzerland's point: point.wrong
+            ("MP", 16.0, 146.0, "Mauritius", 1),  # at the Marianas: point.wrong
+            ("MP", 10.0, 10.0, "Mauritius", 1),  # a point the table doesn't know: point.new
+            (aleppo["FeatureID"], aleppo["Lat"], aleppo["Long"], "Aleppo, ?alab, Syria", 4),
+        ], roles=("ActionGeo",))
+        frame = STEP.count_frame(written.lazy(), CTX)
+        assert frame is not None
+        counts = frame.collect().row(0, named=True)
+        assert {k: v for k, v in counts.items() if k.count(".") == 2} == {
+            "places.id.placeholder": 0, "places.id.shared": 1, "places.id.merged": 1,
+            "places.point.moved": 0, "places.point.wrong": 2, "places.point.new": 1,
+            "places.name.damaged": 1, "places.no_location.named": 0,
         }
 
     def test_a_file_without_any_geo_point_is_counted_as_skipped(self):

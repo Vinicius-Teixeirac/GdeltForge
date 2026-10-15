@@ -408,9 +408,13 @@ class NormalizeStrings(Step):
 # _Lat, _Long and _FeatureID.
 GEO_ROLES = ("Actor1Geo", "Actor2Geo", "ActionGeo")
 # What _joined adds per role: the resolved place (null for none), the
-# FeatureID for a point with a location the table doesn't know, and
-# whether the point has a location at all.
-_RESOLVED = (*places.PLACE_COLUMNS, "new_id", "located")
+# FeatureID for a point with a location the table doesn't know, whether
+# the point has a location at all, and the table's wrong_point (null for a
+# point the table doesn't know).
+_RESOLVED = (*places.PLACE_COLUMNS, "new_id", "located", places.WRONG_POINT)
+# A FullName GDELT's encoding damaged: '?' for a letter Windows-1252 lacks,
+# a control character for one it has outside Latin-1.
+_DAMAGED_NAME = r"[?\x80-\x9f]"
 
 
 @dataclass(frozen=True)
@@ -489,7 +493,8 @@ class ResolvePlaces(Step):
 
             lf = (
                 lf.join(
-                    prefixed(table, "t_").rename(
+                    prefixed(table.rename({places.WRONG_POINT: p + places.WRONG_POINT}),
+                             "t_").rename(
                         {c: f"{p}k_{k}" for c, k in zip(
                             places.KEY_COLUMNS, ("id", "lat", "lon"), strict=True)}
                     ),
@@ -592,12 +597,43 @@ class ResolvePlaces(Step):
         counts: dict[str, list[pl.Expr]] = {
             "places.resolved": [], "places.changed": [], "places.cleared": [],
             "places.unresolved": [],
+            # What each resolved point's correction was, by GDELT's defect;
+            # a point can count under more than one.
+            "places.id.placeholder": [], "places.id.shared": [], "places.id.merged": [],
+            "places.point.moved": [], "places.point.wrong": [], "places.point.new": [],
+            "places.name.damaged": [], "places.no_location.named": [],
         }
         for r in roles:
             p = f"__{r}_"
             fid, lat, lon = pl.col(f"{r}_FeatureID"), pl.col(f"{r}_Lat"), pl.col(f"{r}_Long")
             found = pl.col(p + "place").is_not_null()
             located = pl.col(p + "located")
+            place, written_id = pl.col(p + "place"), fid.cast(pl.String)
+            placeholder = written_id.is_null() | written_id.is_in(["", "0"])
+            other_id = found & ~placeholder & place.ne_missing(written_id)
+            # Another gazetteer's place keeps the ID: a US state takes its
+            # ADM1 code (USCA), a GNS place the gns: prefix.
+            own_form = (place == pl.lit("US") + written_id) | place.str.ends_with(
+                pl.lit(":") + written_id)
+            moved = found & located & (
+                pl.col(p + "place_lat").ne_missing(lat.cast(pl.Float64))
+                | pl.col(p + "place_lon").ne_missing(lon.cast(pl.Float64)))
+            wrong = pl.col(p + places.WRONG_POINT)
+            counts["places.id.placeholder"].append((found & located & placeholder).sum())
+            counts["places.id.shared"].append((other_id & own_form).sum())
+            counts["places.id.merged"].append((other_id & ~own_form).sum())
+            counts["places.point.moved"].append((moved & wrong.eq_missing(False)).sum())
+            counts["places.point.wrong"].append((moved & wrong.eq_missing(True)).sum())
+            counts["places.point.new"].append((moved & wrong.is_null()).sum())
+            counts["places.no_location.named"].append((found & ~located).sum())
+            if f"{r}_FullName" in names:
+                name = pl.col(f"{r}_FullName")
+                counts["places.name.damaged"].append((
+                    found & name.str.contains(_DAMAGED_NAME)
+                    & ~pl.col(p + "place_name").str.contains(_DAMAGED_NAME)
+                ).sum())
+            else:
+                counts["places.name.damaged"].append(pl.lit(0, pl.UInt32))
             # A point without a location GDELT already wrote as one (no ID,
             # no point, no name, Type 0) isn't cleared again.
             written = [fid.is_not_null(), lat.is_not_null(), lon.is_not_null()]

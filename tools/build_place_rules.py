@@ -272,18 +272,22 @@ def build_places(combos_path: str, out_dir: str) -> None:
     # with Lat and Long null, a point at (0, 0) included.
     t = t.join(places.select("root", "place_id"), left_on="place_root", right_on="root",
                how="left")
+    t = _mark_wrong_points(t, dom)
     resolved = t.filter(pl.col("place_id").is_not_null()).with_columns(
         pl.when(pl.col("cls").is_in(["no_point", "zero_zero"])).then(None)
         .otherwise(pl.col(c)).alias(c) for c in ("Lat", "Long")
     )
-    lookup = resolved.group_by(["fid", "Lat", "Long"]).agg(pl.col("place_id").unique())
+    lookup = resolved.group_by(["fid", "Lat", "Long"]).agg(
+        pl.col("place_id").unique(), pl.col("wrong_point").any())
     clashes = lookup.filter(pl.col("place_id").list.len() > 1)
     if clashes.height:
         raise SystemExit(f"{clashes.height} (FeatureID, Lat, Long) combinations resolve to "
                          f"more than one place; lookup by the triple would be ambiguous")
     table = (lookup.select(pl.col("fid").alias("FeatureID"), "Lat", "Long",
-                           pl.col("place_id").list.first())
+                           pl.col("place_id").list.first(), "wrong_point")
              .join(places.drop("root"), on="place_id").drop("place_id")
+             .select("FeatureID", "Lat", "Long", *places.drop("root", "place_id").columns,
+                     "wrong_point")
              .sort(["FeatureID", "Lat", "Long"], nulls_last=True))
 
     source = pl.read_parquet_metadata(combos_path).get("gdeltforge:place_combos")
@@ -310,7 +314,7 @@ def build_places(combos_path: str, out_dir: str) -> None:
     table.write_parquet(os.path.join(out_dir, "places.parquet"), compression="zstd",
                         compression_level=22, row_group_size=1 << 20,
                         metadata={"gdeltforge:places": json.dumps(info)})
-    t.select("FeatureID", "Type", "FullName", "Lat", "Long", "values", "cls", "how",
+    t.select("FeatureID", "Type", "FullName", "Lat", "Long", "values", "cls", "how", "wrong_point",
              "place_id").write_parquet(os.path.join(out_dir, "assignments.parquet"))
     total = int(t["values"].sum())
     print(f"places: {places.height:,} | table rows: {table.height:,} | {info}")
@@ -466,6 +470,31 @@ def repairs_digest(path: str) -> str:
     so a checkout that converts them (git's core.autocrlf) keeps the
     digest the table records."""
     return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _mark_wrong_points(t, dom) -> pl.DataFrame:
+    """t with wrong_point: whether a combination's written point isn't its
+    place's own, so the clean step's audit counts a value moved off it as
+    a wrong point, not a moved one. A point is the place's own when one of
+    the place's features owns it (rule 1), except a country's or state's
+    point that lies nearer another place's reference (POINT_REFS'
+    foreign_points: Europa Island at Switzerland's point). A point without
+    a location is no one's."""
+    from build_place_point_refs import parse_points  # noqa: PLC0415
+
+    refs = _point_refs()
+    admin = dom.filter(pl.col("ns").is_in(["country", "state"])).select("root", "nk")
+    foreign = [(root, la, lo) for root, nk in admin.iter_rows()
+               for la, lo in parse_points(refs[nk]["foreign_points"])]
+    foreign_df = pl.DataFrame(foreign, schema={"place_root": pl.Int64, "lat6": pl.Float64,
+                                               "lon6": pl.Float64}, orient="row")
+    foreign_df = foreign_df.unique().with_columns(pl.lit(True).alias("__foreign"))
+    located = ~pl.col("cls").is_in(["no_point", "zero_zero"])
+    own = pl.col("proot").eq_missing(pl.col("place_root")) & pl.col("proot").is_not_null()
+    return (t.join(foreign_df, on=["place_root", "lat6", "lon6"], how="left")
+            .with_columns((located & (~own | pl.col("__foreign").fill_null(False)))
+                          .alias("wrong_point"))
+            .drop("__foreign"))
 
 
 def _point_refs() -> dict[str, dict]:

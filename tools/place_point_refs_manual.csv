@@ -1,27 +1,29 @@
-feature,source,source_id,point,evidence
-country:AY,none,,,"Neither GNS nor GNIS lists Antarctica as a feature; GDELT writes it at one point, in Antarctica"
-country:BK,GNS,315272,nearest,"GNS's conventional name is Bosnia and Herzegovina; GDELT writes Bosnia-Herzegovina"
-country:BM,GNS,-411312,nearest,"GNS's conventional name is Burma; Myanmar is its variant there"
-country:BQ,GNIS,1393098,reference,"GDELT writes Navassa Island only at (6.30711, -162.686), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 9,542 km from the island, which lies in the Caribbean"
-country:CV,GNS,-1313035,nearest,"GNS's conventional name is Cabo Verde; Cape Verde is its variant there"
-country:DQ,GNIS,1802703,reference,"GDELT writes Jarvis Island only at (6.29073, -162.543), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 793 km from the island"
-country:FM,GNS,-3740370,nearest,"GNS's approved name is Federated States of Micronesia; Micronesia is its variant there"
-country:FQ,GNIS,1802704,reference,"GDELT writes Baker Island only at (6.33168, -162.642), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,680 km from the island"
-country:GA,GNS,-1199863,nearest,"GNS's approved name is The Gambia; Gambia is its variant there"
-country:HQ,GNIS,1802706,reference,"GDELT writes Howland Island only at (6.34533, -162.691), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,663 km from the island"
-country:JN,GNS,-1306277,reference,"GDELT writes Jan Mayen only at (76.8408, 29.707), in the Barents Sea southeast of Svalbard, 1,311 km from the island"
-country:JQ,GNIS,1802707,reference,"GDELT writes Johnston Atoll only at (6.35079, -162.655), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,378 km from the atoll"
-country:LQ,GNIS,1802709,reference,"GDELT writes Palmyra Atoll only at (6.33987, -162.675), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 84 km from the atoll, at sea"
-country:MK,GNS,-860385,nearest,"GNS's conventional name is North Macedonia; Macedonia is its variant there"
-country:MO,GNS,-39830,nearest,"GDELT's only point, (32.0, -5.0), lies in central Morocco; it is nearer Gibraltar's GNS point than Morocco's own, which GNS puts farther south, at (28.5, -10.0)"
-country:MQ,GNIS,1802699,reference,"GDELT writes the Midway Islands only at (6.33441, -162.74), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 2,878 km from the islands"
-country:NR,GNS,-1187305,nearest,"GNS's approved name is Naoero; Nauru is its variant there"
-country:PF,GNS,-1322983,reference,"GDELT writes the Paracel Islands only at (6.33987, -162.675), in the central Pacific where it writes the US Minor Outlying Islands, 9,312 km from the islands"
-country:TT,GNS,9131324,nearest,"GNS's conventional name is Timor-Leste; East Timor is its variant there"
-country:US,none,,,"GNS leaves the United States to GNIS, and GNIS lists the states and territories, not the country"
-country:VM,GNS,-3733340,nearest,"GNS's conventional name is Vietnam; GDELT writes Vietnam, Republic Of"
-country:VQ,GNIS,1802710,nearest,"GNIS names the territory United States Virgin Islands; GDELT writes Virgin Islands"
-country:WI,GNS,-1063814,nearest,"GNS names Western Sahara with variant names and one unverified name (name type D), Western Sahara; it has no conventional or approved name"
-country:WQ,GNIS,1802700,reference,"GDELT writes Wake Island only at (6.27435, -162.554), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 3,630 km from the island"
-country:WZ,GNS,-1331838,nearest,"GNS's approved name is Eswatini; Swaziland is its variant there"
-state:RI,GNIS,1219835,nearest,"GNIS names the state State of Rhode Island and Providence Plantations"
+feature,source,source_id,point,own_points,evidence
+country:AY,none,,,,"Neither GNS nor GNIS lists Antarctica as a feature; GDELT writes it at one point, in Antarctica"
+country:BK,GNS,315272,nearest,,GNS's conventional name is Bosnia and Herzegovina; GDELT writes Bosnia-Herzegovina
+country:BM,GNS,-411312,nearest,,GNS's conventional name is Burma; Myanmar is its variant there
+country:BQ,GNIS,1393098,reference,,"GDELT writes Navassa Island only at (6.30711, -162.686), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 9,542 km from the island, which lies in the Caribbean"
+country:CV,GNS,-1313035,nearest,,GNS's conventional name is Cabo Verde; Cape Verde is its variant there
+country:DQ,GNIS,1802703,reference,,"GDELT writes Jarvis Island only at (6.29073, -162.543), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 793 km from the island"
+country:FM,GNS,-3740370,nearest,,GNS's approved name is Federated States of Micronesia; Micronesia is its variant there
+country:FQ,GNIS,1802704,reference,,"GDELT writes Baker Island only at (6.33168, -162.642), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,680 km from the island"
+country:GA,GNS,-1199863,nearest,,GNS's approved name is The Gambia; Gambia is its variant there
+country:HQ,GNIS,1802706,reference,,"GDELT writes Howland Island only at (6.34533, -162.691), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,663 km from the island"
+country:JN,GNS,-1306277,reference,,"GDELT writes Jan Mayen only at (76.8408, 29.707), in the Barents Sea southeast of Svalbard, 1,311 km from the island"
+country:JQ,GNIS,1802707,reference,,"GDELT writes Johnston Atoll only at (6.35079, -162.655), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,378 km from the atoll"
+country:KR,GNS,-1352554,nearest,1.4167 173.0;1.85 -157.35,"Kiribati spans the central Pacific; GDELT also writes it at Tarawa, its capital, (1.4167, 173.0), and at Kiritimati, (1.85, -157.35), both Kiribati's own though nearer Howland and Jarvis Islands' GNIS points than Kiribati's GNS point in the Phoenix Islands"
+country:LQ,GNIS,1802709,reference,,"GDELT writes Palmyra Atoll only at (6.33987, -162.675), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 84 km from the atoll, at sea"
+country:MK,GNS,-860385,nearest,,GNS's conventional name is North Macedonia; Macedonia is its variant there
+country:MO,GNS,-39830,nearest,32.0 -5.0,"GDELT's only point, (32.0, -5.0), lies in central Morocco; it is nearer Gibraltar's GNS point than Morocco's own, which GNS puts farther south, at (28.5, -10.0)"
+country:MQ,GNIS,1802699,reference,,"GDELT writes the Midway Islands only at (6.33441, -162.74), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 2,878 km from the islands"
+country:NR,GNS,-1187305,nearest,,GNS's approved name is Naoero; Nauru is its variant there
+country:PF,GNS,-1322983,reference,,"GDELT writes the Paracel Islands only at (6.33987, -162.675), in the central Pacific where it writes the US Minor Outlying Islands, 9,312 km from the islands"
+country:TT,GNS,9131324,nearest,,GNS's conventional name is Timor-Leste; East Timor is its variant there
+country:UK,GNS,-2610495,nearest,54.0 -4.0,"GDELT's older centre of the United Kingdom, (54.0, -4.0), lies in the Irish Sea nearer the Isle of Man's GNS point than the United Kingdom's; it is the United Kingdom's own"
+country:US,none,,,,"GNS leaves the United States to GNIS, and GNIS lists the states and territories, not the country"
+country:VM,GNS,-3733340,nearest,,"GNS's conventional name is Vietnam; GDELT writes Vietnam, Republic Of"
+country:VQ,GNIS,1802710,nearest,,GNIS names the territory United States Virgin Islands; GDELT writes Virgin Islands
+country:WI,GNS,-1063814,nearest,,"GNS names Western Sahara with variant names and one unverified name (name type D), Western Sahara; it has no conventional or approved name"
+country:WQ,GNIS,1802700,reference,,"GDELT writes Wake Island only at (6.27435, -162.554), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 3,630 km from the island"
+country:WZ,GNS,-1331838,nearest,,GNS's approved name is Eswatini; Swaziland is its variant there
+state:RI,GNIS,1219835,nearest,,GNIS names the state State of Rhode Island and Providence Plantations

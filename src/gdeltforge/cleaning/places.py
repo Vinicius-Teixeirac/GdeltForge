@@ -37,6 +37,11 @@ INFO_KEY = "gdeltforge:places"
 # The table's columns: the key GDELT wrote, then what it resolves to.
 KEY_COLUMNS = ("FeatureID", "Lat", "Long")
 PLACE_COLUMNS = ("place", "place_type", "place_lat", "place_lon", "place_name")
+# Whether the written point isn't the place's own (another place's point,
+# or one no feature of the place owns): the run audit counts a value moved
+# off it as a wrong point, and one moved off the place's own other point
+# as a moved one.
+WRONG_POINT = "wrong_point"
 # GDELT's Type says which gazetteer a FeatureID is from: 1 a FIPS country
 # code, 2 a US state code, 3 a GNIS ID (US places), 4 and 5 a GNS ID (the
 # rest of the world: cities and landmarks, then first-level divisions).
@@ -53,8 +58,8 @@ def place_table() -> pl.DataFrame:
     The table: FeatureID (as GDELT wrote it, "" where it wrote none), Lat
     and Long (float64, exactly as converted; both null for a FeatureID
     written without a location), then place, place_type, place_lat,
-    place_lon and place_name. About 80 MB in memory, loaded once per
-    process.
+    place_lon, place_name and wrong_point. About 80 MB in memory, loaded
+    once per process.
     """
     with as_file(_resource()) as path:
         # Not memory-mapped: on Windows a mapped file can't be replaced
