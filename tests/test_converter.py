@@ -984,18 +984,27 @@ class TestQuietLogging:
             converter_module.logger.setLevel(logging.INFO)
             converter_module._io_logger.setLevel(logging.INFO)
 
-    def test_quiet_suppresses_the_summary_line(self, tmp_path, capfd):
-        # Same cross-process reasoning as TestVerboseLogging's own
-        # capfd-based test: process_single_file runs inside a
-        # ProcessPoolExecutor worker, so its output must be checked via
-        # the inherited stderr file descriptor, not in-process caplog.
+    def test_quiet_suppresses_the_summary_line(self, tmp_path, capfd, caplog):
+        # The summary is logged by the main process (process_all_files),
+        # so caplog sees it; capfd covers the worker processes' output.
         _write_flat_zip(tmp_path / "raw")
         try:
             run_converter(_make_config(tmp_path), quiet=True)
-            assert "Conversion complete" not in capfd.readouterr().err
+            assert "Conversion summary" not in caplog.text
+            assert "Conversion summary" not in capfd.readouterr().err
         finally:
             converter_module.logger.setLevel(logging.INFO)
             converter_module._io_logger.setLevel(logging.INFO)
+
+    def test_the_summary_line_prints_without_quiet(self, tmp_path, caplog):
+        # The control for the test above: the line it looks for is the one
+        # a run logs.
+        _write_flat_zip(tmp_path / "raw")
+        with caplog.at_level(logging.INFO, logger=converter_module.logger.name):
+            run_converter(_make_config(tmp_path))
+        assert "Conversion summary: 1 Parquet file(s) created, 0 zip file(s) failed." in (
+            caplog.text
+        )
 
     def test_quiet_suppresses_the_unzip_and_extract_lines(self, tmp_path, capfd):
         # The actual regression: unzip_file logs through utils.io's own
@@ -1871,6 +1880,48 @@ class TestConcurrentConversionIsolation:
             converter.process_single_file(str(zip_path))
 
         assert (tmp_path / "csv" / "20200101.export.CSV").exists()
+
+    def test_a_truncated_zip_leaves_no_private_directory(self, tmp_path, monkeypatch):
+        # A ZIP cut short (an interrupted download) fails to open after
+        # unzip_file created the private directory; left behind, the empty
+        # directory kept the run from removing unzip_folder.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        data = zip_path.read_bytes()
+        zip_path.write_bytes(data[: len(data) // 2])
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 4343)
+
+        with pytest.raises(zipfile.BadZipFile):
+            GDELTConverter(_make_config(tmp_path)).process_single_file(str(zip_path))
+
+        assert not (tmp_path / "csv" / ".pid4343_20200101.export.CSV").exists()
+        assert zip_path.exists()
+
+    def test_a_member_that_fails_its_crc_leaves_no_partial_csv(self, tmp_path, monkeypatch):
+        # A damaged member is written out before its CRC check fails: the
+        # partial CSV goes with the private directory, so nothing would
+        # recover it as if it were a whole file.
+        zip_path = _write_flat_zip(tmp_path / "raw")
+        data = zip_path.read_bytes()
+        assert data.count(b"\t20200101") == 1
+        zip_path.write_bytes(data.replace(b"\t20200101", b"\t20200102"))
+        monkeypatch.setattr(converter_module.os, "getpid", lambda: 4344)
+
+        with pytest.raises(zipfile.BadZipFile):
+            GDELTConverter(_make_config(tmp_path)).process_single_file(str(zip_path))
+
+        assert not (tmp_path / "csv" / ".pid4344_20200101.export.CSV").exists()
+        assert not list((tmp_path / "csv").glob("*.CSV"))
+
+    def test_a_run_with_a_damaged_zip_still_removes_the_unzip_folder(self, tmp_path):
+        _write_flat_zip(tmp_path / "raw", filename="20200101.export.CSV.zip")
+        bad = _write_flat_zip(tmp_path / "raw", filename="20200102.export.CSV.zip")
+        bad.write_bytes(bad.read_bytes()[:20])
+
+        outputs, failed = run_converter(_make_config(tmp_path))
+
+        assert len(outputs) == 1
+        assert failed == ["20200102.export.CSV.zip"]
+        assert not (tmp_path / "csv").exists()
 
 
 class TestRecoverUnzippedFiles:
