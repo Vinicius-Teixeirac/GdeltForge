@@ -39,10 +39,10 @@ PRECEDENCE = {"country": 0, "state": 1, "gnis": 2, "gns": 3}
 # bump it whenever a rule changes, so data resolved under the old table is
 # cleaned again. A rebuild from a longer archive under the same rules
 # changes the source it records, and the fingerprint with it.
-TABLE_VERSION = 3
+TABLE_VERSION = 4
 # The repairs of the region names GDELT's encoding damaged, decided by
 # build_place_name_repairs.py from NGA's GEOnet Names Server; version 2
-# added them.
+# added them, version 4 the names GDELT cut short ("DiyaláZ").
 NAME_REPAIRS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "place_name_repairs.csv")
 # A gazetteer point for every country and state, matched by

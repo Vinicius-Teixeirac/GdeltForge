@@ -396,6 +396,16 @@ used there, as witnesses; the lookup key is the point alone, and no
    character, which mark a broken encoding. Where every name a place was
    written with is damaged, its region part is repaired (see
    [Names GDELT's encoding damaged](#names-gdelts-encoding-damaged)).
+   The name is GDELT's own, so it keeps GDELT's form: a region or country
+   part GDELT left empty stays empty ("Bezanija, , Serbia", "Arctic Ocean,
+   ,"; 3,698 places). And it is the place's name, from every feature
+   rule 1 joined into the place, so it can name another country than the
+   row's `CountryCode`, which the step never changes: a point GDELT
+   wrote as "Zaire" reads "Democratic Republic Of The Congo", and a few
+   read a neighbouring country's name, where rule 1 joined their
+   feature to a feature of that country at the same point ("Chinotimba,
+   Zimbabwe" reads "Victoria Falls, Zambia"). Filter by `CountryCode` or
+   by the name, not by both expecting them to agree.
 8. **A point without a location** names a place when its `FeatureID` does:
    read in the gazetteer its `Type` says (or, untyped, in the only one that
    has the ID), it is a feature with a real point, and every point of that
@@ -420,22 +430,25 @@ Latin-1. A letter Windows-1252 lacks became `?` ("Ḩalab" is written
 "?alab", "Nghệ An" "Ngh? An"), and one it has outside Latin-1 became an
 invisible control character (`\x9a` for š in "Pre\x9aovský"). In some
 Vietnamese names the letters after a surviving accented one were lost too
-("Bình Thuận" is written "Bì Thu?n"). GDELT never writes these names
+("Bình Thuận" is written "Bì Thu?n"). And a name with letters outside
+ASCII was cut short, by one byte for each such letter, with one letter of
+what followed it left at its end: "Diyālá" is written "DiyaláZ", "Attikí"
+"AttikíR", "Nuevo León" "Nuevo LeóX". GDELT never writes these names
 undamaged anywhere in the archive, so no rule above can pick a clean
 spelling: "Ar Riya?" alone is written 1,856,810 times in `ActionGeo`.
 
 The damage is only ever in the region part of a name (the first-level
 administrative division, between the place's own name and its country):
-167 distinct region strings in 24 countries, in the names of 10,506 places
-(25,195,226 geo values, 1.13% of those resolved). The table repairs each
-of them, in this order:
+231 distinct region strings in 55 countries, in the names of 19,223 places
+(33,357,096 geo values, 1.49% of those resolved), 64 of the strings cut
+short. The table repairs each of them, in this order:
 
 | Repair | Regions | How |
 |---|---|---|
 | Control characters | 87 | Each is read back as its Windows-1252 letter: lossless, no source needed |
 | Exact replay | 35 | A name of one division in NGA's GEOnet Names Server (GNS), written the way GDELT wrote names, equals GDELT's string |
-| One division fits | 37 | GDELT could have written the names of exactly one GNS division so: each `?` a letter Windows-1252 lacks, the other letters equal or without the accents GDELT's source left out |
-| Reviewed by hand | 8 | Two GNS divisions fit (a district and a city both named Lənkəran), or GNS no longer holds the spelling GDELT's source used; each row names the division and the reason |
+| One division fits | 94 | GDELT could have written the names of exactly one GNS division so: each `?` a letter Windows-1252 lacks, the other letters equal or without the accents GDELT's source left out, and a cut name the start of the division's |
+| Reviewed by hand | 15 | Two GNS divisions fit (a district and a city both named Lənkəran; Panamá and Panamá Oeste), GNS no longer holds the spelling GDELT's source used, or GNS files the division at another level now (Côte d'Ivoire's regions before 2011, Guinea's prefectures); each row names the division and the reason |
 
 GNS is the gazetteer GDELT's world place IDs come from. A repaired name
 takes GNS's full spelling, diacritics included ("Ḩalab", "Hà Nội"); where
@@ -448,8 +461,10 @@ point.
 Every repair is listed, with the GNS feature (UFI) it cites, in
 `tools/place_name_repairs.csv` in the repository; the hand-reviewed ones
 also in `tools/place_name_repairs_manual.csv`, with their reasons. The GNS
-files were downloaded on 2026-10-14; `tools/place_name_sources.json`
-records each one's URL and sha256, and the table's metadata records the
+country files were downloaded on 2026-10-14, and GNS's world file of
+administrative regions, which the repairs of 32 countries' cut names
+cite, on 2026-10-15; `tools/place_name_sources.json` records each one's
+URL and sha256, and the table's metadata records the
 repair file's sha256. `tools/build_place_name_repairs.py` decides the
 repairs again from those files.
 
@@ -540,7 +555,7 @@ day or month of GDELT's files, and from those per year. Over the whole
 | `places.point.moved` | A place written at another of its own points (an older centre, the same point at another precision), moved to its canonical point | 122,554,175 | 4.70% |
 | `places.point.wrong` | A place written at a point that isn't its own (Mauritius at the Northern Mariana Islands, Europa Island at Switzerland), moved to its own | 1,315,070 | 0.05% |
 | `places.point.new` | A point the table doesn't know, its place found by its ID, moved to the place's point | 19 | 0.00% |
-| `places.name.damaged` | A name GDELT's encoding damaged, replaced by the place's undamaged one | 25,221,240 | 0.97% |
+| `places.name.damaged` | A name GDELT's encoding damaged, replaced by the place's undamaged one | 33,349,914 | 1.28% |
 | `places.no_location.named` | A point without a location whose ID always names one place (`GA` at (0, 0)) | 1,664,564 | 0.06% |
 
 `places.cleared` counts the remaining defect: (0, 0) and IDs without
@@ -555,8 +570,11 @@ nearer the Isle of Man).
 
 **Why off by default**: it replaces GDELT's values without keeping them,
 so it's lossy, and `--delete-source` refuses it unless
-`allow_lossy_delete_source: true`. It also costs each worker about 80 MB
-of memory for the table. The table's identity (its rule version and the
+`allow_lossy_delete_source: true`. It also costs memory: each worker
+holds the table (about 150 MB), and resolving a file takes more while it
+runs, about 350 MB in all above a run without places for a daily Events
+file, measured with one worker. Each file's distinct points are resolved
+once and looked up per row, so a 15-minute file adds about 50 ms. The table's identity (its rule version and the
 archive it was built from) is part of the resumability fingerprint, so a
 gdeltforge release with a rebuilt table resolves every file again.
 

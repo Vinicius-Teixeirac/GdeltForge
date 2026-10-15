@@ -219,5 +219,5 @@ class TestTheBundledTable:
                 checked += 1
         assert checked >= 10  # 18 in the committed references
 
-    def test_its_identity_names_rule_version_3(self):
-        assert places.place_table_id().startswith("v3, ")
+    def test_its_identity_names_rule_version_4(self):
+        assert places.place_table_id().startswith("v4, ")
