@@ -17,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - `--delete-source`'s warning no longer calls the cleaned output "narrowed": with errata, normalize or places on, its values were changed, not narrowed.
+- `CITATION.cff` gives the version and its release date, so the citation GitHub generates from it ("Cite this repository") has a year.
 - `sample -n` given with `--stratify`, or with `--mode calendar`, warns that it's ignored: `--n-per-group` or `--per-period` sizes those samples. It was accepted and did nothing.
 - A ZIP `convert` can't extract (truncated by an interrupted download, or a member that fails its CRC) no longer leaves its private extraction directory (`.pid<N>_<name>`) in the unzipped directory, empty or holding a partial CSV; that directory kept the run from removing the unzipped directory. The ZIP stays for a rerun. `convert`'s and `aggregate`'s own summary lines read "Conversion summary: ..." and "Aggregation summary: ...": they said "complete" on a run with failures, just above the run's "finished with N failed" line.
 - `aggregate`'s worker startup line gives its file reads per worker: "1 file read(s) at once each". It read as a total for the run. The docs' "`io.max_concurrent_reads`, else 4", for the reads `sample` and `crossref` batch, now add that an exported `POLARS_MAX_CONCURRENT_SCANS` takes precedence, as it does.
