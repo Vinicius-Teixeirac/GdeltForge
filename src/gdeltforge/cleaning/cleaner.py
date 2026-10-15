@@ -786,7 +786,9 @@ class GDELTCleaner:
             lf.sink_parquet(
                 tmp_path,
                 compression=cast(ParquetCompression, self.compression),
-                metadata={CLEAN_MARKER_KEY: json.dumps(self._file_marker(file_path.name, skipped))},
+                metadata={CLEAN_MARKER_KEY: json.dumps(
+                    self._file_marker(file_path.name, skipped, rows_before, rows_after)
+                )},
             )
             os.replace(tmp_path, output_path)
         except Exception:
@@ -811,20 +813,25 @@ class GDELTCleaner:
             column_names=column_names,
         )
 
-    def _file_marker(self, source: str, skipped: dict[int, list[str]]) -> dict:
+    def _file_marker(
+        self, source: str, skipped: dict[int, list[str]], rows_in: int, rows_out: int
+    ) -> dict:
         """
         The marker written into one cleaned file: the run's marker, the
-        source file's name, and, on each step that couldn't read this file,
-        `"skipped": true` with the columns it lacks. Such a step changed
-        nothing here, so it is not lossy for this file. Without that entry
-        a file the date repair skipped would read as repaired.
+        source file's name and its row counts in and out, and, on each step
+        that couldn't read this file, `"skipped": true` with the columns it
+        lacks. Such a step changed nothing here, so it is not lossy for this
+        file. Without that entry a file the date repair skipped would read
+        as repaired. Equal row counts say every row of the source is here,
+        in its order, which sample's provenance relies on.
         """
         steps = [
             {**entry, "lossy": False, "skipped": True, "missing_columns": skipped[i]}
             if i in skipped else entry
             for i, entry in enumerate(self._marker["steps"])
         ]
-        return {**self._marker, "steps": steps, "source": source}
+        return {**self._marker, "steps": steps, "source": source,
+                "rows_in": rows_in, "rows_out": rows_out}
 
     @staticmethod
     def _unrecognized_code_exprs(lf: pl.LazyFrame) -> list[pl.Expr]:

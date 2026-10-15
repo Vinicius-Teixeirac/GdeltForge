@@ -168,7 +168,11 @@ release with a changed rule, cleans the affected datasets again.
 
 Each cleaned file's Parquet metadata holds a `gdeltforge:clean` entry: the
 gdeltforge version, every step with its settings and whether it is lossy,
-the configuration fingerprint, and the source file's name. The two errata
+the configuration fingerprint, the source file's name, and the file's
+rows in and out (`rows_in`, `rows_out`). `clean` never reorders rows, so
+equal counts mean a row's position in the cleaned file is its position in
+the source, which `sample --provenance` relies on
+([Row provenance](cli-reference.md#row-provenance)). The two errata
 steps name their `rule` (`date_1920`, `event_markers`), and a step the
 configuration leaves empty (a `columns_to_check` of `[]`) isn't listed. A
 step that couldn't run on the file, because the file lacks a column it
