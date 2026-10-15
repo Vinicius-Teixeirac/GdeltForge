@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.14.0] - 2026-10-15
 
 ### Added
 - `sample --provenance` adds `SourceFile` and `SourceRow` to every sampled row, in every mode: the converted file the row comes from, relative to its directory, and its 0-based position there. A row sampled from cleaned data names the converted file its clean marker records, at the same position, so a draw can be read again from any other cleaned version of the same files and paired row for row, where `GlobalEventID` can't pair them (GDELT reuses some IDs across files). Each cleaned file's marker now records its rows in and out (`rows_in`, `rows_out`); a cleaned file that lost rows (a `columns_to_check` null check, `errata.event_markers: drop`) stops a sample with provenance, since its positions no longer match its source's. Filtered sampling numbers each file's rows before its filter, scanning the files one by one when provenance is on. The rows drawn are the same with and without it. See `docs/cli-reference.md#row-provenance`.
