@@ -39,12 +39,17 @@ PRECEDENCE = {"country": 0, "state": 1, "gnis": 2, "gns": 3}
 # bump it whenever a rule changes, so data resolved under the old table is
 # cleaned again. A rebuild from a longer archive under the same rules
 # changes the source it records, and the fingerprint with it.
-TABLE_VERSION = 2
+TABLE_VERSION = 3
 # The repairs of the region names GDELT's encoding damaged, decided by
 # build_place_name_repairs.py from NGA's GEOnet Names Server; version 2
 # added them.
 NAME_REPAIRS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "place_name_repairs.csv")
+# A gazetteer point for every country and state, matched by
+# build_place_point_refs.py from GNS and USGS's GNIS: the canonical point
+# of a country or state is GDELT's own point nearest it. Version 3 added
+# them.
+POINT_REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "place_point_refs.csv")
 
 Point = tuple[float, float]
 
@@ -294,6 +299,12 @@ def build_places(combos_path: str, out_dir: str) -> None:
             "sha256": repairs_digest(NAME_REPAIRS),
             "names_repaired": names_repaired,
         },
+        "point_refs": {
+            "file": os.path.basename(POINT_REFS),
+            "sha256": repairs_digest(POINT_REFS),
+            "gazetteer_points": sum(1 for r in _point_refs().values()
+                                    if r["point"] == "reference"),
+        },
     }
     os.makedirs(out_dir, exist_ok=True)
     table.write_parquet(os.path.join(out_dir, "places.parquet"), compression="zstd",
@@ -381,18 +392,29 @@ def _resolve_without_location(t, nodes, node_root) -> pl.DataFrame:
 
 def _canonical_points(t, edges, node_root, dom) -> pl.DataFrame:
     """Countries and states: of the points legitimately theirs, the one
-    closest to where the place's own features are (its cities for a country,
-    its GNIS features for a state). The most frequent point is sometimes the
-    ISO reading of the FIPS code (Mauritius written at the Northern
-    Marianas)."""
+    nearest the place's gazetteer point (POINT_REFS), or the gazetteer
+    point itself where a reviewed reference says GDELT never wrote the place
+    near itself. The most frequent point is sometimes another country's
+    (Mauritius written at the Northern Marianas, the ISO reading of its FIPS
+    code). A place without a reference (the United States, Antarctica)
+    takes the point closest to where its own features are (its cities for
+    a country, its GNIS features for a state)."""
+    from build_place_point_refs import km, nearer_another  # noqa: PLC0415
+
     world = t.filter((pl.col("cls") == "numeric") & pl.col("T").is_in([4, 5])
                      & pl.col("FullName").is_not_null())
     city_c = _medians(world, pl.col("FullName").str.split(",").list.last())
     us = t.filter((pl.col("cls") == "numeric") & (pl.col("T") == 3)
                   & pl.col("FullName").is_not_null())
     state_c = _medians(us, pl.col("FullName").str.split(",").list.get(-2, null_on_oob=True))
-
     admin = dom.filter(pl.col("ns").is_in(["country", "state"]))
+    rows = _point_refs()
+    unlisted = sorted(set(admin["nk"].to_list()) - set(rows))
+    if unlisted:
+        raise SystemExit(f"no point reference for {unlisted} in "
+                         f"{os.path.basename(POINT_REFS)}: run build_place_point_refs.py")
+    refs = {f: r for f, r in rows.items() if r["source"] != "none"}
+    all_refs = {f: (r["source"], r["source_id"], r["lat"], r["lon"]) for f, r in refs.items()}
     good = (edges.filter(pl.col("kind").is_in(["main", "legit"])).join(node_root, on="ni")
             .join(admin.select("root"), on="root", how="semi").sort(["nk", "pk"]))
     cands: dict[int, list[Point]] = {}
@@ -401,7 +423,23 @@ def _canonical_points(t, edges, node_root, dom) -> pl.DataFrame:
         if (la, lo) not in lst:
             lst.append((la, lo))
     out = []
-    for root, ns, name in admin.select("root", "ns", "main_name").iter_rows():
+    for root, ns, nk, name in admin.select("root", "ns", "nk", "main_name").iter_rows():
+        r = refs.get(nk)
+        if r is not None:
+            gaz = (r["lat"], r["lon"])
+            if r["point"] == "reference":
+                out.append((root, *gaz))
+                continue
+            best = min(cands[root], key=lambda c: (km(c, gaz), c))
+            # A reviewed row has decided a point nearer another reference
+            # (Morocco's, nearer Gibraltar's); anything else stops here.
+            other = nearer_another(best, (r["source"], r["source_id"]), all_refs)
+            if other is not None and r["tier"] != "manual":
+                raise SystemExit(f"{nk}: GDELT's point nearest its reference, {best}, lies "
+                                 f"nearer {other}'s: review it in "
+                                 f"{os.path.basename(POINT_REFS)}")
+            out.append((root, *best))
+            continue
         ref = (city_c if ns == "country" else state_c).get(_key(str(name or "").split(",")[0]))
         if ref is None or ref[2] < 5 or not cands.get(root):
             continue
@@ -424,10 +462,21 @@ def _medians(rows: pl.DataFrame, part: pl.Expr) -> dict:
 
 
 def repairs_digest(path: str) -> str:
-    """sha256 of the repair file's text with its line endings read as LF,
+    """sha256 of a reviewed file's text with its line endings read as LF,
     so a checkout that converts them (git's core.autocrlf) keeps the
     digest the table records."""
     return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _point_refs() -> dict[str, dict]:
+    """feature ("country:EU", "state:GA") -> its row of POINT_REFS, with
+    lat and lon as floats (None for a feature without a reference)."""
+    with open(POINT_REFS, encoding="utf-8", newline="") as f:
+        rows = {r["feature"]: r for r in csv.DictReader(f)}
+    for r in rows.values():
+        for c in ("lat", "lon"):
+            r[c] = float(r[c]) if r[c] else None
+    return rows
 
 
 def _name_repairs() -> dict[tuple[str, str], str]:

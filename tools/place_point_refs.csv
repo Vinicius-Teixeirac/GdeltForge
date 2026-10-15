@@ -1,0 +1,313 @@
+feature,gdelt_name,source,source_id,source_name,lat,lon,point,tier,source_file,evidence
+country:AA,Aruba,GNS,-1307700,Aruba,12.5,-69.966667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AC,Antigua And Barbuda,GNS,-1323139,Antigua and Barbuda,17.05,-61.8,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AE,United Arab Emirates,GNS,-784547,United Arab Emirates,23.75,54.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AF,Afghanistan,GNS,-3367926,Afghanistan,33.0,66.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AG,Algeria,GNS,336619,Algeria,28.0,3.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AJ,Azerbaijan,GNS,-2705129,Azerbaijan,40.5,47.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AL,Albania,GNS,-103516,Albania,41.0,20.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AM,Armenia,GNS,-2324487,Armenia,40.25,45.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AN,Andorra,GNS,-1394437,Andorra,42.55,1.583333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AO,Angola,GNS,-2857979,Angola,-12.5,18.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AQ,American Samoa,GNIS,1802701,Territory of American Samoa,-14.2942615,-170.6892094,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+country:AR,Argentina,GNS,-977087,Argentina,-34.0,-64.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AS,Australia,GNS,-1556565,Australia,-25.0,135.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AU,Austria,GNS,-1974447,Austria,47.333333,13.333333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AV,Anguilla,GNS,-1393054,Anguilla,18.216667,-63.05,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:AY,Antarctica,none,,,,,nearest,manual,,"Neither GNS nor GNIS lists Antarctica as a feature; GDELT writes it at one point, in Antarctica"
+country:BA,Bahrain,GNS,-784883,Bahrain,26.033333,50.55,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BB,Barbados,GNS,-1393236,Barbados,13.166667,-59.533333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BC,Botswana,GNS,-1397283,Botswana,-22.0,24.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BD,Bermuda,GNS,-1393936,Bermuda,32.333333,-64.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BE,Belgium,GNS,-1954041,Belgium,50.75,4.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BF,"Bahamas, The",GNS,-1542762,The Bahamas,24.0,-76.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BG,Bangladesh,GNS,-2711829,Bangladesh,24.0,90.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BH,Belize,GNS,-1148787,Belize,17.25,-88.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BK,Bosnia-Herzegovina,GNS,315272,Bosnia and Herzegovina,44.25,17.833333,nearest,manual,Administrative_Regions.zip,GNS's conventional name is Bosnia and Herzegovina; GDELT writes Bosnia-Herzegovina
+country:BL,Bolivia,GNS,-681871,Bolivia,-17.0,-65.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BM,Myanmar,GNS,-411312,Burma,21.0,96.0,nearest,manual,Administrative_Regions.zip,GNS's conventional name is Burma; Myanmar is its variant there
+country:BN,Benin,GNS,-1332636,Bénin,9.5,2.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BO,Belarus,GNS,-1941128,Belarus’,53.0,28.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BP,Solomon Islands,GNS,-1551639,Solomon Islands,-8.0,159.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BQ,Navassa Island,GNIS,1393098,Navassa Island,18.4027778,-75.0133333,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Navassa Island only at (6.30711, -162.686), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 9,542 km from the island, which lies in the Caribbean"
+country:BR,Brazil,GNS,-631278,Brazil,-10.0,-55.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BS,Bassas Da India,GNS,-1312866,Bassas da India,-21.483333,39.7,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BT,Bhutan,GNS,-2211191,Bhutan,27.5,90.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BU,Bulgaria,GNS,-832642,Bulgaria,42.666667,25.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BV,Bouvet Island,GNS,-1187333,Bouvet Island,-54.433333,3.4,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BX,Brunei,GNS,-1337268,Brunei,4.5,114.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:BY,Burundi,GNS,6066165,Burundi,-3.35,29.88333333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CA,Canada,GNS,-562063,Canada,60.0,-100.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CB,Cambodia,GNS,-1023192,Cambodia,13.0,105.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CD,Chad,GNS,-1092088,Chad,15.0,19.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CE,Sri Lanka,GNS,-2236280,Sri Lanka,7.75,80.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CF,Congo,GNS,-2205398,Congo,-1.0,15.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CG,Democratic Republic Of The Congo,GNS,-2062993,Democratic Republic of the Congo,-2.5,23.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CH,China,GNS,-1900673,China,35.0,105.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CI,Chile,GNS,-876924,Chile,-30.0,-71.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CJ,Cayman Islands,GNS,-1187406,Cayman Islands,19.5,-80.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CM,Cameroon,GNS,-3147545,Cameroon,6.0,12.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CN,Comoros,GNS,-2087781,Comoros,-12.0,43.833333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CO,Colombia,GNS,-581086,Colombia,4.0,-73.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CQ,Northern Mariana Islands,GNIS,1779809,Commonwealth of the Northern Mariana Islands,15.0648527,145.6856206,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+country:CR,Coral Sea Islands,GNS,-1567455,Coral Sea Islands,-17.5,151.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CS,Costa Rica,GNS,-1106882,Costa Rica,10.0,-84.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CT,Central African Republic,GNS,-1342503,Central African Republic,7.0,21.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CU,Cuba,GNS,-1619218,Cuba,22.0,-79.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CV,Cape Verde,GNS,-1313035,Cabo Verde,16.0,-24.0,nearest,manual,Administrative_Regions.zip,GNS's conventional name is Cabo Verde; Cape Verde is its variant there
+country:CW,Cook Islands,GNS,223356,Cook Islands,-21.23,-159.77,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:CY,Cyprus,GNS,-2738201,Cyprus,35.0,33.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:DA,Denmark,GNS,-2741023,Denmark,56.0,10.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:DJ,Djibouti,GNS,-2034413,Djibouti,11.833333,42.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:DO,Dominica,GNS,-1352149,Dominica,15.433333,-61.35,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:DQ,Jarvis Island,GNIS,1802703,Jarvis Island,-0.3722222,-159.9972222,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Jarvis Island only at (6.29073, -162.543), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 793 km from the island"
+country:DR,Dominican Republic,GNS,-3350345,Dominican Republic,19.0,-70.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EC,Ecuador,GNS,-926618,Ecuador,-1.25,-78.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EG,Egypt,GNS,-293336,Egypt,27.0,30.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EI,Ireland,GNS,-1503533,Ireland,53.0,-8.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EK,Equatorial Guinea,GNS,-2064894,Equatorial Guinea,1.583333,10.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EN,Estonia,GNS,-3736218,Estonia,59.0,26.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ER,Eritrea,GNS,-610091,Eritrea,15.0,39.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ES,El Salvador,GNS,-1145467,El Salvador,13.833333,-88.916667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ET,Ethiopia,GNS,-610105,Ethiopia,9.0,39.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EU,Europa Island,GNS,-1393048,Europa Island,-22.366667,40.366667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:EZ,Czech Republic,GNS,-543491,Czech Republic,49.75,15.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:FG,French Guiana,GNS,-916610,French Guiana,4.0,-53.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:FI,Finland,GNS,-1363165,Finland,64.0,26.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:FJ,Fiji,GNS,-1187786,Fiji,-18.0,178.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:FM,Micronesia,GNS,-3740370,Federated States of Micronesia,5.0,152.0,nearest,manual,Administrative_Regions.zip,GNS's approved name is Federated States of Micronesia; Micronesia is its variant there
+country:FO,Faroe Islands,GNS,-2741735,Faroe Islands,62.0,-7.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:FP,French Polynesia,GNS,-1310171,French Polynesia,-15.0,-140.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:FQ,Baker Island,GNIS,1802704,Baker Island,0.1947222,-176.4794444,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Baker Island only at (6.33168, -162.642), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,680 km from the island"
+country:FR,France,GNS,-1427981,France,46.0,2.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GA,Gambia,GNS,-1199863,The Gambia,13.5,-15.5,nearest,manual,Administrative_Regions.zip,GNS's approved name is The Gambia; Gambia is its variant there
+country:GB,Gabon,GNS,-1325753,Gabon,-1.0,11.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GG,Georgia,GNS,-2327232,Georgia,41.999981,43.499905,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GH,Ghana,GNS,-2073393,Ghana,8.0,-1.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GI,Gibraltar,GNS,-1205054,Gibraltar,36.133333,-5.35,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GJ,Grenada,GNS,-1201918,Grenada,12.116667,-61.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GK,Guernsey,GNS,-1176751,Guernsey,49.583333,-2.333333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GL,Greenland,GNS,216889,Greenland,72.0,-40.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GM,Germany,GNS,-1775655,Germany,51.5,10.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GO,Glorioso Islands,GNS,-1176846,Glorioso Islands,-11.578333,47.2975,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GP,Guadeloupe,GNS,-1203022,Guadeloupe,16.25,-61.583333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GQ,Guam,GNIS,1802705,Territory of Guam,13.4427595,144.7694517,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+country:GR,Greece,GNS,169939,Greece,39.0,22.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GT,Guatemala,GNS,-1135822,Guatemala,15.5,-90.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GV,Guinea,GNS,-1180383,Guinea,10.833333,-10.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GY,Guyana,GNS,-919993,Guyana,5.0,-59.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:GZ,Gaza Strip,GNS,-797156,Gaza Strip,31.425074,34.373398,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:HA,Haiti,GNS,-64730,Haiti,19.0,-72.416667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:HK,Hong Kong,GNS,-1353148,Hong Kong,22.25,114.166667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:HM,Heard Island And Mcdonald Islands,GNS,-1306163,Heard Island and McDonald Islands,-53.0,73.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:HO,Honduras,GNS,-1122217,Honduras,15.0,-86.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:HQ,Howland Island,GNIS,1802706,Howland Island,0.8083333,-176.6166667,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Howland Island only at (6.34533, -162.691), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,663 km from the island"
+country:HR,Croatia,GNS,-77870,Croatia,45.166667,15.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:HU,Hungary,GNS,-856156,Hungary,47.0,20.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IC,Iceland,GNS,-2647784,Iceland,65.0,-18.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ID,Indonesia,GNS,-2679462,Indonesia,-5.0,120.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IM,Isle Of Man,GNS,-1186992,Isle of Man,54.25,-4.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IN,India,GNS,-2097795,India,22.0,79.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IO,British Indian Ocean Territory,GNS,-1203981,British Indian Ocean Territory,-6.0,72.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IP,Clipperton Island,GNS,-1310026,Clipperton Island,10.283333,-109.216667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IR,Iran,GNS,-3067252,Īrān,32.0,53.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IS,Israel,GNS,-780275,Israel,31.5,34.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IT,Italy,GNS,-119400,Italy,42.833333,12.833333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IV,Cote D'ivoire,GNS,-2121059,Côte d’Ivoire,8.0,-5.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:IZ,Iraq,GNS,-3102482,Iraq,33.0,44.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:JA,Japan,GNS,-231230,Japan,36.0,138.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:JE,Jersey,GNS,-1187077,Jersey,49.216667,-2.116667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:JM,Jamaica,GNS,-3752352,Jamaica,18.166667,-77.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:JN,Jan Mayen,GNS,-1306277,Jan Mayen,70.983333,-8.5,reference,manual,Administrative_Regions.zip,"GDELT writes Jan Mayen only at (76.8408, 29.707), in the Barents Sea southeast of Svalbard, 1,311 km from the island"
+country:JO,Jordan,GNS,-972016,Jordan,31.0,36.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:JQ,Johnston Atoll,GNIS,1802707,Johnston Atoll,16.7566667,-169.5330556,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Johnston Atoll only at (6.35079, -162.655), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 1,378 km from the atoll"
+country:JU,Juan De Nova Island,GNS,-1205218,Juan de Nova Island,-17.055,42.724444,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KE,Kenya,GNS,-2249831,Kenya,1.0,38.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KG,Kyrgyzstan,GNS,-2332413,Kyrgyzstan,41.5,75.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KN,North Korea,GNS,-181585,North Korea,40.0,127.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KQ,Kingman Reef,GNIS,1802708,Kingman Reef,6.4097222,-162.3669444,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+country:KR,Kiribati,GNS,-1352554,Kiribati,-5.0,-170.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KS,South Korea,GNS,-716590,South Korea,36.5,127.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KT,Christmas Island,GNS,-779048,Christmas Island,-10.5,105.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KU,Kuwait,GNS,-789772,Kuwait,29.5,47.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KV,Kosovo,GNS,415322,Kosovo,42.583333,20.916667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:KZ,Kazakhstan,GNS,-2338816,Kazakhstan,48.0,68.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LA,Laos,GNS,-2665674,Laos,18.0,105.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LE,Lebanon,GNS,-806274,Lebanon,33.833333,35.833333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LG,Latvia,GNS,-3210080,Latvia,57.0,25.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LH,Lithuania,GNS,-2616324,Lithuania,55.416667,24.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LI,Liberia,GNS,-2133518,Liberia,6.5,-9.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LO,Slovak Republic,GNS,-845931,Slovak Republic,48.666667,19.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LQ,Palmyra Atoll,GNIS,1802709,Palmyra Atoll,5.8811111,-162.0725,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Palmyra Atoll only at (6.33987, -162.675), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 84 km from the atoll, at sea"
+country:LS,Liechtenstein,GNS,-1187161,Liechtenstein,47.166667,9.533333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LT,Lesotho,GNS,-1405623,Lesotho,-29.5,28.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LU,Luxembourg,GNS,-1736195,Luxembourg,49.75,6.166667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:LY,Libya,GNS,-3169384,Libya,27.0,18.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MA,Madagascar,GNS,-215084,Madagascar,-20.0,47.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MB,Martinique,GNS,-1554447,Martinique,14.666667,-61.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MC,Macau,GNS,-1204093,Macau,22.157778,113.559722,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MD,Moldova,GNS,-2276888,Moldova,47.25,28.583333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MF,Mayotte,GNS,-1187193,Mayotte,-12.833333,45.166667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MG,Mongolia,GNS,-2351536,Mongolia,46.0,105.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MH,Montserrat,GNS,-1204266,Montserrat,16.75,-62.2,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MI,Malawi,GNS,-1483397,Malawi,-13.5,34.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MJ,Montenegro,GNS,-89497,Montenegro,42.75,19.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MK,Macedonia,GNS,-860385,North Macedonia,41.666667,21.75,nearest,manual,Administrative_Regions.zip,GNS's conventional name is North Macedonia; Macedonia is its variant there
+country:ML,Mali,GNS,-1071447,Mali,17.0,-3.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MN,Monaco,GNS,-1451965,Monaco,43.733333,7.419444,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MO,Morocco,GNS,-39830,Morocco,28.5,-10.0,nearest,manual,Administrative_Regions.zip,"GDELT's only point, (32.0, -5.0), lies in central Morocco; it is nearer Gibraltar's GNS point than Morocco's own, which GNS puts farther south, at (28.5, -10.0)"
+country:MP,Mauritius,GNS,-1355268,Mauritius,-20.3,57.583333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MQ,Midway Islands,GNIS,1802699,Midway Islands,28.2052778,-177.3613889,reference,manual,DomesticNames_National_Text.zip,"GDELT writes the Midway Islands only at (6.33441, -162.74), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 2,878 km from the islands"
+country:MR,Mauritania,GNS,-1402267,Mauritania,20.25,-10.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MT,Malta,GNS,-18831,Malta,35.916667,14.433333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MU,Oman,GNS,-788314,Oman,21.0,57.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MV,Maldives,GNS,-1306875,Maldives,3.2,73.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MX,Mexico,GNS,-1683338,Mexico,23.0,-102.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MY,Malaysia,GNS,-2405157,Malaysia,2.5,112.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:MZ,Mozambique,GNS,-322716,Mozambique,-18.25,35.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NC,New Caledonia,GNS,-1713445,New Caledonia,-21.5,165.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NE,Niue,GNS,-1187248,Niue,-19.051389,-169.862222,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NF,Norfolk Island,GNS,-1591894,Norfolk Island,-29.033333,167.95,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NG,Niger,GNS,-1084966,Niger,17.0,9.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NH,Vanuatu,GNS,-2139680,Vanuatu,-16.3333,167.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NI,Nigeria,GNS,-2020891,Nigeria,10.0,8.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NL,Netherlands,GNS,-2149885,Netherlands,52.25,5.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NO,Norway,GNS,-272880,Norway,62.0,10.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NP,Nepal,GNS,-1022396,Nepāl,28.0,84.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NR,Nauru,GNS,-1187305,Naoero,-0.533333,166.933333,nearest,manual,Administrative_Regions.zip,GNS's approved name is Naoero; Nauru is its variant there
+country:NS,Suriname,GNS,-915232,Suriname,4.0,-56.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NT,Netherlands Antilles,GNS,-1710526,Netherlands Antilles,12.166667,-69.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NU,Nicaragua,GNS,-1113554,Nicaragua,13.0,-85.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:NZ,New Zealand,GNS,-1514529,New Zealand,-42.0,173.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:OD,South Sudan,GNS,11239187,South Sudan,7.5,30.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PA,Paraguay,GNS,-912059,Paraguay,-23.333333,-58.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PC,Pitcairn Islands,GNS,-1307129,Pitcairn Islands,-25.066667,-130.1,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PE,Peru,GNS,-358379,Peru,-10.0,-75.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PF,Paracel Islands,GNS,-1322983,Paracel Islands,16.5,112.0,reference,manual,Paracel Islands.zip,"GDELT writes the Paracel Islands only at (6.33987, -162.675), in the central Pacific where it writes the US Minor Outlying Islands, 9,312 km from the islands"
+country:PG,Spratly Islands,GNS,-1323075,Spratly Islands,10.0,114.0,nearest,name,Spratly Islands.zip,GDELT's name is the GNS feature's name
+country:PK,Pakistan,GNS,-2770971,Pakistan,30.0,70.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PL,Poland,GNS,99514,Poland,52.0,20.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PM,Panama,GNS,-168021,Panamá,9.0,-80.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PO,Portugal,GNS,-2173182,Portugal,39.5,-8.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PP,Papua New Guinea,GNS,-2197995,Papua New Guinea,-6.0,147.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PS,Palau,GNS,-3738346,Palau,6.0,134.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:PU,Guinea-Bissau,GNS,-1490951,Guinea-Bissau,12.0,-15.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:QA,Qatar,GNS,-785517,Qaţar,25.5,51.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RE,Reunion,GNS,-1331308,Reunion,-21.1,55.6,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RI,Serbia,GNS,-95428,Serbia,44.166667,20.833333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RM,Marshall Islands,GNS,-3742636,Marshall Islands,10.0,167.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RN,Saint Martin,GNS,10965216,Saint Martin,18.075,-63.05833,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RO,Romania,GNS,100038,România,46.0,25.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RP,Philippines,GNS,-2445615,Philippines,11.0,122.416667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RQ,Puerto Rico,GNIS,1779808,Commonwealth of Puerto Rico,18.2156983,-66.4146668,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+country:RS,Russia,GNS,-2994055,Russia,60.0,100.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:RW,Rwanda,GNS,-3433870,Rwanda,-2.0,30.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SA,Saudi Arabia,GNS,-3099121,Saudi Arabia,25.0,45.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SC,Saint Kitts And Nevis,GNS,-1359320,Saint Kitts and Nevis,17.333333,-62.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SE,Seychelles,GNS,-1322681,Seychelles,-4.583333,55.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SF,South Africa,GNS,-1285297,South Africa,-29.0,25.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SG,Senegal,GNS,-2274196,Sénégal,14.5,-14.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SH,Saint Helena,GNS,12288725,Saint Helena,-15.963889,-5.706944,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SI,Slovenia,GNS,-96090,Slovenia,46.083333,15.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SL,Sierra Leone,GNS,-1321077,Sierra Leone,8.5,-11.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SM,San Marino,GNS,-127866,San Marino,43.9375,12.458333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SN,Singapore,GNS,-73636,Singapore,1.366667,103.8,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SO,Somalia,GNS,-3229581,Somalia,6.0,48.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SP,Spain,GNS,-403477,Spain,40.0,-4.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ST,Saint Lucia,GNS,-1314126,Saint Lucia,13.883333,-60.966667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SU,Sudan,GNS,-14579,Sudan,16.0,30.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SV,Svalbard,GNS,-2464961,Svalbard,78.0,20.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SW,Sweden,GNS,-2537125,Sweden,62.0,15.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SY,Syria,GNS,-2548116,Syria,35.0,38.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:SZ,Switzerland,GNS,-2554390,Switzerland,47.0,8.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TD,Trinidad And Tobago,GNS,-1360911,Trinidad and Tobago,11.0,-61.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TE,Tromelin Island,GNS,-1393050,Tromelin Island,-15.891944,54.523611,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TH,Thailand,GNS,-3256085,Thailand,15.5,101.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TI,Tajikistan,GNS,-2557092,Tajikistan,39.0,71.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TK,Turks And Caicos Islands,GNS,-1312244,Turks and Caicos Islands,21.733333,-71.583333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TL,Tokelau,GNS,-1309637,Tokelau,-9.0,-171.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TN,Tonga,GNS,-2778431,Tonga,-20.0,-175.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TO,Togo,GNS,-1499563,Togo,8.666667,1.083333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TP,Sao Tome And Principe,GNS,-1312817,Sao Tome and Principe,1.0,7.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TS,Tunisia,GNS,-731710,Tunisia,34.0,9.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TT,East Timor,GNS,9131324,Timor-Leste,-8.833333,125.75,nearest,manual,Administrative_Regions.zip,GNS's conventional name is Timor-Leste; East Timor is its variant there
+country:TU,Turkey,GNS,-773831,Turkey,39.0,35.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TV,Tuvalu,GNS,-1322366,Tuvalu,-8.0,178.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TW,Taiwan,GNS,-2637939,Taiwan,24.0,121.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TX,Turkmenistan,GNS,-2560607,Turkmenistan,39.75,59.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:TZ,Tanzania,GNS,-2573934,Tanzania,-6.0,35.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:UG,Uganda,GNS,-1735332,Uganda,1.25,32.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:UK,United Kingdom,GNS,-2610495,United Kingdom,54.0,-2.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:UP,Ukraine,GNS,-1057067,Ukraine,49.0,32.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:US,United States,none,,,,,nearest,manual,,"GNS leaves the United States to GNIS, and GNIS lists the states and territories, not the country"
+country:UV,Burkina Faso,GNS,-1716959,Burkina Faso,12.5,-1.666667,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:UY,Uruguay,GNS,-909638,Uruguay,-33.0,-56.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:UZ,Uzbekistan,GNS,-2579641,Uzbekistan,41.666667,63.833333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:VC,Saint Vincent And The Grenadines,GNS,-1204549,Saint Vincent and the Grenadines,13.083333,-61.2,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:VE,Venezuela,GNS,-960315,Venezuela,8.0,-66.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:VI,British Virgin Islands,GNS,-1305697,British Virgin Islands,18.5,-64.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:VM,"Vietnam, Republic Of",GNS,-3733340,Vietnam,16.166667,107.833333,nearest,manual,Administrative_Regions.zip,"GNS's conventional name is Vietnam; GDELT writes Vietnam, Republic Of"
+country:VQ,Virgin Islands,GNIS,1802710,United States Virgin Islands,18.3283679,-64.9144993,nearest,manual,DomesticNames_National_Text.zip,GNIS names the territory United States Virgin Islands; GDELT writes Virgin Islands
+country:VT,Vatican City,GNS,-131932,Vatican City,41.903333,12.453333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:WA,Namibia,GNS,-2584033,Namibia,-22.0,17.0,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:WE,West Bank,GNS,-793006,West Bank,32.0,35.25,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:WF,Wallis And Futuna,GNS,-1309787,Wallis and Futuna,-13.3,-176.2,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:WI,Western Sahara,GNS,-1063814,El Sáhara,25.0,-13.5,nearest,manual,Administrative_Regions.zip,"GNS names Western Sahara with variant names and one unverified name (name type D), Western Sahara; it has no conventional or approved name"
+country:WQ,Wake Island,GNIS,1802700,Wake Island,19.2819444,166.6502778,reference,manual,DomesticNames_National_Text.zip,"GDELT writes Wake Island only at (6.27435, -162.554), in the central Pacific, where GDELT writes all the US Minor Outlying Islands near Kingman Reef, 3,630 km from the island"
+country:WS,Samoa,GNS,-1307684,Samoa,-13.8,-172.133333,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:WZ,Swaziland,GNS,-1331838,Eswatini,-26.5,31.5,nearest,manual,Administrative_Regions.zip,GNS's approved name is Eswatini; Swaziland is its variant there
+country:YM,Yemen,GNS,-3193053,Yemen,15.5,47.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ZA,Zambia,GNS,-2306400,Zambia,-14.33333,28.5,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+country:ZI,Zimbabwe,GNS,-2324006,Zimbabwe,-19.0,29.75,nearest,name,Administrative_Regions.zip,GDELT's name is the GNS feature's name
+state:AK,"Alaska, United States",GNIS,1785533,State of Alaska,63.73664,-151.6006053,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:AL,"Alabama, United States",GNIS,1779775,State of Alabama,32.7568799,-86.844521,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:AR,"Arkansas, United States",GNIS,68085,State of Arkansas,34.8999171,-92.4383739,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:AZ,"Arizona, United States",GNIS,1779777,State of Arizona,34.2931436,-111.6644463,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:CA,"California, United States",GNIS,1779778,State of California,37.2153309,-119.66387,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:CO,"Colorado, United States",GNIS,1779779,State of Colorado,38.998532,-105.5478208,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:CT,"Connecticut, United States",GNIS,1779780,State of Connecticut,41.5751642,-72.7382577,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:DC,"District of Columbia, United States",GNIS,1702382,District of Columbia,38.9047746,-77.0163024,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:DE,"Delaware, United States",GNIS,1779781,State of Delaware,38.9949748,-75.4524926,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:FL,"Florida, United States",GNIS,294478,State of Florida,28.4236864,-82.54411,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:GA,"Georgia, United States",GNIS,1705317,State of Georgia,32.6386418,-83.4272463,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:HI,"Hawaii, United States",GNIS,1779782,State of Hawaii,19.6023968,-155.5228859,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:IA,"Iowa, United States",GNIS,1779785,State of Iowa,42.0746508,-93.500089,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:ID,"Idaho, United States",GNIS,1779783,State of Idaho,44.3890549,-114.6594149,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:IL,"Illinois, United States",GNIS,1779784,State of Illinois,40.1242015,-89.1486341,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:IN,"Indiana, United States",GNIS,448508,State of Indiana,39.9198106,-86.2818476,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:KS,"Kansas, United States",GNIS,481813,State of Kansas,38.4847271,-98.3801554,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:KY,"Kentucky, United States",GNIS,1779786,Commonwealth of Kentucky,37.5265869,-85.2905322,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:LA,"Louisiana, United States",GNIS,1629543,State of Louisiana,30.9090798,-91.8142362,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MA,"Massachusetts, United States",GNIS,606926,Commonwealth of Massachusetts,42.1600929,-71.5039723,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MD,"Maryland, United States",GNIS,1714934,State of Maryland,38.946494,-76.6871773,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:ME,"Maine, United States",GNIS,1779787,State of Maine,45.2743221,-69.2027587,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MI,"Michigan, United States",GNIS,1779789,State of Michigan,44.8747749,-85.7309556,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MN,"Minnesota, United States",GNIS,662849,State of Minnesota,46.3493723,-94.1983145,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MO,"Missouri, United States",GNIS,1779791,State of Missouri,38.367639,-92.4774125,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MS,"Mississippi, United States",GNIS,1779790,State of Mississippi,32.7127093,-89.6532874,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:MT,"Montana, United States",GNIS,767982,State of Montana,47.033447,-109.6451018,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NC,"North Carolina, United States",GNIS,1027616,State of North Carolina,35.5260365,-79.1308856,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:ND,"North Dakota, United States",GNIS,1779797,State of North Dakota,47.4463321,-100.4693383,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NE,"Nebraska, United States",GNIS,1779792,State of Nebraska,41.5271511,-99.8108633,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NH,"New Hampshire, United States",GNIS,1779794,State of New Hampshire,43.6802366,-71.571243,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NJ,"New Jersey, United States",GNIS,1779795,State of New Jersey,40.1099961,-74.6559465,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NM,"New Mexico, United States",GNIS,897535,State of New Mexico,34.4213012,-106.1084439,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NV,"Nevada, United States",GNIS,1779793,State of Nevada,39.3561847,-116.6552504,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:NY,"New York, United States",GNIS,1779796,State of New York,42.9210622,-75.5964183,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:OH,"Ohio, United States",GNIS,1085497,State of Ohio,40.4154777,-82.7093797,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:OK,"Oklahoma, United States",GNIS,1102857,State of Oklahoma,35.5834672,-97.5082384,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:OR,"Oregon, United States",GNIS,1155107,State of Oregon,43.9404514,-120.6052562,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:PA,"Pennsylvania, United States",GNIS,1779798,Commonwealth of Pennsylvania,40.8967074,-77.8389307,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:PR,"Puerto Rico, United States",GNIS,1779808,Commonwealth of Puerto Rico,18.2156983,-66.4146668,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:RI,"Rhode Island, United States",GNIS,1219835,State of Rhode Island and Providence Plantations,41.5946389,-71.5247235,nearest,manual,DomesticNames_National_Text.zip,GNIS names the state State of Rhode Island and Providence Plantations
+state:SC,"South Carolina, United States",GNIS,1779799,State of South Carolina,33.877748,-80.8645874,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:SD,"South Dakota, United States",GNIS,1785534,State of South Dakota,44.436136,-100.2304575,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:TN,"Tennessee, United States",GNIS,1325873,State of Tennessee,35.8431074,-86.3421511,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:TX,"Texas, United States",GNIS,1779801,State of Texas,31.4472014,-99.317118,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:UT,"Utah, United States",GNIS,1455989,State of Utah,39.3237687,-111.67825,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:VA,"Virginia, United States",GNIS,1779803,Commonwealth of Virginia,37.5108711,-78.6663564,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:VT,"Vermont, United States",GNIS,1779802,State of Vermont,44.0752001,-72.6626532,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:WA,"Washington, United States",GNIS,1779804,State of Washington,47.4116187,-120.5928185,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:WI,"Wisconsin, United States",GNIS,1779806,State of Wisconsin,44.6399361,-89.7329467,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:WV,"West Virginia, United States",GNIS,1779805,State of West Virginia,38.642567,-80.6137069,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name
+state:WY,"Wyoming, United States",GNIS,1779807,State of Wyoming,42.9995383,-107.5513959,nearest,name,DomesticNames_National_Text.zip,GDELT's name is the GNIS feature's name

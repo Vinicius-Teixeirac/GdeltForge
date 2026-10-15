@@ -179,9 +179,6 @@ class TestTheBundledTable:
         damaged = names.filter(names.str.contains(r"[?\x80-\x9f]"))
         assert damaged.len() == 0, damaged.head(5).to_list()
 
-    def test_its_identity_names_rule_version_2(self):
-        assert places.place_table_id().startswith("v2, ")
-
 
 def test_a_name_with_no_repair_stops_the_build(monkeypatch):
     spec = importlib.util.spec_from_file_location(

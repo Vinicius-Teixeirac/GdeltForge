@@ -377,13 +377,15 @@ used there, as witnesses; the lookup key is the point alone, and no
    the error and the point's place wins; otherwise the point is the error
    and the feature's own place wins.
 6. **The canonical point** of a city or landmark is its main point. A
-   country's or US state's is, of the points it owns, the one nearest the
-   median of its own features (its cities for a country, its GNIS features
-   for a state), since the most frequent point is sometimes another
-   country's: Mauritius' most frequent point is the Northern Mariana
-   Islands, the ISO reading of its FIPS code. When every point it owns is
-   more than 5,000 km from its features, GDELT has no right point for it,
-   and the median is used.
+   country's or US state's is, of the points it owns, the one nearest its
+   point in a gazetteer (see
+   [Country and state points](#country-and-state-points)), since the most
+   frequent point is sometimes another country's: Mauritius' most frequent
+   point is the Northern Mariana Islands, the ISO reading of its FIPS code.
+   Where GDELT never wrote the place near itself, a reviewed decision gives
+   it the gazetteer's point. The two places no gazetteer lists, the United
+   States and Antarctica, take the point they own nearest the median of
+   their own features (their cities).
 7. **The canonical name** is the name written most for the place in the
    latest era it was written in (2015 on, or its own last years if it
    ends earlier), leaving out names with `?` or the Unicode replacement
@@ -401,9 +403,11 @@ used there, as witnesses; the lookup key is the point alone, and no
    no location.
 
 Of all 2.61 billion geo values, 85.7% resolve to a place; 12.8% get a
-different `FeatureID` (mostly `0` becoming its country or state); 3.8% of
-all values (4.5% of those resolved) move more than 1 km. A point GDELT got
-right stays where it is.
+different `FeatureID` (mostly `0` becoming its country or state); 4.0% of
+all values (4.6% of those resolved) move more than 1 km. A point GDELT got
+right stays where it is, except that a country or state GDELT wrote at two
+right points keeps one: Sudan, written at (15, 30) and (16, 30), keeps
+(16, 30), its point in GNS.
 
 ### Names GDELT's encoding damaged
 
@@ -452,11 +456,50 @@ repairs again from those files.
 > www.nga.mil. The National Geospatial-Intelligence Agency name, initials,
 > and seal are protected by 10 United States Code § Section 425.
 
+### Country and state points
+
+GDELT writes many countries at two or more points: older and newer
+centres of the same country, and sometimes another country's point.
+Europa Island (FIPS `EU`) is written more often at Switzerland's point,
+(47, 8), than at its own; Mauritius more often at the Northern Mariana
+Islands. Which point is the place's own can't be read from the archive
+alone, so every country and US state has a reference point from the
+gazetteers GDELT's IDs come from: NGA's GEOnet Names Server (GNS) for the
+world, and the U.S. Geological Survey's Geographic Names Information
+System (GNIS) for the US states and territories, which GNS leaves out. The
+canonical point is GDELT's own point nearest the reference.
+
+| Reference | Places | How |
+|---|---|---|
+| By name | 286 | GDELT's name for the place is the name of exactly one GNS country, dependency or island group, or of one GNIS state or territory |
+| Reviewed by hand | 14 | The gazetteer knows the place by another name (Burma, Timor-Leste, Eswatini); each row names the feature and the reason |
+| Gazetteer point, reviewed | 10 | GDELT never wrote the place near itself, so it takes the gazetteer's point: eight US Minor Outlying Islands and the Paracel Islands, all written in the central Pacific next to Kingman Reef, and Jan Mayen, written in the Barents Sea |
+| None | 2 | Neither gazetteer lists the United States or Antarctica as a feature; rule 6's median decides |
+
+A place every written point of which lies nearer another place's
+reference than its own needs a reviewed row: most are wrong, but a large
+country's own point can lie nearer a small neighbour's reference
+(Morocco's, in central Morocco, is nearer Gibraltar's), and the row keeps
+it. Under these references 45 countries' canonical points differ from
+those of the earlier rule (the point nearest the median of the country's
+cities), 18 of them by less than 10 km; no US state's does.
+
+Every reference is listed, with the gazetteer feature it cites, in
+`tools/place_point_refs.csv` in the repository; the reviewed ones also in
+`tools/place_point_refs_manual.csv`, with their reasons. The gazetteer
+files were downloaded on 2026-10-15; `tools/place_point_sources.json`
+records each one's URL, sha256 and citation, and the table's metadata
+records the reference file's sha256. `tools/build_place_point_refs.py`
+matches the references again from those files. The GNIS data carries no
+use constraints; the U.S. Geological Survey asks for acknowledgment in
+products derived from it.
+
 ### What it never does
 
 - Invent a place: a point is given a place only when GDELT's own ID or
   point names it.
-- Move a point GDELT got right, or discard one the table doesn't know.
+- Move a point GDELT got right, other than to another right point of the
+  same country or state, or discard one the table doesn't know.
 - Read `QuadClass`, or any column but the geo points.
 - Change the converted or the raw files.
 
