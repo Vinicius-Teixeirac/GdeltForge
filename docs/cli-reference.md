@@ -480,7 +480,9 @@ Covers seven code families, each with its own reference list:
 
 FIPS 10-4 country codes are a different scheme from CAMEO's own 3-letter actor-country codes (`UK` not `GBR`, `RS` not `RUS`), so a value valid on one family can be silently wrong on another; `gdeltforge codes <column>` disambiguates before you run a sample.
 
-A handful of real `EventCode`/`EventBaseCode`/`EventRootCode` values (`"X"`, `"--"`, `"---"`) are GDELT's own markers for rows its event coder couldn't classify, not CAMEO codes, so `gdeltforge codes` deliberately won't list them and a filter using one will still warn.
+Ethnic codes are listed lowercase (`kur`, `pal`), the way GDELT writes them in the Events data; every other family is uppercase. Matching ignores case everywhere: `--search`, `sample`'s unrecognized-code warning, and `gdeltforge.sampling.cameo_codes.lookup(column, code)` for translating codes in your own code.
+
+Three real `EventCode`/`EventBaseCode`/`EventRootCode` values aren't CAMEO event categories, and `gdeltforge codes` lists them with what they mean. `---` (with `--` as its root) is the CAMEO null code: the coder matched a verb pattern marked as generating no event, yet the row reached the output (325 rows in the 1979 to 2026 archive). `X` is undocumented anywhere in CAMEO or its coder; its 9 rows are all QuadClass 4, material conflict, with no Goldstein score. Filter these out, not in, for most analyses.
 
 List which columns have a reference list:
 
@@ -519,6 +521,10 @@ happens to be a substring of several unrelated names (`Indonesia`,
 mean" question, not a fuzzy search, and every code in a family is unique.
 A search term that isn't itself a valid code falls back to the substring
 match above.
+
+A term that starts with a dash, such as the event markers `---` and `--`,
+has to be given as `--search=---`: written as `--search ---`, the shell
+argument parser reads it as another option.
 
 | Flag | Description |
 |------|-------------|
