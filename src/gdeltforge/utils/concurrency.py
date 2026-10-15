@@ -75,7 +75,7 @@ class WorkerPlan:
             _exported_int(POLARS_MAX_CONCURRENT_SCANS) or self.concurrent_scans
             if self.concurrent_scans is not None else None
         )
-        reads = f", {scans} file read(s) at once" if scans is not None else ""
+        reads = f", {scans} file read(s) at once each" if scans is not None else ""
         return f"{self.workers} worker process(es), {threads} polars thread(s) each{reads}"
 
 

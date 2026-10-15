@@ -623,7 +623,8 @@ def _read_rows(
     The rows at positions `rows` (sorted, ascending) of one file, scanned
     toward target_schema. Parquet decodes a row group at a time, so this
     reads only the row groups holding a requested row, a few at a time
-    (the scan limit sample runs under, io.max_concurrent_reads, else 4):
+    (the scan limit sample runs under: an exported
+    POLARS_MAX_CONCURRENT_SCANS, else io.max_concurrent_reads, else 4):
     memory follows those few row groups of the requested columns, never
     the whole file. Read strictly one at a time, they left a network share
     with a single request stream, and day-aggregated GKG 2.1 sampled no
@@ -667,10 +668,11 @@ class CalendarSampler:
     period across the flat + historical file union, in two passes. The
     first streams only the date column, with each row's file and
     position, and draws every period's reservoir; the second reads the
-    chosen rows' columns from the row groups holding them. Memory then
-    follows the date column and one row group, not whole rows of every
-    file, which on aggregated files (row groups of several hundred MB)
-    is the difference that matters. The draws depend only on the order
+    chosen rows' columns from the row groups holding them, a few at a
+    time (see _read_rows). Memory then follows the date column and those
+    few row groups, not whole rows of every file, which on aggregated
+    files (row groups of several hundred MB) is the difference that
+    matters. The draws depend only on the order
     rows are read in and on each period's own random stream, so the
     first pass picks exactly the rows a single full scan would.
 

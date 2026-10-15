@@ -544,9 +544,10 @@ _MAX_EXPLODED_ROWS_PER_STEP = 200_000
 def _files_per_batch() -> int:
     """
     How many files a lookup's second pass reads at once: the scan limit
-    sample/crossref run under (POLARS_MAX_CONCURRENT_SCANS, set from
-    io.max_concurrent_reads), else 4. Each batch's row groups are held
-    until its matches are copied out, so this bounds the pass's memory.
+    sample/crossref run under (POLARS_MAX_CONCURRENT_SCANS: the one the
+    user exported, else io.max_concurrent_reads), else 4. Each batch's
+    row groups are held until its matches are copied out, so this bounds
+    the pass's memory.
     """
     return exported_scan_limit() or 4
 
