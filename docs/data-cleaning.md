@@ -555,8 +555,11 @@ nearer the Isle of Man).
 
 **Why off by default**: it replaces GDELT's values without keeping them,
 so it's lossy, and `--delete-source` refuses it unless
-`allow_lossy_delete_source: true`. It also costs each worker about 80 MB
-of memory for the table. The table's identity (its rule version and the
+`allow_lossy_delete_source: true`. It also costs memory: each worker
+holds the table (about 150 MB), and resolving a file takes more while it
+runs, about 350 MB in all above a run without places for a daily Events
+file, measured with one worker. Each file's distinct points are resolved
+once and looked up per row, so a 15-minute file adds about 50 ms. The table's identity (its rule version and the
 archive it was built from) is part of the resumability fingerprint, so a
 gdeltforge release with a rebuilt table resolves every file again.
 
