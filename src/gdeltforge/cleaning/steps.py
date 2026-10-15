@@ -428,8 +428,11 @@ def _point_key(prefix: str) -> pl.Expr:
         separator="\x1f",
     )
 # A FullName GDELT's encoding damaged: '?' for a letter Windows-1252 lacks,
-# a control character for one it has outside Latin-1.
-_DAMAGED_NAME = r"[?\x80-\x9f]"
+# a control character for one it has outside Latin-1, or a part with a
+# letter outside ASCII cut short, one capital letter of what followed it
+# left at its end ("DiyaláZ"; tools/build_place_name_repairs.py, has_debris).
+_DAMAGED_NAME = (r"[?\x80-\x9f]"
+                 r"|(?:[^\x00-\x7F][^,]*\p{Ll}|[\p{Ll}&&[^\x00-\x7F]])\p{Lu}\**(?:,|$)")
 
 
 @dataclass(frozen=True)

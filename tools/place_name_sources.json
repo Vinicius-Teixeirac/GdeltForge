@@ -1,6 +1,11 @@
 {
   "citation": "Toponymic information is based on the Geographic Names Database, containing official standard names approved by the United States Board on Geographic Names and maintained by the National Geospatial-Intelligence Agency. More information is available at the Resources link at www.nga.mil. The National Geospatial-Intelligence Agency name, initials, and seal are protected by 10 United States Code § Section 425.",
   "files": {
+    "Administrative_Regions.zip": {
+      "downloaded": "2026-10-15T14:24:48+00:00",
+      "sha256": "a5fea06208a41e6e0f16c197044e184118cac552e4dfeea5fecb5a0c2caa6666",
+      "url": "https://geonames.nga.mil/geonames/GNSData/fc_files/Administrative_Regions.zip"
+    },
     "Azerbaijan.zip": {
       "downloaded": "2026-10-14T22:30:35+00:00",
       "sha256": "8b383c9ab03233c64665eb6535a7092f39695f0a3cf8d597714f7100ebd517ed",
@@ -74,8 +79,8 @@
   },
   "repairs": {
     "cp1252": 87,
-    "folded": 37,
-    "manual": 8,
+    "folded": 94,
+    "manual": 15,
     "replay": 35
   },
   "source": "NGA GEOnet Names Server (GNS)"
