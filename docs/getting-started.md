@@ -81,7 +81,7 @@ gdeltforge sample --dataset events --mode indexed -n 1000 --out sample.parquet
 
 This downloads one week of daily GDELT files, converts them to Parquet, cleans them, and writes a 1,000-row random sample to `sample.parquet`.
 
-With the built-in defaults, `clean` keeps every row and never loses one of GDELT's values. It repairs the events GDELT dated 1920 instead of 2020, keeping GDELT's own dates in `*_original` columns, and counts the rows whose event code isn't a CAMEO category. It drops rows only for the columns you list under `clean.columns_to_check`. Every file it writes is marked as cleaned, naming its source file, and every run writes an audit, one row per file, to a directory next to the cleaned one (`data/events/cleaned_runs/` by default): rows in and out, what each step changed, and codes missing from the code tables. `gdeltforge clean --dry-run --report` measures all of that without writing anything. See [Data Cleaning](data-cleaning.md) for every step.
+With the built-in defaults, `clean` keeps every row and never loses one of GDELT's values. It repairs the events GDELT dated 1920 instead of 2020, keeping GDELT's own dates in `*_original` columns, and counts the rows whose event code isn't a CAMEO category. It drops rows only for the columns you list under `clean.columns_to_check`. Every file it writes is marked as cleaned, naming its source file, and every run writes an audit, one row per file, to a directory next to the cleaned one (`data/events/cleaned_runs/` by default): rows in and out, what each step changed, and codes missing from the code tables. `gdeltforge clean --dry-run --report` measures all of that without writing anything, for the files a run would clean: right after a run, which leaves none, add `--force` to measure them all. See [Data Cleaning](data-cleaning.md) for every step.
 
 Once that works, drop the date flags to work with the full archive (1979-present).
 
@@ -91,7 +91,7 @@ Once that works, drop the date flags to work with the full archive (1979-present
 
 ### Optional corrections
 
-Three more `clean` steps correct GDELT's values, each off by default because it replaces them without keeping the originals. Turn them on per dataset in `config/settings.yaml`:
+Three more `clean` steps are off by default: places and normalize replace GDELT's values without keeping the originals, and derive makes every file wider. Turn them on per dataset by adding their keys to the `clean:` section `config/settings.yaml` already has; a second `clean:` key would replace the first one silently, your other `clean` settings with it:
 
 ```yaml
 clean:
@@ -110,6 +110,8 @@ clean:
 - **[Places](data-cleaning.md#places-one-place-per-geo-point)** resolves each event's three geo points to one place per point, from a table built once from the full archive and bundled with GdeltForge. GDELT writes the same place under several IDs (the United States as `US` and as `0`), one ID for two places, countries at another country's point, and region names its encoding damaged; the step gives each point one ID, one point and one name, and the run audit counts each correction by the GDELT defect it fixes.
 - **[Normalize](data-cleaning.md#normalize-whitespace)** removes the whitespace GDELT padded about 15 million 2013 values with, so `" USA"` matches `"USA"`.
 - **[Derive](data-cleaning.md#derive-added-columns)** adds columns and never replaces one: `EventDate`, and a name column for any CAMEO-coded column you list.
+
+Then run `gdeltforge clean --dataset events` again. These settings are part of each cleaned file's record of how it was cleaned, so the run cleans every file in scope again under them.
 
 ### Reproducible draws
 

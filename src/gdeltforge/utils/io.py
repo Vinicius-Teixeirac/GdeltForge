@@ -706,7 +706,7 @@ def warn_if_delete_source_drops_recoverable_data(
     settings = ", ".join(narrowing)
     logger.warning(
         f"delete_source is set for {stage} together with {settings}: the input "
-        f"file is deleted once its (narrowed) output is written, so whatever "
+        f"file is deleted once its output is written, so whatever "
         f"{settings} dropped or changed has nothing left to recover it from "
         f"except redoing an earlier pipeline stage."
     )

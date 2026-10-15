@@ -81,6 +81,18 @@ class TestPlaceTable:
             readings.filter(pl.col("place") == pl.col("FeatureID"))["FeatureID"].implode()
         ).all()
 
+    def test_readings_for_ids_are_the_whole_readings_rows_of_those_ids(self):
+        # Every form an ID takes: kept (US), shared with a GNS place
+        # (449676 -> gns:449676), a US state's ADM1 form (CA -> USCA), an ID
+        # no place uses, and a null.
+        ids = pl.Series(["449676", "CA", "US", "no-such-id", None], dtype=pl.String)
+        expected = places.place_readings().filter(
+            pl.col("FeatureID").is_in(ids.drop_nulls().implode()))
+        got = places.readings_for(ids)
+        assert set(got["place"]) >= {"449676", "gns:449676", "CA", "USCA", "US"}
+        assert got.sort("place").equals(expected.sort("place"))
+        assert places.readings_for(pl.Series([], dtype=pl.String)).is_empty()
+
     def test_its_identity_names_the_rule_version_and_the_archive(self):
         info = places.place_table_info()
         assert places.place_table_id() == (

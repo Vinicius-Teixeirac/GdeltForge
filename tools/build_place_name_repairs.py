@@ -11,12 +11,17 @@ a letter Windows-1252 lacks became '?' ("Ḩalab" is written "?alab",
 "Nghệ An" "Ngh? An"), and one it has outside Latin-1 a control character
 ("Prešovský" is written "Preovský"). In some Vietnamese names the
 letters after a surviving accented one were lost as well ("Bình Thuận" is
-written "Bì Thu?n"). Only the region part of a FullName (between the
-place's own name and its country) is ever damaged, and GDELT never writes
-it undamaged anywhere in the archive. A control character reads back as
-its letter. The other names are GNS's own, so the repair looks the damaged
-string up among the first-level administrative divisions (desig_cd ADM1,
-then ADM1H) of GNS's file for the place's country.
+written "Bì Thu?n"), and a name with letters outside ASCII was cut short
+by one byte for each, a byte of what followed it left at its end: "Diyālá"
+is written "DiyaláZ", "Attikí" "AttikíR", "Nuevo León" "Nuevo LeóX". Only
+the region part of a FullName (between the place's own name and its
+country) is ever damaged, and GDELT never writes it undamaged anywhere in
+the archive. A control character reads back as its letter. The other names
+are GNS's own, so the repair looks the damaged string up among the
+first-level administrative divisions (desig_cd ADM1, then ADM1H) of GNS's
+file for the place's country, or, for a country WORLD_FILE lists, among
+those of GNS's world file of administrative regions (the one
+build_place_point_refs.py cites), which holds every country's.
 
 Three subcommands:
 
@@ -96,6 +101,24 @@ COUNTRIES = {
     "Vietnam, Republic Of": ("Vietnam", "VM"),
     "Yemen": ("Yemen", "YM"),
 }
+# Countries whose damaged names are only cut short (no '?'), repaired from
+# GNS's world file of administrative regions, filtered by the country's
+# ISO 3166 code (the file's cc_ft): GDELT's country name -> (FIPS, ISO).
+WORLD_FILE = "Administrative_Regions"
+WORLD_COUNTRIES = {
+    "Angola": ("AO", "AGO"), "Bolivia": ("BL", "BOL"), "Brazil": ("BR", "BRA"),
+    "Central African Republic": ("CT", "CAF"), "Chad": ("CD", "TCD"), "Chile": ("CI", "CHL"),
+    "Colombia": ("CO", "COL"), "Costa Rica": ("CS", "CRI"), "Cote D'ivoire": ("IV", "CIV"),
+    "Dominican Republic": ("DR", "DOM"), "Ecuador": ("EC", "ECU"),
+    "El Salvador": ("ES", "SLV"), "Equatorial Guinea": ("EK", "GNQ"), "France": ("FR", "FRA"),
+    "Gabon": ("GB", "GAB"), "Greece": ("GR", "GRC"), "Guatemala": ("GT", "GTM"),
+    "Guinea": ("GV", "GIN"), "Guinea-Bissau": ("PU", "GNB"), "Honduras": ("HO", "HND"),
+    "Kyrgyzstan": ("KG", "KGZ"), "Mexico": ("MX", "MEX"), "Mongolia": ("MG", "MNG"),
+    "Nicaragua": ("NU", "NIC"), "Oman": ("MU", "OMN"), "Panama": ("PM", "PAN"),
+    "Paraguay": ("PA", "PRY"), "Sao Tome And Principe": ("TP", "STP"), "Spain": ("SP", "ESP"),
+    "Turkey": ("TU", "TUR"), "Uruguay": ("UY", "URY"), "Venezuela": ("VE", "VEN"),
+}
+COUNTRIES.update({c: (WORLD_FILE, fips) for c, (fips, _) in WORLD_COUNTRIES.items()})
 DIVISIONS = ("ADM1", "ADM1H")  # current first-level divisions first, then historical
 FIELDS = ["country", "damaged", "repaired", "tier", "gns_ufi", "gns_name_type",
           "gns_file", "evidence"]
@@ -145,11 +168,25 @@ def split_marker(segment: str) -> tuple[str, str]:
 
 def strip_debris(damaged: str, fips: str) -> tuple[str, bool]:
     """(name, truncated): a trailing FIPS code of the country is debris GDELT
-    left where a name was cut short ("Qu?ng NgãVM"); the name before it
-    may be incomplete."""
+    left where a name was cut short ("Qu?ng NgãVM"), and so is the one
+    capital letter a cut name with letters outside ASCII ends in
+    ("DiyaláZ"); the name before it may be incomplete."""
     if fips and damaged.endswith(fips) and len(damaged) > len(fips):
         return damaged[: -len(fips)], True
+    if has_debris(damaged):
+        return damaged[:-1], True
     return damaged, False
+
+
+def has_debris(segment: str) -> bool:
+    """Whether segment (without its marker) ends in a capital letter right
+    after a lowercase one and has a letter outside ASCII: a name GDELT cut
+    short, one byte of what followed it left at its end ("DiyaláZ",
+    "AttikíR"). No region name in the archive ends so otherwise; every one
+    that does has a letter outside ASCII."""
+    name = split_marker(segment)[0]
+    return (len(name) >= 2 and name[-1].isupper() and name[-2].islower()
+            and any(ord(c) > 127 for c in name))
 
 
 def _in_cp1252(ch: str) -> bool:
@@ -206,7 +243,7 @@ def damaged_segments(full_name: str) -> list[str]:
     """The damaged region parts of a FullName: every part after the
     place's own name and before its country (the last part, or two parts
     for a COUNTRIES name with a comma), carrying '?' or a control
-    character."""
+    character, or cut short (has_debris)."""
     country = country_of(full_name)
     parts = full_name.split(", ")
     body = parts[1:-2] if country and "," in country else parts[1:-1]
@@ -214,7 +251,7 @@ def damaged_segments(full_name: str) -> list[str]:
 
 
 def is_damaged(text: str) -> bool:
-    return "?" in text or any(_is_control(c) for c in text)
+    return "?" in text or any(_is_control(c) for c in text) or has_debris(text)
 
 
 def country_of(full_name: str) -> str | None:
@@ -261,10 +298,14 @@ def _gns_rows(zip_path: Path):
         yield from csv.DictReader(io.TextIOWrapper(zf.open(main), encoding="utf-8"), delimiter="\t")
 
 
-def load_divisions(zip_path: Path) -> dict[str, list[tuple[str, str, str]]]:
+def load_divisions(
+    zip_path: Path, iso: str | None = None
+) -> dict[str, list[tuple[str, str, str]]]:
+    """{ufi: [(name, name type, desig_cd), ...]} of a GNS file's first-level
+    divisions; iso keeps one country's (cc_ft) from the world file."""
     out: dict[str, list[tuple[str, str, str]]] = {}
     for row in _gns_rows(zip_path):
-        if row["desig_cd"] in DIVISIONS:
+        if row["desig_cd"] in DIVISIONS and (iso is None or row["cc_ft"] == iso):
             out.setdefault(row["ufi"], []).append((row["full_name"], row["nt"], row["desig_cd"]))
     return out
 
@@ -294,7 +335,7 @@ def segments(combos_path: str, out_csv: str) -> None:
     import polars as pl  # noqa: PLC0415 (only this subcommand needs it)
 
     combos = (pl.read_parquet(combos_path, columns=["FullName", "values"])
-              .filter(pl.col("FullName").str.contains(r"[?\x80-\x9f]"))
+              .filter(pl.col("FullName").str.contains(r"[?\x80-\x9f]|\p{Ll}\p{Lu}\**(?:,|$)"))
               .group_by("FullName").agg(pl.col("values").sum()))
     counts: dict[tuple[str, str], int] = {}
     unknown: dict[str, int] = {}
@@ -330,11 +371,11 @@ def match(segments_csv: str, gns_dir: str, out_dir: str) -> None:
     # A manual row may name damage without a '?' (letters lost after a
     # surviving accented one), which segments can't detect.
     segs += sorted(k for k in manual if k not in set(segs))
-    cache: dict[str, dict] = {}
+    cache: dict[tuple[str, str | None], dict] = {}
     rows, undecided = [], []
     for country, damaged in segs:
         stem, fips = COUNTRIES.get(country, (country, ""))
-        if "?" not in damaged and (country, damaged) not in manual:
+        if "?" not in damaged and not has_debris(damaged) and (country, damaged) not in manual:
             rows.append({"country": country, "damaged": damaged, "repaired": unmangle(damaged),
                          "tier": "cp1252", "gns_ufi": "", "gns_name_type": "", "gns_file": "",
                          "evidence": "control characters read back as Windows-1252"})
@@ -344,10 +385,11 @@ def match(segments_csv: str, gns_dir: str, out_dir: str) -> None:
             rows.append({**{k: m[k] for k in FIELDS if k in m}, "tier": "manual",
                          "gns_file": f"{stem}.zip"})
             continue
-        if stem not in cache:
-            cache[stem] = load_divisions(root / f"{stem}.zip")
+        iso = WORLD_COUNTRIES[country][1] if stem == WORLD_FILE else None
+        if (stem, iso) not in cache:
+            cache[(stem, iso)] = load_divisions(root / f"{stem}.zip", iso)
         bare, marker = split_marker(damaged)
-        tier, ufi, name, ntype, cands = decide(bare, fips, cache[stem])
+        tier, ufi, name, ntype, cands = decide(bare, fips, cache[(stem, iso)])
         if tier is None or name is None:
             undecided.append((country, damaged, cands[:6]))
             continue
