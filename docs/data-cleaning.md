@@ -456,7 +456,10 @@ the spelling GDELT's source used isn't in GNS any more, it takes the
 division's approved name. The `*` and `**` GDELT ends some division names
 with ("Yerevan*", "Ajaria**") aren't damage, and stay. Repairs change only
 the region part of a name, never the place's own name, its ID or its
-point.
+point. They reach the names of the places the table holds: a point with a
+location the table doesn't know keeps the name GDELT wrote
+([What the step does](#what-the-step-does)), damaged or not, so a cleaned
+file can still hold a few damaged names on such points.
 
 Every repair is listed, with the GNS feature (UFI) it cites, in
 `tools/place_name_repairs.csv` in the repository; the hand-reviewed ones
@@ -572,9 +575,10 @@ nearer the Isle of Man).
 so it's lossy, and `--delete-source` refuses it unless
 `allow_lossy_delete_source: true`. It also costs memory: each worker
 holds the table (about 150 MB), and resolving a file takes more while it
-runs, about 350 MB in all above a run without places for a daily Events
-file, measured with one worker. Each file's distinct points are resolved
-once and looked up per row, so a 15-minute file adds about 50 ms. The table's identity (its rule version and the
+runs, about 350 to 600 MB in all above a run without places for a daily
+Events file, measured with one worker; a larger file takes more. Each
+file's distinct points are resolved once and looked up per row, so a
+15-minute file adds about 50 to 60 ms. The table's identity (its rule version and the
 archive it was built from) is part of the resumability fingerprint, so a
 gdeltforge release with a rebuilt table resolves every file again.
 
