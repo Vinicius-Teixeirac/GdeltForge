@@ -1407,7 +1407,7 @@ def build_parser() -> argparse.ArgumentParser:
     # codes
     # ----------------------------------------------------
     codes = subparsers.add_parser(
-        "codes", help="Look up valid GDELT country codes for filter values"
+        "codes", help="Look up valid CAMEO/FIPS codes for filter values"
     )
     codes.add_argument(
         "column",
