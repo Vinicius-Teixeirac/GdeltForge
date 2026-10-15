@@ -98,7 +98,7 @@ class TestPlanWorkers:
 
     def test_describe_names_the_scan_limit_when_set(self):
         assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
-            "4 worker process(es), 8 polars thread(s) each, 1 file read(s) at once"
+            "4 worker process(es), 8 polars thread(s) each, 1 file read(s) at once each"
         )
 
     def test_describe_reports_what_the_user_exported(self, monkeypatch):
@@ -107,7 +107,7 @@ class TestPlanWorkers:
         monkeypatch.setenv(POLARS_MAX_THREADS, "3")
         monkeypatch.setenv(POLARS_MAX_CONCURRENT_SCANS, "8")
         assert WorkerPlan(workers=4, polars_threads=8, concurrent_scans=1).describe() == (
-            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once"
+            "4 worker process(es), 3 polars thread(s) each, 8 file read(s) at once each"
         )
         # A plan without a scan limit (clean, convert: one file per
         # worker) names no file reads, exported or not.
