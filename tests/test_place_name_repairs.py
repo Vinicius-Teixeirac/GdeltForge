@@ -11,9 +11,11 @@ import importlib.util
 import json
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from gdeltforge.cleaning import places
+from gdeltforge.cleaning.steps import _DAMAGED_NAME
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 
@@ -29,6 +31,10 @@ def _load_tool():
 
 
 repairs = _load_tool()
+
+
+def _any_part_cut(name: str) -> bool:
+    return any(repairs.has_debris(p) for p in name.split(", ")[1:])
 
 
 def _repair_rows() -> list[dict]:
@@ -69,12 +75,32 @@ class TestTheDamage:
         assert repairs.strip_debris("Qu?ng NgãVM", "VM") == ("Qu?ng Ngã", True)
         assert repairs.strip_debris("Qu?ng Nam", "VM") == ("Qu?ng Nam", False)
 
+    @pytest.mark.parametrize("segment, cut", [
+        ("DiyaláZ", True),  # one byte of what followed it left at its end
+        ("AttikíR", True),
+        ("NariñO", True),
+        ("Castilla y LeóP*", True),  # the marker isn't the end of the name
+        ("Diyālá", False),
+        ("McLean", False),  # ASCII only: never cut so
+        ("Yerevan*", False),
+        ("SÃO PAULO", False),  # no lowercase letter before the capital
+    ])
+    def test_a_name_with_letters_outside_ascii_cut_short_ends_in_a_capital(
+        self, segment, cut
+    ):
+        assert repairs.has_debris(segment) is cut
+        assert repairs.is_damaged(segment) is cut
+        if cut:
+            name, _ = repairs.split_marker(segment)
+            assert repairs.strip_debris(name, "IZ") == (name[:-1], True)
+
     @pytest.mark.parametrize("full_name, damaged", [
         ("Aleppo, ?alab, Syria", ["?alab"]),
         ("Thara, B?c K?n, Vietnam, Republic Of", ["B?c K?n"]),  # a country with a comma
         ("Lomnica, Pre\x9aovský, Slovak Republic", ["Pre\x9aovský"]),
         ("Kinshasa, Kinshasa, Congo", []),
         ("Yerevan, Yerevan*, Armenia", []),
+        ("Baqubah, DiyaláZ, Iraq", ["DiyaláZ"]),
     ])
     def test_damaged_segments_are_the_region_parts_only(self, full_name, damaged):
         assert repairs.damaged_segments(full_name) == damaged
@@ -95,6 +121,14 @@ class TestCouldBe:
     ])
     def test_it_accepts_what_the_damage_explains(self, damaged, name):
         assert repairs.could_be(damaged, name)
+
+    @pytest.mark.parametrize("damaged, name", [
+        ("Diyalá", "Diyālá"),  # cut names, their debris stripped
+        ("Nuevo Leó", "Nuevo León"),
+        ("SãTomé", "São Tomé"),  # letters lost after the surviving ã
+    ])
+    def test_a_cut_name_matches_its_division(self, damaged, name):
+        assert repairs.could_be(damaged, name, truncated=True)
 
     @pytest.mark.parametrize("damaged, name", [
         # '?' is a letter Windows-1252 lacks: ô, a and plain letters aren't
@@ -176,8 +210,10 @@ class TestTheBundledTable:
 
     def test_no_place_name_carries_encoding_damage(self):
         names = places.place_table().get_column("place_name").drop_nulls().unique()
-        damaged = names.filter(names.str.contains(r"[?\x80-\x9f]"))
+        damaged = names.filter(names.str.contains(_DAMAGED_NAME))
         assert damaged.len() == 0, damaged.head(5).to_list()
+        assert names.filter(
+            names.map_elements(_any_part_cut, return_dtype=pl.Boolean)).len() == 0
 
 
 def test_a_name_with_no_repair_stops_the_build(monkeypatch):
