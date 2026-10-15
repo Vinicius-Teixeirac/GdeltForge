@@ -908,7 +908,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
@@ -921,7 +921,7 @@ class TestRunSamplingCmdSource:
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source=source, n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -948,7 +948,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
@@ -968,7 +968,7 @@ class TestRunSamplingCmdSource:
         }
         args = argparse.Namespace(
             dataset="gkg-v2", mode="indexed", source="aggregated", period=None,
-            n=10, seed=42, replace=False,
+            n=10, seed=42, replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -989,7 +989,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["folder_path"] = folder_path
 
@@ -1007,7 +1007,7 @@ class TestRunSamplingCmdSource:
         }
         args = argparse.Namespace(
             dataset="gkg-v2", mode="indexed", source="aggregated", period="month",
-            n=10, seed=42, replace=False,
+            n=10, seed=42, replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1018,7 +1018,7 @@ class TestRunSamplingCmdSource:
     def test_source_aggregated_rejects_an_ineligible_dataset(self, tmp_path, monkeypatch):
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="aggregated", period=None,
-            n=10, seed=42, replace=False,
+            n=10, seed=42, replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1041,7 +1041,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["historical_folder"] = historical_folder
 
@@ -1054,7 +1054,7 @@ class TestRunSamplingCmdSource:
         config["converter"] = {"partitioning": None}
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1079,7 +1079,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["historical_folder"] = historical_folder
 
@@ -1099,7 +1099,7 @@ class TestRunSamplingCmdSource:
         }
         args = argparse.Namespace(
             dataset="events-reduced", mode="indexed", source="converted", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1121,7 +1121,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["columns"] = columns
 
@@ -1132,7 +1132,7 @@ class TestRunSamplingCmdSource:
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID", "QuadClass"],
             export_format="parquet", start_date=None, end_date=None,
         )
@@ -1154,7 +1154,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 date_column="Day", period="day",
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["date_column"] = date_column
 
@@ -1175,7 +1175,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events-reduced", mode="calendar", source="converted",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None,
             export_format="parquet", start_date=None, end_date=None,
         )
@@ -1193,7 +1193,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 date_column="Day", period="day",
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["columns"] = columns
 
@@ -1207,7 +1207,7 @@ class TestRunSamplingCmdSource:
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
             export_format="parquet", start_date=None, end_date=None,
         )
@@ -1225,7 +1225,7 @@ class TestRunSamplingCmdSource:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 pass
 
@@ -1236,7 +1236,7 @@ class TestRunSamplingCmdSource:
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="csv",
             start_date=None, end_date=None,
         )
@@ -1274,7 +1274,7 @@ class TestRunSamplingCmdReplace:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 pass
 
@@ -1286,7 +1286,7 @@ class TestRunSamplingCmdReplace:
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=True, stratify=None,
+            replace=True, provenance=False, stratify=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1311,7 +1311,8 @@ class TestRunSamplingCmdReplace:
 
         args = argparse.Namespace(
             dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
-            replace=True, filter='{"QuadClass": [1]}', stratify=None, n_per_group=None,
+            replace=True, provenance=False, filter='{"QuadClass": [1]}', stratify=None,
+            n_per_group=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1323,7 +1324,7 @@ class TestRunSamplingCmdReplace:
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=10, period=None, date_column=None, seed=42,
-            replace=True, stratify=None,
+            replace=True, provenance=False, stratify=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1333,7 +1334,7 @@ class TestRunSamplingCmdReplace:
     def test_replace_rejected_alongside_stratify(self, tmp_path):
         args = argparse.Namespace(
             dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
-            replace=True, filter=None, stratify="QuadClass", n_per_group=50,
+            replace=True, provenance=False, filter=None, stratify="QuadClass", n_per_group=50,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1344,7 +1345,7 @@ class TestRunSamplingCmdReplace:
         # args.stratify is only read once args.replace is truthy (short-
         # circuited); a plain indexed Namespace that never sets .stratify
         # at all (as most hand-built fixtures in this file don't) must
-        # still work when replace=False, the default.
+        # still work when replace=False, provenance=False, the default.
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
 
@@ -1359,7 +1360,7 @@ class TestRunSamplingCmdReplace:
 
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1403,7 +1404,7 @@ class TestStrataSidecar:
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=2, period=None, date_column=None, seed=42,
-            replace=False, stratify=None,
+            replace=False, provenance=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1435,7 +1436,7 @@ class TestStrataSidecar:
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
             dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
-            replace=False, filter=None, stratify="QuadClass", n_per_group=4,
+            replace=False, provenance=False, filter=None, stratify="QuadClass", n_per_group=4,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1473,7 +1474,7 @@ class TestStrataSidecar:
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=2, period=None, date_column=None, seed=42,
-            replace=False, stratify=None,
+            replace=False, provenance=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1505,7 +1506,7 @@ class TestStrataSidecar:
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
             dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
-            replace=False, filter=None, stratify="QuadClass", n_per_group=4,
+            replace=False, provenance=False, filter=None, stratify="QuadClass", n_per_group=4,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1531,7 +1532,7 @@ class TestStrataSidecar:
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1569,7 +1570,7 @@ class TestStrataSidecar:
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
             per_day=None, per_period=2, period=None, date_column=None, seed=42,
-            replace=False, stratify=None,
+            replace=False, provenance=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
         )
@@ -1601,7 +1602,7 @@ class TestRunSamplingCmdDateFiltering:
     def _args(**overrides):
         defaults = dict(
             dataset="events", mode="indexed", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out="o.parquet", columns=None, export_format="parquet",
             filter=None, stratify=None, n_per_group=None,
             start_date=None, end_date=None,
@@ -1617,7 +1618,7 @@ class TestRunSamplingCmdDateFiltering:
         class FakeIndexedSampler:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
-                start_date=None, end_date=None, date_parser=None,
+                start_date=None, end_date=None, date_parser=None, provenance=False,
             ):
                 captured["start_date"] = start_date
                 captured["end_date"] = end_date
@@ -1746,7 +1747,7 @@ class TestRunSamplingCmdStratifyWithoutFilter:
     def _args(**overrides):
         defaults = dict(
             dataset="events", mode="filtered", source="cleaned", n=10, seed=42,
-            replace=False,
+            replace=False, provenance=False,
             out="o.parquet", columns=None, export_format="parquet",
             filter=None, stratify=None, n_per_group=None,
             start_date=None, end_date=None,

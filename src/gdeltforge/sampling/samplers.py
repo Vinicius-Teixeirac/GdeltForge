@@ -31,6 +31,7 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
+    cleaned_marker,
     clearer_dataset_errors,
     detach,
     narrow_to_available_columns,
@@ -121,6 +122,70 @@ def _scan_dataset(files: list[Path]) -> pl.LazyFrame:
     # with the schema it inferred. scan_dataset_reconciled resolves both:
     # see its own docstring for the full mechanism.
     return scan_dataset_reconciled(files)
+
+
+# ----------------------------------------------------------
+# Row provenance
+# ----------------------------------------------------------
+# With provenance=True every sampler adds these two columns: the converted
+# file a row comes from, relative to its directory, and the row's 0-based
+# position in that file. A row read from a cleaned file names the
+# converted file its marker records, at the same position: clean keeps
+# every row in order unless a step drops rows.
+SOURCE_FILE = "SourceFile"
+SOURCE_ROW = "SourceRow"
+PROVENANCE_COLUMNS = (SOURCE_FILE, SOURCE_ROW)
+
+
+def _keeps_positions(marker: dict) -> bool:
+    """Whether a cleaned file holds every row of its source, in order, so a
+    row's position in it is its position in the source. The marker's row
+    counts say so; a marker written before they were recorded says so when
+    no step that drops rows ran (a null check, event_markers: drop)."""
+    if "rows_in" in marker and "rows_out" in marker:
+        return marker["rows_in"] == marker["rows_out"]
+    for step in marker.get("steps", []):
+        if step.get("skipped"):
+            continue
+        if step.get("step") == "require" or (
+            step.get("rule") == "event_markers" and step.get("mode") == "drop"
+        ):
+            return False
+    return True
+
+
+def _source_label(path: Path, roots: list[Path]) -> str:
+    """The converted file `path`'s rows come from, relative to its
+    directory: path itself, or, for a cleaned file, the source its marker
+    names, in the same subdirectory (a historical partition's)."""
+    full = path.resolve()
+    rel = next(
+        (full.relative_to(r.resolve()) for r in roots if full.is_relative_to(r.resolve())),
+        Path(path.name),
+    )
+    marker = cleaned_marker(path)
+    if marker is None:
+        return rel.as_posix()
+    if not _keeps_positions(marker) or "source" not in marker:
+        raise ValueError(
+            f"{path.name}: its clean run dropped rows (columns_to_check, or "
+            f"errata.event_markers: drop), so a row's position in it isn't its position in "
+            f"the converted file it came from. Sample with provenance from data cleaned "
+            f"without those, or from the converted data."
+        )
+    return (rel.parent / marker["source"]).as_posix()
+
+
+def _label_provenance(df: pl.DataFrame, roots: list[Path]) -> pl.DataFrame:
+    """df with SourceFile turned from the path read into the converted
+    file's name (_source_label), and the provenance columns last."""
+    if df.is_empty() or SOURCE_FILE not in df.columns:
+        return df
+    labels = {p: _source_label(Path(p), roots) for p in df[SOURCE_FILE].unique().to_list()}
+    return df.with_columns(
+        pl.col(SOURCE_FILE).replace_strict(labels, return_dtype=pl.String),
+        pl.col(SOURCE_ROW).cast(pl.Int64),
+    ).select(pl.exclude(PROVENANCE_COLUMNS), *PROVENANCE_COLUMNS)
 
 
 # ----------------------------------------------------------
@@ -401,8 +466,11 @@ class IndexedSampler:
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
+        provenance: bool = False,
     ):
         self.folder = Path(folder_path)
+        self.provenance = provenance
+        self._roots = [self.folder] + ([Path(historical_folder)] if historical_folder else [])
         parquet_files = sorted(self.folder.glob("*.parquet"))
 
         if historical_folder:
@@ -533,10 +601,16 @@ class IndexedSampler:
                 # See _apply_reservoir_replacements above: DataFrame.gather()
                 # isn't available on this project's declared minimum polars
                 # version, bracket indexing is.
-                sampled.append(df[relative_rows])
+                part = df[relative_rows]
+                if self.provenance:
+                    part = part.with_columns(
+                        pl.lit(str(file_path)).alias(SOURCE_FILE),
+                        pl.Series(SOURCE_ROW, relative_rows, dtype=pl.Int64),
+                    )
+                sampled.append(part)
                 pbar.update(1)
 
-        return pl.concat(sampled)
+        return _label_provenance(pl.concat(sampled), self._roots)
 
 
 def _read_rows(
@@ -641,6 +715,7 @@ class CalendarSampler:
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
+        provenance: bool = False,
     ):
         if period not in self._PERIOD_PREFIX_LENGTH:
             raise ValueError(
@@ -656,6 +731,7 @@ class CalendarSampler:
         self.start_date = start_date
         self.end_date = end_date
         self.date_parser = date_parser
+        self.provenance = provenance
         self.rng = ReproducibleRNG(random_state)
 
         # Populated by get_calendar_samples with each period's true row
@@ -720,8 +796,15 @@ class CalendarSampler:
             for (file_index,), rows in chosen.group_by(self._FILE_INDEX, maintain_order=True):
                 f = files[int(file_index)]  # type: ignore[arg-type]
                 df = _read_rows(f, rows[self._ROW].to_numpy(), target, file_schemas[f])
-                parts.append(df.with_columns(rows[self._ORDER]))
-        return pl.concat(parts, how="vertical_relaxed").sort(self._ORDER).drop(self._ORDER)
+                df = df.with_columns(rows[self._ORDER])
+                if self.provenance:
+                    df = df.with_columns(
+                        pl.lit(str(f)).alias(SOURCE_FILE), rows[self._ROW].alias(SOURCE_ROW)
+                    )
+                parts.append(df)
+        sample = pl.concat(parts, how="vertical_relaxed").sort(self._ORDER).drop(self._ORDER)
+        roots = [self.folder] + ([self.historical_folder] if self.historical_folder else [])
+        return _label_provenance(sample, roots)
 
     def _warn_before_1979(self, n_rows: int) -> None:
         """
@@ -971,7 +1054,9 @@ class FilteredSampler:
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
+        provenance: bool = False,
     ):
+        self.provenance = provenance
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
         # Columns the clean stage adds (errata originals, derived columns):
@@ -983,7 +1068,9 @@ class FilteredSampler:
         self._valid_columns = self.gdelt_columns | self._clean_added_columns
         # Output column order: the declared schema's, then the clean
         # stage's columns in the order that stage adds them.
-        self._output_order = self._gdelt_columns_ordered + clean_added
+        self._output_order = self._gdelt_columns_ordered + clean_added + (
+            list(PROVENANCE_COLUMNS) if provenance else []
+        )
         self._columns_given = bool(columns)
 
         self.folder = Path(folder_path)
@@ -1297,7 +1384,18 @@ class FilteredSampler:
             self.folder, self.historical_folder,
             self.start_date, self.end_date, self.date_parser,
         )
+        if self.provenance:
+            # Each row's file and its position there, numbered before the
+            # filter.
+            return scan_dataset_reconciled(
+                files, include_file_paths=SOURCE_FILE, row_index=SOURCE_ROW
+            )
         return _scan_dataset(files)
+
+    def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
+        """A sample with its provenance labelled (_label_provenance)."""
+        roots = [self.folder] + ([self.historical_folder] if self.historical_folder else [])
+        return _label_provenance(df, roots)
 
     def _batches(self, needed_columns: list[str]):
         """
@@ -1350,6 +1448,8 @@ class FilteredSampler:
 
         available = set(schema.names())
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
+        if self.provenance:
+            required |= set(PROVENANCE_COLUMNS)
         requested = set(self.columns)
         if not self._columns_given:
             requested |= self._clean_added_columns & available
@@ -1375,7 +1475,7 @@ class FilteredSampler:
 
         if not frames:
             return pl.DataFrame()
-        return pl.concat(frames)
+        return self._finish(pl.concat(frames))
 
     # ---------- reservoir sampling for random sample ----------
     def get_random_sample(self, n: int, replace: bool = False) -> pl.DataFrame:
@@ -1474,7 +1574,7 @@ class FilteredSampler:
             return pl.DataFrame()
 
         keep_cols = [c for c in self._output_order if c in reservoir.columns]
-        return reservoir.select(keep_cols)
+        return self._finish(reservoir.select(keep_cols))
 
     # ---------- with-replacement sampling (two-pass) ----------
     def _get_random_sample_with_replacement(
@@ -1557,7 +1657,7 @@ class FilteredSampler:
 
         sample = pl.concat(frames)
         keep_cols = [c for c in self._output_order if c in sample.columns]
-        return sample.select(keep_cols)
+        return self._finish(sample.select(keep_cols))
 
     # ---------- stratified reservoir sampling ----------
     # A dedicated grouping-key column, added and dropped inside the loop
@@ -1689,4 +1789,4 @@ class FilteredSampler:
         # group's Float64 for the same column, both correct on their own.
         sample    = pl.concat(list(reservoirs.values()), how="vertical_relaxed")
         keep_cols = [c for c in self._output_order if c in sample.columns]
-        return sample.select(keep_cols)
+        return self._finish(sample.select(keep_cols))

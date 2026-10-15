@@ -179,7 +179,7 @@ By default `clean` shows the same setup line, progress bar, and end-of-run summa
 
 `--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything; add `--report` to also measure what each step would change, which reads every file in scope. `--report` without `--dry-run` is an error.
 
-With the default settings, `clean` also repairs known GDELT errors (the events dated 1920 instead of 2020) while keeping GDELT's own values, and counts the rows that aren't CAMEO events; see [Data Cleaning](data-cleaning.md#errata-known-gdelt-errors). `--delete-source` refuses to run while a lossy step added in 0.12.0 is configured (`event_markers: drop`, `date_1920` without `keep_original`, or either `normalize` switch) unless `clean.allow_lossy_delete_source` is `true`.
+With the default settings, `clean` also repairs known GDELT errors (the events dated 1920 instead of 2020) while keeping GDELT's own values, and counts the rows that aren't CAMEO events; see [Data Cleaning](data-cleaning.md#errata-known-gdelt-errors). `--delete-source` refuses to run while a lossy step added in 0.12.0 is configured (`event_markers: drop`, `date_1920` without `keep_original`, either `normalize` switch, or `places.resolve`) unless `clean.allow_lossy_delete_source` is `true`.
 
 ## `gdeltforge aggregate`
 
@@ -236,6 +236,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
+| `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there (see [Row provenance](#row-provenance)). Off by default |
 | `--per-period N` | calendar | Rows per calendar period (default 10) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
@@ -266,6 +267,33 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 !!! note "`--seed` across a re-chunked archive"
 
     A rerun against the exact same files always reproduces the same sample, for every mode. Only `--mode indexed` also reproduces the same sample after the same logical rows get re-chunked into a different number of files; `calendar` and `stratified` sampling aren't guaranteed to at real archive scale. See [Limitations](limitations-and-roadmap.md#sampling) for the full explanation, including a note on `calendar`/`stratified` reproducibility across the 0.10.0 upgrade specifically.
+
+### Row provenance
+
+`--provenance` adds two columns, last, to every sampled row, in every mode:
+`SourceFile`, the converted file the row comes from, relative to its
+directory (`20150301.export.parquet`, or `Year=2003/...` for a historical
+partition), and `SourceRow`, the row's 0-based position in that file. A
+row identified this way can be found again in any version of the same
+data, which `GlobalEventID` can't do: GDELT reuses some IDs across files.
+
+Sampling cleaned data, a row names the converted file its cleaned file
+was made from (the clean marker records it), at the same position:
+`clean` keeps every row, in order, unless a step drops rows. Each cleaned
+file's marker records its rows in and out; a file that lost rows (a
+`columns_to_check` null check, or `errata.event_markers: drop`) stops the
+sample with an error, since its positions no longer match the converted
+file's. The default `clean` settings drop no row.
+
+A draw's rows can then be read again from any other version of the same
+files, cleaned with other settings, at the same (`SourceFile`,
+`SourceRow`), and paired row for row with the draw. With
+`--source aggregated`, `SourceFile` names the aggregated file, since an
+aggregated file has no single source.
+
+```bash
+gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance --out draw.parquet
+```
 
 ### Indexed sampling (uniform random)
 

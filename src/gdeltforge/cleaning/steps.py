@@ -23,6 +23,7 @@ Provides:
     - Date1920Repair, EventMarkers: repairs of known GDELT errors
       (the errata step)
     - NormalizeStrings: optional whitespace normalization
+    - ResolvePlaces: optional resolution of each geo point to its place
     - DeriveColumns: optional derived columns (a real event date, code
       labels)
     - ordered: sort steps into STEP_ORDER
@@ -37,15 +38,19 @@ from functools import reduce
 
 import polars as pl
 
+from gdeltforge.cleaning import places
 from gdeltforge.sampling import cameo_codes
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 # errata: repairs of known GDELT errors. normalize: optional value
-# normalization. require: drop rows missing a required value. derive:
-# add columns. project: keep a column subset. narrow: smaller encodings.
-STEP_ORDER = ("errata", "normalize", "require", "derive", "project", "narrow")
+# normalization. places: resolve geo points to places. require: drop rows
+# missing a required value. derive: add columns. project: keep a column
+# subset. narrow: smaller encodings.
+STEP_ORDER = (
+    "errata", "normalize", "places", "require", "derive", "project", "narrow",
+)
 
 # Bumped whenever an errata rule is added or changed, and recorded in the
 # resumability fingerprint, so data cleaned under an older rule set is
@@ -72,7 +77,9 @@ class Step:
     --delete-source must refuse it when lossy. apply() receives the frame
     as every earlier step left it and returns the frame for the next step.
     counts() returns named expressions over that same input frame, summed
-    into the run audit and the dry-run report.
+    into the run audit and the dry-run report; count_frame() evaluates them,
+    and a step whose counts need more than expressions over its input (a
+    join) overrides it.
     """
 
     name = ""
@@ -90,6 +97,12 @@ class Step:
         returns any doesn't run on the file at all, and the file's marker
         says so."""
         return []
+
+    def count_frame(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame | None:
+        """The step's counts as a one-row frame, or None when it counts
+        nothing."""
+        exprs = self.counts(lf, ctx)
+        return lf.select([e.alias(k) for k, e in exprs.items()]) if exprs else None
 
     def settings(self) -> dict:
         """The step's settings as JSON-ready values, for the cleaned-file
@@ -388,6 +401,303 @@ class NormalizeStrings(Step):
                 (pl.col(c).str.strip_chars() == "").sum() for c in columns
             ])
         return out
+
+
+# GDELT's three geo points per event, each written as <role>_Type,
+# _FullName, _CountryCode, _ADM1Code (and _ADM2Code in the 15-minute feed),
+# _Lat, _Long and _FeatureID.
+GEO_ROLES = ("Actor1Geo", "Actor2Geo", "ActionGeo")
+# What _joined adds per role: the resolved place (null for none), the
+# FeatureID for a point with a location the table doesn't know, whether
+# the point has a location at all, and the table's wrong_point (null for a
+# point the table doesn't know).
+_RESOLVED = (*places.PLACE_COLUMNS, "new_id", "located", places.WRONG_POINT)
+# What identifies a point for resolution: its key in the table (FeatureID,
+# "" for none, and Lat and Long, null without a location), its FeatureID
+# when it has a location, and the gazetteer its Type names.
+_POINT_KEY = ("k_id", "k_lat", "k_lon", "f_id", "gazetteer")
+
+
+def _point_key(prefix: str) -> pl.Expr:
+    """_POINT_KEY's columns (under `prefix`) as one string, to look a point
+    up among the resolved ones: a null as \x00, the columns joined by \x1f,
+    neither of which GDELT writes. Both sides come from the same file, so a
+    Lat or Long reads the same on each."""
+    return pl.concat_str(
+        [pl.col(prefix + k).cast(pl.String).fill_null("\x00") for k in _POINT_KEY],
+        separator="\x1f",
+    )
+# A FullName GDELT's encoding damaged: '?' for a letter Windows-1252 lacks,
+# a control character for one it has outside Latin-1, or a part with a
+# letter outside ASCII cut short, one capital letter of what followed it
+# left at its end ("DiyaláZ"; tools/build_place_name_repairs.py, has_debris).
+_DAMAGED_NAME = (r"[?\x80-\x9f]"
+                 r"|(?:[^\x00-\x7F][^,]*\p{Ll}|[\p{Ll}&&[^\x00-\x7F]])\p{Lu}\**(?:,|$)")
+
+
+@dataclass(frozen=True)
+class ResolvePlaces(Step):
+    """
+    Resolve each geo point to the place it names (see places.py and
+    docs/data-cleaning.md#places). Every point ends as a place, under one
+    unambiguous ID, or as no location, the way GDELT writes a point it
+    couldn't locate (FeatureID, Lat, Long and FullName null, Type 0):
+
+    - a point with a location is looked up by the exact FeatureID, Lat and
+      Long GDELT wrote; found, it takes the place's ID, canonical point,
+      name and type in <role>_FeatureID, _Lat, _Long, _FullName and _Type;
+    - a point without a location (no coordinates, or (0, 0), which is the
+      same thing) is looked up by its FeatureID alone, and is no location
+      when that names no place;
+    - a point with a location the table doesn't know takes the place its
+      FeatureID names in the gazetteer its Type says, when there is one
+      (a known place at a new point); otherwise it is a place the table
+      doesn't have yet, kept as GDELT wrote it, with its FeatureID in the
+      same scheme: a different place's ID gets its own gazetteer's form,
+      and the placeholder 0 becomes null.
+
+    CountryCode and the ADM codes are never touched. Lossy: GDELT's own
+    values are replaced. `table` is places.place_table_id(), for the marker.
+    """
+
+    table: str = ""
+    name = "places"
+    lossy = True
+
+    @staticmethod
+    def _roles(lf: pl.LazyFrame) -> list[str]:
+        names = lf.collect_schema().names()
+        return [
+            r for r in GEO_ROLES
+            if all(f"{r}_{c}" in names for c in places.KEY_COLUMNS)
+        ]
+
+    @staticmethod
+    def _joined(lf: pl.LazyFrame, roles: list[str]) -> pl.LazyFrame:
+        """lf with, per role, __<role>_<column> for every _RESOLVED column.
+        Row order is kept."""
+        names = lf.collect_schema().names()
+        for r in roles:
+            p = f"__{r}_"
+            fid = pl.col(f"{r}_FeatureID").cast(pl.String)
+            lat = pl.col(f"{r}_Lat").cast(pl.Float64)
+            lon = pl.col(f"{r}_Long").cast(pl.Float64)
+            located = lat.is_not_null() & lon.is_not_null() & ~((lat == 0) & (lon == 0))
+            gazetteer = (
+                pl.col(f"{r}_Type").cast(pl.Int64, strict=False)
+                .replace_strict(places.GAZETTEERS, default=None, return_dtype=pl.String)
+                if f"{r}_Type" in names else pl.lit(None, pl.String)
+            )
+            lf = lf.with_columns(
+                # The table writes a missing FeatureID as "", and a point
+                # without a location with Lat and Long null.
+                fid.fill_null("").alias(p + "k_id"),
+                pl.when(located).then(lat).alias(p + "k_lat"),
+                pl.when(located).then(lon).alias(p + "k_lon"),
+                # The fallback, for a point with a location only.
+                pl.when(located).then(fid).alias(p + "f_id"),
+                gazetteer.alias(p + "gazetteer"),
+                located.alias(p + "located"),
+            )
+        # Each distinct point resolved once, in a frame of a few thousand
+        # rows, then looked up per row by an expression, which streams and
+        # keeps the row order. Joining the file to the whole table took
+        # nine joins per pass over the file, each building its hash table
+        # over a million rows: about 2 GiB per worker and half a second
+        # per file, however small.
+        distinct = pl.collect_all([
+            lf.select(pl.col(f"__{r}_{k}").alias(k) for k in _POINT_KEY).unique()
+            for r in roles
+        ])
+        resolved = ResolvePlaces._resolve_points(pl.concat(distinct).unique())
+        keys = resolved.select(_point_key("").alias("key"))["key"]
+        outputs = [c for c in resolved.columns if c not in _POINT_KEY]
+        for r in roles:
+            p = f"__{r}_"
+            lf = lf.with_columns(_point_key(p).alias(p + "key")).with_columns(
+                pl.col(p + "key").replace_strict(
+                    keys, resolved[c], default=None, return_dtype=resolved.schema[c]
+                ).alias(p + c)
+                for c in outputs
+            ).drop([p + "key", *[p + k for k in _POINT_KEY]])
+        return lf
+
+    @staticmethod
+    def _resolve_points(points: pl.DataFrame) -> pl.DataFrame:
+        """
+        Per distinct point (_POINT_KEY), the _RESOLVED columns but located:
+        the place its (FeatureID, Lat, Long) has in the table; else, for a
+        point with a location, the place its FeatureID names in the
+        gazetteer its Type says, or the only place using that ID; and the
+        FeatureID such a point keeps when it names none.
+        """
+        key = {"FeatureID": "k_id", "Lat": "k_lat", "Long": "k_lon"}
+        # Filtered by ID first: a lookup in the file's few thousand IDs,
+        # before the join hashes three columns.
+        table = places.place_table().filter(
+            pl.col("FeatureID").is_in(points["k_id"].unique().implode())
+        ).join(
+            points.select(pl.col(k).alias(c) for c, k in key.items()),
+            on=list(places.KEY_COLUMNS), how="semi", nulls_equal=True,
+        )
+        # The fallback reads a FeatureID only for a point with a location
+        # the table doesn't know (every row of the table has a place):
+        # usually none. Every place of each of those IDs, so place_ids
+        # counts them all.
+        unknown = points.join(
+            table.rename(key), on=list(key.values()), how="anti", nulls_equal=True
+        ).filter(pl.col("k_lat").is_not_null())
+        readings = places.readings_for(unknown["f_id"])
+        ids = places.place_ids(readings)
+
+        def tagged(frame: pl.DataFrame, tag: str) -> pl.LazyFrame:
+            return frame.lazy().rename({c: tag + c for c in places.PLACE_COLUMNS})
+
+        joined = (
+            points.lazy()
+            .join(tagged(table, "t_").rename(key), on=list(key.values()), how="left",
+                  nulls_equal=True)
+            .join(tagged(readings, "r_").rename({"FeatureID": "f_id"}),
+                  on=["f_id", "gazetteer"], how="left")
+            .join(tagged(ids, "u_").rename({"FeatureID": "f_id"}), on="f_id", how="left")
+        )
+        typed = pl.col("gazetteer").is_not_null()
+        one = pl.col("readings") == 1
+        resolved = [
+            pl.coalesce(
+                pl.col(f"t_{c}"),
+                pl.when(typed).then(pl.col(f"r_{c}")).when(one).then(pl.col(f"u_{c}")),
+            ).alias(c)
+            for c in places.PLACE_COLUMNS
+        ]
+        f_id, gaz = pl.col("f_id"), pl.col("gazetteer")
+        own_form = (
+            pl.when((gaz == "state") & f_id.str.contains(r"^[A-Z]{2}$"))
+            .then(pl.lit("US") + f_id)
+            .otherwise(gaz + pl.lit(":") + f_id)
+        )
+        new_id = (
+            pl.when(f_id.is_null() | f_id.is_in(["", "0"])).then(None)
+            .when(pl.col("readings").is_null()).then(f_id)
+            .when(~typed).then(None)
+            .otherwise(own_form)
+        )
+        return joined.select(
+            *_POINT_KEY, *resolved, new_id.alias("new_id"), places.WRONG_POINT
+        ).collect()
+
+    @staticmethod
+    def _temporary(roles: list[str]) -> list[str]:
+        return [f"__{r}_{c}" for r in roles for c in _RESOLVED]
+
+    def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
+        roles = self._roles(lf)
+        if not roles:
+            return lf
+        schema = lf.collect_schema()
+        lf = self._joined(lf, roles)
+        exprs = []
+        for r in roles:
+            p = f"__{r}_"
+            found = pl.col(p + "place").is_not_null()
+            located = pl.col(p + "located")
+
+            def pick(
+                column: str, resolved: pl.Expr, cleared: pl.Expr, unknown: pl.Expr,
+                found: pl.Expr = found, located: pl.Expr = located,
+            ) -> pl.Expr:
+                return (
+                    pl.when(found).then(resolved)
+                    .when(~located).then(cleared)
+                    .otherwise(unknown)
+                    .cast(schema[column]).alias(column)
+                )
+
+            exprs += [
+                pick(f"{r}_FeatureID", pl.col(p + "place"), pl.lit(None),
+                     pl.col(p + "new_id")),
+                pick(f"{r}_Lat", pl.col(p + "place_lat"), pl.lit(None), pl.col(f"{r}_Lat")),
+                pick(f"{r}_Long", pl.col(p + "place_lon"), pl.lit(None), pl.col(f"{r}_Long")),
+            ]
+            if f"{r}_FullName" in schema:
+                exprs.append(pick(
+                    f"{r}_FullName",
+                    # A place with no usable name keeps the point's own.
+                    pl.coalesce(pl.col(p + "place_name"), pl.col(f"{r}_FullName")),
+                    pl.lit(None), pl.col(f"{r}_FullName"),
+                ))
+            if f"{r}_Type" in schema:
+                exprs.append(pick(
+                    f"{r}_Type", pl.col(p + "place_type"), pl.lit(0), pl.col(f"{r}_Type")
+                ))
+        return lf.with_columns(exprs).drop(self._temporary(roles))
+
+    def count_frame(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame | None:
+        roles = self._roles(lf)
+        if not roles:
+            # No geo point with its FeatureID, Lat and Long, most likely
+            # pruned by converter.output_columns: the cleaner warns once
+            # per run with the count.
+            return lf.select(pl.lit(1).alias("places_skipped_files"))
+        names = lf.collect_schema().names()
+        counts: dict[str, list[pl.Expr]] = {
+            "places.resolved": [], "places.changed": [], "places.cleared": [],
+            "places.unresolved": [],
+            # What each resolved point's correction was, by GDELT's defect;
+            # a point can count under more than one.
+            "places.id.placeholder": [], "places.id.shared": [], "places.id.merged": [],
+            "places.point.moved": [], "places.point.wrong": [], "places.point.new": [],
+            "places.name.damaged": [], "places.no_location.named": [],
+        }
+        for r in roles:
+            p = f"__{r}_"
+            fid, lat, lon = pl.col(f"{r}_FeatureID"), pl.col(f"{r}_Lat"), pl.col(f"{r}_Long")
+            found = pl.col(p + "place").is_not_null()
+            located = pl.col(p + "located")
+            place, written_id = pl.col(p + "place"), fid.cast(pl.String)
+            placeholder = written_id.is_null() | written_id.is_in(["", "0"])
+            other_id = found & ~placeholder & place.ne_missing(written_id)
+            # Another gazetteer's place keeps the ID: a US state takes its
+            # ADM1 code (USCA), a GNS place the gns: prefix.
+            own_form = (place == pl.lit("US") + written_id) | place.str.ends_with(
+                pl.lit(":") + written_id)
+            moved = found & located & (
+                pl.col(p + "place_lat").ne_missing(lat.cast(pl.Float64))
+                | pl.col(p + "place_lon").ne_missing(lon.cast(pl.Float64)))
+            wrong = pl.col(p + places.WRONG_POINT)
+            counts["places.id.placeholder"].append((found & located & placeholder).sum())
+            counts["places.id.shared"].append((other_id & own_form).sum())
+            counts["places.id.merged"].append((other_id & ~own_form).sum())
+            counts["places.point.moved"].append((moved & wrong.eq_missing(False)).sum())
+            counts["places.point.wrong"].append((moved & wrong.eq_missing(True)).sum())
+            counts["places.point.new"].append((moved & wrong.is_null()).sum())
+            counts["places.no_location.named"].append((found & ~located).sum())
+            if f"{r}_FullName" in names:
+                name = pl.col(f"{r}_FullName")
+                counts["places.name.damaged"].append((
+                    found & name.str.contains(_DAMAGED_NAME)
+                    & ~pl.col(p + "place_name").str.contains(_DAMAGED_NAME)
+                ).sum())
+            else:
+                counts["places.name.damaged"].append(pl.lit(0, pl.UInt32))
+            # A point without a location GDELT already wrote as one (no ID,
+            # no point, no name, Type 0) isn't cleared again.
+            written = [fid.is_not_null(), lat.is_not_null(), lon.is_not_null()]
+            if f"{r}_FullName" in names:
+                written.append(pl.col(f"{r}_FullName").is_not_null())
+            if f"{r}_Type" in names:
+                written.append(pl.col(f"{r}_Type").cast(pl.Int64, strict=False).ne_missing(0))
+            counts["places.resolved"].append(found.sum())
+            counts["places.changed"].append((found & (
+                pl.col(p + "place").ne_missing(fid.cast(pl.String))
+                | pl.col(p + "place_lat").ne_missing(lat.cast(pl.Float64))
+                | pl.col(p + "place_lon").ne_missing(lon.cast(pl.Float64))
+            )).sum())
+            counts["places.cleared"].append((~found & ~located & pl.any_horizontal(written)).sum())
+            counts["places.unresolved"].append((~found & located).sum())
+        return self._joined(lf, roles).select(
+            reduce(operator.add, parts).alias(key) for key, parts in counts.items()
+        )
 
 
 @dataclass(frozen=True)

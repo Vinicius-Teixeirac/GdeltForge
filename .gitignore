@@ -31,6 +31,14 @@ config/settings.yaml
 *.zip
 *.csv
 *.parquet
+# The place table the clean stage's places step reads, shipped in the package
+!src/gdeltforge/data/places.parquet
+# The reviewed repairs of its damaged names, the audit trail of the table
+!tools/place_name_repairs.csv
+!tools/place_name_repairs_manual.csv
+# The gazetteer points of its countries and states, matched and reviewed
+!tools/place_point_refs.csv
+!tools/place_point_refs_manual.csv
 
 # Logs
 logs/

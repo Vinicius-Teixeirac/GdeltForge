@@ -1,0 +1,40 @@
+{
+  "references": {
+    "manual, nearest": 16,
+    "manual, reference": 10,
+    "name, nearest": 284,
+    "no reference": 2
+  },
+  "sources": {
+    "GNIS": {
+      "citation": "U.S. Geological Survey, National Geospatial Program, Geographic Names Information System (GNIS) Domestic Names National, published 2026-09-29. Acknowledgment of the U.S. Geological Survey would be appreciated for products derived from these data.",
+      "files": {
+        "DomesticNames_National_Text.zip": {
+          "downloaded": "2026-10-15T14:24:59+00:00",
+          "sha256": "180651b9fba01e65fc65182fb61de5be73bf6f42082a1b9b82cca2f74d3c16e9",
+          "url": "https://prd-tnm.s3.amazonaws.com/StagedProducts/GeographicNames/DomesticNames/DomesticNames_National_Text.zip"
+        }
+      }
+    },
+    "GNS": {
+      "citation": "Toponymic information is based on the Geographic Names Database, containing official standard names approved by the United States Board on Geographic Names and maintained by the National Geospatial-Intelligence Agency. More information is available at the Resources link at www.nga.mil. The National Geospatial-Intelligence Agency name, initials, and seal are protected by 10 United States Code § Section 425.",
+      "files": {
+        "Administrative_Regions.zip": {
+          "downloaded": "2026-10-15T14:24:48+00:00",
+          "sha256": "a5fea06208a41e6e0f16c197044e184118cac552e4dfeea5fecb5a0c2caa6666",
+          "url": "https://geonames.nga.mil/geonames/GNSData/fc_files/Administrative_Regions.zip"
+        },
+        "Paracel Islands.zip": {
+          "downloaded": "2026-10-15T14:24:50+00:00",
+          "sha256": "c4a122f5ef37ac8f4ad711597c1b818c882319a6dc19f6ce684ff1e7bb00d835",
+          "url": "https://geonames.nga.mil/geonames/GNSData/Paracel%20Islands.zip"
+        },
+        "Spratly Islands.zip": {
+          "downloaded": "2026-10-15T14:24:50+00:00",
+          "sha256": "7f7fca6817a41cbf1e79bb61707de348851f7c414fe3de4529252e23326a66bf",
+          "url": "https://geonames.nga.mil/geonames/GNSData/Spratly%20Islands.zip"
+        }
+      }
+    }
+  }
+}

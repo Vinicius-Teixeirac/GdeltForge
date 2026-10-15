@@ -43,10 +43,11 @@ question, it belongs to sampling.
 | **Known GDELT errors are repaired by default, and the defaults lose nothing** | Nearly everyone needs these repairs and almost nobody knows the errors exist. Each rule is exact, backed by evidence from the full archive, and can be switched off. The defaults keep GDELT's own values beside every repaired one and keep rows they flag, so a default run never discards anything GDELT published |
 | **Steps run in one fixed order** | No configuration can produce an order-dependent result by accident |
 | **Every step declares whether it's lossy** | A lossy step leaves the cleaned output unable to tell what the converted input held, which matters for deciding whether the converted copy can go |
+| **Place resolution is available but off by default, from a table built once** | A geo point's `FeatureID` and coordinates often disagree: one place under three codes, two places under one, a country written in the wrong ocean. Telling them apart takes evidence from the whole archive, which a row-level step can't gather, so the decisions are made once, over the full archive, and shipped as a table; the step only looks up each point. It replaces GDELT's values without keeping them, which the defaults never do |
 | **Derived columns only add, and are off by default** | Adding a column never discards anything, so the step is never lossy; storing them costs width in every file, and which ones are useful depends on the analysis |
 | **No option to store code columns as categoricals** | Measured on real Events files, it gains nothing and costs read time (see [below](#not-included-categorical-storage)) |
 | **Normalization is available but off by default** | Whitespace padding is common in GDELT's 2013 files and breaks code lookups, but fixing it rewrites GDELT's values without keeping them, which the defaults never do |
-| **`--delete-source` refuses a lossy step added in 0.12.0** (errata, normalize) unless `allow_lossy_delete_source: true` | Deleting the converted copy removes the only way back to what a lossy step discarded, so that combination has to be chosen deliberately. The original three steps (`columns_to_check`, `output_columns`, `float32_columns`) keep their long-standing warning, since existing setups rely on them to fit disk |
+| **`--delete-source` refuses a lossy step added in 0.12.0** (errata, normalize, places) unless `allow_lossy_delete_source: true` | Deleting the converted copy removes the only way back to what a lossy step discarded, so that combination has to be chosen deliberately. The original three steps (`columns_to_check`, `output_columns`, `float32_columns`) keep their long-standing warning, since existing setups rely on them to fit disk |
 | **Every cleaned file says it's cleaned** | A cleaned file must never pass for GDELT's own data. Each one carries a `gdeltforge:clean` entry in its Parquet metadata; `clean` warns when its input already carries it, and `sample`/`aggregate`/`crossref` warn when a `--source converted` directory does |
 | **Every run leaves an audit** | So you can always tell what a run changed, per file, without re-deriving it |
 | **Output never goes into an input directory** | Cleaned files beside the converted ones would be cleaned again on the next run, and every reader of the converted directory would count those rows twice. `clean` refuses to start in that configuration |
@@ -60,14 +61,15 @@ Each file passes through the configured steps in this order:
 |---|---|---|---|---|
 | 1 | errata | `errata.<dataset>` | Repairs known GDELT errors ([below](#errata-known-gdelt-errors)) | No, with the default settings |
 | 2 | normalize | `normalize.<dataset>` | Trims whitespace, turns blank strings into null ([below](#normalize-whitespace)); off by default | Yes: GDELT's own spelling |
-| 3 | require | `columns_to_check` | Drops rows with a null in any listed column | Yes: the rows |
-| 4 | derive | `derive.<dataset>` | Adds a real event date and code labels ([below](#derive-added-columns)); off by default | No: only adds columns |
-| 5 | project | `output_columns` | Keeps only the listed columns | Yes: the other columns |
-| 6 | narrow | `float32_columns` | Stores the listed float columns as float32 | Yes: GDELT floats carry up to 15 significant figures, float32 about 7 |
+| 3 | places | `places.<dataset>` | Resolves each geo point to one place ([below](#places-one-place-per-geo-point)); off by default | Yes: GDELT's geo values |
+| 4 | require | `columns_to_check` | Drops rows with a null in any listed column | Yes: the rows |
+| 5 | derive | `derive.<dataset>` | Adds a real event date and code labels ([below](#derive-added-columns)); off by default | No: only adds columns |
+| 6 | project | `output_columns` | Keeps only the listed columns | Yes: the other columns |
+| 7 | narrow | `float32_columns` | Stores the listed float columns as float32 | Yes: GDELT floats carry up to 15 significant figures, float32 about 7 |
 
 Errata come first so every later step sees corrected values, and
-normalization comes before the null check so a blank value counts as
-missing there. Derived columns come after both, so they're built from
+normalization and place resolution come before the null check so a blank
+value, or a point without a location, counts as missing there. Derived columns come after both, so they're built from
 repaired values, and before projection, so `output_columns` can keep them.
 
 Then the file is written with the configured `compression` (zstd by default,
@@ -166,7 +168,11 @@ release with a changed rule, cleans the affected datasets again.
 
 Each cleaned file's Parquet metadata holds a `gdeltforge:clean` entry: the
 gdeltforge version, every step with its settings and whether it is lossy,
-the configuration fingerprint, and the source file's name. The two errata
+the configuration fingerprint, the source file's name, and the file's
+rows in and out (`rows_in`, `rows_out`). `clean` never reorders rows, so
+equal counts mean a row's position in the cleaned file is its position in
+the source, which `sample --provenance` relies on
+([Row provenance](cli-reference.md#row-provenance)). The two errata
 steps name their `rule` (`date_1920`, `event_markers`), and a step the
 configuration leaves empty (a `columns_to_check` of `[]`) isn't listed. A
 step that couldn't run on the file, because the file lacks a column it
@@ -205,7 +211,7 @@ directory, with `_runs` added to its name
 |---|---|
 | `source`, `output` | The converted file and the cleaned file |
 | `rows_in`, `rows_out` | Rows before and after the steps |
-| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.date_1920_skipped_files` (files the repair couldn't read), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `require.rows_dropped`, `derive.event_date_invalid` |
+| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.date_1920_skipped_files` (files the repair couldn't read), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `places.resolved`/`places.changed`/`places.cleared`/`places.unresolved` (geo points), `places.id.*`/`places.point.*`/`places.name.damaged`/`places.no_location.named` (geo points by the GDELT defect corrected, see [Places](#places-one-place-per-geo-point)), `places_skipped_files`, `require.rows_dropped`, `derive.event_date_invalid` |
 | `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output. One column per coded column the output has, zero included |
 
 The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
@@ -262,6 +268,323 @@ clean:
 The run audit counts `normalize.trimmed` and `normalize.blank_to_null`.
 Both switches are lossy, so `--delete-source` refuses them unless
 `allow_lossy_delete_source: true`.
+
+## Places: one place per geo point
+
+Optional, per dataset, under `clean.places.<dataset>`, off by default, for
+`gdelt_event` and `gdelt_event_15min`.
+
+Every event has three geo points: where Actor1 is (`Actor1Geo_*`), where
+Actor2 is (`Actor2Geo_*`), and where the action happened (`ActionGeo_*`).
+Each names its place twice. `FeatureID` names it in a gazetteer: a GNIS ID
+for a US place, a GNS ID for the rest of the world, a two-letter FIPS code
+for a country or a US state, or `0` when GDELT only knew the country or
+state. `Lat` and `Long` give the point on the map. The two should agree,
+and often don't. Real combinations from the 1979 to 2026 archive, with the
+number of geo values carrying each:
+
+| GDELT wrote (FeatureID, Lat, Long) | What it is | Values |
+|---|---|---|
+| `US`, 39.828175, -98.5795 | The United States | 18,814,549 |
+| `US`, 38.0, -97.0 | The United States again, at GDELT 1.0's round-number centre | 13,790,530 |
+| `0`, 38.0, -97.0 | The United States again, as "only knew the country" | 14,219,713 |
+| `449676`, 39.1662, -86.5264 | Indiana University, in GNIS | 108,168 |
+| `449676`, 34.6767, 69.0073 | Kula, Afghanistan: the same number in GNS | 41 |
+| `MP`, 16.0, 146.0 | Mauritius (FIPS `MP`), written at the Northern Mariana Islands (ISO `MP`) | 241,561 |
+| `MP`, -20.2833, 57.55 | Mauritius, at its own point | 130,695 |
+| `0` or none, 0.0, 0.0 | No location at all | 87,790,602 (3.37% of all geo values) |
+| `GA`, 0.0, 0.0 | Georgia, the US state, its point missing (2003 to 2016) | 1,422,389 |
+
+So one place gets three codes (the United States), two places get one
+code (Indiana University and Kula), a country sits in the wrong ocean two
+times out of three, and a point with no location passes a null check,
+since `0.0` isn't null.
+
+### What the step does
+
+A table built once from the full archive assigns every (FeatureID, Lat,
+Long) combination GDELT wrote to one place. It ships with gdeltforge
+(`gdeltforge/data/places.parquet`, 22 MB), so the step needs nothing but
+the point itself. Every geo point comes out either as a place, under one
+ID no other place shares, or as no location, the way GDELT writes a point
+it couldn't locate (`FeatureID`, `Lat`, `Long` and `FullName` null, `Type`
+0):
+
+- **A point with a location** is looked up by its exact `FeatureID`, `Lat`
+  and `Long`, at full float64 precision. Found, it gets the place's ID in
+  `FeatureID`, its canonical point in `Lat`/`Long`, its canonical name in
+  `FullName` and its type in `Type`.
+- **A point without a location**, with no coordinates or at (0, 0), which
+  is the same thing, is looked up by its `FeatureID` alone. It gets the
+  place when the archive shows that ID, written without a location,
+  always names one place ([rule 8](#how-the-table-decides)), and is no
+  location otherwise. The null check runs after this step, so a
+  `columns_to_check` that requires a geo column drops those events.
+- **A point with a location the table doesn't know**, a combination GDELT
+  first wrote after the table was built, gets the place its `FeatureID`
+  names in the gazetteer its `Type` says, when the table has one: a known
+  place written at a new point. Otherwise it's a place the table doesn't
+  have, and its point, name and type stay as GDELT wrote them. Its
+  `FeatureID` follows rule 2: an ID the table gives another gazetteer's
+  place takes its own form (`gns:<id>` or `US<code>`, or `gnis:<id>` for a
+  GNIS ID the table gives a GNS place), and `0`, or an untyped ID more than
+  one place uses, becomes null. In the archive itself, 6,818 combinations
+  (12,707 values) resolve under no rule below, nearly all of them named
+  points GDELT wrote without an ID; they keep their point and name.
+
+`Type` is read only for that last case, to tell which gazetteer a new
+point's ID is from. `CountryCode`, `ADM1Code` and `ADM2Code` are never
+touched, nor is any other column.
+
+For a made-up event built from three of the cases above:
+
+| Point | GDELT wrote | After the step | `FullName` after |
+|---|---|---|---|
+| `Actor1Geo` | `0`, 38.0, -97.0 | `US`, 39.828175, -98.5795 | United States |
+| `Actor2Geo` | `MP`, 16.0, 146.0 | `MP`, -20.2833, 57.55 | Mauritius |
+| `ActionGeo` | `449676`, 34.6767, 69.0073 | `gns:449676`, 34.6767, 69.0073 | Kula, Kabol, Afghanistan |
+
+### How the table decides
+
+The table covers 1,193,681 distinct combinations of `FeatureID`, `Type`,
+`FullName`, `Lat` and `Long`, 2.61 billion geo values from 1979 to
+2026-07-31, and resolves them to 965,477 places. `Type` and `FullName` are
+used there, as witnesses; the lookup key is the point alone, and no
+(FeatureID, Lat, Long) combination resolves to two places.
+
+1. **A place is a location.** A feature (a FeatureID of a given type) is
+   written most often at one point, its main point. It also owns every
+   other point where it carries at least half of the values written there.
+   Features that own the same point are one place, joined largest first,
+   except that two different countries or US states never become one place
+   through a shared point.
+2. **A place's ID is GDELT's own `FeatureID`, one reading per ID.** A
+   numeric ID is a GNIS ID for a US place (Type 3) and a GNS ID otherwise;
+   a two-letter code is a FIPS country for Type 1 and a US state for Type
+   2. When one ID names a place in each reading, the first reading in a
+   fixed order (country, US state, GNIS, GNS) keeps it, and the other takes
+   a form of its own. A US state takes its ADM1 code, the one GDELT writes
+   in `ADM1Code`: `CA` stays Canada and California becomes `USCA`, so a
+   country's ID is still its `CountryCode`. A GNS place takes the `gns:`
+   prefix: `449676` stays Indiana University and Kula becomes
+   `gns:449676`. This concerns 27 US states and 3,739 GNS places; every
+   other ID stays as GDELT wrote it. The order is fixed, not the larger
+   reading first, so a rebuild never swaps two IDs: 843 of the 3,739
+   numeric pairs are within a factor of two of each other.
+3. **`0`, and a point written without an ID,** resolve to the place that
+   owns their point: `0` at (38.0, -97.0) is the United States.
+4. **GDELT 1.0's untyped features** (Type 0) resolve to the typed feature
+   with the same ID at the same point, when exactly one has it, and by
+   their point otherwise.
+5. **A feature written at a point it doesn't own:** when the name written
+   with it is the point owner's name and not the feature's own, the ID is
+   the error and the point's place wins; otherwise the point is the error
+   and the feature's own place wins.
+6. **The canonical point** of a city or landmark is its main point. A
+   country's or US state's is, of the points it owns, the one nearest its
+   point in a gazetteer (see
+   [Country and state points](#country-and-state-points)), since the most
+   frequent point is sometimes another country's: Mauritius' most frequent
+   point is the Northern Mariana Islands, the ISO reading of its FIPS code.
+   Where GDELT never wrote the place near itself, a reviewed decision gives
+   it the gazetteer's point. The two places no gazetteer lists, the United
+   States and Antarctica, take the point they own nearest the median of
+   their own features (their cities).
+7. **The canonical name** is the name written most for the place in the
+   latest era it was written in (2015 on, or its own last years if it
+   ends earlier), leaving out names with `?` or the Unicode replacement
+   character, which mark a broken encoding. Where every name a place was
+   written with is damaged, its region part is repaired (see
+   [Names GDELT's encoding damaged](#names-gdelts-encoding-damaged)).
+   The name is GDELT's own, so it keeps GDELT's form: a region or country
+   part GDELT left empty stays empty ("Bezanija, , Serbia", "Arctic Ocean,
+   ,"; 3,698 places). And it is the place's name, from every feature
+   rule 1 joined into the place, so it can name another country than the
+   row's `CountryCode`, which the step never changes: a point GDELT
+   wrote as "Zaire" reads "Democratic Republic Of The Congo", and a few
+   read a neighbouring country's name, where rule 1 joined their
+   feature to a feature of that country at the same point ("Chinotimba,
+   Zimbabwe" reads "Victoria Falls, Zambia"). Filter by `CountryCode` or
+   by the name, not by both expecting them to agree.
+8. **A point without a location** names a place when its `FeatureID` does:
+   read in the gazetteer its `Type` says (or, untyped, in the only one that
+   has the ID), it is a feature with a real point, and every point of that
+   ID without a location agrees. `GA` at (0, 0) is always Georgia, the US
+   state, and resolves to it (1,422,389 values); `GG` without coordinates
+   is Georgia, the country (240,758). `0`, a missing ID, and IDs with no
+   place of their own (`RB`, `YI`, and `MH` written as the Marshall
+   Islands, while `MH` with a location is Montserrat; 412,271 values) are
+   no location.
+
+Of all 2.61 billion geo values, 85.7% resolve to a place; 12.8% get a
+different `FeatureID` (mostly `0` becoming its country or state); 4.0% of
+all values (4.6% of those resolved) move more than 1 km. A point GDELT got
+right stays where it is, except that a country or state GDELT wrote at two
+right points keeps one: Sudan, written at (15, 30) and (16, 30), keeps
+(16, 30), its point in GNS.
+
+### Names GDELT's encoding damaged
+
+GDELT encoded its place names to Windows-1252 and read them back as
+Latin-1. A letter Windows-1252 lacks became `?` ("Ḩalab" is written
+"?alab", "Nghệ An" "Ngh? An"), and one it has outside Latin-1 became an
+invisible control character (`\x9a` for š in "Pre\x9aovský"). In some
+Vietnamese names the letters after a surviving accented one were lost too
+("Bình Thuận" is written "Bì Thu?n"). And a name with letters outside
+ASCII was cut short, by one byte for each such letter, with one letter of
+what followed it left at its end: "Diyālá" is written "DiyaláZ", "Attikí"
+"AttikíR", "Nuevo León" "Nuevo LeóX". GDELT never writes these names
+undamaged anywhere in the archive, so no rule above can pick a clean
+spelling: "Ar Riya?" alone is written 1,856,810 times in `ActionGeo`.
+
+The damage is only ever in the region part of a name (the first-level
+administrative division, between the place's own name and its country):
+231 distinct region strings in 55 countries, in the names of 19,223 places
+(33,357,096 geo values, 1.49% of those resolved), 64 of the strings cut
+short. The table repairs each of them, in this order:
+
+| Repair | Regions | How |
+|---|---|---|
+| Control characters | 87 | Each is read back as its Windows-1252 letter: lossless, no source needed |
+| Exact replay | 35 | A name of one division in NGA's GEOnet Names Server (GNS), written the way GDELT wrote names, equals GDELT's string |
+| One division fits | 94 | GDELT could have written the names of exactly one GNS division so: each `?` a letter Windows-1252 lacks, the other letters equal or without the accents GDELT's source left out, and a cut name the start of the division's |
+| Reviewed by hand | 15 | Two GNS divisions fit (a district and a city both named Lənkəran; Panamá and Panamá Oeste), GNS no longer holds the spelling GDELT's source used, or GNS files the division at another level now (Côte d'Ivoire's regions before 2011, Guinea's prefectures); each row names the division and the reason |
+
+GNS is the gazetteer GDELT's world place IDs come from. A repaired name
+takes GNS's full spelling, diacritics included ("Ḩalab", "Hà Nội"); where
+the spelling GDELT's source used isn't in GNS any more, it takes the
+division's approved name. The `*` and `**` GDELT ends some division names
+with ("Yerevan*", "Ajaria**") aren't damage, and stay. Repairs change only
+the region part of a name, never the place's own name, its ID or its
+point. They reach the names of the places the table holds: a point with a
+location the table doesn't know keeps the name GDELT wrote
+([What the step does](#what-the-step-does)), damaged or not, so a cleaned
+file can still hold a few damaged names on such points.
+
+Every repair is listed, with the GNS feature (UFI) it cites, in
+`tools/place_name_repairs.csv` in the repository; the hand-reviewed ones
+also in `tools/place_name_repairs_manual.csv`, with their reasons. The GNS
+country files were downloaded on 2026-10-14, and GNS's world file of
+administrative regions, which the repairs of 32 countries' cut names
+cite, on 2026-10-15; `tools/place_name_sources.json` records each one's
+URL and sha256, and the table's metadata records the
+repair file's sha256. `tools/build_place_name_repairs.py` decides the
+repairs again from those files.
+
+> Toponymic information is based on the Geographic Names Database,
+> containing official standard names approved by the United States Board
+> on Geographic Names and maintained by the National Geospatial-Intelligence
+> Agency. More information is available at the Resources link at
+> www.nga.mil. The National Geospatial-Intelligence Agency name, initials,
+> and seal are protected by 10 United States Code § Section 425.
+
+### Country and state points
+
+GDELT writes many countries at two or more points: older and newer
+centres of the same country, and sometimes another country's point.
+Europa Island (FIPS `EU`) is written more often at Switzerland's point,
+(47, 8), than at its own; Mauritius more often at the Northern Mariana
+Islands. Which point is the place's own can't be read from the archive
+alone, so every country and US state has a reference point from the
+gazetteers GDELT's IDs come from: NGA's GEOnet Names Server (GNS) for the
+world, and the U.S. Geological Survey's Geographic Names Information
+System (GNIS) for the US states and territories, which GNS leaves out. The
+canonical point is GDELT's own point nearest the reference.
+
+| Reference | Places | How |
+|---|---|---|
+| By name | 284 | GDELT's name for the place is the name of exactly one GNS country, dependency or island group, or of one GNIS state or territory |
+| Reviewed by hand | 16 | The gazetteer knows the place by another name (Burma, Timor-Leste, Eswatini), or a point GDELT writes the place at is its own though it lies nearer another place's reference (the United Kingdom, Kiribati); each row names the feature and the reason |
+| Gazetteer point, reviewed | 10 | GDELT never wrote the place near itself, so it takes the gazetteer's point: eight US Minor Outlying Islands and the Paracel Islands, all written in the central Pacific next to Kingman Reef, and Jan Mayen, written in the Barents Sea |
+| None | 2 | Neither gazetteer lists the United States or Antarctica as a feature; rule 6's median decides |
+
+A place every written point of which lies nearer another place's
+reference than its own needs a reviewed row: most are wrong, but a large
+country's own point can lie nearer a small neighbour's reference
+(Morocco's, in central Morocco, is nearer Gibraltar's), and the row keeps
+it. Under these references 45 countries' canonical points differ from
+those of the earlier rule (the point nearest the median of the country's
+cities), 18 of them by less than 10 km; no US state's does.
+
+Every reference is listed, with the gazetteer feature it cites, in
+`tools/place_point_refs.csv` in the repository; the reviewed ones also in
+`tools/place_point_refs_manual.csv`, with their reasons. The gazetteer
+files were downloaded on 2026-10-15; `tools/place_point_sources.json`
+records each one's URL, sha256 and citation, and the table's metadata
+records the reference file's sha256. `tools/build_place_point_refs.py`
+matches the references again from those files. The GNIS data carries no
+use constraints; the U.S. Geological Survey asks for acknowledgment in
+products derived from it.
+
+### What it never does
+
+- Invent a place: a point is given a place only when GDELT's own ID or
+  point names it.
+- Move a point GDELT got right, other than to another right point of the
+  same country or state, or discard one the table doesn't know.
+- Read `QuadClass`, or any column but the geo points.
+- Change the converted or the raw files.
+
+### Settings
+
+```yaml
+clean:
+  places:
+    gdelt_event:
+      resolve: true
+```
+
+The run audit counts, per geo point: `places.resolved` (found in the
+table), `places.changed` (of those, the ones whose ID or point changed),
+`places.cleared` (turned into no location: at (0, 0), or an ID written
+without coordinates that names no place) and `places.unresolved` (with a
+location, but no place in the table: kept as written). A file with no geo point left to
+resolve, pruned by `converter.output_columns`, counts under
+`places_skipped_files`, and the run warns with the number of such files.
+
+It also counts each resolved point's correction by the GDELT defect it
+corrects, so a result that changes under place resolution can be traced
+to the defect behind it. A point can count under more than one class (a
+`0` at a country's older centre is a placeholder ID and a moved point).
+Each file is counted on its own, so a run's audit gives the counts per
+day or month of GDELT's files, and from those per year. Over the whole
+1979 to 2026 archive:
+
+| Count | GDELT's defect | Geo values | Share |
+|---|---|---|---|
+| `places.id.placeholder` | `0` or no ID at a located point, given its place's ID | 204,282,598 | 7.83% |
+| `places.id.shared` | An ID two gazetteers share, taking its own form (`USCA`, `gns:449676`) | 120,541,261 | 4.62% |
+| `places.id.merged` | A place written under a second ID, given its place's own (the White House's `531723` becomes Washington's `531871`; GDELT 1.0's untyped duplicates) | 9,700,796 | 0.37% |
+| `places.point.moved` | A place written at another of its own points (an older centre, the same point at another precision), moved to its canonical point | 122,554,175 | 4.70% |
+| `places.point.wrong` | A place written at a point that isn't its own (Mauritius at the Northern Mariana Islands, Europa Island at Switzerland), moved to its own | 1,315,070 | 0.05% |
+| `places.point.new` | A point the table doesn't know, its place found by its ID, moved to the place's point | 19 | 0.00% |
+| `places.name.damaged` | A name GDELT's encoding damaged, replaced by the place's undamaged one | 33,349,914 | 1.28% |
+| `places.no_location.named` | A point without a location whose ID always names one place (`GA` at (0, 0)) | 1,664,564 | 0.06% |
+
+`places.cleared` counts the remaining defect: (0, 0) and IDs without
+coordinates that name no place, GDELT's "no location" written as a point
+(88,202,873 values, 3.38%). Whether a written point is the place's own
+comes from the table: a point no feature of the place owns
+([rule 1](#how-the-table-decides)) isn't, nor is a country's or state's
+point that lies nearer another place's gazetteer point (listed in
+`tools/place_point_refs.csv`), unless a reviewed row says it is the
+place's own (the United Kingdom's older centre lies in the Irish Sea,
+nearer the Isle of Man).
+
+**Why off by default**: it replaces GDELT's values without keeping them,
+so it's lossy, and `--delete-source` refuses it unless
+`allow_lossy_delete_source: true`. It also costs memory: each worker
+holds the table (about 150 MB), and resolving a file takes more while it
+runs, about 350 to 600 MB in all above a run without places for a daily
+Events file, measured with one worker; a larger file takes more. Each
+file's distinct points are resolved once and looked up per row, so a
+15-minute file adds about 50 to 60 ms. The table's identity (its rule version and the
+archive it was built from) is part of the resumability fingerprint, so a
+gdeltforge release with a rebuilt table resolves every file again.
+
+The table is rebuilt from a converted Events archive with
+`tools/build_place_table.py` in the repository, a maintainer tool. A
+rebuild stops at any damaged name without a reviewed repair.
 
 ## Derive: added columns
 
@@ -375,5 +698,5 @@ errata repairs. Nothing needs doing by hand:
 - **Keep the converted copy** unless disk space forces otherwise:
   `--delete-source` removes it once the cleaned file is written, and after
   that the only way back is re-converting from GDELT's raw ZIPs. It refuses
-  to run with a lossy step added in 0.12.0 (errata or normalize) unless you
+  to run with a lossy step added in 0.12.0 (errata, normalize or places) unless you
   set `allow_lossy_delete_source: true`.

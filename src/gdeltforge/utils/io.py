@@ -706,7 +706,7 @@ def warn_if_delete_source_drops_recoverable_data(
     settings = ", ".join(narrowing)
     logger.warning(
         f"delete_source is set for {stage} together with {settings}: the input "
-        f"file is deleted once its (narrowed) output is written, so whatever "
+        f"file is deleted once its output is written, so whatever "
         f"{settings} dropped or changed has nothing left to recover it from "
         f"except redoing an earlier pipeline stage."
     )
@@ -1014,6 +1014,7 @@ def scan_dataset_reconciled(
     target_schema: dict[str, pl.DataType] | None = None,
     file_schemas: dict[Path, dict[str, pl.DataType]] | None = None,
     include_file_paths: str | None = None,
+    row_index: str | None = None,
 ) -> pl.LazyFrame:
     """
     Lazily scan every file in `files` as one dataset, reconciling both a
@@ -1052,7 +1053,10 @@ def scan_dataset_reconciled(
     file_schemas, when given, holds the files' own schemas already read
     (read_file_schemas), saving a second footer read per file.
     include_file_paths names a column to add holding each row's file
-    path, as pl.scan_parquet's parameter of that name does.
+    path, as pl.scan_parquet's parameter of that name does. row_index
+    names an Int64 column to add holding each row's position within its
+    own file, numbered before any filter the caller applies; it scans one
+    LazyFrame per file, since a combined scan numbers rows across files.
     """
     if file_schemas is None:
         file_schemas = read_file_schemas(files)
@@ -1067,7 +1071,7 @@ def scan_dataset_reconciled(
         for name, dtype in target_schema.items()
     )
 
-    if not conflicting:
+    if not conflicting and row_index is None:
         return pl.scan_parquet(
             files, schema=target_schema, missing_columns="insert", extra_columns="ignore",
             include_file_paths=include_file_paths,
@@ -1088,6 +1092,8 @@ def scan_dataset_reconciled(
         lf = scan_file_against_schema(
             f, target_schema, real_schema=file_schemas[f], widening_checked=True
         )
+        if row_index:
+            lf = lf.with_row_index(row_index).with_columns(pl.col(row_index).cast(pl.Int64))
         if include_file_paths:
             lf = lf.with_columns(pl.lit(str(f)).alias(include_file_paths))
         lazy_frames.append(lf)

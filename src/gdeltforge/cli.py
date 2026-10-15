@@ -539,6 +539,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             start_date=start_date,
             end_date=end_date,
             date_parser=date_parser,
+            provenance=args.provenance,
         )
         df = sampler.get_random_sample(args.n, replace=args.replace)
         _write_sample_output(df, out, args.export_format)
@@ -581,6 +582,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             start_date=start_date,
             end_date=end_date,
             date_parser=date_parser,
+            provenance=args.provenance,
         )
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period)
         _write_sample_output(df, out, args.export_format)
@@ -629,6 +631,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             start_date=start_date,
             end_date=end_date,
             date_parser=date_parser,
+            provenance=args.provenance,
         )
 
         if args.stratify:
@@ -1200,6 +1203,12 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--seed", type=int, default=42,
         help="RNG seed"
+    )
+    sample.add_argument(
+        "--provenance", action="store_true",
+        help="Add SourceFile and SourceRow to every sampled row: the converted "
+             "file it comes from and its 0-based position there (for --source "
+             "cleaned, the file the clean marker names). Off by default"
     )
     sample.add_argument(
         "--per-period", type=int, default=10,
