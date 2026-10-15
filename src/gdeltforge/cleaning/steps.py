@@ -412,9 +412,27 @@ GEO_ROLES = ("Actor1Geo", "Actor2Geo", "ActionGeo")
 # the point has a location at all, and the table's wrong_point (null for a
 # point the table doesn't know).
 _RESOLVED = (*places.PLACE_COLUMNS, "new_id", "located", places.WRONG_POINT)
+# What identifies a point for resolution: its key in the table (FeatureID,
+# "" for none, and Lat and Long, null without a location), its FeatureID
+# when it has a location, and the gazetteer its Type names.
+_POINT_KEY = ("k_id", "k_lat", "k_lon", "f_id", "gazetteer")
+
+
+def _point_key(prefix: str) -> pl.Expr:
+    """_POINT_KEY's columns (under `prefix`) as one string, to look a point
+    up among the resolved ones: a null as \x00, the columns joined by \x1f,
+    neither of which GDELT writes. Both sides come from the same file, so a
+    Lat or Long reads the same on each."""
+    return pl.concat_str(
+        [pl.col(prefix + k).cast(pl.String).fill_null("\x00") for k in _POINT_KEY],
+        separator="\x1f",
+    )
 # A FullName GDELT's encoding damaged: '?' for a letter Windows-1252 lacks,
-# a control character for one it has outside Latin-1.
-_DAMAGED_NAME = r"[?\x80-\x9f]"
+# a control character for one it has outside Latin-1, or a part with a
+# letter outside ASCII cut short, one capital letter of what followed it
+# left at its end ("DiyaláZ"; tools/build_place_name_repairs.py, has_debris).
+_DAMAGED_NAME = (r"[?\x80-\x9f]"
+                 r"|(?:[^\x00-\x7F][^,]*\p{Ll}|[\p{Ll}&&[^\x00-\x7F]])\p{Lu}\**(?:,|$)")
 
 
 @dataclass(frozen=True)
@@ -459,9 +477,6 @@ class ResolvePlaces(Step):
         """lf with, per role, __<role>_<column> for every _RESOLVED column.
         Row order is kept."""
         names = lf.collect_schema().names()
-        table = places.place_table().lazy()
-        readings = places.place_readings().lazy()
-        ids = places.place_ids().lazy()
         for r in roles:
             p = f"__{r}_"
             fid = pl.col(f"{r}_FeatureID").cast(pl.String)
@@ -484,61 +499,92 @@ class ResolvePlaces(Step):
                 gazetteer.alias(p + "gazetteer"),
                 located.alias(p + "located"),
             )
-
-            def prefixed(frame: pl.LazyFrame, tag: str, p: str = p) -> pl.LazyFrame:
-                return frame.select(
-                    *[c for c in frame.collect_schema().names() if c not in places.PLACE_COLUMNS],
-                    *[pl.col(c).alias(f"{p}{tag}{c}") for c in places.PLACE_COLUMNS],
-                )
-
-            lf = (
-                lf.join(
-                    prefixed(table.rename({places.WRONG_POINT: p + places.WRONG_POINT}),
-                             "t_").rename(
-                        {c: f"{p}k_{k}" for c, k in zip(
-                            places.KEY_COLUMNS, ("id", "lat", "lon"), strict=True)}
-                    ),
-                    on=[p + "k_id", p + "k_lat", p + "k_lon"], how="left",
-                    nulls_equal=True, maintain_order="left",
-                )
-                .join(
-                    prefixed(readings, "r_").rename(
-                        {"FeatureID": p + "f_id", "gazetteer": p + "gazetteer"}),
-                    on=[p + "f_id", p + "gazetteer"], how="left", maintain_order="left",
-                )
-                .join(
-                    prefixed(ids, "u_").rename(
-                        {"FeatureID": p + "f_id", "readings": p + "readings"}),
-                    on=p + "f_id", how="left", maintain_order="left",
-                )
-            )
-            typed = pl.col(p + "gazetteer").is_not_null()
-            one = pl.col(p + "readings") == 1
-            resolved = [
-                pl.coalesce(
-                    pl.col(f"{p}t_{c}"),
-                    pl.when(typed).then(pl.col(f"{p}r_{c}"))
-                    .when(one).then(pl.col(f"{p}u_{c}")),
+        # Each distinct point resolved once, in a frame of a few thousand
+        # rows, then looked up per row by an expression, which streams and
+        # keeps the row order. Joining the file to the whole table took
+        # nine joins per pass over the file, each building its hash table
+        # over a million rows: about 2 GiB per worker and half a second
+        # per file, however small.
+        distinct = pl.collect_all([
+            lf.select(pl.col(f"__{r}_{k}").alias(k) for k in _POINT_KEY).unique()
+            for r in roles
+        ])
+        resolved = ResolvePlaces._resolve_points(pl.concat(distinct).unique())
+        keys = resolved.select(_point_key("").alias("key"))["key"]
+        outputs = [c for c in resolved.columns if c not in _POINT_KEY]
+        for r in roles:
+            p = f"__{r}_"
+            lf = lf.with_columns(_point_key(p).alias(p + "key")).with_columns(
+                pl.col(p + "key").replace_strict(
+                    keys, resolved[c], default=None, return_dtype=resolved.schema[c]
                 ).alias(p + c)
-                for c in places.PLACE_COLUMNS
-            ]
-            f_id, gaz = pl.col(p + "f_id"), pl.col(p + "gazetteer")
-            own_form = (
-                pl.when((gaz == "state") & f_id.str.contains(r"^[A-Z]{2}$"))
-                .then(pl.lit("US") + f_id)
-                .otherwise(gaz + pl.lit(":") + f_id)
-            )
-            new_id = (
-                pl.when(f_id.is_null() | f_id.is_in(["", "0"])).then(None)
-                .when(pl.col(p + "readings").is_null()).then(f_id)
-                .when(~typed).then(None)
-                .otherwise(own_form)
-            )
-            keep = {p + c for c in _RESOLVED}
-            lf = lf.with_columns(*resolved, new_id.alias(p + "new_id"))
-            lf = lf.drop([c for c in lf.collect_schema().names()
-                          if c.startswith(p) and c not in keep])
+                for c in outputs
+            ).drop([p + "key", *[p + k for k in _POINT_KEY]])
         return lf
+
+    @staticmethod
+    def _resolve_points(points: pl.DataFrame) -> pl.DataFrame:
+        """
+        Per distinct point (_POINT_KEY), the _RESOLVED columns but located:
+        the place its (FeatureID, Lat, Long) has in the table; else, for a
+        point with a location, the place its FeatureID names in the
+        gazetteer its Type says, or the only place using that ID; and the
+        FeatureID such a point keeps when it names none.
+        """
+        key = {"FeatureID": "k_id", "Lat": "k_lat", "Long": "k_lon"}
+        # Filtered by ID first: a lookup in the file's few thousand IDs,
+        # before the join hashes three columns.
+        table = places.place_table().filter(
+            pl.col("FeatureID").is_in(points["k_id"].unique().implode())
+        ).join(
+            points.select(pl.col(k).alias(c) for c, k in key.items()),
+            on=list(places.KEY_COLUMNS), how="semi", nulls_equal=True,
+        )
+        # The fallback reads a FeatureID only for a point with a location
+        # the table doesn't know (every row of the table has a place):
+        # usually none. Every place of each of those IDs, so place_ids
+        # counts them all.
+        unknown = points.join(
+            table.rename(key), on=list(key.values()), how="anti", nulls_equal=True
+        ).filter(pl.col("k_lat").is_not_null())
+        readings = places.readings_for(unknown["f_id"])
+        ids = places.place_ids(readings)
+
+        def tagged(frame: pl.DataFrame, tag: str) -> pl.LazyFrame:
+            return frame.lazy().rename({c: tag + c for c in places.PLACE_COLUMNS})
+
+        joined = (
+            points.lazy()
+            .join(tagged(table, "t_").rename(key), on=list(key.values()), how="left",
+                  nulls_equal=True)
+            .join(tagged(readings, "r_").rename({"FeatureID": "f_id"}),
+                  on=["f_id", "gazetteer"], how="left")
+            .join(tagged(ids, "u_").rename({"FeatureID": "f_id"}), on="f_id", how="left")
+        )
+        typed = pl.col("gazetteer").is_not_null()
+        one = pl.col("readings") == 1
+        resolved = [
+            pl.coalesce(
+                pl.col(f"t_{c}"),
+                pl.when(typed).then(pl.col(f"r_{c}")).when(one).then(pl.col(f"u_{c}")),
+            ).alias(c)
+            for c in places.PLACE_COLUMNS
+        ]
+        f_id, gaz = pl.col("f_id"), pl.col("gazetteer")
+        own_form = (
+            pl.when((gaz == "state") & f_id.str.contains(r"^[A-Z]{2}$"))
+            .then(pl.lit("US") + f_id)
+            .otherwise(gaz + pl.lit(":") + f_id)
+        )
+        new_id = (
+            pl.when(f_id.is_null() | f_id.is_in(["", "0"])).then(None)
+            .when(pl.col("readings").is_null()).then(f_id)
+            .when(~typed).then(None)
+            .otherwise(own_form)
+        )
+        return joined.select(
+            *_POINT_KEY, *resolved, new_id.alias("new_id"), places.WRONG_POINT
+        ).collect()
 
     @staticmethod
     def _temporary(roles: list[str]) -> list[str]:

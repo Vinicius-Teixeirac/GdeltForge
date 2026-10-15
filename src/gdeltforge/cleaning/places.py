@@ -17,7 +17,8 @@ Provides:
     - place_table: the table, one row per combination
     - place_readings: one row per place, with GDELT's own FeatureID for it
       and the gazetteer it reads that ID in
-    - place_ids: per FeatureID, how many places use it
+    - readings_for: the same, for the places of given FeatureIDs only
+    - place_ids: per FeatureID of given readings, how many places use it
     - place_table_info: what the table was built from (rule version,
       archive span, counts)
     - place_table_id: a short identity of the table, for the resumability
@@ -58,7 +59,7 @@ def place_table() -> pl.DataFrame:
     The table: FeatureID (as GDELT wrote it, "" where it wrote none), Lat
     and Long (float64, exactly as converted; both null for a FeatureID
     written without a location), then place, place_type, place_lat,
-    place_lon, place_name and wrong_point. About 80 MB in memory, loaded
+    place_lon, place_name and wrong_point. About 150 MB in memory, loaded
     once per process.
     """
     with as_file(_resource()) as path:
@@ -73,9 +74,37 @@ def place_readings() -> pl.DataFrame:
     One row per place: FeatureID, GDELT's own ID for it (gns:449676 ->
     449676, USCA -> CA), gazetteer, and the place columns. A point the
     table doesn't know names the place its FeatureID has in the gazetteer
-    its Type says, when there is one.
+    its Type says, when there is one. The whole table's, cached: the
+    places step uses readings_for, which holds no more than a file needs.
     """
-    readings = place_table().select(PLACE_COLUMNS).unique("place", maintain_order=True)
+    return _readings(place_table())
+
+
+# The forms a place's ID takes where GDELT's own ID names another place
+# (rule 2 in docs/data-cleaning.md): a US state's ADM1 code, or the ID
+# with its gazetteer's prefix.
+_ID_FORMS = (("", ""), ("US", ""), ("gns:", ""), ("gnis:", ""))
+
+
+def readings_for(ids: pl.Series) -> pl.DataFrame:
+    """
+    place_readings' rows whose FeatureID is in `ids`, every place of each
+    ID included, found from the IDs' own forms (449676, gns:449676, CA,
+    USCA) without building the readings of the whole table: those cost
+    each worker about 220 MB, for the few points per file the table
+    doesn't know.
+    """
+    ids = ids.drop_nulls().unique()
+    if ids.is_empty():
+        return _readings(place_table().clear())
+    candidates = pl.concat([prefix + ids + suffix for prefix, suffix in _ID_FORMS])
+    found = place_table().filter(pl.col("place").is_in(candidates.implode()))
+    readings = _readings(found)
+    return readings.filter(pl.col("FeatureID").is_in(ids.implode()))
+
+
+def _readings(table: pl.DataFrame) -> pl.DataFrame:
+    readings = table.select(PLACE_COLUMNS).unique("place", maintain_order=True)
     place = pl.col("place")
     gdelt_id = (
         pl.when(place.str.contains(":")).then(place.str.replace(r"^[a-z]+:", ""))
@@ -90,12 +119,14 @@ def place_readings() -> pl.DataFrame:
                            *PLACE_COLUMNS)
 
 
-@lru_cache(maxsize=1)
-def place_ids() -> pl.DataFrame:
-    """Per GDELT FeatureID the places use: how many (`readings`) and, where
-    exactly one, that place's columns. An untyped point the table doesn't
-    know names a place only through an ID one place uses."""
-    return place_readings().group_by("FeatureID", maintain_order=True).agg(
+def place_ids(readings: pl.DataFrame) -> pl.DataFrame:
+    """Per GDELT FeatureID in `readings` (place_readings, or a cut of it
+    holding every place of each FeatureID it keeps): how many places use it
+    (`readings`) and, where exactly one, that place's columns. An untyped
+    point the table doesn't know names a place only through an ID one place
+    uses. Not cached: ResolvePlaces builds it per file from the readings of
+    that file's IDs, a few rows."""
+    return readings.group_by("FeatureID", maintain_order=True).agg(
         pl.len().alias("readings"), *[pl.col(c).first() for c in PLACE_COLUMNS]
     )
 
