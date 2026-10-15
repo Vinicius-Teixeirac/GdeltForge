@@ -627,7 +627,9 @@ categoricals help an analysis in memory, cast after reading
 scope without writing anything, then logs the totals: rows in and out, each
 step's counts, unrecognized codes, columns in and out, and which configured
 steps are lossy. It reads the data, so it takes about as long as a real run
-minus the writing. A plain `--dry-run` only counts files.
+minus the writing. Like a run, it skips files already cleaned under the
+same settings, so right after a run it measures nothing; `--force`
+measures them too. A plain `--dry-run` only counts files.
 
 ## Data cleaned before 0.12.0
 
