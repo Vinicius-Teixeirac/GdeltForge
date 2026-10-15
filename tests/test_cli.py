@@ -1369,6 +1369,81 @@ class TestRunSamplingCmdReplace:
         cli.run_sampling_cmd(self._config(), args)
 
 
+class TestRunSamplingCmdIgnoredN:
+    """-n sizes only a simple random draw; a calendar or stratified sample
+    is sized per group, so -n given to one is warned about. Before, it was
+    accepted and silently did nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _fakes(self, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(cli, "_write_strata_sidecar", lambda *a, **kw: None)
+        self.drawn = {}
+        drawn = self.drawn
+        frame = pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+
+        class FakeSampler:
+            period_row_counts_ = stratum_row_counts_ = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n, replace=False):
+                drawn["n"] = n
+                return frame
+
+            def get_stratified_sample(self, column, n_per_group):
+                drawn["n_per_group"] = n_per_group
+                return frame
+
+            def get_calendar_samples(self, *args, **kwargs):
+                return frame
+
+        for name in ("IndexedSampler", "FilteredSampler", "CalendarSampler"):
+            monkeypatch.setattr(cli, name, FakeSampler)
+
+    @staticmethod
+    def _run(tmp_path, *flags):
+        config = {
+            "paths": {
+                "cleaned_data_directory": str(tmp_path),
+                "cleaned_historical_directory": str(tmp_path / "hist"),
+            },
+            "columns": {"gdelt_event": ["GlobalEventID", "Day"]},
+        }
+        args = cli.build_parser().parse_args(
+            ["sample", "--dataset", "events", "--out", str(tmp_path / "o.parquet"), *flags]
+        )
+        cli.run_sampling_cmd(config, args)
+
+    def test_warned_with_stratify(self, tmp_path, caplog):
+        self._run(
+            tmp_path, "--mode", "filtered", "--stratify", "QuadClass",
+            "--n-per-group", "5", "-n", "10",
+        )
+        assert "-n is ignored here: --n-per-group" in caplog.text
+        assert self.drawn == {"n_per_group": 5}
+
+    def test_warned_with_calendar(self, tmp_path, caplog):
+        self._run(tmp_path, "--mode", "calendar", "-n", "10")
+        assert "-n is ignored here: --per-period" in caplog.text
+
+    @pytest.mark.parametrize("mode", ["indexed", "filtered"])
+    def test_used_and_not_warned_for_a_simple_draw(self, tmp_path, caplog, mode):
+        flags = ["--filter", '{"QuadClass": [1]}'] if mode == "filtered" else []
+        self._run(tmp_path, "--mode", mode, "-n", "10", *flags)
+        assert self.drawn == {"n": 10}
+        assert "-n is ignored" not in caplog.text
+
+    def test_default_when_not_given_and_no_warning(self, tmp_path, caplog):
+        self._run(tmp_path, "--mode", "filtered", "--stratify", "QuadClass",
+                  "--n-per-group", "5")
+        assert "-n is ignored" not in caplog.text
+        self._run(tmp_path, "--mode", "indexed")
+        assert self.drawn["n"] == 1000
+
+
 class TestStrataSidecar:
     """<out>.strata.json, written after calendar/stratified sampling from
     period_row_counts_/stratum_row_counts_, the true per-group row counts

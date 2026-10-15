@@ -233,7 +233,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
 | `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
 | `--source {cleaned,converted,aggregated,filtered}` | all | Which stage's output to read from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
-| `-n N` | indexed, filtered | Number of rows to sample (default 1000) |
+| `-n N` | indexed, filtered | Number of rows to sample (default 1000). Not with `--stratify`, where `--n-per-group` sizes the sample: given there, or in calendar mode, it's ignored with a warning |
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
 | `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there (see [Row provenance](#row-provenance)). Off by default |
