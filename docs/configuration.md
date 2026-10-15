@@ -185,6 +185,8 @@ The marker records the run's own `output_columns` and `compression` settings, no
 
 Markers are written as a dot-prefixed sibling of the data (`.<name>.done`), the standard convention for "not a data file" that `pandas.read_parquet`/`pyarrow.dataset` already skip on their own. A directory `convert`/`clean` has written into is safe to point any tool at directly, no special handling needed, even though `clean`'s own source directory is `convert`'s output directory and therefore always ends up holding both. Markers from before this existed aren't dot-prefixed; they're recognized and quietly migrated to the current naming the next time that file is checked, without reprocessing it.
 
+A marker sits beside the file a stage read, in that stage's input directory: `convert`'s next to each raw ZIP, `clean`'s next to each converted file. So copying an input directory copies the next stage's record of what it already did: `clean` pointed at a copy of a converted directory skips the files already cleaned under the same settings, though its own output directory is empty. Use `--force`, or leave the dot-prefixed files out of the copy. For the same reason, two cleaned copies of one converted directory under different settings (one with `clean.places` on, say) share one marker per file: each run cleans every file again, and the other copy's next run does too.
+
 ## `clean`
 
 The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.

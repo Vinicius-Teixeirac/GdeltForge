@@ -214,7 +214,11 @@ project_root/
 │ │ └── default_settings.yaml # Bundled fallback config, used when no settings.yaml/--config is found at all
 │ │
 │ ├── data/
-│ │ └── cameo_codes.json # Bundled CAMEO/FIPS code -> name reference data, backs the `codes` command
+│ │ ├── cameo_codes.json # Bundled CAMEO/FIPS code -> name reference data, backs the `codes` command
+│ │ └── places.parquet # Bundled place table: one place per (FeatureID, Lat, Long) GDELT wrote, backs clean.places
+│ │
+│ ├── aggregation/
+│ │ └── aggregator.py # Concatenates a period's 15-minute files (GKG 2.1, Mentions, events-15min) into one per day/month/year
 │ │
 │ ├── conversion/
 │ │ └── converter.py # CSV -> Parquet conversion logic
@@ -224,6 +228,7 @@ project_root/
 │ │
 │ ├── cleaning/
 │ │ ├── cleaner.py # The clean stage: runs its steps on every file
+│ │ ├── places.py # Loads the bundled place table for the places step
 │ │ └── steps.py # The stage's steps, applied in one fixed order
 │ │
 │ ├── filtering/
@@ -233,7 +238,7 @@ project_root/
 │ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command
 │ │ ├── indexer.py # File indexing for reproducible sampling
 │ │ ├── rng.py # Random number generation helpers
-│ │ └── samplers.py # Indexed, daily, and filtered sampling
+│ │ └── samplers.py # Indexed, calendar, and filtered sampling
 │ │
 │ ├── scraping/
 │ │ └── scraper.py # Downloader for Events, GKG 2.1, GKG 1.0, and Mentions
@@ -247,6 +252,7 @@ project_root/
 │
 ├── docs/assets/brand/ # Emblem, favicon, wordmark lockups, icon set, GitHub social preview
 ├── tests/ # pytest suite (unit tests, no network/browser required)
+├── tools/ # Maintainer tools that build the place table, with the gazetteer references and repairs it cites
 │
 ├── main.py # Backward-compatible shim: `python main.py <command>` still works
 ├── pyproject.toml # Package metadata, build backend, gdeltforge console-script entry point
@@ -270,6 +276,7 @@ gdeltforge <command> [options]
 | `scrape` | Download raw GDELT data (ZIP -> CSV) |
 | `convert` | Convert downloaded CSV files to Parquet |
 | `clean` | Clean converted Parquet: the data-quality stage (formerly `filter`) |
+| `aggregate` | Concatenate the 15-minute datasets' files into one per day, month or year |
 | `sample` | Efficient, reproducible sampling |
 | `crossref` | Join a sampled Events output back onto GKG |
 | `codes` | Look up valid CAMEO/FIPS codes across seven column families |
