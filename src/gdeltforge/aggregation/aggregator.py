@@ -336,7 +336,7 @@ class GDELTAggregator:
                 raise
 
         logger.info(
-            f"Aggregation complete. Periods aggregated: {periods_processed}, "
+            f"Aggregation summary: {periods_processed} period(s) aggregated, "
             f"{periods_failed} failed."
         )
         return periods_processed, periods_failed

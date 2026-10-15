@@ -37,6 +37,7 @@ import logging
 import multiprocessing
 import os
 import re
+import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
@@ -810,7 +811,7 @@ class GDELTConverter:
                 raise
 
         logger.info(
-            f"Conversion complete. Total Parquets created: {len(all_outputs)}, "
+            f"Conversion summary: {len(all_outputs)} Parquet file(s) created, "
             f"{len(failed)} {unit} file(s) failed."
         )
         self._cleanup_unzipped_folder()
@@ -899,7 +900,17 @@ class GDELTConverter:
             # means two concurrent processes never share a single
             # extracted file at any point during the read/convert window.
             private_extract_dir = self.unzip_folder / f".pid{os.getpid()}_{zip_p.stem}"
-            extracted_files = unzip_file(zip_path, private_extract_dir)
+            try:
+                extracted_files = unzip_file(zip_path, private_extract_dir)
+            except Exception:
+                # A ZIP that can't be extracted (truncated, damaged)
+                # leaves its private directory empty or holding a
+                # partial member, never a CSV worth recovering; the ZIP
+                # itself stays for a rerun. Left behind, the directory
+                # also kept _cleanup_unzipped_folder from removing
+                # unzip_folder.
+                shutil.rmtree(private_extract_dir, ignore_errors=True)
+                raise
             if not extracted_files:
                 logger.warning(f"No extracted files from {zip_p.name}")
                 try:
