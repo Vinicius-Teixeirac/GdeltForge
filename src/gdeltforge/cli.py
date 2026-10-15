@@ -287,6 +287,9 @@ def _apply_verbosity(args: argparse.Namespace) -> None:
 # so this is a no-op unless a caller actually asks for a different format.
 _EXPORT_EXTENSIONS = {"parquet": ".parquet", "csv": ".csv"}
 
+# sample -n when it isn't given.
+_DEFAULT_SAMPLE_ROWS = 1000
+
 
 def _out_path_for_export_format(out: Path, export_format: str) -> Path:
     """
@@ -480,6 +483,20 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             "sampling aren't implemented yet."
         )
 
+    # -n sizes only a simple random draw (indexed, filtered without
+    # --stratify); a calendar or stratified sample is sized per group, by
+    # --per-period or --n-per-group. Warned, not rejected: a script that
+    # passes -n to either ran without complaint before.
+    per_group = (
+        "--per-period" if args.mode in ("calendar", "daily")
+        else "--n-per-group" if args.mode == "filtered" and args.stratify
+        else None
+    )
+    n = getattr(args, "n", None)
+    if n is not None and per_group is not None:
+        logger.warning(f"-n is ignored here: {per_group} sets how many rows each group gets.")
+    n = _DEFAULT_SAMPLE_ROWS if n is None else n
+
     if args.source == "aggregated":
         # --period picks which of the three aggregated directories to
         # read (default "day", same as calendar mode's own default),
@@ -541,7 +558,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             date_parser=date_parser,
             provenance=args.provenance,
         )
-        df = sampler.get_random_sample(args.n, replace=args.replace)
+        df = sampler.get_random_sample(n, replace=args.replace)
         _write_sample_output(df, out, args.export_format)
         logger.info(f"Saved indexed sample ({len(df)} rows) -> {out}")
         return
@@ -650,7 +667,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 f"stratified by '{args.stratify}' ({args.n_per_group} per group) -> {out}"
             )
         else:
-            df = sampler.get_random_sample(args.n, replace=args.replace)
+            df = sampler.get_random_sample(n, replace=args.replace)
             _write_sample_output(df, out, args.export_format)
             logger.info(
                 f"Saved filtered sample ({len(df)} rows) "
@@ -1191,8 +1208,9 @@ def build_parser() -> argparse.ArgumentParser:
              "of 'cleaned'"
     )
     sample.add_argument(
-        "-n", type=int, default=1000,
-        help="Number of rows to sample"
+        "-n", type=int, default=None,
+        help=f"Number of rows to sample (indexed, and filtered without --stratify; "
+             f"default {_DEFAULT_SAMPLE_ROWS})"
     )
     sample.add_argument(
         "--replace", action="store_true",
