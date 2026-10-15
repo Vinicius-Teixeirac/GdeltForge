@@ -123,6 +123,8 @@ Then run `gdeltforge clean --dataset events` again. These settings are part of e
 gdeltforge sample --dataset events --mode calendar --period month --per-period 100 --provenance --out draw.parquet
 ```
 
+A calendar period is one of the events' dates (`Day`), not of the files'. GDELT dates some events months or years before the file that records them, so a draw over a few days' files also draws up to 100 rows from each of those earlier months.
+
 ### The 15-minute datasets
 
 GKG 2.1, Mentions and `events-15min` arrive as 96 files a day. `gdeltforge aggregate --dataset gkg-v2 --period day` concatenates a period's files into one, after `clean`, and `sample`/`crossref --source aggregated` read the result: on a network share, indexing a GKG 2.1 archive for sampling went from 9,027 s to 50 s. See [Aggregation](configuration.md#aggregation).
