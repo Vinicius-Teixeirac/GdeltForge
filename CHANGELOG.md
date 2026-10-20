@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- The CLI reference lists where the bundled CAMEO code tables depart from GDELT's own lookup files, and the Events record evidence for each: ethnic `bod`, `mon`, `bas` and `moh`, geo `LO` and `GV`, the coding error behind religion `SHN`, and the damaged Demand section (`101` to `108`) of GDELT's event-code file. See `docs/cli-reference.md#where-the-tables-depart-from-gdelts-lookup-files`.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added

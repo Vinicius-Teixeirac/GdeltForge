@@ -484,6 +484,35 @@ Ethnic codes are listed lowercase (`kur`, `pal`), the way GDELT writes them in t
 
 Three real `EventCode`/`EventBaseCode`/`EventRootCode` values aren't CAMEO event categories, and `gdeltforge codes` lists them with what they mean. `---` (with `--` as its root) is the CAMEO null code: the coder matched a verb pattern marked as generating no event, yet the row reached the output (325 rows in the 1979 to 2026 archive). `X` is undocumented anywhere in CAMEO or its coder; its 9 rows are all QuadClass 4, material conflict, with no Goldstein score. Filter these out, not in, for most analyses.
 
+### Where the tables depart from GDELT's lookup files
+
+GDELT publishes a lookup file for each code family ([gdeltproject.org/data/lookups](https://www.gdeltproject.org/data/lookups/)), and the bundled tables hold every code in them. Where a file's name for a code contradicts the Events record, the bundled name follows the record: the actor names GDELT coded with an actor code, or the name GDELT wrote for a country-level place (`*Geo_Type` 1) with a geo code. The departures below are deliberate. Don't bring the tables back in line with the lookup files for these codes.
+
+| Code | GDELT's lookup file | Bundled table | What the Events record shows |
+|------|---------------------|---------------|------------------------------|
+| Ethnic `bod` | Bodo, and Tibetan on a second line | Bodo | Coded with the actor name `BODO`; `bod` is not Tibetan in the record |
+| Ethnic `mon` | Maonan, and Mongol on a second line | Maonan | Coded with Maonan actors; `mon` is not Mongol in the record |
+| Ethnic `bas` | Basoga | Bassa (also used for Basoga and Duala) | Bassa 13,275 times, Basoga 1,021, Duala 446 |
+| Ethnic `moh` | Mohajirs, and Mohawk on a second line | Mohawk (also used for Mohajirs) | Mohawk 45,550 times, Mohajirs 1,603 |
+| Geo `LO` | Czechoslovakia | Slovakia | Country-level places named `Slovak Republic` |
+| Geo `GV` | Equatorial Guinea | Guinea | Country-level places named `Guinea`; Equatorial Guinea is `EK`, as in the lookup file |
+
+Counts are over the 1979 to 2026-07 Events archive. Where one code covers several groups, the bundled name gives the main one and says which others the code is used for.
+
+Religion `SHN` keeps its CAMEO meaning, Shintoism, but GDELT's coder writes it almost only for actors named `ST HELENA` or `SAINT HELENA`: a coding error in GDELT's record. Read an `SHN` value as Saint Helena, not as a Shinto actor.
+
+GDELT's event-code file, `CAMEO.eventcodes.txt`, has a damaged Demand section (`10`). The CAMEO Demand codes mirror Express intent to cooperate (`03`) code for code, and the subcodes in GDELT's own file still do: `1011` to `1014` match `0311` to `0314`, `1051` to `1056` match `0351` to `0356`. The names of the three-digit codes don't. The file calls `101` "Demand information, investigation" above subcodes for economic, military, judicial and intelligence cooperation, and `105` "Demand mediation" above subcodes for easing sanctions, releasing persons and de-escalating. The line for `1056` runs into the next code's (`Demand de-escalation of military engagement106:[-5.0] Demand withdrawal`), so `106` has no line of its own, and `107` and `108` read "Demand ceasefire" and "Demand meeting, negotiation". The bundled table names the Demand codes after their `03` counterparts:
+
+| Code | GDELT's lookup file | Bundled table | Its `03` counterpart |
+|------|---------------------|---------------|----------------------|
+| 101 | Demand information, investigation | Demand material cooperation | `031` material cooperation |
+| 102 | Demand policy support | Demand diplomatic cooperation (such as policy support) | `032` diplomatic cooperation |
+| 103 | Demand aid, protection, or peacekeeping | Demand material aid | `033` material aid |
+| 105 | Demand mediation | Demand that target yields | `035` yield |
+| 106 | Demand withdrawal (inside `1056`'s line) | Demand meeting, negotiation | `036` meet or negotiate |
+| 107 | Demand ceasefire | Demand settling of dispute | `037` settle dispute |
+| 108 | Demand meeting, negotiation | Demand mediation | `038` accept mediation |
+
 List which columns have a reference list:
 
 ```bash
