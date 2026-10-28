@@ -20,8 +20,8 @@ Provides:
     - Step: base class
     - RequireColumns, ProjectColumns, NarrowFloat32: the stage's
       original operations
-    - Date1920Repair, EventMarkers: repairs of known GDELT errors
-      (the errata step)
+    - Date1920Repair, DateAddedRepair, EventMarkers: repairs of known
+      GDELT errors (the errata step)
     - NormalizeStrings: optional whitespace normalization
     - ResolvePlaces: optional resolution of each geo point to its place
     - DeriveColumns: optional derived columns (a real event date, code
@@ -55,8 +55,9 @@ STEP_ORDER = (
 # Bumped whenever an errata rule is added or changed, and recorded in the
 # resumability fingerprint, so data cleaned under an older rule set is
 # cleaned again on the next run. 2: date_1920's *_original columns are
-# written to every file, not only to files around the window.
-ERRATA_VERSION = 2
+# written to every file, not only to files around the window. 3: the
+# dateadded_blank rule.
+ERRATA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -290,7 +291,7 @@ class Date1920Repair(Step):
         return lf.with_columns(exprs) if exprs else lf
 
     def settings(self) -> dict:
-        # Both errata rules are steps named "errata"; the rule name tells
+        # Every errata rule is a step named "errata"; the rule name tells
         # them apart in the marker.
         return {"rule": "date_1920", **super().settings()}
 
@@ -302,6 +303,48 @@ class Date1920Repair(Step):
         if not self._applies(ctx):
             return {}
         return {"errata.date_1920": self._condition().sum()}
+
+
+# GDELT's daily export files for 2013-09-01 and 2013-09-02 leave DATEADDED
+# blank on every row (190,740 rows). In every other daily file, 4,664 of
+# them, DATEADDED equals the file's own date on every row.
+_DATEADDED_BLANK_DAYS = (date(2013, 9, 1), date(2013, 9, 2))
+
+
+@dataclass(frozen=True)
+class DateAddedRepair(Step):
+    """
+    Fill the blank DATEADDED of the daily files for 2013-09-01 and
+    2013-09-02 with the file's date, as YYYYMMDD. Only nulls are filled,
+    and only in a file whose name gives one of those two days. Not lossy:
+    GDELT left every row of those files blank, so the filled value says
+    what was there.
+    """
+
+    name = "errata"
+
+    @staticmethod
+    def _day(ctx: FileContext) -> date | None:
+        # The 15-minute feed starts in 2015, so a file for one of these
+        # days is a daily export file, which writes YYYYMMDD.
+        start, end = ctx.period_start, ctx.period_end
+        return start if start == end and start in _DATEADDED_BLANK_DAYS else None
+
+    def apply(self, lf: pl.LazyFrame, ctx: FileContext) -> pl.LazyFrame:
+        day = self._day(ctx)
+        schema = lf.collect_schema()
+        if day is None or "DATEADDED" not in schema:
+            return lf
+        filled = pl.lit(int(day.strftime("%Y%m%d"))).cast(schema["DATEADDED"])
+        return lf.with_columns(pl.col("DATEADDED").fill_null(filled))
+
+    def settings(self) -> dict:
+        return {"rule": "dateadded_blank", **super().settings()}
+
+    def counts(self, lf: pl.LazyFrame, ctx: FileContext) -> dict[str, pl.Expr]:
+        if self._day(ctx) is None or "DATEADDED" not in lf.collect_schema():
+            return {}
+        return {"errata.dateadded_blank": pl.col("DATEADDED").is_null().sum()}
 
 
 _EVENT_MARKERS = {"EventCode": ("---", "X"), "EventBaseCode": ("---", "X"),

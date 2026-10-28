@@ -6,6 +6,7 @@ import pytest
 from gdeltforge.cleaning.steps import (
     STEP_ORDER,
     Date1920Repair,
+    DateAddedRepair,
     DeriveColumns,
     EventMarkers,
     FileContext,
@@ -146,6 +147,60 @@ class TestDate1920Repair:
     def test_lossy_only_without_the_originals(self):
         assert Date1920Repair(keep_original=True).lossy is False
         assert Date1920Repair(keep_original=False).lossy is True
+
+
+class TestDateAddedRepair:
+    @staticmethod
+    def _ctx(day):
+        return FileContext(f"{day:%Y%m%d}.export.parquet", day, day)
+
+    @pytest.mark.parametrize("day", [date(2013, 9, 1), date(2013, 9, 2)])
+    def test_fills_the_blank_dateadded_with_the_files_date(self, day):
+        lf = _events([20130831, 20130901], pl.Series([None, None], dtype=pl.Int64))
+        out = DateAddedRepair().apply(lf, self._ctx(day)).collect()
+        assert out["DATEADDED"].to_list() == [int(f"{day:%Y%m%d}")] * 2
+        assert out.schema["DATEADDED"] == pl.Int64
+
+    def test_keeps_the_columns_type(self):
+        # Converted before Polars, DATEADDED of these files is Float64.
+        lf = _events([20130901], pl.Series([None], dtype=pl.Float64))
+        out = DateAddedRepair().apply(lf, self._ctx(date(2013, 9, 1))).collect()
+        assert out["DATEADDED"].to_list() == [20130901.0]
+        assert out.schema["DATEADDED"] == pl.Float64
+
+    def test_only_nulls_are_filled(self):
+        lf = _events([20130901, 20130901], [None, 20130902])
+        out = DateAddedRepair().apply(lf, self._ctx(date(2013, 9, 1))).collect()
+        assert out["DATEADDED"].to_list() == [20130901, 20130902]
+
+    @pytest.mark.parametrize("ctx", [
+        FileContext("20130903.export.parquet", date(2013, 9, 3), date(2013, 9, 3)),
+        FileContext("201309.parquet", date(2013, 9, 1), date(2013, 9, 30)),
+        CTX,
+    ])
+    def test_any_other_file_is_left_alone(self, ctx):
+        lf = _events([20130903], pl.Series([None], dtype=pl.Int64))
+        step = DateAddedRepair()
+        assert step.apply(lf, ctx).collect()["DATEADDED"].to_list() == [None]
+        assert step.counts(lf, ctx) == {}
+
+    def test_a_file_without_dateadded_is_left_as_it_is(self):
+        lf = _events([20130901], [None]).drop("DATEADDED")
+        ctx = self._ctx(date(2013, 9, 1))
+        step = DateAddedRepair()
+        assert step.apply(lf, ctx).collect().equals(lf.collect())
+        assert step.counts(lf, ctx) == {}
+
+    def test_counts_the_rows_it_fills(self):
+        lf = _events([20130901] * 3, [None, None, 20130901])
+        exprs = DateAddedRepair().counts(lf, self._ctx(date(2013, 9, 1)))
+        assert lf.select(**exprs).collect().row(0, named=True) == {
+            "errata.dateadded_blank": 2
+        }
+
+    def test_is_not_lossy_and_its_settings_name_the_rule(self):
+        assert DateAddedRepair().lossy is False
+        assert DateAddedRepair().settings() == {"rule": "dateadded_blank"}
 
 
 class TestEventMarkers:
