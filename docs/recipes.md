@@ -106,6 +106,48 @@ gdeltforge sample \
   --out samples/verbal_stratified_rootflag.parquet
 ```
 
+## Every event of a window
+
+A filtered draw with an empty filter and an `-n` larger than the window
+returns every row of the window's files: the reservoir never fills. It
+also holds all of them in memory until it writes, so a long window needs
+more memory than most machines have (11 months of 2023, 43 million rows
+with 19 columns, peaked at 38 GB). One week of files at a time holds a
+week: about a million rows, 1.5 GB at peak with all 58 columns.
+
+```bash
+mkdir -p window
+start=2023-01-01
+last=2023-12-31
+while [[ ! "$start" > "$last" ]]; do
+    end=$(date -d "$start + 6 days" +%F)
+    [[ "$end" > "$last" ]] && end=$last
+    gdeltforge sample --dataset events --mode filtered --filter '{}' \
+        --start-date "$start" --end-date "$end" -n 1000000000 \
+        --out "window/$start.parquet"
+    start=$(date -d "$end + 1 day" +%F)
+done
+```
+
+`date -d` is GNU date; on macOS, install coreutils and use `gdate`. Each
+run logs a warning that `--start-date`/`--end-date` and `--filter` are
+both set, which an empty filter makes harmless. The pieces need no join:
+read them together, as one dataset.
+
+```python
+import polars as pl
+
+window = pl.scan_parquet("window/*.parquet")
+```
+
+The window is one of files, not of event dates. GDELT records some events
+in a file days or years after they happened, so the window's files hold
+older events, and an event dated in the window but recorded after it is
+left out (about 1% of the events dated in the 2023 window above). To
+select by `Day`, take the day of files before the window and a few weeks
+after it, and filter on `Day` when reading. Days GDELT never published leave gaps of their own;
+see [Known Absent Files](known-absent-files.md).
+
 ## GKG-enriched events
 
 Sample Events, then enrich the sample with GKG (themes, tone, people, organizations) via `crossref`. GKG 2.1, the current format, carries no event ID at all, only the source article's URL, so it needs Mentions too, as the bridge to Events; legacy GKG 1.0 carries `EventIds` directly, so it skips straight to GKG. See [Related Work](comparison.md#where-gdeltforge-differs) for why that two-hop join has a command of its own.

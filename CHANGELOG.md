@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- A recipe for every event of a window: a filtered draw with an empty filter and an `-n` above the window's rows returns all of them, but holds them in memory until it writes, so a long window runs one week of files at a time (about 1.5 GB at peak with all 58 columns). See `docs/recipes.md#every-event-of-a-window`.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added
