@@ -129,6 +129,31 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   dates before 1979 (for example with `--source converted`), naming the
   count and this repair; the rows are still sampled.
 
+### `dateadded_blank`: two days without `DATEADDED`
+
+GDELT's daily export files for 2013-09-01 and 2013-09-02 leave `DATEADDED`
+blank on every row: 61,067 and 129,673 rows, 190,740 in all.
+
+- **Evidence**: the blank is in GDELT's own files (the raw
+  `20130901.export.CSV.zip` has an empty `DATEADDED` field on every row).
+  In every other daily file, 4,664 of them, `DATEADDED` equals the
+  file's date on every row.
+- **Repair**: in the files whose names give 2013-09-01 or 2013-09-02,
+  a blank `DATEADDED` becomes the file's date (`20130901`, `20130902`).
+  A value already there is left alone, and no other file is touched.
+  Applies to `gdelt_event`; the 15-minute feed starts in 2015. The audit
+  counts `errata.dateadded_blank`.
+- **Not lossy**: GDELT left every row of those two files blank, so the
+  filled value is all there was to replace.
+- **Without it**: `DATEADDED` is null on those rows. A `columns_to_check`
+  that lists `DATEADDED` drops both days (the repair runs before the null
+  check), and `crossref --gkg-version auto` leaves the rows out without
+  a warning, since it keeps the events whose `DATEADDED` is in GKG's
+  coverage.
+- **Type**: the column keeps its type. Files converted before 0.8.0 hold
+  these two days' `DATEADDED` as `Float64` (pandas made an all-blank
+  column a float); convert them again for `Int64`.
+
 ### `event_markers`: rows that aren't CAMEO events
 
 `EventCode`/`EventBaseCode` `---` with `EventRootCode` `--` (325 rows in
@@ -152,6 +177,7 @@ clean:
     gdelt_event:
       date_1920: true        # repair the 1920 dates
       keep_original: true    # keep GDELT's values in *_original
+      dateadded_blank: true  # fill the blank DATEADDED of 2013-09-01/02
       event_markers: keep    # keep | drop
   allow_lossy_delete_source: false
 ```
@@ -623,6 +649,39 @@ columns, and it accepts these as well, in `--columns`, `--filter` and
 labels are worth storing depends on the analysis. Labels are also tied to
 the code tables of the gdeltforge version that wrote them; the code column
 itself stays authoritative.
+
+## Not repaired: `GoldsteinScale` for unscored codes
+
+GDELT gives each event code its Goldstein score from a fixed table and
+leaves `GoldsteinScale` empty for a code the table doesn't score. The two
+archive formats write that empty score differently: the daily files, from
+2013-04-01, leave it null; the backfile, the yearly and monthly files for
+1979 to 2013-03, writes 0.0. In the backfile, 0.0 is therefore either no
+score or a real one: common codes score 0.0 (`010`, make statement, on
+3.6 million rows of 2024 alone).
+
+Four codes are unscored in the daily files. Over the 1979 to 2026-07
+archive:
+
+| `EventCode` | Backfile | Daily files |
+|---|---|---|
+| `106` | 0.0, 20,792 rows | null through 2013-08-29, 1,042 rows; -5.0 from 2013-08-30, 33,085 rows |
+| `1213` | 0.0, 1,437 rows | null, 2,466 rows |
+| `---` | 0.0, 39 rows | null, 286 rows |
+| `X` | 0.0, 3 rows | null, 6 rows |
+
+`106` had no score until GDELT scored it -5.0, from its 2013-08-30 file
+on. Its scores before and after that date aren't comparable. The other
+three have never had one: the [event markers](#event_markers-rows-that-arent-cameo-events)
+and `1213`.
+
+`clean` changes none of these values, since a backfile 0.0 for any other
+code can be a real score. To read "no score" alike across the archive,
+treat 0.0 as null for these four codes on backfile rows. `DATEADDED`
+doesn't tell those apart, since backfile rows run to 2013-05-18; the file
+does. `sample --provenance` gives each row's file in `SourceFile`
+([Row provenance](cli-reference.md#row-provenance)): a backfile row's has
+no `.export`.
 
 ## Not included: categorical storage
 

@@ -7,7 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Added
+- The data cleaning page explains `GoldsteinScale` for the event codes GDELT leaves unscored (`106` until 2013-08-29, `1213`, `---` and `X`): the daily files write null, the 1979 to 2013-03 backfile 0.0, which elsewhere is a real score, so `clean` leaves both. `106` is scored -5.0 from 2013-08-30 on. See `docs/data-cleaning.md#not-repaired-goldsteinscale-for-unscored-codes`.
 - The CLI reference lists where the bundled CAMEO code tables depart from GDELT's own lookup files, and the Events record evidence for each: ethnic `bod`, `mon`, `bas` and `moh`, geo `LO` and `GV`, the coding error behind religion `SHN`, and the damaged Demand section (`101` to `108`) of GDELT's event-code file. See `docs/cli-reference.md#where-the-tables-depart-from-gdelts-lookup-files`.
+
+### Fixed
+- `clean` fills the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02 with the file's date: GDELT left it blank on all 190,740 rows of those two files, and in every other daily file `DATEADDED` equals the file's date. A new errata rule, `clean.errata.gdelt_event.dateadded_blank`, on by default and not lossy; the audit counts `errata.dateadded_blank`. A `columns_to_check` listing `DATEADDED` dropped both days, and `crossref --gkg-version auto` left their events out without a warning. The errata rule set's version is part of each cleaned file's fingerprint, so the next `clean` of `events` cleans every file again. See `docs/data-cleaning.md#dateadded_blank-two-days-without-dateadded`.
 
 ## [0.14.0] - 2026-10-15
 
