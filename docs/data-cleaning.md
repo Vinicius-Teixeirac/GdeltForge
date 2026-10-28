@@ -129,6 +129,31 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   dates before 1979 (for example with `--source converted`), naming the
   count and this repair; the rows are still sampled.
 
+### `dateadded_blank`: two days without `DATEADDED`
+
+GDELT's daily export files for 2013-09-01 and 2013-09-02 leave `DATEADDED`
+blank on every row: 61,067 and 129,673 rows, 190,740 in all.
+
+- **Evidence**: the blank is in GDELT's own files (the raw
+  `20130901.export.CSV.zip` has an empty `DATEADDED` field on every row).
+  In every other daily file, 4,664 of them, `DATEADDED` equals the
+  file's date on every row.
+- **Repair**: in the files whose names give 2013-09-01 or 2013-09-02,
+  a blank `DATEADDED` becomes the file's date (`20130901`, `20130902`).
+  A value already there is left alone, and no other file is touched.
+  Applies to `gdelt_event`; the 15-minute feed starts in 2015. The audit
+  counts `errata.dateadded_blank`.
+- **Not lossy**: GDELT left every row of those two files blank, so the
+  filled value is all there was to replace.
+- **Without it**: `DATEADDED` is null on those rows. A `columns_to_check`
+  that lists `DATEADDED` drops both days (the repair runs before the null
+  check), and `crossref --gkg-version auto` leaves the rows out without
+  a warning, since it keeps the events whose `DATEADDED` is in GKG's
+  coverage.
+- **Type**: the column keeps its type. Files converted before 0.8.0 hold
+  these two days' `DATEADDED` as `Float64` (pandas made an all-blank
+  column a float); convert them again for `Int64`.
+
 ### `event_markers`: rows that aren't CAMEO events
 
 `EventCode`/`EventBaseCode` `---` with `EventRootCode` `--` (325 rows in
@@ -152,6 +177,7 @@ clean:
     gdelt_event:
       date_1920: true        # repair the 1920 dates
       keep_original: true    # keep GDELT's values in *_original
+      dateadded_blank: true  # fill the blank DATEADDED of 2013-09-01/02
       event_markers: keep    # keep | drop
   allow_lossy_delete_source: false
 ```
