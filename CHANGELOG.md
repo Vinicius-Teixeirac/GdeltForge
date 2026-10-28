@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- Known Absent Files lists what GDELT never listed: 22 days of the daily Events archive (2014-01-23 to 01-25, 2014-03-19, 2025-06-14 to 07-01) and 7,290 15-minute updates of Mentions and events-15min (7,285 of GKG 2.1) through 2025-12-31, none served by GDELT. The page's audit starts from GDELT's lists, so these never entered it, and `scrape` doesn't report them. See `docs/known-absent-files.md#never-listed-by-gdelt`.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added
