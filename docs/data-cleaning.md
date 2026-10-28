@@ -624,6 +624,39 @@ labels are worth storing depends on the analysis. Labels are also tied to
 the code tables of the gdeltforge version that wrote them; the code column
 itself stays authoritative.
 
+## Not repaired: `GoldsteinScale` for unscored codes
+
+GDELT gives each event code its Goldstein score from a fixed table and
+leaves `GoldsteinScale` empty for a code the table doesn't score. The two
+archive formats write that empty score differently: the daily files, from
+2013-04-01, leave it null; the backfile, the yearly and monthly files for
+1979 to 2013-03, writes 0.0. In the backfile, 0.0 is therefore either no
+score or a real one: common codes score 0.0 (`010`, make statement, on
+3.6 million rows of 2024 alone).
+
+Four codes are unscored in the daily files. Over the 1979 to 2026-07
+archive:
+
+| `EventCode` | Backfile | Daily files |
+|---|---|---|
+| `106` | 0.0, 20,792 rows | null through 2013-08-29, 1,042 rows; -5.0 from 2013-08-30, 33,085 rows |
+| `1213` | 0.0, 1,437 rows | null, 2,466 rows |
+| `---` | 0.0, 39 rows | null, 286 rows |
+| `X` | 0.0, 3 rows | null, 6 rows |
+
+`106` had no score until GDELT scored it -5.0, from its 2013-08-30 file
+on. Its scores before and after that date aren't comparable. The other
+three have never had one: the [event markers](#event_markers-rows-that-arent-cameo-events)
+and `1213`.
+
+`clean` changes none of these values, since a backfile 0.0 for any other
+code can be a real score. To read "no score" alike across the archive,
+treat 0.0 as null for these four codes on backfile rows. `DATEADDED`
+doesn't tell those apart, since backfile rows run to 2013-05-18; the file
+does. `sample --provenance` gives each row's file in `SourceFile`
+([Row provenance](cli-reference.md#row-provenance)): a backfile row's has
+no `.export`.
+
 ## Not included: categorical storage
 
 Storing the CAMEO-coded columns as polars `Categorical` was proposed as a
