@@ -79,6 +79,7 @@ from gdeltforge.cleaning.steps import (
     ERRATA_VERSION,
     ORIGINAL_COLUMNS,
     Date1920Repair,
+    DateAddedRepair,
     DeriveColumns,
     EventMarkers,
     FileContext,
@@ -145,7 +146,7 @@ class FileReport:
 
 # The errata settings a dataset may set under clean.errata.<dataset>, and
 # the defaults a caller that sets none of them gets: nothing repaired.
-_ERRATA_KEYS = ("date_1920", "event_markers", "keep_original")
+_ERRATA_KEYS = ("date_1920", "dateadded_blank", "event_markers", "keep_original")
 _EVENT_MARKER_MODES = ("keep", "drop")
 _NORMALIZE_KEYS = ("trim_strings", "blank_to_null")
 _DERIVE_KEYS = ("event_date", "labels")
@@ -366,6 +367,8 @@ class GDELTCleaner:
                     f"counts as lossy. List them in output_columns to keep them."
                 )
             steps.append(Date1920Repair(keep_original=keep, originals_left_out=bool(left_out)))
+        if self.errata.get("dateadded_blank"):
+            steps.append(DateAddedRepair())
         if self.errata.get("event_markers") is not None:
             steps.append(EventMarkers(mode=self.errata["event_markers"]))
         if any(self.normalize.values()):
@@ -1143,7 +1146,7 @@ class GDELTCleaner:
         unknown = sorted(set(errata) - set(_ERRATA_KEYS))
         if unknown:
             raise ValueError(f"{label}: unknown setting(s) {unknown}; known: {list(_ERRATA_KEYS)}")
-        for key in ("date_1920", "keep_original"):
+        for key in ("date_1920", "dateadded_blank", "keep_original"):
             if key in errata and not isinstance(errata[key], bool):
                 raise ValueError(f"{label}.{key} must be true or false, got {errata[key]!r}")
         markers = errata.get("event_markers")

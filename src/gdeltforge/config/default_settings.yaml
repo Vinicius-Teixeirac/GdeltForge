@@ -471,12 +471,14 @@ clean:
     gdelt_gkg_v1_counts: []
   # Repairs of known GDELT errors, on by default and losing nothing: the
   # 1920-for-2020 dates are repaired with GDELT's values kept in
-  # *_original columns, and the non-CAMEO event markers are kept (only
-  # counted). See docs/data-cleaning.md#errata.
+  # *_original columns, the blank DATEADDED of the 2013-09-01/02 daily
+  # files is filled with the file's date, and the non-CAMEO event markers
+  # are kept (only counted). See docs/data-cleaning.md#errata.
   errata:
     gdelt_event:
       date_1920: true
       keep_original: true
+      dateadded_blank: true
       event_markers: keep
     gdelt_event_15min:
       date_1920: true
