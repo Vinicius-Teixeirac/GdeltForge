@@ -2230,6 +2230,9 @@ class TestMisappliedCleanSettings:
          "clean.derive.gdelt_event must be a mapping"),
         ({"errata": {"gdelt_mentions": {"event_markers": "drop"}}}, "gdelt_mentions",
          "clean.errata.gdelt_mentions: the known GDELT errors"),
+        ({"errata": {"gdelt_event_15min": {"dateadded_blank": True}}}, "gdelt_event",
+         r"clean\.errata\.gdelt_event_15min\.dateadded_blank: the error this rule "
+         r"repairs is in gdelt_event only"),
         ({"derive": {"gdelt_mentions": {"event_date": True}}}, "gdelt_mentions",
          "gdelt_mentions has no Day column"),
         ({"derive": {"gdelt_mentions": {"labels": ["EventRootCode"]}}}, "gdelt_mentions",
