@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.14.2] - 2026-10-29
 
 ### Fixed
 - `sample --mode indexed` reads only the row groups holding a drawn row from each file, a few at a time, and copies the drawn rows out, as `--mode calendar` already read its chosen rows. It collected every drawn file whole and kept the drawn rows as views into it, so every decoded file stayed in memory until the end: 133,000 rows over 4,748 files reached 39 GB. The sample is unchanged, row for row and in the same order.

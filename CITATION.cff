@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If GdeltForge contributes to published work, please cite it as below, and cite the GDELT Project, whose data it processes."
 title: "GdeltForge: reproducible sampling and cross-referencing of the full GDELT archive"
 type: software
-version: "0.14.1"
+version: "0.14.2"
 date-released: "2026-10-29"
 authors:
   - family-names: Freitas
