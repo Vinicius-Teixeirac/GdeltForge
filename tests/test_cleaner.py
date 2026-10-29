@@ -1946,7 +1946,10 @@ class TestRunAudit:
         assert captured["runs_folder"] == str(tmp_path / "gkg_audits")
 
 
-DEFAULT_ERRATA = {"date_1920": True, "keep_original": True, "event_markers": "keep"}
+DEFAULT_ERRATA = {
+    "date_1920": True, "keep_original": True, "dateadded_blank": True,
+    "event_markers": "keep",
+}
 
 
 def _write_new_year_2020(in_dir):
@@ -2136,6 +2139,32 @@ class TestErrata:
         assert audit["errata.date_1920"].to_list() == [2]
         assert audit["errata.event_markers_keep"].to_list() == [1]
 
+    def test_default_settings_fill_the_blank_dateadded_of_2013_09_01(self, tmp_path):
+        # As GDELT published 20130901.export.CSV.zip: DATEADDED blank on
+        # every row. The next day's file is filled too, the day after isn't.
+        in_dir = tmp_path / "in"
+        in_dir.mkdir()
+        for day in ("20130901", "20130902", "20130903"):
+            pl.DataFrame({
+                "GlobalEventID": [1, 2],
+                "Day": [20130825, int(day)],
+                "DATEADDED": pl.Series([None, None], dtype=pl.Int64),
+            }).write_parquet(in_dir / f"{day}.export.parquet")
+        out_dir = tmp_path / "out"
+        GDELTCleaner(
+            str(in_dir), str(out_dir), columns_to_check=["DATEADDED"], errata=DEFAULT_ERRATA
+        ).clean_all_files()
+
+        def added(day):
+            return pl.read_parquet(out_dir / f"{day}.export_cleaned.parquet")["DATEADDED"]
+
+        # Filled before the null check, so the two days' rows survive it.
+        assert added("20130901").to_list() == [20130901, 20130901]
+        assert added("20130902").to_list() == [20130902, 20130902]
+        assert added("20130903").to_list() == []
+        audit = pl.read_parquet(next((out_dir.parent / f"{out_dir.name}_runs").glob("*.parquet")))
+        assert audit["errata.dateadded_blank"].sum() == 4
+
     def test_no_errata_setting_leaves_gdelts_values(self, tmp_path):
         _write_new_year_2020(tmp_path / "in")
         GDELTCleaner(
@@ -2157,6 +2186,7 @@ class TestErrata:
         ({"date_1921": True}, "unknown setting"),
         ({"event_markers": "flag"}, "must be one of"),
         ({"date_1920": "yes"}, "must be true or false"),
+        ({"dateadded_blank": "yes"}, "must be true or false"),
     ])
     def test_invalid_settings_fail_before_anything_runs(self, tmp_path, errata, message):
         with pytest.raises(ValueError, match=message):
@@ -2200,6 +2230,9 @@ class TestMisappliedCleanSettings:
          "clean.derive.gdelt_event must be a mapping"),
         ({"errata": {"gdelt_mentions": {"event_markers": "drop"}}}, "gdelt_mentions",
          "clean.errata.gdelt_mentions: the known GDELT errors"),
+        ({"errata": {"gdelt_event_15min": {"dateadded_blank": True}}}, "gdelt_event",
+         r"clean\.errata\.gdelt_event_15min\.dateadded_blank: the error this rule "
+         r"repairs is in gdelt_event only"),
         ({"derive": {"gdelt_mentions": {"event_date": True}}}, "gdelt_mentions",
          "gdelt_mentions has no Day column"),
         ({"derive": {"gdelt_mentions": {"labels": ["EventRootCode"]}}}, "gdelt_mentions",

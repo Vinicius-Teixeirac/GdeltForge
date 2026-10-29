@@ -79,6 +79,7 @@ from gdeltforge.cleaning.steps import (
     ERRATA_VERSION,
     ORIGINAL_COLUMNS,
     Date1920Repair,
+    DateAddedRepair,
     DeriveColumns,
     EventMarkers,
     FileContext,
@@ -145,7 +146,7 @@ class FileReport:
 
 # The errata settings a dataset may set under clean.errata.<dataset>, and
 # the defaults a caller that sets none of them gets: nothing repaired.
-_ERRATA_KEYS = ("date_1920", "event_markers", "keep_original")
+_ERRATA_KEYS = ("date_1920", "dateadded_blank", "event_markers", "keep_original")
 _EVENT_MARKER_MODES = ("keep", "drop")
 _NORMALIZE_KEYS = ("trim_strings", "blank_to_null")
 _DERIVE_KEYS = ("event_date", "labels")
@@ -366,6 +367,8 @@ class GDELTCleaner:
                     f"counts as lossy. List them in output_columns to keep them."
                 )
             steps.append(Date1920Repair(keep_original=keep, originals_left_out=bool(left_out)))
+        if self.errata.get("dateadded_blank"):
+            steps.append(DateAddedRepair())
         if self.errata.get("event_markers") is not None:
             steps.append(EventMarkers(mode=self.errata["event_markers"]))
         if any(self.normalize.values()):
@@ -1143,7 +1146,7 @@ class GDELTCleaner:
         unknown = sorted(set(errata) - set(_ERRATA_KEYS))
         if unknown:
             raise ValueError(f"{label}: unknown setting(s) {unknown}; known: {list(_ERRATA_KEYS)}")
-        for key in ("date_1920", "keep_original"):
+        for key in ("date_1920", "dateadded_blank", "keep_original"):
             if key in errata and not isinstance(errata[key], bool):
                 raise ValueError(f"{label}.{key} must be true or false, got {errata[key]!r}")
         markers = errata.get("event_markers")
@@ -1375,6 +1378,9 @@ def _empty_block_hint(section: str) -> str:
 
 # The datasets GDELT's known errors (errata) are in.
 _ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
+# Errata rules whose error is in one dataset only: dateadded_blank's two
+# days predate the 15-minute feed, which starts in 2015.
+_ERRATA_RULE_DATASETS = {"dateadded_blank": ("gdelt_event",)}
 # The datasets whose geo points the place table was built from: the daily
 # export and the 15-minute feed write the same points.
 _PLACES_DATASETS = ("gdelt_event", "gdelt_event_15min")
@@ -1386,7 +1392,8 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
     fail only once files are being read: an unknown key under clean:, a
     name under errata/normalize/places/derive that isn't a dataset, a
     dataset's settings that aren't a mapping, errata for a dataset GDELT's
-    known errors aren't in, places for a dataset without Events geo points,
+    known errors aren't in, an errata rule for a dataset its error isn't
+    in, places for a dataset without Events geo points,
     and derive columns the dataset being cleaned doesn't declare.
     """
     clean = config["clean"]
@@ -1426,6 +1433,13 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
                     f"clean.errata.{name}: the known GDELT errors this stage repairs are "
                     f"in {' and '.join(_ERRATA_DATASETS)} only"
                 )
+            if section == "errata":
+                for rule, datasets in _ERRATA_RULE_DATASETS.items():
+                    if rule in settings and name not in datasets:
+                        raise ValueError(
+                            f"clean.errata.{name}.{rule}: the error this rule repairs is "
+                            f"in {' and '.join(datasets)} only"
+                        )
             if section == "places" and settings and name not in _PLACES_DATASETS:
                 raise ValueError(
                     f"clean.places.{name}: places are resolved in "

@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- `clean` fills the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02 with the file's date: GDELT left it blank on all 190,740 rows of those two files, and in the other 4,632 daily files GDELT serves from 2013-04-01 to 2025-12-31 `DATEADDED` equals the file's date. A new errata rule, `clean.errata.gdelt_event.dateadded_blank`, on by default and not lossy; the audit counts `errata.dateadded_blank`. It applies to `gdelt_event` only, and the setting under `gdelt_event_15min` fails the run. A `columns_to_check` listing `DATEADDED` dropped both days, and `crossref --gkg-version auto` left their events out without a warning. The errata rule set's version is part of each cleaned file's fingerprint, so the next `clean` of `events` and of `events-15min` cleans every file again. See `docs/data-cleaning.md#dateadded_blank-two-days-without-dateadded`.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added

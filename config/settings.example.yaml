@@ -614,6 +614,10 @@ clean:
       # Year_original and FractionDate_original (repaired rows only).
       # false makes the repair lossy.
       keep_original: true
+      # GDELT left DATEADDED blank on every row of its daily files for
+      # 2013-09-01 and 2013-09-02 (190,740 rows). Fills it with the
+      # file's date.
+      dateadded_blank: true
       # Rows coded "---"/"--" (CAMEO null code) or "X" (undocumented):
       # keep (counted in the run audit) or drop (lossy).
       event_markers: keep

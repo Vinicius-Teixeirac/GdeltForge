@@ -129,6 +129,32 @@ added between its 2019-12-31 23:00 UTC and 2020-01-05 15:00 UTC updates.
   dates before 1979 (for example with `--source converted`), naming the
   count and this repair; the rows are still sampled.
 
+### `dateadded_blank`: two days without `DATEADDED`
+
+GDELT's daily export files for 2013-09-01 and 2013-09-02 leave `DATEADDED`
+blank on every row: 61,067 and 129,673 rows, 190,740 in all.
+
+- **Evidence**: the blank is in GDELT's own files (the raw
+  `20130901.export.CSV.zip` has an empty `DATEADDED` field on every row).
+  In the other 4,632 daily files GDELT serves from 2013-04-01 to
+  2025-12-31, `DATEADDED` equals the file's date on every row.
+- **Repair**: in the files whose names give 2013-09-01 or 2013-09-02,
+  a blank `DATEADDED` becomes the file's date (`20130901`, `20130902`).
+  A value already there is left alone, and no other file is touched.
+  Applies to `gdelt_event` only: the 15-minute feed starts in 2015, so
+  the setting under `gdelt_event_15min` fails the run. The audit counts
+  `errata.dateadded_blank`.
+- **Not lossy**: GDELT left every row of those two files blank, so the
+  filled value is all there was to replace.
+- **Without it**: `DATEADDED` is null on those rows. A `columns_to_check`
+  that lists `DATEADDED` drops both days (the repair runs before the null
+  check), and `crossref --gkg-version auto` leaves the rows out without
+  a warning, since it keeps the events whose `DATEADDED` is in GKG's
+  coverage.
+- **Type**: the column keeps its type. Files converted before 0.8.0 hold
+  these two days' `DATEADDED` as `Float64` (pandas made an all-blank
+  column a float); convert them again for `Int64`.
+
 ### `event_markers`: rows that aren't CAMEO events
 
 `EventCode`/`EventBaseCode` `---` with `EventRootCode` `--` (325 rows in
@@ -152,6 +178,7 @@ clean:
     gdelt_event:
       date_1920: true        # repair the 1920 dates
       keep_original: true    # keep GDELT's values in *_original
+      dateadded_blank: true  # fill the blank DATEADDED of 2013-09-01/02
       event_markers: keep    # keep | drop
   allow_lossy_delete_source: false
 ```
@@ -172,8 +199,9 @@ the configuration fingerprint, the source file's name, and the file's
 rows in and out (`rows_in`, `rows_out`). `clean` never reorders rows, so
 equal counts mean a row's position in the cleaned file is its position in
 the source, which `sample --provenance` relies on
-([Row provenance](cli-reference.md#row-provenance)). The two errata
-steps name their `rule` (`date_1920`, `event_markers`), and a step the
+([Row provenance](cli-reference.md#row-provenance)). The errata
+steps name their `rule` (`date_1920`, `dateadded_blank`,
+`event_markers`), and a step the
 configuration leaves empty (a `columns_to_check` of `[]`) isn't listed. A
 step that couldn't run on the file, because the file lacks a column it
 reads, carries `"skipped": true` and `"missing_columns"`, and counts as not
@@ -211,12 +239,15 @@ directory, with `_runs` added to its name
 |---|---|
 | `source`, `output` | The converted file and the cleaned file |
 | `rows_in`, `rows_out` | Rows before and after the steps |
-| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.date_1920_skipped_files` (files the repair couldn't read), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `places.resolved`/`places.changed`/`places.cleared`/`places.unresolved` (geo points), `places.id.*`/`places.point.*`/`places.name.damaged`/`places.no_location.named` (geo points by the GDELT defect corrected, see [Places](#places-one-place-per-geo-point)), `places_skipped_files`, `require.rows_dropped`, `derive.event_date_invalid` |
+| `<step>.<count>` | What each step did: `errata.date_1920` (rows repaired), `errata.date_1920_skipped_files` (files the repair couldn't read), `errata.dateadded_blank` (`DATEADDED` values filled), `errata.event_markers_keep`/`_drop` (marker rows kept or removed), `normalize.trimmed`/`normalize.blank_to_null` (values changed), `places.resolved`/`places.changed`/`places.cleared`/`places.unresolved` (geo points), `places.id.*`/`places.point.*`/`places.name.damaged`/`places.no_location.named` (geo points by the GDELT defect corrected, see [Places](#places-one-place-per-geo-point)), `places_skipped_files`, `require.rows_dropped`, `derive.event_date_invalid` |
 | `unrecognized.<column>` | Non-null values of a CAMEO-coded column missing from the bundled code tables ([`gdeltforge codes`](cli-reference.md#gdeltforge-codes)), counted on the output. One column per coded column the output has, zero included |
 
 The file's own metadata (`gdeltforge:clean-run`) holds the run's settings,
 start and end times, and the files that failed. The end-of-run summary
-prints every non-zero count. One audit per run, never one per data
+prints every non-zero count. A rule that can only apply to some files
+(`date_1920` around its window, `dateadded_blank` on its two days) has a
+column only in an audit whose run cleaned one of them, so audits of
+different runs can have different columns. One audit per run, never one per data
 file: an archive has hundreds of thousands of files, and per-file sidecars
 would recreate the many-small-files problem.
 
