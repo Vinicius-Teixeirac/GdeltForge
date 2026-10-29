@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.14.1] - 2026-10-29
 
 ### Added
 - The data cleaning page explains `GoldsteinScale` for the event codes GDELT leaves unscored (`106` until 2013-08-29, `1213`, `---` and `X`): the daily files write null, the 1979 to 2013-03 backfile 0.0, which elsewhere is a real score, so `clean` leaves both. `106` is scored -5.0 from 2013-08-30 on. See `docs/data-cleaning.md#not-repaired-goldsteinscale-for-unscored-codes`.
