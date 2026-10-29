@@ -407,7 +407,7 @@ gdeltforge convert --dataset events --start-date 2020-01-01 --end-date 2020-12-3
 gdeltforge clean --dataset events
 ```
 
-The data-quality stage. By default it repairs known GDELT errors (the events GDELT dated 1920 for 2020, with GDELT's own values kept in `*_original` columns) and keeps every row; rows missing a value in the columns listed under `clean.columns_to_check` are dropped. Every cleaned file is marked as cleaned, every run leaves an audit, and `--dry-run --report` measures what each step would change before anything is written. See [Data Cleaning](https://vinicius-teixeirac.github.io/GdeltForge/data-cleaning/). Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
+The data-quality stage. By default it repairs known GDELT errors (the events GDELT dated 1920 for 2020, with GDELT's own values kept in `*_original` columns, and the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02, filled with the file's date) and keeps every row; rows missing a value in the columns listed under `clean.columns_to_check` are dropped. Every cleaned file is marked as cleaned, every run leaves an audit, and `--dry-run --report` measures what each step would change before anything is written. See [Data Cleaning](https://vinicius-teixeirac.github.io/GdeltForge/data-cleaning/). Also accepts `--start-date`/`--end-date`, narrowing which already-converted files get read (which *files* get filtered, not which rows survive within them).
 
 ### Sampling
 
