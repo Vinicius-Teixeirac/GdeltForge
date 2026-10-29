@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ## [Unreleased]
 
 ### Fixed
+- `sample --mode indexed` reads only the row groups holding a drawn row from each file, a few at a time, and copies the drawn rows out, as `--mode calendar` already read its chosen rows. It collected every drawn file whole and kept the drawn rows as views into it, so every decoded file stayed in memory until the end: 133,000 rows over 4,748 files reached 39 GB. The sample is unchanged, row for row and in the same order.
 - `crossref --gkg-version v2` (and `auto` over the GDELT 2.0 window) reads Mentions in two passes, as it already read GKG 2.1: `GLOBALEVENTID` of every file first, then the bridge columns of the files holding a requested event, a few at a time, each batch's rows copied out before the next is read. One scan over every file kept every matched row as a view into its decoded row group, so memory followed every row group holding a match: 15,000 events peaked at 38 GB. The rows returned are unchanged.
 - The summaries of `clean`'s defaults in the README, Getting Started and the CLI reference name the `dateadded_blank` repair added in 0.14.1 (the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02), next to the 1920 repair they already named.
 

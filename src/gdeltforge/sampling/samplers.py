@@ -37,7 +37,6 @@ from gdeltforge.utils.io import (
     narrow_to_available_columns,
     read_file_schemas,
     reconcile_file_schemas,
-    reconcile_parquet_schema,
     scan_dataset_reconciled,
     scan_file_against_schema,
 )
@@ -569,7 +568,9 @@ class IndexedSampler:
         # the moment two such files were both drawn into the same sample;
         # a directory spanning the Actor2Geo_Type dtype boundary raised a
         # "data type mismatch" instead, once a draw crossed it.
-        schema = reconcile_parquet_schema(list(indices_by_file))
+        file_schemas = read_file_schemas(list(indices_by_file))
+        schema = reconcile_file_schemas(file_schemas)
+        target = {c: schema[c] for c in read_columns} if read_columns is not None else schema
 
         sampled = []
         # Driven manually (with + explicit update()) rather than iterated
@@ -594,14 +595,18 @@ class IndexedSampler:
         # all, leaving only the one, explicit, __exit__-driven close.
         with tqdm(total=len(indices_by_file), desc="Loading samples") as pbar:
             for file_path, relative_rows in indices_by_file.items():
-                lf = scan_file_against_schema(file_path, schema)
-                if read_columns is not None:
-                    lf = lf.select(read_columns)
-                df = lf.collect()
-                # See _apply_reservoir_replacements above: DataFrame.gather()
-                # isn't available on this project's declared minimum polars
-                # version, bracket indexing is.
-                part = df[relative_rows]
+                # Only the row groups holding a drawn row, each copied out
+                # (see _read_rows). Collecting the whole file and keeping
+                # df[relative_rows] held every decoded file until the
+                # concat below: 133k rows over 4,748 files reached 39 GB.
+                # relative_rows is sorted (group_indices_by_file), as
+                # _read_rows needs, so the rows come back in the same order.
+                part = _read_rows(
+                    file_path,
+                    np.asarray(relative_rows, dtype=np.int64),
+                    target,
+                    file_schemas[file_path],
+                )
                 if self.provenance:
                     part = part.with_columns(
                         pl.lit(str(file_path)).alias(SOURCE_FILE),
