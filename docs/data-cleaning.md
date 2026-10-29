@@ -136,8 +136,8 @@ blank on every row: 61,067 and 129,673 rows, 190,740 in all.
 
 - **Evidence**: the blank is in GDELT's own files (the raw
   `20130901.export.CSV.zip` has an empty `DATEADDED` field on every row).
-  In the other 4,662 daily files from 2013-04-01 to 2026-07-31,
-  `DATEADDED` equals the file's date on every row.
+  In the other 4,632 daily files GDELT serves from 2013-04-01 to
+  2025-12-31, `DATEADDED` equals the file's date on every row.
 - **Repair**: in the files whose names give 2013-09-01 or 2013-09-02,
   a blank `DATEADDED` becomes the file's date (`20130901`, `20130902`).
   A value already there is left alone, and no other file is touched.
