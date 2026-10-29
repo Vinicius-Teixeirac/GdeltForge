@@ -559,15 +559,19 @@ def _files_per_batch() -> int:
 _FIRST_PASS_FILES = 500
 
 
-def _files_with_matches(files: list[Path], column: str, values: set[str]) -> list[Path]:
+def _files_with_matches(
+    files: list[Path], column: str, values: set[str] | set[int],
+    dtype: pl.DataType | None = None,
+) -> list[Path]:
     """
     The first pass of a two-pass lookup: the files in `files` holding a
-    row whose `column` (a string column every file has) is in `values`,
-    in their original order. It reads that one column of every file and
-    nothing else, so a lookup's second pass decodes the other columns of
-    the matching files only. One column, with one dtype everywhere, also
-    keeps the scan on polars' single multi-file path even when other
-    columns' dtypes differ across files (see scan_dataset_reconciled).
+    row whose `column` (a column every file has, of type `dtype`, String
+    when not given) is in `values`, in their original order. It reads
+    that one column of every file and nothing else, so a lookup's second
+    pass decodes the other columns of the matching files only. One
+    column, with one dtype everywhere, also keeps the scan on polars'
+    single multi-file path even when other columns' dtypes differ across
+    files (see scan_dataset_reconciled).
 
     The files are scanned _FIRST_PASS_FILES at a time: one scan over every
     file held about 1.65 MB per file read until it finished (14 GiB over a
@@ -578,7 +582,7 @@ def _files_with_matches(files: list[Path], column: str, values: set[str]) -> lis
     for i in range(0, len(files), _FIRST_PASS_FILES):
         hits = (
             pl.scan_parquet(
-                files[i:i + _FIRST_PASS_FILES], schema={column: pl.String},
+                files[i:i + _FIRST_PASS_FILES], schema={column: dtype or pl.String()},
                 extra_columns="ignore", include_file_paths="__gdeltforge_file",
             )
             .filter(pl.col(column).is_in(values))
@@ -927,16 +931,34 @@ def crossref_events_gkg_v2(
             extra=empty_extra,
         )
 
-    # Hop 1: Mentions, filter-pushdown on GLOBALEVENTID, a real scalar
-    # column unlike GKG 1.0's comma-packed EventIds, so this narrows
-    # the scan at the row-group level instead of reading everything.
+    # Hop 1: Mentions, by GLOBALEVENTID, in two passes like hop 2 below
+    # (see _files_with_matches). GLOBALEVENTID is a real scalar column,
+    # unlike GKG 1.0's comma-packed EventIds, so its row-group statistics
+    # skip row groups in both passes. One scan over every file kept each
+    # matched row as a view into its decoded row group (see detach), so
+    # memory followed every row group holding a match: 15,000 events
+    # peaked at 38 GB.
     with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
         logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
-        bridge_df = (
-            mentions_lf
-            .filter(pl.col("GLOBALEVENTID").is_in(event_id_set))
-            .select(mentions_read_columns)
-            .collect()
+        matched_mentions = _files_with_matches(
+            mentions_files, "GLOBALEVENTID", event_id_set, mentions_schema["GLOBALEVENTID"]
+        )
+        if not matched_mentions:
+            return empty_result()
+        mentions_target = {c: mentions_schema[c] for c in mentions_read_columns}
+        batch = _files_per_batch()
+        bridge_df = pl.concat(
+            [
+                detach(
+                    scan_dataset_reconciled(
+                        matched_mentions[i:i + batch], target_schema=mentions_target
+                    )
+                    .filter(pl.col("GLOBALEVENTID").is_in(event_id_set))
+                    .collect()
+                )
+                for i in range(0, len(matched_mentions), batch)
+            ],
+            how="vertical_relaxed",
         )
 
     if bridge_df.is_empty():

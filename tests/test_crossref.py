@@ -1346,7 +1346,11 @@ class TestCrossrefEventsGkgV2TwoPass:
         )
         assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
         # In the archive's own order; the unmatched file never reaches it.
-        assert seen == [["20200101000000.gkg.parquet", "20200101003000.gkg.parquet"]]
+        # The Mentions hop's second pass comes first.
+        assert seen == [
+            ["20200101120000.mentions.parquet"],
+            ["20200101000000.gkg.parquet", "20200101003000.gkg.parquet"],
+        ]
 
     def test_the_second_pass_reads_in_batches_of_the_scan_limit(self, tmp_path, monkeypatch):
         # Each batch's matches are copied out before the next is read; the
@@ -1366,7 +1370,11 @@ class TestCrossrefEventsGkgV2TwoPass:
         result = crossref_events_gkg_v2(
             events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
         )
-        assert seen == [["20200101000000.gkg.parquet"], ["20200101003000.gkg.parquet"]]
+        assert seen == [
+            ["20200101120000.mentions.parquet"],
+            ["20200101000000.gkg.parquet"],
+            ["20200101003000.gkg.parquet"],
+        ]
         assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
 
     def test_the_first_pass_scans_in_batches(self, tmp_path, monkeypatch):
@@ -1433,6 +1441,106 @@ class TestCrossrefEventsGkgV2TwoPass:
         )
         assert result.is_empty()
         assert "GKG_GKGRECORDID" in result.columns
+
+
+class TestCrossrefEventsGkgV2MentionsTwoPass:
+    """Mentions is read in two passes too: GLOBALEVENTID of every file,
+    then the bridge columns of the files that matched only, a few files
+    at a time, each batch's matches copied out."""
+
+    @staticmethod
+    def _setup(tmp_path):
+        mentions = tmp_path / "mentions"
+        mentions.mkdir()
+        for name, ids, urls in [
+            ("20200101000000", [2001, 9001], ["http://a.com/1", "http://x.com/9"]),
+            ("20200101001500", [9002], ["http://x.com/9"]),
+            ("20200101003000", [2002, 2001], ["http://a.com/2", "http://a.com/3"]),
+        ]:
+            pl.DataFrame({
+                "GLOBALEVENTID": ids,
+                "MentionIdentifier": urls,
+                "Confidence": [50] * len(ids),
+            }).write_parquet(mentions / f"{name}.mentions.parquet")
+        gkg = tmp_path / "gkg_v2"
+        gkg.mkdir()
+        pl.DataFrame({
+            "V2DOCUMENTIDENTIFIER": ["http://a.com/1", "http://a.com/2", "http://a.com/3"],
+            "GKGRECORDID": ["R1", "R2", "R3"],
+        }).write_parquet(gkg / "20200101000000.gkg.parquet")
+        events = pl.DataFrame({"GlobalEventID": [2001, 2002]})
+        return events, str(mentions), str(gkg)
+
+    @staticmethod
+    def _spy(monkeypatch):
+        seen = []
+        real = crossref_module.scan_dataset_reconciled
+
+        def spy(files, target_schema=None):
+            if target_schema is not None and Path(files[0]).name.endswith(".mentions.parquet"):
+                seen.append([Path(f).name for f in files])
+            return real(files, target_schema=target_schema)
+
+        monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
+        return seen
+
+    def test_the_second_pass_reads_only_the_matching_files(self, tmp_path, monkeypatch):
+        events, mentions, gkg = self._setup(tmp_path)
+        seen = self._spy(monkeypatch)
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID"]
+        )
+        assert seen == [["20200101000000.mentions.parquet", "20200101003000.mentions.parquet"]]
+        assert sorted(zip(result["GlobalEventID"], result["GKG_GKGRECORDID"], strict=True)) == [
+            (2001, "R1"), (2001, "R3"), (2002, "R2"),
+        ]
+        assert result["Mention_Confidence"].to_list() == [50, 50, 50]
+
+    def test_the_second_pass_reads_in_batches_of_the_scan_limit(self, tmp_path, monkeypatch):
+        events, mentions, gkg = self._setup(tmp_path)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "1")
+        seen = self._spy(monkeypatch)
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID"], dedupe_mentions=True
+        )
+        assert seen == [["20200101000000.mentions.parquet"], ["20200101003000.mentions.parquet"]]
+        assert sorted(result["GKG_GKGRECORDID"]) == ["R1", "R2", "R3"]
+
+    def test_the_same_mentions_as_one_scan(self, tmp_path):
+        events, mentions, gkg = self._setup(tmp_path)
+        one_scan = (
+            pl.scan_parquet(sorted(Path(mentions).glob("*.parquet")))
+            .filter(pl.col("GLOBALEVENTID").is_in([2001, 2002]))
+            .collect()
+        )
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID"]
+        )
+        assert result.select(
+            pl.col("GlobalEventID").alias("GLOBALEVENTID"),
+            pl.col("GKG_V2DOCUMENTIDENTIFIER").alias("MentionIdentifier"),
+        ).sort("GLOBALEVENTID", "MentionIdentifier").equals(
+            one_scan.select("GLOBALEVENTID", "MentionIdentifier").sort(
+                "GLOBALEVENTID", "MentionIdentifier"
+            )
+        )
+
+    def test_the_first_pass_finds_integer_ids(self, tmp_path):
+        events, mentions, _ = self._setup(tmp_path)
+        files = sorted(Path(mentions).glob("*.parquet"))
+        found = crossref_module._files_with_matches(files, "GLOBALEVENTID", {2002}, pl.Int64())
+        assert found == [files[2]]
+
+    def test_no_matching_mention_returns_the_empty_result(self, tmp_path, monkeypatch):
+        events, mentions, gkg = self._setup(tmp_path)
+        seen = self._spy(monkeypatch)
+        result = crossref_events_gkg_v2(
+            pl.DataFrame({"GlobalEventID": [7777]}), mentions, gkg,
+            ["V2DOCUMENTIDENTIFIER", "GKGRECORDID"],
+        )
+        assert result.is_empty()
+        assert "GKG_GKGRECORDID" in result.columns
+        assert seen == []
 
 
 class TestCrossrefEventsGkgV2ColumnNarrowing:
