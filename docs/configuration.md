@@ -191,7 +191,7 @@ A marker sits beside the file a stage read, in that stage's input directory: `co
 
 The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.
 
-The section is checked before any file is read. An unknown key under `clean:` is ignored with a warning. A name under `errata`, `normalize`, `places` or `derive` that isn't a dataset, settings for a dataset that aren't a mapping, an empty (null) block, `errata` or `places` for a dataset other than `gdelt_event`/`gdelt_event_15min`, a `labels` value that isn't a list, a derived column whose source the dataset doesn't declare, or a `labels` column listed twice fails the run, naming the setting. An empty block is what YAML makes of one whose lines are all commented out; for `errata` it would otherwise switch the default repair off. Write `{}` to keep the defaults, or turn a rule off by name (`date_1920: false`).
+The section is checked before any file is read. An unknown key under `clean:` is ignored with a warning. A name under `errata`, `normalize`, `places` or `derive` that isn't a dataset, settings for a dataset that aren't a mapping, an empty (null) block, `errata` or `places` for a dataset other than `gdelt_event`/`gdelt_event_15min`, `errata.gdelt_event_15min.dateadded_blank`, a `labels` value that isn't a list, a derived column whose source the dataset doesn't declare, or a `labels` column listed twice fails the run, naming the setting. An empty block is what YAML makes of one whose lines are all commented out; for `errata` it would otherwise switch the default repair off. Write `{}` to keep the defaults, or turn a rule off by name (`date_1920: false`).
 
 | Key | Description |
 |-----|-------------|
@@ -201,7 +201,7 @@ The section is checked before any file is read. An unknown key under `clean:` is
 | `compression.<dataset>` | Parquet codec for the cleaned output. Unset defaults to `zstd`. polars' own writer already supports `zstd`, `gzip`, `brotli`, `lz4`, and `snappy` natively, so this needs no new dependency |
 | `errata.<dataset>.date_1920` | Repair the events GDELT dated 1920 instead of 2020 (add 100 years to `Day`, `MonthYear`, `Year`, `FractionDate` where `Day` is before 1979 and `DATEADDED` is 2019-12-31 to 2020-01-05). `true` by default for `gdelt_event` and `gdelt_event_15min` |
 | `errata.<dataset>.keep_original` | Keep GDELT's values of repaired columns in `<column>_original`. `true` by default; `false` makes the repair lossy |
-| `errata.<dataset>.dateadded_blank` | Fill the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02 (190,740 rows) with the file's date. `true` by default for `gdelt_event`; not lossy |
+| `errata.<dataset>.dateadded_blank` | Fill the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02 (190,740 rows) with the file's date. `true` by default for `gdelt_event`, the only dataset that takes it; not lossy |
 | `errata.<dataset>.event_markers` | Rows whose event code is `---`/`--` (CAMEO null code) or `X`: `keep` (default, counted in the run audit) or `drop` (lossy) |
 | `normalize.<dataset>.trim_strings` | Strip leading and trailing whitespace from every string column. `false` by default; lossy |
 | `normalize.<dataset>.blank_to_null` | Turn whitespace-only strings into null, before the `columns_to_check` null check. `false` by default; lossy |
