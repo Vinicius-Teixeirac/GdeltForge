@@ -505,10 +505,10 @@ GDELT's event-code file, `CAMEO.eventcodes.txt`, has a damaged Demand section (`
 
 | Code | GDELT's lookup file | Bundled table | Its `03` counterpart |
 |------|---------------------|---------------|----------------------|
-| 101 | Demand information, investigation | Demand material cooperation | `031` material cooperation |
+| 101 | Demand information, investigation | Demand material cooperation, not specified below | `031` material cooperation |
 | 102 | Demand policy support | Demand diplomatic cooperation (such as policy support) | `032` diplomatic cooperation |
-| 103 | Demand aid, protection, or peacekeeping | Demand material aid | `033` material aid |
-| 105 | Demand mediation | Demand that target yields | `035` yield |
+| 103 | Demand aid, protection, or peacekeeping | Demand material aid, not specified below | `033` material aid |
+| 105 | Demand mediation | Demand that target yields, not specified below | `035` yield |
 | 106 | Demand withdrawal (inside `1056`'s line) | Demand meeting, negotiation | `036` meet or negotiate |
 | 107 | Demand ceasefire | Demand settling of dispute | `037` settle dispute |
 | 108 | Demand meeting, negotiation | Demand mediation | `038` accept mediation |

@@ -1378,6 +1378,9 @@ def _empty_block_hint(section: str) -> str:
 
 # The datasets GDELT's known errors (errata) are in.
 _ERRATA_DATASETS = ("gdelt_event", "gdelt_event_15min")
+# Errata rules whose error is in one dataset only: dateadded_blank's two
+# days predate the 15-minute feed, which starts in 2015.
+_ERRATA_RULE_DATASETS = {"dateadded_blank": ("gdelt_event",)}
 # The datasets whose geo points the place table was built from: the daily
 # export and the 15-minute feed write the same points.
 _PLACES_DATASETS = ("gdelt_event", "gdelt_event_15min")
@@ -1389,7 +1392,8 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
     fail only once files are being read: an unknown key under clean:, a
     name under errata/normalize/places/derive that isn't a dataset, a
     dataset's settings that aren't a mapping, errata for a dataset GDELT's
-    known errors aren't in, places for a dataset without Events geo points,
+    known errors aren't in, an errata rule for a dataset its error isn't
+    in, places for a dataset without Events geo points,
     and derive columns the dataset being cleaned doesn't declare.
     """
     clean = config["clean"]
@@ -1429,6 +1433,13 @@ def _validate_clean_section(config: dict, dataset: str) -> None:
                     f"clean.errata.{name}: the known GDELT errors this stage repairs are "
                     f"in {' and '.join(_ERRATA_DATASETS)} only"
                 )
+            if section == "errata":
+                for rule, datasets in _ERRATA_RULE_DATASETS.items():
+                    if rule in settings and name not in datasets:
+                        raise ValueError(
+                            f"clean.errata.{name}.{rule}: the error this rule repairs is "
+                            f"in {' and '.join(datasets)} only"
+                        )
             if section == "places" and settings and name not in _PLACES_DATASETS:
                 raise ValueError(
                     f"clean.places.{name}: places are resolved in "
