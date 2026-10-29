@@ -306,9 +306,9 @@ class Date1920Repair(Step):
 
 
 # GDELT's daily export files for 2013-09-01 and 2013-09-02 leave DATEADDED
-# blank on every row (190,740 rows). In the other 4,662 daily files from
-# 2013-04-01 to 2026-07-31, DATEADDED equals the file's own date on every
-# row.
+# blank on every row (190,740 rows). In the other 4,632 daily files GDELT
+# serves from 2013-04-01 to 2025-12-31, DATEADDED equals the file's own
+# date on every row.
 _DATEADDED_BLANK_DAYS = (date(2013, 9, 1), date(2013, 9, 2))
 
 
