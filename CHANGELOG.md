@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- The summaries of `clean`'s defaults in the README, Getting Started and the CLI reference name the `dateadded_blank` repair added in 0.14.1 (the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02), next to the 1920 repair they already named.
+
 ## [0.14.1] - 2026-10-29
 
 ### Added
