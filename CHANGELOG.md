@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Security
+- The development lock file moves urllib3 to 2.8.0 and virtualenv to 21.15.1, clearing 14 open advisories against them (urllib3 through `requests` and the `selenium` extra, virtualenv through `pre-commit`). The package's own dependency ranges are unchanged, so an installed wheel already resolves urllib3 2.8.0; a checkout picks it up with `uv sync`.
+
 ## [0.14.1] - 2026-10-29
 
 ### Added
