@@ -32,6 +32,10 @@ of files in both categories, redone independently, have confirmed the
 classification exactly, including the precise minute-level boundary of
 each gap window.
 
+Starting from the lists leaves out what GDELT never listed: whole days
+of the daily archive and thousands of 15-minute updates. Those are in
+[Never listed by GDELT](#never-listed-by-gdelt), below.
+
 ## Summary
 
 | Dataset | In-scope total | Present | Absent | — 404 (never published) | — empty (published, 0 bytes) |
@@ -64,7 +68,9 @@ reason for a daily-cadence dataset (events) and two independent 15-minute-
 cadence datasets (gkg_v2, mentions) to all go dark on the exact same
 minutes. The likeliest explanation is that GDELT's own pipeline had real
 outages around **2022-11-10/11** (~20.5 hours) and **2023-03-23**
-(~1.5 hours), plus others too brief or dataset-specific to leave this same
+(~1.5 hours of listed files, part of a ~34-hour outage whose earlier
+updates GDELT never listed; see [Never listed by GDELT](#never-listed-by-gdelt)),
+plus others too brief or dataset-specific to leave this same
 cross-dataset signature.
 
 The largest single-dataset cluster is **2015-05-29 00:00–06:45 in gkg_v2
@@ -76,6 +82,77 @@ immaturity rather than a shared outage.
 scattered through 2015–2017, each a distinct 15-minute interval where
 GDELT evidently had zero new mentions to report, plausible for a feed's
 early, lower-volume years.
+
+## Never listed by GDELT
+
+The audit above diffs GDELT's lists against what was downloaded, so a file
+missing from the lists themselves never enters it. Laid against the
+calendar, from each dataset's start through 2025-12-31, the lists lack
+these days and 15-minute updates:
+
+| Dataset | Never listed |
+|---|---:|
+| events (daily) | 22 days |
+| events-15min | 7,290 updates |
+| mentions | 7,290 updates |
+| gkg_v2 | 7,285 updates |
+
+GDELT doesn't serve them either: all 22 days and 300 updates per 15-minute
+dataset, drawn at random, answer 404. `scrape` downloads what the lists
+hold, so it neither fetches these nor reports them as failures; a day
+without a file reads as a day without events. The 15-minute counts
+reconcile with the summary above: the 381,024 updates from 2015-02-19
+through 2025-12-31, plus the 4 listed on 2015-02-18, less the unlisted
+ones, are exactly the in-scope totals for `gkg_v2` (373,743) and
+`mentions` (373,738).
+
+events-15min and mentions lack the same 7,290 updates. gkg_v2 lacks 5
+fewer: it holds 2016-04-25 15:30, 2017-05-10 07:45, 2017-07-21 09:00 and
+10:45, and 2017-08-20 21:00, which the other two don't.
+
+**The daily archive** has no file for:
+
+| Days | Count |
+|---|---:|
+| 2014-01-23 to 2014-01-25 | 3 |
+| 2014-03-19 | 1 |
+| 2025-06-14 to 2025-07-01 | 18 |
+
+**The 15-minute datasets**, by year (mentions; gkg_v2 differs only by the
+five updates above):
+
+| Year | Updates never listed |
+|---|---:|
+| 2015 | 200 |
+| 2016 | 45 |
+| 2017 | 994 |
+| 2018 | 992 |
+| 2019 | 11 |
+| 2020 | 2,585 |
+| 2021 | 610 |
+| 2022 | 5 |
+| 2023 | 165 |
+| 2024 | 2 |
+| 2025 | 1,681 |
+
+Most of the 2,247 gaps are single updates (1,724). The rest fall into a
+few patterns:
+
+- **Three long outages**: 2015-10-21 04:15 to 2015-10-22 21:45 (167
+  updates); 2023-03-22 04:45 to 2023-03-23 12:45 (129); and 2025-06-14
+  18:00 to 2025-07-02 02:00 (1,665, about 17 days), the same outage as the
+  daily archive's 18 missing days. The 2023 one runs straight into the
+  listed-but-404 window of 2023-03-23 13:00 to 14:30 above, so that outage
+  lasted about 34 hours.
+- **Nightly gaps for weeks**: 2020-09-24 to 2020-11-18 lose 2,579 updates
+  in 309 gaps, 69% of them between 21:00 and 08:00 UTC; 2021-07-30 to
+  2021-08-19 lose 598 in 109 gaps, 94% at those hours.
+- **2017 and 2018**: about 990 updates a year, in runs of one to four,
+  scattered across most months (one run of 19 on 2018-07-15).
+
+A window that crosses one of these gaps holds fewer events than its
+length suggests. For counts per day or per update, check the window
+against this list before reading a dip as real.
 
 ## Full itemized list
 
