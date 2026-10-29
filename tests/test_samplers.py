@@ -722,6 +722,86 @@ class TestCalendarSampler:
         assert df["NumArticles"].null_count() == 1
 
 
+class TestIndexedSamplerReadsOnlyDrawnRows:
+    """get_random_sample reads only the row groups holding a drawn row
+    (_read_rows) instead of collecting every drawn file whole, and returns
+    the same rows, in the same order, as indexing each whole file did."""
+
+    @staticmethod
+    def _write(folder):
+        folder.mkdir()
+        sources = []
+        for i in range(4):
+            ids = list(range(i * 30, i * 30 + 30))
+            source = pl.DataFrame({
+                "GlobalEventID": ids,
+                "Actor1Name": [f"actor{x}" for x in ids],
+                "NumArticles": [None if x % 7 == 0 else x for x in ids],
+            })
+            source.write_parquet(folder / f"{i}.parquet", row_group_size=4)
+            sources.append(source)
+        return sources
+
+    @staticmethod
+    def _whole_file_reference(sampler, n, replace, sources, columns=None):
+        # What the loop did before: each drawn file read whole, then
+        # indexed with its sorted relative rows, files in index order.
+        draws = sampler.rng.choice(sampler.index.total_rows, n, replace=replace)
+        by_file = sampler.index.group_indices_by_file(draws)
+        parts = []
+        for path, rows in by_file.items():
+            source = sources[int(path.stem)]
+            parts.append((source.select(columns) if columns else source)[rows])
+        return pl.concat(parts)
+
+    @pytest.mark.parametrize("replace", [False, True])
+    def test_same_rows_in_the_same_order_as_whole_file_reads(self, tmp_path, replace):
+        folder = tmp_path / "data"
+        sources = self._write(folder)
+        n = 70 if not replace else 150
+        expected = self._whole_file_reference(
+            IndexedSampler(str(folder), random_state=11), n, replace, sources
+        )
+        df = IndexedSampler(str(folder), random_state=11).get_random_sample(n, replace=replace)
+        assert df.equals(expected, null_equal=True)
+        assert df.schema == sources[0].schema
+
+    def test_same_rows_with_columns(self, tmp_path):
+        folder = tmp_path / "data"
+        sources = self._write(folder)
+        columns = {"GlobalEventID", "NumArticles"}
+        expected_sampler = IndexedSampler(str(folder), random_state=4, columns=columns)
+        expected = self._whole_file_reference(
+            expected_sampler, 25, False, sources, list(expected_sampler.columns or ())
+        )
+        df = IndexedSampler(str(folder), random_state=4, columns=columns).get_random_sample(25)
+        assert df.equals(expected, null_equal=True)
+
+    def test_reads_only_the_row_groups_holding_a_drawn_row(self, tmp_path, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": list(range(40))}).write_parquet(
+            folder / "a.parquet", row_group_size=4
+        )
+        sampler = IndexedSampler(str(folder), random_state=2)
+        draws = sampler.rng.choice(sampler.index.total_rows, 3, replace=False)
+        groups_holding = {int(row) // 4 for row in draws}
+
+        slices = []
+        real_slice = samplers_module.pl.LazyFrame.slice
+
+        def spy(self, offset, length=None):
+            slices.append(offset)
+            return real_slice(self, offset, length)
+
+        monkeypatch.setattr(samplers_module.pl.LazyFrame, "slice", spy)
+        df = IndexedSampler(str(folder), random_state=2).get_random_sample(3)
+        assert sorted(df["GlobalEventID"].to_list()) == sorted(int(r) for r in draws)
+        assert sorted(offset // 4 for offset in slices) == sorted(groups_holding)
+
+
 class TestCalendarSamplerTwoPass:
     """The draw runs over row identities; a second pass reads the chosen
     rows, one row group at a time."""
@@ -2665,21 +2745,26 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         sampler = IndexedSampler(str(folder), random_state=1)
         _patch_tqdm_close_to_raise_once(monkeypatch)
 
-        call_count = [0]
-        real_collect = pl.LazyFrame.collect
+        # The loop reads each file's rows through _read_rows, whose reads
+        # are pl.collect_all calls: the second one is the second file.
+        import gdeltforge.sampling.samplers as samplers_module
 
-        def collect_and_interrupt_once(self, *args, **kwargs):
+        call_count = [0]
+        real_collect_all = samplers_module.pl.collect_all
+
+        def collect_all_and_interrupt_once(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] == 2:
                 raise KeyboardInterrupt("first interrupt, mid-loop")
-            return real_collect(self, *args, **kwargs)
+            return real_collect_all(*args, **kwargs)
 
-        monkeypatch.setattr(pl.LazyFrame, "collect", collect_and_interrupt_once)
+        monkeypatch.setattr(samplers_module.pl, "collect_all", collect_all_and_interrupt_once)
 
         with _capture_unraisable_exceptions() as events:
             with pytest.raises(KeyboardInterrupt):
                 sampler.get_random_sample(3)
 
+        assert call_count[0] == 2, "the interrupt never landed mid-loop"
         assert events == [], f"tqdm leaked an unraisable exception: {events}"
 
     def test_calendar_sampler_sampling_loop(self, tmp_path, monkeypatch):
