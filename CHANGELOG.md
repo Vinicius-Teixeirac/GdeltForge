@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - `crossref --gkg-version v2` (and `auto` over the GDELT 2.0 window) reads Mentions in two passes, as it already read GKG 2.1: `GLOBALEVENTID` of every file first, then the bridge columns of the files holding a requested event, a few at a time, each batch's rows copied out before the next is read. One scan over every file kept every matched row as a view into its decoded row group, so memory followed every row group holding a match: 15,000 events peaked at 38 GB. The rows returned are unchanged.
+- The summaries of `clean`'s defaults in the README, Getting Started and the CLI reference name the `dateadded_blank` repair added in 0.14.1 (the blank `DATEADDED` of GDELT's daily files for 2013-09-01 and 2013-09-02), next to the 1920 repair they already named.
+
+### Security
+- The development lock file moves urllib3 to 2.8.0 and virtualenv to 21.15.1, clearing 14 open advisories against them (urllib3 through `requests` and the `selenium` extra, virtualenv through `pre-commit`). The package's own dependency ranges are unchanged, so an installed wheel already resolves urllib3 2.8.0; a checkout picks it up with `uv sync`.
 
 ## [0.14.1] - 2026-10-29
 
