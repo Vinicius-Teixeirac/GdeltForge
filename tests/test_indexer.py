@@ -142,7 +142,10 @@ class TestSavedIndex:
                 metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)
             )
             assert index.schemas[f] == dict(pl.read_parquet_schema(f).items())
-        assert len(index.row_groups[index.files[0]]) == 4  # 50 rows, groups of 16
+        # 50 rows in groups of 16: several row groups, however the polars
+        # writer cuts the last one (16, 16, 18 at polars 1.34; 16, 16, 16,
+        # 2 later).
+        assert all(len(index.row_groups[f]) > 1 for f in index.files)
 
     def test_only_a_changed_or_new_file_is_read_again(self, tmp_path, monkeypatch):
         data = tmp_path / "data"
