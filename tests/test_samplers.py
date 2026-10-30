@@ -2358,9 +2358,9 @@ class TestStratifiedSampling:
         # a numeric column upcasts to Float64 only within whichever
         # group's own reservoir actually drew a null; a sibling group
         # with no null stays Int64. Plain vertical concat raised on that
-        # disagreement instead of reconciling it. Each group's reservoir
-        # is now cast back to the dataset's type, so the column stays
-        # Int64, null included.
+        # disagreement instead of reconciling it. The chosen rows are now
+        # read with the dataset's own types, so the column stays Int64,
+        # null included.
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({
@@ -2400,6 +2400,137 @@ class TestStratifiedSampling:
         assert all(
             source[g] == n for g, n in df.select("GlobalEventID", "NumArticles").iter_rows()
         )
+
+class TestFilteredSamplerTwoPass:
+    """Every FilteredSampler draw runs over row identities, scanning only
+    the filter's and the strata's columns; a second pass reads the chosen
+    rows."""
+
+    COLUMNS = ["GlobalEventID", "Day", "QuadClass", "Actor1Name", "NumArticles"]
+
+    @staticmethod
+    def _write(folder, sizes=(23, 7, 31), quad_type: type[pl.DataType] = pl.Int64):
+        """Files of different sizes and small row groups, a null every
+        few rows, QuadClass typed quad_type in the last file."""
+        folder.mkdir()
+        frames, start = [], 0
+        for k, size in enumerate(sizes):
+            ids = range(start, start + size)
+            df = pl.DataFrame({
+                "GlobalEventID": list(ids),
+                "Day": [20200101 + k] * size,
+                "QuadClass": [(i % 4) + 1 for i in ids],
+                "Actor1Name": [None if i % 5 == 0 else f"actor{i}" for i in ids],
+                "NumArticles": [None if i % 6 == 0 else i for i in ids],
+            })
+            frames.append(df)
+            if k == len(sizes) - 1:
+                df = df.with_columns(pl.col("QuadClass").cast(quad_type))
+            df.write_parquet(folder / f"2020010{k + 1}.export.parquet", row_group_size=4)
+            start += size
+        return pl.concat(frames)
+
+    @staticmethod
+    def _draws(folder, **kwargs):
+        sampler = FilteredSampler(
+            str(folder), TestFilteredSamplerTwoPass.COLUMNS,
+            filter_dict={"QuadClass": [1, 2, 3]}, random_state=11, **kwargs,
+        )
+        return {
+            "random": sampler.get_random_sample(15),
+            "replace": sampler.get_random_sample(40, replace=True),
+            "stratified": sampler.get_stratified_sample("QuadClass", 4),
+        }
+
+    @staticmethod
+    def _assert_whole_source_rows(df, source):
+        assert df.schema == source.schema
+        joined = df.join(source, on="GlobalEventID", how="left", suffix="_src")
+        for column in source.columns[1:]:
+            assert joined[column].equals(joined[f"{column}_src"], null_equal=True)
+        assert set(df["QuadClass"].to_list()) <= {1, 2, 3}
+
+    def test_rows_come_back_whole_across_files_and_row_groups(self, tmp_path):
+        source = self._write(tmp_path / "data")
+        draws = self._draws(tmp_path / "data")
+        assert draws["random"].height == 15
+        assert draws["random"]["GlobalEventID"].n_unique() == 15
+        assert draws["replace"].height == 40
+        assert draws["replace"]["GlobalEventID"].n_unique() < 40
+        assert _size_by_group(draws["stratified"], "QuadClass") == {1: 4, 2: 4, 3: 4}
+        for df in draws.values():
+            self._assert_whole_source_rows(df, source)
+
+    def test_a_filter_column_typed_differently_across_files(self, tmp_path):
+        # The key scan then reads file by file; the row numbers must still
+        # count across the files in scan order.
+        source = self._write(tmp_path / "data", quad_type=pl.Int32)
+        for df in self._draws(tmp_path / "data").values():
+            self._assert_whole_source_rows(df, source)
+
+    def test_output_columns_do_not_change_the_rows_drawn(self, tmp_path):
+        self._write(tmp_path / "data")
+        every = self._draws(tmp_path / "data")
+        few = self._draws(tmp_path / "data", columns={"GlobalEventID"})
+        for name, df in every.items():
+            assert few[name]["GlobalEventID"].equals(df["GlobalEventID"])
+
+    def test_the_draw_scans_only_the_filter_and_strata_columns(self, tmp_path, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        self._write(tmp_path / "data")
+        scanned = []
+        real = samplers_module.scan_dataset_reconciled
+
+        def spy(files, target_schema=None, **kwargs):
+            if target_schema is not None:
+                scanned.append(set(target_schema))
+            return real(files, target_schema=target_schema, **kwargs)
+
+        monkeypatch.setattr(samplers_module, "scan_dataset_reconciled", spy)
+        self._draws(tmp_path / "data")
+        # random, replace's two scans, stratified.
+        assert scanned == [{"QuadClass"}] * 4
+
+    def test_the_chosen_rows_are_read_a_few_row_groups_at_a_time_across_files(
+        self, tmp_path, monkeypatch
+    ):
+        # One row group per file, as converted Events files are: read one
+        # file at a time, a sample over many files decoded them serially.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        folder = tmp_path / "data"
+        folder.mkdir()
+        for k in range(5):
+            pl.DataFrame({
+                "GlobalEventID": range(k * 10, k * 10 + 10), "QuadClass": [1] * 10,
+            }).write_parquet(folder / f"2020010{k + 1}.export.parquet")
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "3")
+        batches = []
+        real = samplers_module.pl.collect_all
+
+        def spy(frames, *args, **kwargs):
+            batches.append(len(frames))
+            return real(frames, *args, **kwargs)
+
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        df = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass"], random_state=2
+        ).get_random_sample(50)
+        assert sorted(df["GlobalEventID"].to_list()) == list(range(50))
+        assert batches == [3, 2]
+
+    def test_with_provenance_each_row_names_its_own_file_and_position(self, tmp_path):
+        folder = tmp_path / "data"
+        source = self._write(folder)
+        for df in self._draws(folder, provenance=True).values():
+            for gid, name, row in df.select(
+                "GlobalEventID", "SourceFile", "SourceRow"
+            ).iter_rows():
+                in_file = pl.read_parquet(folder / name)
+                assert in_file["GlobalEventID"][row] == gid
+            assert df.drop("SourceFile", "SourceRow").schema == source.schema
+
 
 class TestStratifiedSamplingSeedReproducibility:
     """--stratify's own version of TestCalendarSamplerSeedReproducibility
