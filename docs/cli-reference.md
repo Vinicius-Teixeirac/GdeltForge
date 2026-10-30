@@ -237,6 +237,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
 | `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there (see [Row provenance](#row-provenance)). Off by default |
+| `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
 | `--per-period N` | calendar | Rows per calendar period (default 10) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
@@ -294,6 +295,24 @@ aggregated file has no single source.
 ```bash
 gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance --out draw.parquet
 ```
+
+### Saved file index
+
+Every sample first reads each file's footer: its rows, row groups and
+columns. Over the 368,388 files of the translated GKG 2.1 stream on a network
+share, that alone ran for hours and passed 60 GB before it was stopped. `sample` keeps those facts in a saved file
+index, one per source directory under `paths.index_directory` (default
+`./data/index`), and on a later run reads only the footers of files that are
+new or whose size or modification time changed; the others cost one `stat`
+each. The rows drawn are the same with or without it.
+
+`--file-index PATH` reads and updates the index at `PATH` instead.
+`paths.index_directory: null` keeps no index, reading every footer on every
+run. The index is a cache: deleting it only costs the next run its footer
+reads, and one that can't be read or written is rebuilt or skipped with a
+warning. Like the clean run audit, it must sit outside every data directory.
+Footers are read a few at a time, under the limit `io.max_concurrent_reads`
+sets.
 
 ### Indexed sampling (uniform random)
 

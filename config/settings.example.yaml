@@ -419,6 +419,11 @@ paths:
   # Only used when converter.partitioning.enabled is true.
   cleaned_historical_directory: "./path_example/events/cleaned_historical"
 
+  # Where `sample` keeps its saved file index (each Parquet file's rows,
+  # row groups and schema, reused while the file is unchanged). One for
+  # every dataset; null keeps none. Must sit outside every data directory.
+  index_directory: "./path_example/index"
+
   # GKG 2.1 and Mentions: same four stages as Events (download / unzip /
   # convert / clean), but their own directories; these publish at
   # 15-minute granularity, not daily, so keeping them separate from

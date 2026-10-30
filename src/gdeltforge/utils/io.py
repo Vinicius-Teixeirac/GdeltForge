@@ -3,10 +3,11 @@ import os
 import re
 import sys
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TypeVar
 
 import polars as pl
 import pyarrow as pa
@@ -774,7 +775,11 @@ def _footer_reads_at_once() -> int:
     return exported_scan_limit() or min(32, os.cpu_count() or 1)
 
 
-def _map_files(fn, files: list):
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+def _map_files(fn: Callable[[_T], _R], files: list[_T]) -> list[_R]:
     """fn over files, a few at a time (_footer_reads_at_once), results in
     the files' order. Reading footers one by one cost about 24 ms each on
     a network share: 12 minutes for one quarter's 15-minute files before

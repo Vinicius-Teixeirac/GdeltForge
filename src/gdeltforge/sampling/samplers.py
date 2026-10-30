@@ -20,7 +20,6 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gdeltforge.cleaning.steps import added_columns
@@ -35,7 +34,6 @@ from gdeltforge.utils.io import (
     clearer_dataset_errors,
     detach,
     narrow_to_available_columns,
-    read_file_schemas,
     reconcile_file_schemas,
     scan_dataset_reconciled,
     scan_file_against_schema,
@@ -106,7 +104,9 @@ def _discover_dataset_files(
     return all_files
 
 
-def _scan_dataset(files: list[Path]) -> pl.LazyFrame:
+def _scan_dataset(
+    files: list[Path], file_schemas: dict[Path, dict[str, pl.DataType]]
+) -> pl.LazyFrame:
     # polars' scan_parquet infers its schema from a single file rather
     # than the union of every file's schema the way pyarrow.dataset.
     # dataset() does, confirmed directly: a column present in some files
@@ -120,7 +120,7 @@ def _scan_dataset(files: list[Path]) -> pl.LazyFrame:
     # mismatch" once scan_parquet hits a file whose own dtype disagrees
     # with the schema it inferred. scan_dataset_reconciled resolves both:
     # see its own docstring for the full mechanism.
-    return scan_dataset_reconciled(files)
+    return scan_dataset_reconciled(files, file_schemas=file_schemas)
 
 
 # ----------------------------------------------------------
@@ -466,6 +466,7 @@ class IndexedSampler:
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
         provenance: bool = False,
+        file_index: Path | None = None,
     ):
         self.folder = Path(folder_path)
         self.provenance = provenance
@@ -491,7 +492,7 @@ class IndexedSampler:
             )
 
         self.rng   = ReproducibleRNG(random_state)
-        self.index = FileIndex(parquet_files)
+        self.index = FileIndex(parquet_files, saved=file_index, roots=self._roots)
 
         # A genuinely nonexistent --columns name used to reach
         # pl.read_parquet(file_path, columns=read_columns) unchecked in
@@ -568,7 +569,7 @@ class IndexedSampler:
         # the moment two such files were both drawn into the same sample;
         # a directory spanning the Actor2Geo_Type dtype boundary raised a
         # "data type mismatch" instead, once a draw crossed it.
-        file_schemas = read_file_schemas(list(indices_by_file))
+        file_schemas = {f: self.index.schemas[f] for f in indices_by_file}
         schema = reconcile_file_schemas(file_schemas)
         target = {c: schema[c] for c in read_columns} if read_columns is not None else schema
 
@@ -606,6 +607,7 @@ class IndexedSampler:
                     np.asarray(relative_rows, dtype=np.int64),
                     target,
                     file_schemas[file_path],
+                    self.index.row_groups[file_path],
                 )
                 if self.provenance:
                     part = part.with_columns(
@@ -623,6 +625,7 @@ def _read_rows(
     rows: np.ndarray,
     target_schema: dict[str, pl.DataType],
     real_schema: dict[str, pl.DataType],
+    row_groups: tuple[int, ...],
 ) -> pl.DataFrame:
     """
     The rows at positions `rows` (sorted, ascending) of one file, scanned
@@ -635,15 +638,15 @@ def _read_rows(
     with a single request stream, and day-aggregated GKG 2.1 sampled no
     faster than a full scan. Each row group's chosen rows are copied out
     (detach): kept as they are, they would hold the whole decoded row
-    group.
+    group. row_groups holds the file's row-group sizes (FileIndex), so its
+    footer isn't read again.
     """
     lf = scan_file_against_schema(file, target_schema, real_schema=real_schema)
-    metadata = pq.ParquetFile(file).metadata
     # (first row, row count, chosen positions within it) per row group read.
     wanted: list[tuple[int, int, np.ndarray]] = []
     start = taken = 0
-    for group in range(metadata.num_row_groups):
-        end = start + metadata.row_group(group).num_rows
+    for group_rows in row_groups:
+        end = start + group_rows
         upto = int(np.searchsorted(rows, end, side="left"))
         if upto > taken:
             wanted.append((start, end - start, rows[taken:upto] - start))
@@ -723,6 +726,7 @@ class CalendarSampler:
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
         provenance: bool = False,
+        file_index: Path | None = None,
     ):
         if period not in self._PERIOD_PREFIX_LENGTH:
             raise ValueError(
@@ -739,6 +743,7 @@ class CalendarSampler:
         self.end_date = end_date
         self.date_parser = date_parser
         self.provenance = provenance
+        self.file_index = file_index
         self.rng = ReproducibleRNG(random_state)
 
         # Populated by get_calendar_samples with each period's true row
@@ -787,7 +792,7 @@ class CalendarSampler:
     def _gather(
         self,
         files: list[Path],
-        file_schemas: dict[Path, dict[str, pl.DataType]],
+        index: FileIndex,
         target_schema: dict[str, pl.DataType],
         chosen: pl.DataFrame,
         columns: list[str],
@@ -802,7 +807,9 @@ class CalendarSampler:
         with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
             for (file_index,), rows in chosen.group_by(self._FILE_INDEX, maintain_order=True):
                 f = files[int(file_index)]  # type: ignore[arg-type]
-                df = _read_rows(f, rows[self._ROW].to_numpy(), target, file_schemas[f])
+                df = _read_rows(
+                    f, rows[self._ROW].to_numpy(), target, index.schemas[f], index.row_groups[f]
+                )
                 df = df.with_columns(rows[self._ORDER])
                 if self.provenance:
                     df = df.with_columns(
@@ -810,8 +817,11 @@ class CalendarSampler:
                     )
                 parts.append(df)
         sample = pl.concat(parts, how="vertical_relaxed").sort(self._ORDER).drop(self._ORDER)
-        roots = [self.folder] + ([self.historical_folder] if self.historical_folder else [])
-        return _label_provenance(sample, roots)
+        return _label_provenance(sample, self._roots)
+
+    @property
+    def _roots(self) -> list[Path]:
+        return [self.folder] + ([self.historical_folder] if self.historical_folder else [])
 
     def _warn_before_1979(self, n_rows: int) -> None:
         """
@@ -864,8 +874,13 @@ class CalendarSampler:
                 self.folder, self.historical_folder,
                 self.start_date, self.end_date, self.date_parser,
             )
-            # Every footer read once, for both passes.
-            file_schemas = read_file_schemas(files)
+            # Every footer read once (or none, from the saved index), for
+            # both passes.
+            index = FileIndex(
+                files, saved=self.file_index, roots=self._roots,
+                label=f"calendar sample dataset in {self.folder}",
+            )
+            file_schemas = index.schemas
             target_schema = reconcile_file_schemas(file_schemas)
         available = set(target_schema)
         if self.date_column not in available:
@@ -1033,7 +1048,7 @@ class CalendarSampler:
         # null).
         chosen = pl.concat(list(reservoirs.values()))
         columns = needed if needed is not None else list(target_schema)
-        return self._gather(files, file_schemas, target_schema, chosen, columns)
+        return self._gather(files, index, target_schema, chosen, columns)
 
 
 # ----------------------------------------------------------
@@ -1062,8 +1077,12 @@ class FilteredSampler:
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
         provenance: bool = False,
+        file_index: Path | None = None,
     ):
         self.provenance = provenance
+        self.file_index = file_index
+        # The scanned files and their FileIndex, built once (_indexed_files).
+        self._indexed: tuple[list[Path], FileIndex] | None = None
         self._gdelt_columns_ordered = list(gdelt_columns)
         self.gdelt_columns = set(gdelt_columns)
         # Columns the clean stage adds (errata originals, derived columns):
@@ -1386,23 +1405,40 @@ class FilteredSampler:
         return expr
 
     # ---------- dataset: union of flat daily + historical partition files ----------
+    @property
+    def _roots(self) -> list[Path]:
+        return [self.folder] + ([self.historical_folder] if self.historical_folder else [])
+
+    def _indexed_files(self) -> tuple[list[Path], FileIndex]:
+        """The files to scan, in scan order, and their FileIndex: every
+        footer read once per sampler (or none, from the saved index), not
+        once per scan."""
+        if self._indexed is None:
+            files = _discover_dataset_files(
+                self.folder, self.historical_folder,
+                self.start_date, self.end_date, self.date_parser,
+            )
+            index = FileIndex(
+                files, saved=self.file_index, roots=self._roots,
+                label=f"filtered sample dataset in {self.folder}",
+            )
+            self._indexed = (files, index)
+        return self._indexed
+
     def _dataset(self) -> pl.LazyFrame:
-        files = _discover_dataset_files(
-            self.folder, self.historical_folder,
-            self.start_date, self.end_date, self.date_parser,
-        )
+        files, index = self._indexed_files()
         if self.provenance:
             # Each row's file and its position there, numbered before the
             # filter.
             return scan_dataset_reconciled(
-                files, include_file_paths=SOURCE_FILE, row_index=SOURCE_ROW
+                files, file_schemas=index.schemas,
+                include_file_paths=SOURCE_FILE, row_index=SOURCE_ROW,
             )
-        return _scan_dataset(files)
+        return _scan_dataset(files, index.schemas)
 
     def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
         """A sample with its provenance labelled (_label_provenance)."""
-        roots = [self.folder] + ([self.historical_folder] if self.historical_folder else [])
-        return _label_provenance(df, roots)
+        return _label_provenance(df, self._roots)
 
     def _batches(self, needed_columns: list[str]):
         """

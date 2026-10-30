@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- `sample` keeps a saved file index: each Parquet file's rows, row groups and schema, read from its footer once and reused while the file's size and modification time are unchanged, so a later sample over the same files reads no footers (one `stat` per file instead). Every mode used to read every footer on every run, the indexed mode through one PyArrow dataset that held every file's metadata: over the 368,388 files of the translated GKG 2.1 stream on a network share it ran for hours and passed 60 GB before it was stopped. The index lives under the new `paths.index_directory` (default `./data/index`), one file per source directory; `--file-index PATH` reads and updates another, and `index_directory: null` keeps none. Footers are read a few at a time, under `io.max_concurrent_reads`, and each once per run: the filtered mode read them again for every scan, and the indexed and calendar modes again for the rows they read. The rows drawn are the same with or without the index. See `docs/cli-reference.md#saved-file-index`.
+
 ## [0.14.2] - 2026-10-29
 
 ### Fixed
