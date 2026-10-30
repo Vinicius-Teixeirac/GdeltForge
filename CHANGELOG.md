@@ -14,6 +14,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 - `sample --mode filtered` draws in two passes, random, `--replace` and `--stratify` alike, as `--mode calendar` has since 0.13.0: the draw streams only the columns the filter and `--stratify` name, with each row's file and position, and the chosen rows are read afterwards from the row groups holding them, a few at a time. Each draw streamed every output column of every file passing the filter and kept whole rows in its reservoirs. Over the 366 Events files of 2016, with every column, a stratified draw of 500 rows per group peaks at 1.1 GB (2.1 GB before) and a `--replace` draw of 20,000 rows at 1.1 GB (past 4.5 GB before). The rows drawn are the same, in the same order, with the dataset's own column types. With `--provenance`, filtered sampling no longer scans the files one by one.
 
+### Security
+- The development lock file moves certifi to 2026.10.23, clearing a critical advisory (fixed in 2026.10.18; certifi comes through `requests` and the `selenium` extra), and filelock to 4.2.5 on Python 3.11 and later, clearing 12 advisories (fixed in 4.2.1 and 4.0.9; filelock comes through `pre-commit`, a development tool). On Python 3.10 filelock stays at 4.1.0: 4.2 requires Python 3.11, so the advisories fixed in 4.2.1 remain for a 3.10 development environment. The package's own dependency ranges are unchanged, so an installed wheel already resolves certifi 2026.10.23; a checkout picks it up with `uv sync`.
+
 ## [0.14.2] - 2026-10-29
 
 ### Fixed
