@@ -1507,6 +1507,105 @@ class TestRunSamplingCmdIgnoredN:
         assert self.drawn["n"] == 1000
 
 
+class TestQuotaFile:
+    """--quota-file: per-group counts for calendar and stratified samples;
+    an unlisted group gets --per-period/--n-per-group, else 0."""
+
+    @pytest.fixture(autouse=True)
+    def _fakes(self, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        monkeypatch.setattr(cli, "_write_strata_sidecar", lambda *a, **kw: None)
+        self.drawn = {}
+        drawn = self.drawn
+        frame = pl.DataFrame({"GlobalEventID": [1], "Day": [20200101]})
+
+        class FakeSampler:
+            period_row_counts_ = stratum_row_counts_ = None
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_stratified_sample(self, column, n_per_group, **kwargs):
+                drawn.update(n_per_group=n_per_group, **kwargs)
+                return frame
+
+            def get_calendar_samples(self, samples_per_period, **kwargs):
+                drawn.update(samples_per_period=samples_per_period, **kwargs)
+                return frame
+
+            def get_random_sample(self, n, replace=False):
+                drawn["n"] = n
+                return frame
+
+        for name in ("IndexedSampler", "FilteredSampler", "CalendarSampler"):
+            monkeypatch.setattr(cli, name, FakeSampler)
+
+    _run = staticmethod(TestRunSamplingCmdIgnoredN._run)
+
+    @staticmethod
+    def _quota_file(tmp_path, text):
+        path = tmp_path / "quotas.csv"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def test_stratified_quotas_and_unlisted_groups_get_nothing(self, tmp_path):
+        quotas = self._quota_file(tmp_path, "group,count\n1,30\n2,0\n__NA__,5\n")
+        self._run(tmp_path, "--mode", "filtered", "--stratify", "QuadClass",
+                  "--quota-file", quotas)
+        assert self.drawn == {"n_per_group": 0, "quotas": {"1": 30, "2": 0, "__NA__": 5}}
+
+    def test_n_per_group_sizes_the_unlisted_groups(self, tmp_path):
+        quotas = self._quota_file(tmp_path, "group,count\n1,30\n")
+        self._run(tmp_path, "--mode", "filtered", "--stratify", "QuadClass",
+                  "--quota-file", quotas, "--n-per-group", "4")
+        assert self.drawn == {"n_per_group": 4, "quotas": {"1": 30}}
+
+    def test_calendar_quotas(self, tmp_path):
+        quotas = self._quota_file(tmp_path, "﻿group,count\n202001,100\n202002,7\n")
+        self._run(tmp_path, "--mode", "calendar", "--period", "month", "--quota-file", quotas)
+        assert self.drawn == {"samples_per_period": 0, "quotas": {"202001": 100, "202002": 7}}
+        self.drawn.clear()
+        self._run(tmp_path, "--mode", "calendar", "--period", "month", "--quota-file", quotas,
+                  "--per-period", "3")
+        assert self.drawn["samples_per_period"] == 3
+
+    def test_without_a_quota_file_nothing_changes(self, tmp_path):
+        self._run(tmp_path, "--mode", "calendar")
+        assert self.drawn == {"samples_per_period": 10}
+        self.drawn.clear()
+        with pytest.raises(ValueError, match="--n-per-group"):
+            self._run(tmp_path, "--mode", "filtered", "--stratify", "QuadClass")
+
+    @pytest.mark.parametrize("flags", [
+        ["--mode", "indexed"], ["--mode", "filtered", "--filter", "{}"],
+    ])
+    def test_refused_without_groups(self, tmp_path, flags):
+        quotas = self._quota_file(tmp_path, "group,count\n1,3\n")
+        with pytest.raises(ValueError, match="applies to --mode calendar"):
+            self._run(tmp_path, *flags, "--quota-file", quotas)
+        assert self.drawn == {}
+
+    @pytest.mark.parametrize(("text", "message"), [
+        ("", "header 'group,count'"),
+        ("stratum,n\n1,3\n", "header 'group,count'"),
+        ("group,count\n1,-3\n", "line 2: count must be a whole number"),
+        ("group,count\n1,3.5\n", "line 2: count must be a whole number"),
+        ("group,count\n1,3\n1,4\n", "line 3: group '1' listed twice"),
+        ("group,count\n1,3,4\n", "line 2: expected group,count"),
+    ])
+    def test_a_malformed_file_is_refused(self, tmp_path, text, message):
+        quotas = self._quota_file(tmp_path, text)
+        with pytest.raises(ValueError, match=re.escape(message)):
+            self._run(tmp_path, "--mode", "filtered", "--stratify", "QuadClass",
+                      "--quota-file", quotas)
+
+    def test_a_missing_file_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="Could not read --quota-file"):
+            self._run(tmp_path, "--mode", "calendar", "--quota-file",
+                      str(tmp_path / "absent.csv"))
+
+
 class TestStrataSidecar:
     """<out>.strata.json, written after calendar/stratified sampling from
     period_row_counts_/stratum_row_counts_, the true per-group row counts

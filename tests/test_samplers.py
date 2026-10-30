@@ -2401,6 +2401,87 @@ class TestStratifiedSampling:
             source[g] == n for g, n in df.select("GlobalEventID", "NumArticles").iter_rows()
         )
 
+class TestQuotas:
+    """Per-group counts (sample --quota-file): a listed group draws its
+    own count, an unlisted one the per-group default."""
+
+    @staticmethod
+    def _write(folder):
+        folder.mkdir()
+        for k in range(3):
+            n = 40
+            pl.DataFrame({
+                "GlobalEventID": range(k * n, (k + 1) * n),
+                "Day": [20200101 + k] * 20 + [20200201 + k] * 20,
+                "QuadClass": [(i % 4) + 1 if i % 9 else None for i in range(n)],
+            }).write_parquet(folder / f"2020010{k + 1}.export.parquet", row_group_size=7)
+
+    @staticmethod
+    def _stratified(folder, n_per_group, quotas=None):
+        sampler = FilteredSampler(
+            str(folder), ["GlobalEventID", "Day", "QuadClass"], random_state=5
+        )
+        return sampler, sampler.get_stratified_sample("QuadClass", n_per_group, quotas)
+
+    def test_each_listed_group_draws_its_count(self, tmp_path):
+        self._write(tmp_path / "data")
+        sampler, df = self._stratified(
+            tmp_path / "data", 2, {"1": 6, "3": 0, "__NA__": 1}
+        )
+        sizes = _size_by_group(df.with_columns(pl.col("QuadClass").fill_null(0)), "QuadClass")
+        assert sizes == {1: 6, 2: 2, 4: 2, 0: 1}
+        # Every group is still counted, a group of quota 0 too.
+        assert set(sampler.stratum_row_counts_ or {}) == {"1", "2", "3", "4", "__NA__"}
+        assert sum((sampler.stratum_row_counts_ or {}).values()) == 120
+
+    def test_a_group_draws_the_rows_it_draws_with_that_count_for_every_group(self, tmp_path):
+        # Each group has its own random stream, so a quota changes only its
+        # own group's draw.
+        self._write(tmp_path / "data")
+        _, with_quota = self._stratified(tmp_path / "data", 2, {"1": 6})
+        _, plain = self._stratified(tmp_path / "data", 6)
+        _, plain_two = self._stratified(tmp_path / "data", 2)
+
+        def ids(df, quad):
+            return df.filter(pl.col("QuadClass") == quad)["GlobalEventID"].to_list()
+
+        assert ids(with_quota, 1) == ids(plain, 1)
+        assert ids(with_quota, 2) == ids(plain_two, 2)
+
+    def test_quotas_alone_draw_only_the_listed_groups(self, tmp_path):
+        self._write(tmp_path / "data")
+        _, df = self._stratified(tmp_path / "data", 0, {"2": 3})
+        assert df["QuadClass"].to_list() == [2, 2, 2]
+
+    def test_calendar_quotas(self, tmp_path):
+        self._write(tmp_path / "data")
+        sampler = CalendarSampler(str(tmp_path / "data"), random_state=5, period="month")
+        df = sampler.get_calendar_samples(0, {"202002": 9})
+        assert df.height == 9
+        assert (df["Day"] // 100 == 202002).all()
+        assert sampler.period_row_counts_ == {"202001": 60, "202002": 60}
+
+    def test_a_listed_group_absent_from_the_data_warns(self, tmp_path, caplog):
+        self._write(tmp_path / "data")
+        with caplog.at_level(logging.WARNING):
+            _, df = self._stratified(tmp_path / "data", 1, {"1": 2, "7": 5})
+        assert "1 'QuadClass' group(s) in the quotas have no rows here: '7'" in caplog.text
+        assert df.height == 2 + 1 + 1 + 1 + 1
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            CalendarSampler(
+                str(tmp_path / "data"), random_state=5, period="month"
+            ).get_calendar_samples(1, {"2020-01": 3})
+        assert "1 period(s) in the quotas have no rows here: '2020-01'" in caplog.text
+
+    def test_a_negative_quota_is_refused(self, tmp_path):
+        self._write(tmp_path / "data")
+        with pytest.raises(ValueError, match="non-negative"):
+            self._stratified(tmp_path / "data", 1, {"1": -2})
+        with pytest.raises(ValueError, match="non-negative"):
+            CalendarSampler(str(tmp_path / "data")).get_calendar_samples(1, {"20200101": -1})
+
+
 class TestFilteredSamplerTwoPass:
     """Every FilteredSampler draw runs over row identities, scanning only
     the filter's and the strata's columns; a second pass reads the chosen
