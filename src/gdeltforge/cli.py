@@ -1,11 +1,12 @@
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import os
 import signal
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import polars as pl
@@ -340,6 +341,88 @@ def _write_strata_sidecar(out: Path, group_by: str, counts: dict) -> None:
         logger.warning(f"Could not write strata sidecar {sidecar}: {e}")
 
 
+_MANIFEST_VERSION = 1
+
+
+def _files_fingerprint(sampler) -> dict | None:
+    """
+    The files a sample read: how many, their rows, and a sha256 over each
+    file's path (relative to its source directory) and row count, so two
+    samples read the same files exactly when their fingerprints match.
+    None when the sampler kept no file index.
+    """
+    index = getattr(sampler, "index", None)
+    if index is None:
+        return None
+    roots = [Path(r).resolve() for r in getattr(sampler, "_roots", [])]
+    lines = []
+    for f, rows in zip(index.files, index.counts, strict=True):
+        full = Path(f).resolve()
+        rel = next((full.relative_to(r) for r in roots if full.is_relative_to(r)), Path(full.name))
+        lines.append(f"{rel.as_posix()}\t{rows}\n")
+    digest = hashlib.sha256("".join(sorted(lines)).encode("utf-8")).hexdigest()
+    return {"files": len(lines), "rows": index.total_rows, "sha256": digest}
+
+
+def _file_sha256(path: Path) -> str | None:
+    """The sha256 of a written file, or None when it can't be read."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _write_manifest(
+    out: Path, args: argparse.Namespace, sampler, df: pl.DataFrame, draw: dict,
+    sources: list[Path], strata: bool,
+) -> None:
+    """
+    Best-effort <out>.manifest.json beside every sample: the gdeltforge
+    version, the command, the draw's settings (seed, mode, sizes, filter,
+    quotas), the files read (_files_fingerprint) and the output written
+    (rows, columns, sha256). A write failure, like the strata sidecar's,
+    only warns.
+    """
+    manifest = {
+        "manifest_version": _MANIFEST_VERSION,
+        "gdeltforge": __version__,
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "command": ["gdeltforge", *sys.argv[1:]],
+        "draw": {
+            "dataset": args.dataset,
+            "source": args.source,
+            "mode": args.mode,
+            "seed": args.seed,
+            "start_date": getattr(args, "start_date", None),
+            "end_date": getattr(args, "end_date", None),
+            "columns": list(args.columns) if args.columns else None,
+            "provenance": getattr(args, "provenance", False),
+            **draw,
+        },
+        "input": {
+            "directories": [str(d) for d in sources],
+            **(_files_fingerprint(sampler) or {}),
+        },
+        "output": {
+            "file": out.name,
+            "format": args.export_format,
+            "rows": df.height,
+            "columns": df.columns,
+            "sha256": _file_sha256(out),
+        },
+        "strata": out.name + ".strata.json" if strata else None,
+    }
+    path = out.with_name(out.name + ".manifest.json")
+    try:
+        path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Could not write sample manifest {path}: {e}")
+
+
 def _read_quota_file(path: Path) -> dict[str, int]:
     """
     --quota-file: a CSV with the header group,count, one row per group: a
@@ -601,9 +684,8 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     columns = set(args.columns) if args.columns else None
-    file_index = _sample_file_index(
-        config, args, [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
-    )
+    sources = [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
+    file_index = _sample_file_index(config, args, sources)
 
     # -----------------------------
     # Indexed Sampling
@@ -622,6 +704,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         )
         df = sampler.get_random_sample(n, replace=args.replace)
         _write_sample_output(df, out, args.export_format)
+        _write_manifest(
+            out, args, sampler, df, {"n": n, "replace": args.replace}, sources, strata=False
+        )
         logger.info(f"Saved indexed sample ({len(df)} rows) -> {out}")
         return
 
@@ -678,6 +763,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         # the sampler never actually ran, which can't happen here.
         if sampler.period_row_counts_ is not None:
             _write_strata_sidecar(out, date_column, sampler.period_row_counts_)
+        _write_manifest(
+            out, args, sampler, df,
+            {
+                "period": period, "date_column": date_column,
+                "per_period": samples_per_period, "quota_file": quota_file, "quotas": quotas,
+            },
+            sources, strata=sampler.period_row_counts_ is not None,
+        )
         logger.info(
             f"Saved calendar sample ({len(df)} rows, period={period}"
             + (f", quotas from {quota_file}" if quotas is not None else "")
@@ -739,6 +832,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             # still be written for that case.
             if sampler.stratum_row_counts_ is not None:
                 _write_strata_sidecar(out, args.stratify, sampler.stratum_row_counts_)
+            _write_manifest(
+                out, args, sampler, df,
+                {
+                    "filter": filter_dict, "stratify": args.stratify,
+                    "n_per_group": n_per_group, "quota_file": quota_file, "quotas": quotas,
+                },
+                sources, strata=sampler.stratum_row_counts_ is not None,
+            )
             logger.info(
                 f"Saved stratified sample ({len(df)} rows) "
                 f"stratified by '{args.stratify}' ("
@@ -751,6 +852,11 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         else:
             df = sampler.get_random_sample(n, replace=args.replace)
             _write_sample_output(df, out, args.export_format)
+            _write_manifest(
+                out, args, sampler, df,
+                {"filter": filter_dict, "n": n, "replace": args.replace},
+                sources, strata=False,
+            )
             logger.info(
                 f"Saved filtered sample ({len(df)} rows) "
                 f"using filter={filter_dict} -> {out}"

@@ -315,6 +315,28 @@ warning. Like the clean run audit, it must sit outside every data directory.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
 sets.
 
+### Sample manifest
+
+Every sample is written with `<out>.manifest.json` beside it, a record of how
+it was drawn:
+
+- `gdeltforge`: the version that drew it, and `command`, the command line.
+- `draw`: the settings: dataset, source, mode, seed, date range, columns,
+  provenance, and the mode's own: `-n` and `--replace`, `--filter`,
+  `--stratify` and `--n-per-group`, `--period` and `--per-period`, and the
+  quotas of a `--quota-file`, written out in full.
+- `input`: the source directories, how many files were read and their rows,
+  and `sha256`, a hash over each file's path within its directory and its
+  row count. Two samples read the same files exactly when these match; a
+  file added, removed, renamed or rewritten with other rows changes it.
+- `output`: the file's name, format, rows, columns and `sha256`.
+- `strata`: the name of the `.strata.json` sidecar, for a calendar or
+  stratified sample.
+
+The command and the directories are local paths, so read the manifest
+before sharing it. Writing it is best-effort, as the strata sidecar's is: a
+failure logs a warning and leaves the sample in place.
+
 ### Indexed sampling (uniform random)
 
 ```bash
