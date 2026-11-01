@@ -299,7 +299,7 @@ gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance 
 ### Saved file index
 
 Every sample first reads each file's footer: its rows, row groups and
-columns. Over the 368,388 files of the translated GKG 2.1 stream on a network
+columns. Over the 368,388 files of the translated Events 15-minute stream on a network
 share, that alone ran for hours and passed 60 GB before it was stopped. `sample` keeps those facts in a saved file
 index, one per source directory under `paths.index_directory` (default
 `./data/index`), and on a later run reads only the footers of files that are
