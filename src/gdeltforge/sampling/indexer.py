@@ -12,7 +12,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gdeltforge.utils.io import _map_files, clearer_dataset_errors
+from gdeltforge.utils.io import _imap_files, _map_files, clearer_dataset_errors
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -65,7 +65,7 @@ class FileIndex:
     Efficient global-row-index -> (file, relative-row) mapping, with each
     file's row groups and schema.
 
-    Every file's footer is read once, a few at a time (_map_files). With
+    Every file's footer is read once, a few at a time (_imap_files). With
     `saved`, the footer facts are kept in that file and reused while a
     file's size and mtime are unchanged, so a later sample over the same
     files reads no footers at all (one stat per file instead).
@@ -129,20 +129,17 @@ class FileIndex:
 
         missing = [i for i, e in enumerate(entries) if e is None]
         if missing:
-            # A corrupt/non-parquet file raises here, named clearly.
-            # Schemas interned as they're read: most files share one.
-            interned: dict[bytes, bytes] = {
-                e.schema: e.schema for e in known.values()
-            }
-
-            def read(f: Path) -> tuple[tuple[int, ...], bytes]:
-                row_groups, schema = _read_footer(f)
-                return row_groups, interned.setdefault(schema, schema)
-
+            facts = _FooterFacts({e.schema: e.schema for e in known.values()})
+            # The footers are read a few at a time on worker threads; each
+            # one's facts are taken here, on this thread. Taken on the
+            # workers, on Linux, they kept about 114 KiB per file: 43 GiB
+            # over 368,388 files, against about 3 KiB here. A corrupt or
+            # non-parquet file raises here, named clearly.
             with clearer_dataset_errors(self._label):
-                read_entries = _map_files(read, [self.files[i] for i in missing])
-            for i, (row_groups, schema) in zip(missing, read_entries, strict=True):
-                entries[i] = _Entry(stats[i].st_size, stats[i].st_mtime_ns, row_groups, schema)
+                footers = _imap_files(_read_footer, [self.files[i] for i in missing])
+                for i, metadata in zip(missing, footers, strict=True):
+                    row_groups, schema = facts(metadata)
+                    entries[i] = _Entry(stats[i].st_size, stats[i].st_mtime_ns, row_groups, schema)
         logger.info(
             f"FileIndex: {len(missing):,} footer(s) read, "
             f"{len(self.files) - len(missing):,} from the saved index."
@@ -281,14 +278,37 @@ class FileIndex:
         return result
 
 
-def _read_footer(file: Path) -> tuple[tuple[int, ...], bytes]:
-    """A file's row-group sizes and its Arrow schema, from one footer read."""
-    metadata = pq.ParquetFile(file).metadata
-    row_groups = tuple(metadata.row_group(i).num_rows for i in range(metadata.num_row_groups))
-    # Without the file's metadata (a cleaned file's marker names its own
-    # source), so files with the same columns share one schema.
-    schema = metadata.schema.to_arrow_schema().remove_metadata()
-    return row_groups, schema.serialize().to_pybytes()
+def _read_footer(file: Path) -> pq.FileMetaData:
+    """A file's footer."""
+    return pq.ParquetFile(file).metadata
+
+
+class _FooterFacts:
+    """
+    A footer's row-group sizes and Arrow schema (serialized), the schema
+    interned in `interned` (most files share one). Converting a footer's
+    schema to Arrow costs about 300 us, so a footer whose schema matches
+    the one before reuses that one's (about 6 us to compare).
+    """
+
+    def __init__(self, interned: dict[bytes, bytes]):
+        self.interned = interned
+        self.last: tuple[pq.ParquetSchema, bytes | None, bytes] | None = None
+
+    def __call__(self, metadata: pq.FileMetaData) -> tuple[tuple[int, ...], bytes]:
+        row_groups = tuple(metadata.row_group(i).num_rows for i in range(metadata.num_row_groups))
+        # The Arrow schema pyarrow derives depends on this key as well.
+        arrow = (metadata.metadata or {}).get(b"ARROW:schema")
+        if self.last is not None:
+            parquet_schema, last_arrow, schema = self.last
+            if arrow == last_arrow and metadata.schema.equals(parquet_schema):
+                return row_groups, schema
+        # Without the file's metadata (a cleaned file's marker names its
+        # own source), so files with the same columns share one schema.
+        serialized = metadata.schema.to_arrow_schema().remove_metadata().serialize().to_pybytes()
+        schema = self.interned.setdefault(serialized, serialized)
+        self.last = (metadata.schema, arrow, schema)
+        return row_groups, schema
 
 
 def _polars_schema(serialized: bytes) -> dict[str, pl.DataType]:
