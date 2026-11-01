@@ -380,3 +380,33 @@ class TestFooterReads:
         with pytest.raises(OSError, match="unreadable"):
             list(io_module._imap_files(fn, list(range(20))))
 
+
+class TestSavedIndexUpkeep:
+    def test_a_removed_file_leaves_the_saved_index_at_its_next_save(self, tmp_path):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        FileIndex(data, saved=saved)
+        (data / "20200101.export.parquet").unlink()
+        _write_days(data, days=("20200104",), rows=5)
+        FileIndex(data, saved=saved)
+        paths = pq.read_table(saved, columns=["path"])["path"].to_pylist()
+        assert sorted(Path(p).name for p in paths) == [
+            "20200102.export.parquet", "20200103.export.parquet", "20200104.export.parquet",
+        ]
+
+    def test_entries_of_files_not_sampled_this_time_are_kept(self, tmp_path):
+        # A sample over some dates reads only some of the root's files.
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        files = sorted(data.glob("*.parquet"))
+        FileIndex(files[:1], saved=saved, roots=[data])
+        FileIndex(files[1:], saved=saved, roots=[data])
+        assert pq.read_table(saved).num_rows == 3
+
+    def test_the_refusal_names_the_index_directory(self, tmp_path):
+        data = tmp_path / "data"
+        data.mkdir()
+        with pytest.raises(ValueError, match=r"The index directory \S*idx would sit inside"):
+            index_path_for(data / "idx", [data])

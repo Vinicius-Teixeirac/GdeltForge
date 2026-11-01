@@ -311,6 +311,7 @@ each. The rows drawn are the same with or without it.
 run. The index is a cache: deleting it only costs the next run its footer
 reads, and one that can't be read or written is rebuilt or skipped with a
 warning. Like the clean run audit, it must sit outside every data directory.
+A file removed from the directory leaves the index at its next save.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
 sets.
 

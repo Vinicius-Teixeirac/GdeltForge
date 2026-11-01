@@ -43,19 +43,19 @@ def index_path_for(index_directory: str | Path, roots: list[Path]) -> Path:
     it would sit inside one of them.
     """
     directory = Path(index_directory)
-    _refuse_inside_roots(directory / "x", roots)
+    _refuse_inside_roots(directory, roots, "The index directory")
     key = "\n".join(os.path.abspath(r) for r in roots)
     digest = hashlib.sha256(key.encode()).hexdigest()[:12]
     first = Path(os.path.abspath(roots[0]))
     return directory / f"{first.parent.name}_{first.name}-{digest}{INDEX_SUFFIX}"
 
 
-def _refuse_inside_roots(path: Path, roots: list[Path]) -> None:
+def _refuse_inside_roots(path: Path, roots: list[Path], what: str = "The file index") -> None:
     target = Path(os.path.abspath(path))
     for root in roots:
         if target.is_relative_to(os.path.abspath(root)):
             raise ValueError(
-                f"The file index {path} would sit inside {root}, which the sample reads. "
+                f"{what} {path} would sit inside {root}, which the sample reads. "
                 f"Point paths.index_directory (or --file-index) outside every data directory."
             )
 
@@ -83,8 +83,9 @@ class FileIndex:
         self.saved = saved
         # What a footer-read error names (clearer_dataset_errors).
         self._label = label or f"{len(self.files)} parquet file(s)"
+        self._roots = roots or ([self.folder] if self.folder else [])
         if saved is not None:
-            _refuse_inside_roots(saved, roots or ([self.folder] if self.folder else []))
+            _refuse_inside_roots(saved, self._roots)
 
         logger.info("Building FileIndex from Parquet footers...")
         self._build_metadata()
@@ -174,7 +175,7 @@ class FileIndex:
 
         if self.saved is not None and missing:
             known.update(zip(keys, (e for e in entries if e is not None), strict=True))
-            self._save(known)
+            self._save(self._without_removed_files(known))
 
     # ----------------------------------------------------------
     # The saved index
@@ -209,6 +210,22 @@ class FileIndex:
                 columns["path"], columns["size"], columns["mtime_ns"],
                 columns["row_groups"], schema_ids, strict=True,
             )
+        }
+
+    def _without_removed_files(self, entries: dict[str, _Entry]) -> dict[str, _Entry]:
+        """`entries` less those of files gone from the roots (one listing
+        per root): over a directory whose files are renamed or rotated,
+        the saved index would otherwise only grow. An entry outside every
+        root, or with no roots known, is kept."""
+        if not self._roots:
+            return entries
+        roots = {os.path.abspath(r) for r in self._roots}
+        present = {
+            os.path.abspath(f) for root in self._roots for f in Path(root).glob("*.parquet")
+        }
+        return {
+            path: entry for path, entry in entries.items()
+            if path in present or os.path.dirname(path) not in roots
         }
 
     def _save(self, entries: dict[str, _Entry]) -> None:
