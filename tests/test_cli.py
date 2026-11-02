@@ -1360,8 +1360,10 @@ class TestSampleManifest:
         assert manifest["input"] == {
             "directories": [str(cleaned)], "files": 3, "rows": 30,
             "sha256": self._files_sha256([
-                "20200101.export.parquet\t10\n", "20200102.export.parquet\t10\n",
-                "20200201.export.parquet\t10\n",
+                f"{name}\t{(cleaned / name).stat().st_size}\t10\n" for name in (
+                    "20200101.export.parquet", "20200102.export.parquet",
+                    "20200201.export.parquet",
+                )
             ]),
         }
         assert manifest["output"] == {
@@ -1418,6 +1420,41 @@ class TestSampleManifest:
         grown = self._sample(config, tmp_path / "c.parquet", "--mode", "indexed", "-n", "2")
         assert grown["input"]["files"] == 4
         assert grown["input"]["sha256"] != first["input"]["sha256"]
+
+    def test_a_file_rewritten_to_another_size_with_its_row_count_changes_it(self, tmp_path):
+        config, cleaned = self._setup(tmp_path)
+        first = self._sample(config, tmp_path / "a.parquet", "--mode", "indexed", "-n", "2")
+        day = cleaned / "20200102.export.parquet"
+        size = day.stat().st_size
+        pl.read_parquet(day).with_columns(pl.col("GlobalEventID") + 1000).write_parquet(
+            day, compression="uncompressed"
+        )
+        assert day.stat().st_size != size
+        rewritten = self._sample(config, tmp_path / "b.parquet", "--mode", "indexed", "-n", "2")
+        assert rewritten["input"]["rows"] == first["input"]["rows"]
+        assert rewritten["input"]["sha256"] != first["input"]["sha256"]
+
+    def test_a_count_only_the_quota_file_gives_is_null(self, tmp_path):
+        config, _ = self._setup(tmp_path)
+        quotas = tmp_path / "quotas.csv"
+        quotas.write_text("group,count\n1,2\n", encoding="utf-8")
+        strat = self._sample(
+            config, tmp_path / "s.parquet", "--mode", "filtered", "--stratify", "QuadClass",
+            "--quota-file", str(quotas),
+        )
+        assert strat["draw"]["n_per_group"] is None
+        months = tmp_path / "months.csv"
+        months.write_text("group,count\n2020-01,2\n", encoding="utf-8")
+        calendar = self._sample(
+            config, tmp_path / "c.parquet", "--mode", "calendar", "--period", "month",
+            "--quota-file", str(months),
+        )
+        assert calendar["draw"]["per_period"] is None
+        explicit = self._sample(
+            config, tmp_path / "c0.parquet", "--mode", "calendar", "--period", "month",
+            "--quota-file", str(months), "--per-period", "0",
+        )
+        assert explicit["draw"]["per_period"] == 0
 
     def test_a_failed_write_only_warns(self, tmp_path, monkeypatch, caplog):
         config, _ = self._setup(tmp_path)

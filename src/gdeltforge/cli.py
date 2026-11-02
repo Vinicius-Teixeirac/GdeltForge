@@ -347,8 +347,10 @@ _MANIFEST_VERSION = 1
 def _files_fingerprint(sampler) -> dict | None:
     """
     The files a sample read: how many, their rows, and a sha256 over each
-    file's path (relative to its source directory) and row count, so two
-    samples read the same files exactly when their fingerprints match.
+    file's path (relative to its source directory), size in bytes and row
+    count. A file added, removed, renamed, or rewritten to another size or
+    row count changes it; one rewritten to the same size and row count
+    does not (hashing every file's content would read the whole dataset).
     None when the sampler kept no file index.
     """
     index = getattr(sampler, "index", None)
@@ -356,10 +358,10 @@ def _files_fingerprint(sampler) -> dict | None:
         return None
     roots = [Path(r).resolve() for r in getattr(sampler, "_roots", [])]
     lines = []
-    for f, rows in zip(index.files, index.counts, strict=True):
+    for f, size, rows in zip(index.files, index.sizes, index.counts, strict=True):
         full = Path(f).resolve()
         rel = next((full.relative_to(r) for r in roots if full.is_relative_to(r)), Path(full.name))
-        lines.append(f"{rel.as_posix()}\t{rows}\n")
+        lines.append(f"{rel.as_posix()}\t{size}\t{rows}\n")
     digest = hashlib.sha256("".join(sorted(lines)).encode("utf-8")).hexdigest()
     return {"files": len(lines), "rows": index.total_rows, "sha256": digest}
 
@@ -767,7 +769,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             out, args, sampler, df,
             {
                 "period": period, "date_column": date_column,
-                "per_period": samples_per_period, "quota_file": quota_file, "quotas": quotas,
+                # null when only the quota file gives counts.
+                "per_period": (
+                    None if quotas is not None and args.per_period is None
+                    and args.per_day is None else samples_per_period
+                ),
+                "quota_file": quota_file, "quotas": quotas,
             },
             sources, strata=sampler.period_row_counts_ is not None,
         )
@@ -836,7 +843,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 out, args, sampler, df,
                 {
                     "filter": filter_dict, "stratify": args.stratify,
-                    "n_per_group": n_per_group, "quota_file": quota_file, "quotas": quotas,
+                    # null when only the quota file gives counts.
+                    "n_per_group": args.n_per_group,
+                    "quota_file": quota_file, "quotas": quotas,
                 },
                 sources, strata=sampler.stratum_row_counts_ is not None,
             )
