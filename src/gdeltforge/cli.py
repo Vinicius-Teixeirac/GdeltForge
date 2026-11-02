@@ -347,8 +347,10 @@ _MANIFEST_VERSION = 1
 def _files_fingerprint(sampler) -> dict | None:
     """
     The files a sample read: how many, their rows, and a sha256 over each
-    file's path (relative to its source directory) and row count, so two
-    samples read the same files exactly when their fingerprints match.
+    file's path (relative to its source directory), size in bytes and row
+    count. A file added, removed, renamed, or rewritten to another size or
+    row count changes it; one rewritten to the same size and row count
+    does not (hashing every file's content would read the whole dataset).
     None when the sampler kept no file index.
     """
     index = getattr(sampler, "index", None)
@@ -356,10 +358,10 @@ def _files_fingerprint(sampler) -> dict | None:
         return None
     roots = [Path(r).resolve() for r in getattr(sampler, "_roots", [])]
     lines = []
-    for f, rows in zip(index.files, index.counts, strict=True):
+    for f, size, rows in zip(index.files, index.sizes, index.counts, strict=True):
         full = Path(f).resolve()
         rel = next((full.relative_to(r) for r in roots if full.is_relative_to(r)), Path(full.name))
-        lines.append(f"{rel.as_posix()}\t{rows}\n")
+        lines.append(f"{rel.as_posix()}\t{size}\t{rows}\n")
     digest = hashlib.sha256("".join(sorted(lines)).encode("utf-8")).hexdigest()
     return {"files": len(lines), "rows": index.total_rows, "sha256": digest}
 

@@ -327,9 +327,11 @@ it was drawn:
   `--stratify` and `--n-per-group`, `--period` and `--per-period`, and the
   quotas of a `--quota-file`, written out in full.
 - `input`: the source directories, how many files were read and their rows,
-  and `sha256`, a hash over each file's path within its directory and its
-  row count. Two samples read the same files exactly when these match; a
-  file added, removed, renamed or rewritten with other rows changes it.
+  and `sha256`, a hash over each file's path within its directory, its size
+  in bytes and its row count. A file added, removed, renamed, or rewritten
+  to another size or row count changes it. A file rewritten to the same
+  size and row count leaves it unchanged: it names the files read, it does
+  not hash their content. For that, keep the files' own checksums.
 - `output`: the file's name, format, rows, columns and `sha256`.
 - `strata`: the name of the `.strata.json` sidecar, for a calendar or
   stratified sample.

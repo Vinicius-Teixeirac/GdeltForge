@@ -116,6 +116,7 @@ class FileIndex:
         self.stops: list[int] = []    # cumulative row end positions (+1)
         self.starts: list[int] = []   # starting global index for each file
         self.counts: list[int] = []   # rows per file
+        self.sizes: list[int] = []    # bytes per file
 
         stats = _map_files(os.stat, self.files)
         known = self._load_saved()
@@ -164,6 +165,7 @@ class FileIndex:
             cumulative += nrows
             self.stops.append(cumulative)
             self.counts.append(nrows)
+            self.sizes.append(entry.size)
 
         self.total_rows = cumulative
         # Every column any file has, in first-seen order: IndexedSampler
