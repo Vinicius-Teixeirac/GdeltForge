@@ -325,7 +325,9 @@ it was drawn:
 - `draw`: the settings: dataset, source, mode, seed, date range, columns,
   provenance, and the mode's own: `-n` and `--replace`, `--filter`,
   `--stratify` and `--n-per-group`, `--period` and `--per-period`, and the
-  quotas of a `--quota-file`, written out in full.
+  quotas of a `--quota-file`, written out in full. With a quota file and
+  no `--n-per-group` or `--per-period`, that count is `null`: a group the
+  file doesn't list draws no rows.
 - `input`: the source directories, how many files were read and their rows,
   and `sha256`, a hash over each file's path within its directory, its size
   in bytes and its row count. A file added, removed, renamed, or rewritten

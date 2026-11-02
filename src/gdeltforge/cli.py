@@ -769,7 +769,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             out, args, sampler, df,
             {
                 "period": period, "date_column": date_column,
-                "per_period": samples_per_period, "quota_file": quota_file, "quotas": quotas,
+                # null when only the quota file gives counts.
+                "per_period": (
+                    None if quotas is not None and args.per_period is None
+                    and args.per_day is None else samples_per_period
+                ),
+                "quota_file": quota_file, "quotas": quotas,
             },
             sources, strata=sampler.period_row_counts_ is not None,
         )
@@ -838,7 +843,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 out, args, sampler, df,
                 {
                     "filter": filter_dict, "stratify": args.stratify,
-                    "n_per_group": n_per_group, "quota_file": quota_file, "quotas": quotas,
+                    # null when only the quota file gives counts.
+                    "n_per_group": args.n_per_group,
+                    "quota_file": quota_file, "quotas": quotas,
                 },
                 sources, strata=sampler.stratum_row_counts_ is not None,
             )
