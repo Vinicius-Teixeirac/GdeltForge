@@ -300,7 +300,7 @@ gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance 
 ### Saved file index
 
 Every sample first reads each file's footer: its rows, row groups and
-columns. Over the 368,388 files of the translated GKG 2.1 stream on a network
+columns. Over the 368,388 files of the translated Events 15-minute stream on a network
 share, that alone ran for hours and passed 60 GB before it was stopped. `sample` keeps those facts in a saved file
 index, one per source directory under `paths.index_directory` (default
 `./data/index`), and on a later run reads only the footers of files that are
@@ -312,6 +312,7 @@ each. The rows drawn are the same with or without it.
 run. The index is a cache: deleting it only costs the next run its footer
 reads, and one that can't be read or written is rebuilt or skipped with a
 warning. Like the clean run audit, it must sit outside every data directory.
+A file removed from the directory leaves the index at its next save.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
 sets.
 
@@ -413,7 +414,7 @@ gdeltforge sample \
 
 Filters support nested `AND`/`OR` blocks; see the example pipelines below for an `OR` example across multiple columns.
 
-`--replace` also works here (without `--stratify`): `gdeltforge sample --dataset events --mode filtered --filter '{"QuadClass": [1, 2]}' -n 5000 --replace` samples the filtered rows with replacement. Unlike `indexed`, the filtered row count isn't known upfront, so this runs a first counting pass (filter columns only, no rows materialized) before drawing `n` positions with replacement and streaming the filtered rows a second time to gather them; expect roughly double the I/O of the same call without `--replace`.
+`--replace` also works here (without `--stratify`): `gdeltforge sample --dataset events --mode filtered --filter '{"QuadClass": [1, 2]}' -n 5000 --replace` samples the filtered rows with replacement. Unlike `indexed`, the filtered row count isn't known upfront, so this first counts the filtered rows (a scan of the filter's columns only) before drawing `n` positions with replacement. The chosen rows are then read as for any filtered draw: the only extra cost is that one scan of the filter's columns.
 
 !!! warning "Two country-code schemes, easy to mix up"
 

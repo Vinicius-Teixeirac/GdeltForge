@@ -311,3 +311,102 @@ class TestSamplersWithASavedIndex:
         assert read == []
         for a, b, c in zip(without, first, second, strict=True):
             assert a.equals(b) and b.equals(c)
+
+
+class TestFooterReads:
+    def test_footer_facts_are_taken_on_the_calling_thread(self, tmp_path, monkeypatch):
+        # On Linux, taking them on the worker threads kept about 114 KiB
+        # per file: 43 GiB over 368,388 files.
+        data = tmp_path / "data"
+        _write_days(data, days=tuple(f"202001{d:02d}" for d in range(1, 13)), rows=3)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "4")
+        threads = set()
+        original = indexer_module._FooterFacts.__call__
+
+        def spy(self, metadata):
+            threads.add(threading.get_ident())
+            return original(self, metadata)
+
+        monkeypatch.setattr(indexer_module._FooterFacts, "__call__", spy)
+        index = FileIndex(data)
+        assert threads == {threading.get_ident()}
+        assert index.counts == [3] * 12
+
+    def test_a_schema_like_the_one_before_is_not_mistaken_for_it(self, tmp_path):
+        # The last footer's schema is reused only when it matches.
+        data = tmp_path / "data"
+        data.mkdir()
+        pl.DataFrame({"a": [1]}).write_parquet(data / "1.parquet")
+        pl.DataFrame({"a": [1]}).write_parquet(data / "2.parquet")
+        pl.DataFrame({"a": [1]}, schema={"a": pl.Int32}).write_parquet(data / "3.parquet")
+        pq.write_table(pa.table({"a": pa.array([1], pa.int32())}), data / "4.parquet")
+        pl.DataFrame({"a": ["x"]}).write_parquet(data / "5.parquet")
+        index = FileIndex(data)
+        assert [index.schemas[f] for f in index.files] == [
+            dict(pl.read_parquet_schema(f).items()) for f in index.files
+        ]
+        assert [index.schemas[f]["a"] for f in index.files] == [
+            pl.Int64, pl.Int64, pl.Int32, pl.Int32, pl.String,
+        ]
+
+    def test_reads_run_only_a_few_ahead_and_come_back_in_order(self, monkeypatch):
+        from gdeltforge.utils import io as io_module
+
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "2")
+        started = []
+
+        def fn(k):
+            started.append(k)
+            return k * 10
+
+        results = io_module._imap_files(fn, list(range(100)))
+        assert next(results) == 0
+        time.sleep(0.05)
+        # Two workers, eight calls in flight at most, plus the next one
+        # the first result made room for.
+        assert len(started) <= 9
+        assert [0, *results] == [k * 10 for k in range(100)]
+
+    def test_an_error_in_a_read_reaches_the_caller(self, monkeypatch):
+        from gdeltforge.utils import io as io_module
+
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "2")
+
+        def fn(k):
+            if k == 5:
+                raise OSError("unreadable")
+            return k
+
+        with pytest.raises(OSError, match="unreadable"):
+            list(io_module._imap_files(fn, list(range(20))))
+
+
+class TestSavedIndexUpkeep:
+    def test_a_removed_file_leaves_the_saved_index_at_its_next_save(self, tmp_path):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        FileIndex(data, saved=saved)
+        (data / "20200101.export.parquet").unlink()
+        _write_days(data, days=("20200104",), rows=5)
+        FileIndex(data, saved=saved)
+        paths = pq.read_table(saved, columns=["path"])["path"].to_pylist()
+        assert sorted(Path(p).name for p in paths) == [
+            "20200102.export.parquet", "20200103.export.parquet", "20200104.export.parquet",
+        ]
+
+    def test_entries_of_files_not_sampled_this_time_are_kept(self, tmp_path):
+        # A sample over some dates reads only some of the root's files.
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        files = sorted(data.glob("*.parquet"))
+        FileIndex(files[:1], saved=saved, roots=[data])
+        FileIndex(files[1:], saved=saved, roots=[data])
+        assert pq.read_table(saved).num_rows == 3
+
+    def test_the_refusal_names_the_index_directory(self, tmp_path):
+        data = tmp_path / "data"
+        data.mkdir()
+        with pytest.raises(ValueError, match=r"The index directory \S*idx would sit inside"):
+            index_path_for(data / "idx", [data])

@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 from tqdm import tqdm
 
+from gdeltforge.sampling.indexer import FileIndex
 from gdeltforge.sampling.samplers import (
     CalendarSampler,
     FilteredSampler,
@@ -2600,6 +2601,67 @@ class TestFilteredSamplerTwoPass:
         ).get_random_sample(50)
         assert sorted(df["GlobalEventID"].to_list()) == list(range(50))
         assert batches == [3, 2]
+
+    def test_a_large_row_group_is_read_a_few_columns_at_a_time(self, tmp_path, monkeypatch):
+        # A row group decodes whole: the yearly Events files' million-row
+        # groups, every column, four at once, peaked far above a full scan.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        self._write(tmp_path / "data")
+        whole = self._draws(tmp_path / "data", provenance=True)
+        widths = []
+        real = samplers_module.pl.collect_all
+
+        def spy(frames, *args, **kwargs):
+            widths.extend(len(f.collect_schema()) for f in frames)
+            return real(frames, *args, **kwargs)
+
+        # Row groups of 4 rows: 2 columns per read.
+        monkeypatch.setattr(samplers_module, "_CELLS_PER_READ", 8)
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        split = self._draws(tmp_path / "data", provenance=True)
+        assert widths and max(widths) == 2
+        for name, df in whole.items():
+            assert split[name].equals(df)
+
+    def test_read_units_split_only_a_row_group_above_the_budget(self, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        monkeypatch.setattr(samplers_module, "_CELLS_PER_READ", 100)
+        lf = pl.LazyFrame()
+        reads = [
+            (lf, 0, 10, np.arange(3)), (lf, 10, 40, np.arange(3)), (lf, 50, 1000, np.arange(3)),
+        ]
+        units = samplers_module._read_units(reads, ["a", "b", "c", "d", "e"])
+        assert units == [
+            (0, ["a", "b", "c", "d", "e"]),
+            (1, ["a", "b"]), (1, ["c", "d"]), (1, ["e"]),
+            (2, ["a"]), (2, ["b"]), (2, ["c"]), (2, ["d"]), (2, ["e"]),
+        ]
+
+    def test_the_gathered_rows_keep_the_order_they_were_chosen_in(self, tmp_path):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        source = self._write(tmp_path / "data")
+        files = sorted((tmp_path / "data").glob("*.parquet"))
+        index = FileIndex(files)
+        target = dict(source.schema)
+        every = pl.DataFrame({
+            "__row_file__": [k for k, n in enumerate(index.counts) for _ in range(n)],
+            "__row_position__": [p for n in index.counts for p in range(n)],
+        })
+        for chosen in (every, every.reverse(), every.sample(fraction=1.0, shuffle=True, seed=3)):
+            df = samplers_module._gather_rows(
+                files, index, target, chosen, list(target), False, "test"
+            )
+            expected = chosen.join(
+                source.with_columns(
+                    pl.Series("__row_file__", every["__row_file__"]),
+                    pl.Series("__row_position__", every["__row_position__"]),
+                ),
+                on=["__row_file__", "__row_position__"], how="left", maintain_order="left",
+            ).drop("__row_file__", "__row_position__")
+            assert df.equals(expected)
 
     def test_with_provenance_each_row_names_its_own_file_and_position(self, tmp_path):
         folder = tmp_path / "data"
