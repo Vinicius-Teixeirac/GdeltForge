@@ -646,7 +646,7 @@ def _read_rows(
     """
     lf = scan_file_against_schema(file, target_schema, real_schema=real_schema)
     reads = [(lf, first, count, at) for first, count, at, _ in _row_group_reads(rows, row_groups)]
-    return pl.concat(_collect_reads(reads))
+    return pl.concat(_collect_reads(reads, list(target_schema)))
 
 
 def _row_group_reads(
@@ -673,22 +673,57 @@ def _row_group_reads(
     return wanted
 
 
-def _collect_reads(reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]]) -> list[pl.DataFrame]:
+# At most this many values (rows x columns) of one row group are decoded
+# by one read. A row group decodes whole, whatever rows a filter keeps,
+# and the 1979 to 2005 yearly Events files hold a million rows per group:
+# four of those read at once, every column, peaked at 9.6 GiB where a
+# full scan of the archive took 5.2. A larger row group is read a few
+# columns at a time: a daily file's (about 200,000 rows) in two reads, a
+# yearly file's in about seven. A random draw over a month of daily
+# files peaked at 1.1 GiB with 8M values per read, 1.5 with 16M (0.14.2's
+# single pass: 2.8).
+_CELLS_PER_READ = 8_000_000
+
+
+def _read_units(
+    reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]], columns: list[str]
+) -> list[tuple[int, list[str]]]:
+    """Each read of `reads` as one or more (read, columns) units of at
+    most _CELLS_PER_READ values, a single column being the smallest."""
+    units = []
+    for k, (_, _, count, _) in enumerate(reads):
+        width = max(1, _CELLS_PER_READ // max(1, count))
+        units.extend((k, columns[i:i + width]) for i in range(0, len(columns), width))
+    return units
+
+
+def _collect_reads(
+    reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]], columns: list[str]
+) -> list[pl.DataFrame]:
     """
     The chosen rows of each (scan, first row, row count, positions) row
-    group, collected a few row groups at a time (the scan limit, as
-    _read_rows explains), each copied out (detach).
+    group, its `columns` collected a few reads at a time (the scan limit,
+    as _read_rows explains; a large row group in several reads,
+    _read_units), each copied out (detach) unless every row of the row
+    group is kept.
     """
     at_once = exported_scan_limit() or 4
-    parts = []
-    for i in range(0, len(reads), at_once):
-        batch = reads[i:i + at_once]
-        chunks = pl.collect_all([lf.slice(first, count) for lf, first, count, _ in batch])
-        for chunk, (_, _, _, positions) in zip(chunks, batch, strict=True):
-            # Bracket indexing: DataFrame.gather() postdates polars 1.34.
-            parts.append(detach(chunk[positions]))
+    units = _read_units(reads, columns)
+    pieces: list[list[pl.Series]] = [[] for _ in reads]
+    for i in range(0, len(units), at_once):
+        batch = units[i:i + at_once]
+        chunks = pl.collect_all([
+            reads[k][0].select(names).slice(reads[k][1], reads[k][2]) for k, names in batch
+        ])
+        for chunk, (k, _) in zip(chunks, batch, strict=True):
+            positions, count = reads[k][3], reads[k][2]
+            if len(positions) == count and np.array_equal(positions, np.arange(count)):
+                pieces[k].extend(chunk.get_columns())
+            else:
+                # Bracket indexing: DataFrame.gather() postdates polars 1.34.
+                pieces[k].extend(detach(chunk[positions]).get_columns())
         del chunks
-    return parts
+    return [pl.DataFrame(series) for series in pieces]
 
 
 # A two-pass draw's row identity: the row's file (an index into the
@@ -733,14 +768,20 @@ def _gather_rows(
             ):
                 reads.append((lf, first, count, at))
                 labels.append((rows[_ROW_ORDER][which], str(f), positions[which]))
-        parts = _collect_reads(reads)
+        parts = _collect_reads(reads, columns)
     for i, (order, path, positions) in enumerate(labels):
         parts[i] = parts[i].with_columns(order)
         if provenance:
             parts[i] = parts[i].with_columns(
                 pl.lit(path).alias(SOURCE_FILE), positions.alias(SOURCE_ROW)
             )
-    return pl.concat(parts, how="vertical_relaxed").sort(_ROW_ORDER).drop(_ROW_ORDER)
+    sample = pl.concat(parts, how="vertical_relaxed")
+    del parts
+    # Sorting copies every row; a sample already in file order (every row
+    # of a week, say) skips it.
+    if not sample[_ROW_ORDER].is_sorted():
+        sample = sample.sort(_ROW_ORDER)
+    return sample.drop(_ROW_ORDER)
 
 
 # ----------------------------------------------------------
