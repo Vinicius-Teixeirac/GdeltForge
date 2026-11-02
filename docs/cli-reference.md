@@ -299,7 +299,7 @@ gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance 
 ### Saved file index
 
 Every sample first reads each file's footer: its rows, row groups and
-columns. Over the 368,388 files of the translated GKG 2.1 stream on a network
+columns. Over the 368,388 files of the translated Events 15-minute stream on a network
 share, that alone ran for hours and passed 60 GB before it was stopped. `sample` keeps those facts in a saved file
 index, one per source directory under `paths.index_directory` (default
 `./data/index`), and on a later run reads only the footers of files that are
@@ -311,6 +311,7 @@ each. The rows drawn are the same with or without it.
 run. The index is a cache: deleting it only costs the next run its footer
 reads, and one that can't be read or written is rebuilt or skipped with a
 warning. Like the clean run audit, it must sit outside every data directory.
+A file removed from the directory leaves the index at its next save.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
 sets.
 

@@ -3,9 +3,11 @@ import os
 import re
 import sys
 import zipfile
-from collections.abc import Callable, Mapping
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from itertools import islice
 from pathlib import Path
 from typing import TypeVar
 
@@ -789,6 +791,24 @@ def _map_files(fn: Callable[[_T], _R], files: list[_T]) -> list[_R]:
         return [fn(f) for f in files]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(fn, files))
+
+
+def _imap_files(fn: Callable[[_T], _R], files: list[_T]) -> Iterator[_R]:
+    """_map_files, each result handed to the caller as soon as it and every
+    one before it are ready, with only a few calls run ahead of the
+    caller, so the results never pile up while the caller works on them."""
+    workers = min(_footer_reads_at_once(), max(1, len(files)))
+    if workers == 1:
+        yield from map(fn, files)
+        return
+    remaining = iter(files)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = deque(pool.submit(fn, f) for f in islice(remaining, 4 * workers))
+        while pending:
+            result = pending.popleft().result()
+            for f in islice(remaining, 1):
+                pending.append(pool.submit(fn, f))
+            yield result
 
 
 def read_file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
