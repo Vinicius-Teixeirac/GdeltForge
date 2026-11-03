@@ -690,9 +690,14 @@ def _collect_reads(
     pieces: list[list[pl.Series]] = [[] for _ in reads]
     for i in range(0, len(units), at_once):
         batch = units[i:i + at_once]
-        chunks = pl.collect_all([
-            reads[k][0].select(names).slice(reads[k][1], reads[k][2]) for k, names in batch
-        ])
+        # Reads of one file share its scan, and common-subplan elimination
+        # would read that scan once, whole, and slice it afterwards: four
+        # row groups of a cleaned monthly Events file (42 groups) peaked
+        # at 1.4 GiB that way, 0.13 GiB without it.
+        chunks = pl.collect_all(
+            [reads[k][0].select(names).slice(reads[k][1], reads[k][2]) for k, names in batch],
+            optimizations=pl.QueryOptFlags(comm_subplan_elim=False),
+        )
         for chunk, (k, _) in zip(chunks, batch, strict=True):
             positions, count = reads[k][3], reads[k][2]
             if len(positions) == count and np.array_equal(positions, np.arange(count)):

@@ -2543,6 +2543,28 @@ class TestFilteredSamplerTwoPass:
         for name, df in whole.items():
             assert split[name].equals(df)
 
+    def test_reads_of_one_file_are_not_merged_into_one_scan(self, tmp_path, monkeypatch):
+        # Common-subplan elimination turned row-group slices of one file,
+        # collected together, into one cached read of the whole file: four
+        # row groups of a 42-group file peaked at ten times their size.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        path = tmp_path / "f.parquet"
+        pl.DataFrame({"a": range(40), "b": range(40)}).write_parquet(path, row_group_size=10)
+        lf = pl.scan_parquet(path)
+        reads = [(lf, first, 10, np.array([1, 3])) for first in (0, 10, 20, 30)]
+        real = pl.collect_all
+        flags = []
+
+        def spy(frames, *args, **kwargs):
+            flags.append(kwargs.get("optimizations", pl.QueryOptFlags()).comm_subplan_elim)
+            return real(frames, *args, **kwargs)
+
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        parts = samplers_module._collect_reads(reads, ["a", "b"])
+        assert [p["a"].to_list() for p in parts] == [[1, 3], [11, 13], [21, 23], [31, 33]]
+        assert flags == [False]
+
     def test_read_units_split_only_a_row_group_above_the_budget(self, monkeypatch):
         import gdeltforge.sampling.samplers as samplers_module
 
