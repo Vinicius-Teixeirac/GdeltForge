@@ -2643,8 +2643,77 @@ class TestFilteredSamplerTwoPass:
 
         monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
         parts = samplers_module._collect_reads(reads, ["a", "b"])
-        assert [p["a"].to_list() for p in parts] == [[1, 3], [11, 13], [21, 23], [31, 33]]
+        assert pl.concat(parts)["a"].to_list() == [1, 3, 11, 13, 21, 23, 31, 33]
         assert flags == [False]
+
+    def test_the_rows_of_many_small_reads_are_copied_into_a_few_frames(
+        self, tmp_path, monkeypatch
+    ):
+        # One frame per read: 13,000 reads of two rows, 58 columns, held
+        # 1.3 GiB for 10 MiB of values.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        path = tmp_path / "f.parquet"
+        pl.DataFrame({
+            "a": range(200), "s": [f"v{i}" for i in range(200)],
+        }).write_parquet(path, row_group_size=10)
+        lf = pl.scan_parquet(path)
+        # 18 reads of two rows, then a whole row group, then 1 more read.
+        reads = [(lf, first, 10, np.array([2, 7])) for first in range(0, 180, 10)]
+        reads.append((lf, 180, 10, np.arange(10)))
+        reads.append((lf, 190, 10, np.array([4])))
+        monkeypatch.setattr(samplers_module, "_READS_PER_COPY", 4)
+        monkeypatch.setattr(samplers_module, "_ROWS_PER_COPY", 1000)
+        parts = samplers_module._collect_reads(reads, ["a", "s"])
+        expected = [f + p for f in range(0, 180, 10) for p in (2, 7)]
+        expected += [*range(180, 190), 194]
+        df = pl.concat(parts)
+        assert df["a"].to_list() == expected
+        assert df["s"].to_list() == [f"v{i}" for i in expected]
+        # 36 rows in copies of 4 reads (8 rows each), the last two reads
+        # of the 18 copied alone, the whole row group as it is (a week of
+        # whole row groups copied again peaked 80 % higher), then 194.
+        assert [p.height for p in parts] == [8, 8, 8, 8, 4, 10, 1]
+
+    def test_a_sample_of_whole_row_groups_is_not_copied_into_one_chunk(self, tmp_path):
+        # The chosen rows came in several chunks, and labels sliced from
+        # them made polars rechunk the whole sample: every row of a week
+        # peaked at 2.3 GiB, 1.6 without.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        # polars sorts a frame this large into several chunks.
+        n = 100_000
+        folder = tmp_path / "data"
+        folder.mkdir()
+        for k in range(3):
+            pl.DataFrame({"a": range(k * n, k * n + n)}).write_parquet(folder / f"{k}.parquet")
+        files = sorted(folder.glob("*.parquet"))
+        index = FileIndex(files)
+        chosen = pl.DataFrame({
+            "__row_file__": [k for k in range(3) for _ in range(n)],
+            "__row_position__": [p for _ in range(3) for p in range(n)],
+        })
+        df = samplers_module._gather_rows(
+            files, index, {"a": pl.Int64()}, chosen, ["a"], False, "test"
+        )
+        assert df["a"].to_list() == list(range(3 * n))
+        assert df.n_chunks("all") == [3]
+
+    def test_a_read_of_many_chosen_rows_is_kept_in_a_frame_of_its_own(
+        self, tmp_path, monkeypatch
+    ):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        path = tmp_path / "f.parquet"
+        pl.DataFrame({"a": range(60)}).write_parquet(path, row_group_size=20)
+        lf = pl.scan_parquet(path)
+        reads = [
+            (lf, 0, 20, np.array([1])), (lf, 20, 20, np.arange(0, 20, 2)),
+            (lf, 40, 20, np.array([3])),
+        ]
+        monkeypatch.setattr(samplers_module, "_ROWS_PER_COPY", 10)
+        parts = samplers_module._collect_reads(reads, ["a"])
+        assert [p["a"].to_list() for p in parts] == [[1], list(range(20, 40, 2)), [43]]
 
     def test_read_units_split_only_a_row_group_above_the_budget(self, monkeypatch):
         import gdeltforge.sampling.samplers as samplers_module

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import zlib
+from collections import Counter
 from collections.abc import Callable
 from datetime import date, datetime
 from enum import Enum
@@ -696,19 +697,46 @@ def _read_units(
     return units
 
 
+# The chosen rows of this many row groups, or of row groups holding this
+# many rows in all, are copied into one frame as they come in. With a
+# frame per read, a random draw of 20,000 rows over the 4,634 cleaned
+# daily Events files kept about 13,000 frames of 58 columns (13,000
+# frames of two rows hold 1.3 GiB for 10 MiB of values), and it peaked
+# at 2.4 GiB where 0.14.2 took 1.5.
+_READS_PER_COPY = 256
+_ROWS_PER_COPY = 65_536
+
+
 def _collect_reads(
     reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]], columns: list[str]
 ) -> list[pl.DataFrame]:
     """
     The chosen rows of each (scan, first row, row count, positions) row
-    group, its `columns` collected a few reads at a time (the scan limit,
-    as _read_rows explains; a large row group in several reads,
-    _read_units), each copied out (detach) unless every row of the row
-    group is kept.
+    group, in order, its `columns` collected a few reads at a time (the
+    scan limit, as _read_rows explains; a large row group in several
+    reads, _read_units), each copied out (detach) unless every row of the
+    row group is kept. The rows come back in a few frames: the small
+    reads' rows copied together (_READS_PER_COPY), a row group kept whole
+    or a read of _ROWS_PER_COPY rows or more in a frame of its own.
     """
     at_once = exported_scan_limit() or 4
     units = _read_units(reads, columns)
-    pieces: list[list[pl.Series]] = [[] for _ in reads]
+    left = Counter(k for k, _ in units)
+    pieces: dict[int, list[pl.Series]] = {}
+    whole: set[int] = set()
+    frames: list[pl.DataFrame] = []
+    small: list[pl.DataFrame] = []
+    small_rows = 0
+
+    def copy_small() -> None:
+        nonlocal small_rows
+        if small:
+            frames.append(
+                small[0] if len(small) == 1 else detach(pl.concat(small, how="vertical_relaxed"))
+            )
+            small.clear()
+            small_rows = 0
+
     for i in range(0, len(units), at_once):
         batch = units[i:i + at_once]
         # Reads of one file share its scan, and common-subplan elimination
@@ -722,12 +750,28 @@ def _collect_reads(
         for chunk, (k, _) in zip(chunks, batch, strict=True):
             positions, count = reads[k][3], reads[k][2]
             if len(positions) == count and np.array_equal(positions, np.arange(count)):
-                pieces[k].extend(chunk.get_columns())
+                pieces.setdefault(k, []).extend(chunk.get_columns())
+                whole.add(k)
             else:
                 # Bracket indexing: DataFrame.gather() postdates polars 1.34.
-                pieces[k].extend(detach(chunk[positions]).get_columns())
+                pieces.setdefault(k, []).extend(detach(chunk[positions]).get_columns())
+            left[k] -= 1
+            if left[k]:
+                continue
+            frame = pl.DataFrame(pieces.pop(k))
+            # A row group kept whole is never copied: every row of a week
+            # copied again peaked at 2.2 GiB, 1.2 without.
+            if k in whole or frame.height >= _ROWS_PER_COPY:
+                copy_small()
+                frames.append(frame)
+            else:
+                small.append(frame)
+                small_rows += frame.height
+                if len(small) >= _READS_PER_COPY or small_rows >= _ROWS_PER_COPY:
+                    copy_small()
         del chunks
-    return [pl.DataFrame(series) for series in pieces]
+    copy_small()
+    return frames
 
 
 # A two-pass draw's row identity: the row's file (an index into the
@@ -758,27 +802,36 @@ def _gather_rows(
     converted file's name).
     """
     target = {c: target_schema[c] for c in columns}
-    chosen = chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER)
+    # In one chunk, so each part's labels below are too: labels in more
+    # chunks than their part's columns rechunked the sample, every row.
+    chosen = (
+        chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER).rechunk()
+    )
     reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]] = []
-    # Per read: its rows' places in the sample, file and positions.
-    labels: list[tuple[pl.Series, str, pl.Series]] = []
     with clearer_dataset_errors(label):
         for (file_index,), rows in chosen.group_by(_ROW_FILE, maintain_order=True):
             f = files[int(file_index)]  # type: ignore[arg-type]
             lf = scan_file_against_schema(f, target, real_schema=index.schemas[f])
-            positions = rows[_ROW_POSITION]
-            for first, count, at, which in _row_group_reads(
-                positions.to_numpy(), index.row_groups[f]
+            for first, count, at, _ in _row_group_reads(
+                rows[_ROW_POSITION].to_numpy(), index.row_groups[f]
             ):
                 reads.append((lf, first, count, at))
-                labels.append((rows[_ROW_ORDER][which], str(f), positions[which]))
         parts = _collect_reads(reads, columns)
-    for i, (order, path, positions) in enumerate(labels):
-        parts[i] = parts[i].with_columns(order)
+    # The reads cover the rows of `chosen` once each, in its order. Each
+    # part takes its own rows' labels, so they are chunked as its columns
+    # are: a label column chunked otherwise rechunks the whole sample.
+    paths = {k: str(files[k]) for k in chosen[_ROW_FILE].unique().to_list()}
+    start = 0
+    for i, part in enumerate(parts):
+        rows = chosen.slice(start, part.height)
+        start += part.height
+        labels = [rows[_ROW_ORDER]]
         if provenance:
-            parts[i] = parts[i].with_columns(
-                pl.lit(path).alias(SOURCE_FILE), positions.alias(SOURCE_ROW)
-            )
+            labels += [
+                rows[_ROW_FILE].replace_strict(paths, return_dtype=pl.String).alias(SOURCE_FILE),
+                rows[_ROW_POSITION].alias(SOURCE_ROW),
+            ]
+        parts[i] = part.with_columns(labels)
     sample = pl.concat(parts, how="vertical_relaxed")
     del parts
     # Sorting copies every row; a sample already in file order (every row
