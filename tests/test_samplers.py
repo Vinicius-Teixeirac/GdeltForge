@@ -2616,7 +2616,8 @@ class TestFilteredSamplerTwoPass:
             files, index, {"a": pl.Int64()}, chosen, ["a"], False, "test"
         )
         assert df["a"].to_list() == list(range(3 * n))
-        assert df.n_chunks("all") == [3]
+        # A chunk per part at least (polars 1.34 collects each in several).
+        assert df.n_chunks("all")[0] >= 3
 
     def test_a_read_of_many_chosen_rows_is_kept_in_a_frame_of_its_own(
         self, tmp_path, monkeypatch

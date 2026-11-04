@@ -796,8 +796,9 @@ def _gather_rows(
                 reads.append((lf, first, count, at))
         parts = _collect_reads(reads, columns)
     # The reads cover the rows of `chosen` once each, in its order. Each
-    # part takes its own rows' labels, so they are chunked as its columns
-    # are: a label column chunked otherwise rechunks the whole sample.
+    # part takes its own rows' labels, chunked as its columns are: a label
+    # column chunked otherwise rechunks the whole sample, and polars 1.34
+    # collects a row group kept whole in several chunks.
     paths = {k: str(files[k]) for k in chosen[_ROW_FILE].unique().to_list()}
     start = 0
     for i, part in enumerate(parts):
@@ -809,7 +810,8 @@ def _gather_rows(
                 rows[_ROW_FILE].replace_strict(paths, return_dtype=pl.String).alias(SOURCE_FILE),
                 rows[_ROW_POSITION].alias(SOURCE_ROW),
             ]
-        parts[i] = part.with_columns(labels)
+        lengths = part.to_series(0).chunk_lengths()
+        parts[i] = part.with_columns(_chunked_as(s, lengths) for s in labels)
     sample = pl.concat(parts, how="vertical_relaxed")
     del parts
     # Sorting copies every row; a sample already in file order (every row
@@ -817,6 +819,16 @@ def _gather_rows(
     if not sample[_ROW_ORDER].is_sorted():
         sample = sample.sort(_ROW_ORDER)
     return sample.drop(_ROW_ORDER)
+
+
+def _chunked_as(series: pl.Series, lengths: list[int]) -> pl.Series:
+    """`series` (in one chunk) in chunks of `lengths`, without a copy."""
+    if len(lengths) <= 1:
+        return series
+    starts = np.cumsum([0, *lengths[:-1]])
+    return pl.concat(
+        [series.slice(int(a), n) for a, n in zip(starts, lengths, strict=True)], rechunk=False
+    )
 
 
 # ----------------------------------------------------------
