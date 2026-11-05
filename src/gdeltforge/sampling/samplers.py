@@ -665,7 +665,7 @@ def _read_units(
 # frame per read, a random draw of 20,000 rows over the 4,634 cleaned
 # daily Events files kept about 13,000 frames of 58 columns (13,000
 # frames of two rows hold 1.3 GiB for 10 MiB of values), and it peaked
-# at 2.4 GiB where 0.14.2 took 1.5.
+# at 2.0 GiB on Linux where 0.14.2 took 1.1.
 _READS_PER_COPY = 256
 _ROWS_PER_COPY = 65_536
 
