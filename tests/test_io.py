@@ -1176,7 +1176,7 @@ class TestNarrowToAvailableColumns:
 
 class TestReconcileParquetSchema:
     """
-    Shared by samplers.py's _scan_dataset/IndexedSampler.get_random_sample
+    Shared by samplers.py's CalendarSampler/FilteredSampler/IndexedSampler.get_random_sample
     and crossref.py's _dataset: a real accumulated GDELT archive can
     declare the same column under genuinely different dtypes in different
     files (events' own Actor2Geo_Type is Float64 in every archive through

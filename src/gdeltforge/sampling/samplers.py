@@ -105,25 +105,6 @@ def _discover_dataset_files(
     return all_files
 
 
-def _scan_dataset(
-    files: list[Path], file_schemas: dict[Path, dict[str, pl.DataType]]
-) -> pl.LazyFrame:
-    # polars' scan_parquet infers its schema from a single file rather
-    # than the union of every file's schema the way pyarrow.dataset.
-    # dataset() does, confirmed directly: a column present in some files
-    # and absent from others (e.g. a historical partition file converted
-    # under an older, narrower output_columns) raises "extra column ...
-    # outside of expected schema" for whichever file doesn't match the
-    # schema scan_parquet happened to infer, regardless of file order. A
-    # column present in every file but typed differently in some of them
-    # (e.g. events' own Actor2Geo_Type, Float64 through 2007-10 and Int64
-    # from 2007-11 onward) raises a different but related "data type
-    # mismatch" once scan_parquet hits a file whose own dtype disagrees
-    # with the schema it inferred. scan_dataset_reconciled resolves both:
-    # see its own docstring for the full mechanism.
-    return scan_dataset_reconciled(files, file_schemas=file_schemas)
-
-
 # ----------------------------------------------------------
 # Row provenance
 # ----------------------------------------------------------
@@ -555,7 +536,7 @@ class IndexedSampler:
         read_columns = list(self.columns) if self.columns else None
 
         # Reconciled schema across just the files this call actually
-        # touches, the same reconciliation _scan_dataset/
+        # touches, the same reconciliation
         # scan_dataset_reconciled already applies for CalendarSampler/
         # FilteredSampler: a real accumulated data directory can hold
         # files whose own physical schema genuinely differs, whether a
@@ -678,11 +659,15 @@ def _row_group_reads(
 # by one read. A row group decodes whole, whatever rows a filter keeps,
 # and the converted 1979 to 2005 yearly Events files hold a million rows
 # per group: four of those, every column, peaked at 3.1 GiB. A larger
-# row group is read a few columns at a time: a converted daily file's
-# (about 200,000 rows) in two reads, a converted yearly file's in about
-# seven. A random draw over a month of daily files peaked at 1.1 GiB
-# with 8M values per read, 1.5 with 16M (0.14.2's single pass: 2.8).
-_CELLS_PER_READ = 8_000_000
+# row group is read a few columns at a time: a cleaned daily file's
+# (about 100,000 rows) in two reads, a converted daily file's (about
+# 200,000) in three, a converted yearly file's in about fifteen. A
+# random draw over a month of daily files peaked at 1.1 GiB with 8M
+# values per read, 1.5 with 16M (0.14.2's single pass: 2.8). Over the
+# 4,634 cleaned daily files it peaked at 1.0 to 1.1 GiB with 8M and 0.7
+# with 2M (0.14.2: 1.0 to 1.1), on Linux; 2M doubled a one-year draw's
+# time.
+_CELLS_PER_READ = 4_000_000
 
 
 def _read_units(
@@ -702,7 +687,7 @@ def _read_units(
 # frame per read, a random draw of 20,000 rows over the 4,634 cleaned
 # daily Events files kept about 13,000 frames of 58 columns (13,000
 # frames of two rows hold 1.3 GiB for 10 MiB of values), and it peaked
-# at 2.4 GiB where 0.14.2 took 1.5.
+# at 2.0 GiB on Linux where 0.14.2 took 1.1.
 _READS_PER_COPY = 256
 _ROWS_PER_COPY = 65_536
 
@@ -802,20 +787,32 @@ def _gather_rows(
     converted file's name).
     """
     target = {c: target_schema[c] for c in columns}
-    # In one chunk, so each part's labels below are too: labels in more
-    # chunks than their part's columns rechunked the sample, every row.
-    chosen = (
-        chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER).rechunk()
-    )
+    # Rows chosen in file order (every row of a week, say) are read as
+    # they are; any others are sorted into file order, each numbered with
+    # its place in `chosen` to be put back there. Numbering and sorting a
+    # week's rows, unneeded, kept it 5 % above 0.14.2's peak. In one
+    # chunk, so each part's labels below are too: labels in more chunks
+    # than their part's columns rechunked the sample, every row.
+    in_order = _in_file_order(chosen)
+    if not in_order:
+        chosen = chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER)
+    if provenance or not in_order:
+        chosen = chosen.rechunk()
+    # Each file's rows, as runs of `chosen`.
+    file_of_row = chosen[_ROW_FILE].to_numpy()
+    starts = np.flatnonzero(np.diff(file_of_row, prepend=-1)).tolist()
+    ends = [*starts[1:], len(file_of_row)] if starts else []
+    runs = zip(starts, ends, strict=True)
     reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]] = []
     with clearer_dataset_errors(label):
-        for (file_index,), rows in chosen.group_by(_ROW_FILE, maintain_order=True):
-            f = files[int(file_index)]  # type: ignore[arg-type]
+        for start, end in runs:
+            f = files[int(file_of_row[start])]
             lf = scan_file_against_schema(f, target, real_schema=index.schemas[f])
             for first, count, at, _ in _row_group_reads(
-                rows[_ROW_POSITION].to_numpy(), index.row_groups[f]
+                chosen[_ROW_POSITION].slice(start, end - start).to_numpy(), index.row_groups[f]
             ):
                 reads.append((lf, first, count, at))
+        del file_of_row
         parts = _collect_reads(reads, columns)
     # The reads cover the rows of `chosen` once each, in its order. Each
     # part takes its own rows' labels, chunked as its columns are: a label
@@ -826,21 +823,35 @@ def _gather_rows(
     for i, part in enumerate(parts):
         rows = chosen.slice(start, part.height)
         start += part.height
-        labels = [rows[_ROW_ORDER]]
+        labels = [] if in_order else [rows[_ROW_ORDER]]
         if provenance:
             labels += [
                 rows[_ROW_FILE].replace_strict(paths, return_dtype=pl.String).alias(SOURCE_FILE),
                 rows[_ROW_POSITION].alias(SOURCE_ROW),
             ]
-        lengths = part.to_series(0).chunk_lengths()
-        parts[i] = part.with_columns(_chunked_as(s, lengths) for s in labels)
+        if labels:
+            lengths = part.to_series(0).chunk_lengths()
+            parts[i] = part.with_columns(_chunked_as(s, lengths) for s in labels)
     sample = pl.concat(parts, how="vertical_relaxed")
     del parts
-    # Sorting copies every row; a sample already in file order (every row
-    # of a week, say) skips it.
+    if in_order:
+        return sample
+    # Sorting copies every row; rows already read in their chosen order
+    # skip it (a draw with replacement names its rows in file order).
     if not sample[_ROW_ORDER].is_sorted():
         sample = sample.sort(_ROW_ORDER)
     return sample.drop(_ROW_ORDER)
+
+
+def _in_file_order(chosen: pl.DataFrame) -> bool:
+    """Whether `chosen` names its rows file by file, each file's in
+    ascending position, none twice."""
+    if not chosen[_ROW_FILE].is_sorted():
+        return False
+    steps = chosen.select(
+        (pl.col(_ROW_POSITION).diff() > 0) | (pl.col(_ROW_FILE).diff() != 0)
+    ).to_series()
+    return bool(steps.slice(1).all())
 
 
 def _chunked_as(series: pl.Series, lengths: list[int]) -> pl.Series:
@@ -1022,7 +1033,7 @@ class CalendarSampler:
 
         # A dataset scan built over files with differing schemas fills a
         # column absent from SOME of them with null when it's present in
-        # at least one (missing_columns="insert" on _scan_dataset), so a
+        # at least one (missing_columns="insert" in scan_dataset_reconciled), so a
         # single stray file missing date_column doesn't need special
         # handling here: those rows just come back null and get counted
         # as unparseable below. But date_column absent from EVERY file
@@ -1607,17 +1618,6 @@ class FilteredSampler:
             self._indexed = (files, index)
         return self._indexed
 
-    def _dataset(self) -> pl.LazyFrame:
-        files, index = self._indexed_files()
-        if self.provenance:
-            # Each row's file and its position there, numbered before the
-            # filter.
-            return scan_dataset_reconciled(
-                files, file_schemas=index.schemas,
-                include_file_paths=SOURCE_FILE, row_index=SOURCE_ROW,
-            )
-        return _scan_dataset(files, index.schemas)
-
     def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
         """A sample with its provenance labelled (_label_provenance)."""
         return _label_provenance(df, self._roots)
@@ -1710,12 +1710,20 @@ class FilteredSampler:
         the same strict way the filter's own columns are, rather than
         being treated as a droppable, output-only request.
         """
-        # Wrapped the same as _batches below: _dataset() itself can raise
-        # (every file's footer schema is read there), and this runs
-        # before _batches ever does, so a corrupt/non-parquet file needs
-        # the same clear error here too, not a bare arrow one.
+        # Wrapped the same as _batches below: the file index reads every
+        # file's footer, and this runs before _batches ever does, so a
+        # corrupt/non-parquet file needs the same clear error here too,
+        # not a bare arrow one.
+        # The schema comes from the footers the index already holds. A
+        # lazy scan of every file for it peaked at 3.2 GiB over the whole
+        # cleaned Events archive, and kept 2.7 GiB of that through the
+        # second pass. Each file's Int64 -> Float64 widening is checked
+        # where its rows are read.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            schema = self._dataset().collect_schema()
+            _, index = self._indexed_files()
+            schema = reconcile_file_schemas(index.schemas)
+        if self.provenance:
+            schema |= {SOURCE_FILE: pl.String(), SOURCE_ROW: pl.Int64()}
 
         # Checked against the real schema, before _batches ever runs: see
         # _validate_filter_value_types' own docstring for why a --filter
@@ -1723,7 +1731,7 @@ class FilteredSampler:
         # from inside the scan below.
         self._validate_filter_value_types(schema)
 
-        available = set(schema.names())
+        available = set(schema)
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
         if self.provenance:
             required |= set(PROVENANCE_COLUMNS)
@@ -1886,7 +1894,7 @@ class FilteredSampler:
         batched path every other scan in this class already uses (get_
         random_sample's own without-replacement reservoir loop, filter_
         dataset, get_stratified_sample), rather than a plain lf.collect()
-        on the reconciled multi-file union self._dataset() builds. A bare
+        on a reconciled multi-file union of every file. A bare
         .collect() there is not just slower: against this project's own
         documented real-archive shape (thousands of files spanning
         decades, reconciled to a common schema across per-file dtype
