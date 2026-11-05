@@ -105,25 +105,6 @@ def _discover_dataset_files(
     return all_files
 
 
-def _scan_dataset(
-    files: list[Path], file_schemas: dict[Path, dict[str, pl.DataType]]
-) -> pl.LazyFrame:
-    # polars' scan_parquet infers its schema from a single file rather
-    # than the union of every file's schema the way pyarrow.dataset.
-    # dataset() does, confirmed directly: a column present in some files
-    # and absent from others (e.g. a historical partition file converted
-    # under an older, narrower output_columns) raises "extra column ...
-    # outside of expected schema" for whichever file doesn't match the
-    # schema scan_parquet happened to infer, regardless of file order. A
-    # column present in every file but typed differently in some of them
-    # (e.g. events' own Actor2Geo_Type, Float64 through 2007-10 and Int64
-    # from 2007-11 onward) raises a different but related "data type
-    # mismatch" once scan_parquet hits a file whose own dtype disagrees
-    # with the schema it inferred. scan_dataset_reconciled resolves both:
-    # see its own docstring for the full mechanism.
-    return scan_dataset_reconciled(files, file_schemas=file_schemas)
-
-
 # ----------------------------------------------------------
 # Row provenance
 # ----------------------------------------------------------
@@ -533,7 +514,7 @@ class IndexedSampler:
         read_columns = list(self.columns) if self.columns else None
 
         # Reconciled schema across just the files this call actually
-        # touches, the same reconciliation _scan_dataset/
+        # touches, the same reconciliation
         # scan_dataset_reconciled already applies for CalendarSampler/
         # FilteredSampler: a real accumulated data directory can hold
         # files whose own physical schema genuinely differs, whether a
@@ -989,7 +970,7 @@ class CalendarSampler:
 
         # A dataset scan built over files with differing schemas fills a
         # column absent from SOME of them with null when it's present in
-        # at least one (missing_columns="insert" on _scan_dataset), so a
+        # at least one (missing_columns="insert" in scan_dataset_reconciled), so a
         # single stray file missing date_column doesn't need special
         # handling here: those rows just come back null and get counted
         # as unparseable below. But date_column absent from EVERY file
@@ -1559,17 +1540,6 @@ class FilteredSampler:
             self._indexed = (files, index)
         return self._indexed
 
-    def _dataset(self) -> pl.LazyFrame:
-        files, index = self._indexed_files()
-        if self.provenance:
-            # Each row's file and its position there, numbered before the
-            # filter.
-            return scan_dataset_reconciled(
-                files, file_schemas=index.schemas,
-                include_file_paths=SOURCE_FILE, row_index=SOURCE_ROW,
-            )
-        return _scan_dataset(files, index.schemas)
-
     def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
         """A sample with its provenance labelled (_label_provenance)."""
         return _label_provenance(df, self._roots)
@@ -1662,12 +1632,20 @@ class FilteredSampler:
         the same strict way the filter's own columns are, rather than
         being treated as a droppable, output-only request.
         """
-        # Wrapped the same as _batches below: _dataset() itself can raise
-        # (every file's footer schema is read there), and this runs
-        # before _batches ever does, so a corrupt/non-parquet file needs
-        # the same clear error here too, not a bare arrow one.
+        # Wrapped the same as _batches below: the file index reads every
+        # file's footer, and this runs before _batches ever does, so a
+        # corrupt/non-parquet file needs the same clear error here too,
+        # not a bare arrow one.
+        # The schema comes from the footers the index already holds. A
+        # lazy scan of every file for it peaked at 3.2 GiB over the whole
+        # cleaned Events archive, and kept 2.7 GiB of that through the
+        # second pass. Each file's Int64 -> Float64 widening is checked
+        # where its rows are read.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            schema = self._dataset().collect_schema()
+            _, index = self._indexed_files()
+            schema = reconcile_file_schemas(index.schemas)
+        if self.provenance:
+            schema |= {SOURCE_FILE: pl.String(), SOURCE_ROW: pl.Int64()}
 
         # Checked against the real schema, before _batches ever runs: see
         # _validate_filter_value_types' own docstring for why a --filter
@@ -1675,7 +1653,7 @@ class FilteredSampler:
         # from inside the scan below.
         self._validate_filter_value_types(schema)
 
-        available = set(schema.names())
+        available = set(schema)
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
         if self.provenance:
             required |= set(PROVENANCE_COLUMNS)
@@ -1838,7 +1816,7 @@ class FilteredSampler:
         batched path every other scan in this class already uses (get_
         random_sample's own without-replacement reservoir loop, filter_
         dataset, get_stratified_sample), rather than a plain lf.collect()
-        on the reconciled multi-file union self._dataset() builds. A bare
+        on a reconciled multi-file union of every file. A bare
         .collect() there is not just slower: against this project's own
         documented real-archive shape (thousands of files spanning
         decades, reconciled to a common schema across per-file dtype
