@@ -475,7 +475,7 @@ class TestCalendarSampler:
     def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
         self, tmp_path
     ):
-        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # Mirrors the real Actor2Geo_Type split via scan_dataset_reconciled, the
         # single shared scan CalendarSampler and FilteredSampler both go
         # through: scan_parquet's own schema= parameter is an assertion,
         # so a plain union scan crashed ("data type mismatch ...
@@ -1411,7 +1411,7 @@ class TestFilteredSamplerValidation:
     def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
         self, tmp_path
     ):
-        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # Mirrors the real Actor2Geo_Type split via scan_dataset_reconciled, the
         # same shared scan CalendarSampler's own identical test above
         # covers; see that test's comment for the exact failure this
         # replaces.
@@ -2543,6 +2543,43 @@ class TestFilteredSamplerTwoPass:
         for df in draws.values():
             self._assert_whole_source_rows(df, source)
 
+    def test_the_columns_come_from_the_file_index_without_a_scan(self, tmp_path, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        self._write(tmp_path / "data", quad_type=pl.Int32)
+        sampler = FilteredSampler(
+            str(tmp_path / "data"), self.COLUMNS, filter_dict={"QuadClass": [1]},
+            provenance=True,
+        )
+        sampler._indexed_files()
+
+        def no_scan(*args, **kwargs):
+            raise AssertionError("the columns were read with a scan")
+
+        monkeypatch.setattr(pl, "scan_parquet", no_scan)
+        monkeypatch.setattr(samplers_module, "scan_dataset_reconciled", no_scan)
+        assert set(sampler._needed_columns()) == {*self.COLUMNS, "SourceFile", "SourceRow"}
+
+    def test_a_file_unsafe_to_widen_fails_only_a_draw_that_reads_its_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3], "NumArticles": [1.0, 2.0, 3.0],
+        }).write_parquet(folder / "20200101.export.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [4, 5], "QuadClass": [4, 4], "NumArticles": [2**53 + 2, 7],
+        }).write_parquet(folder / "20200102.export.parquet")
+        columns = ["GlobalEventID", "QuadClass", "NumArticles"]
+
+        def draw(quads):
+            return FilteredSampler(
+                str(folder), columns, filter_dict={"QuadClass": quads}, random_state=1,
+            ).get_random_sample(3)
+
+        assert sorted(draw([1, 2, 3])["GlobalEventID"].to_list()) == [1, 2, 3]
+        with pytest.raises(Exception, match="without losing precision"):
+            draw([4])
+
     def test_a_filter_column_typed_differently_across_files(self, tmp_path):
         # The key scan then reads file by file; the row numbers must still
         # count across the files in scan order.
@@ -2754,6 +2791,39 @@ class TestFilteredSamplerTwoPass:
                 on=["__row_file__", "__row_position__"], how="left", maintain_order="left",
             ).drop("__row_file__", "__row_position__")
             assert df.equals(expected)
+
+    def test_rows_chosen_in_file_order_are_read_with_their_provenance(self, tmp_path):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        source = self._write(tmp_path / "data")
+        files = sorted((tmp_path / "data").glob("*.parquet"))
+        index = FileIndex(files)
+        every = pl.DataFrame({
+            "__row_file__": [k for k, n in enumerate(index.counts) for _ in range(n)],
+            "__row_position__": [p for n in index.counts for p in range(n)],
+        })
+        chosen = every.gather_every(3)
+        assert samplers_module._in_file_order(chosen)
+        df = samplers_module._gather_rows(
+            files, index, dict(source.schema), chosen, source.columns, True, "test"
+        )
+        assert df.drop("SourceFile", "SourceRow").equals(source.gather_every(3))
+        assert df["SourceFile"].to_list() == [str(files[k]) for k in chosen["__row_file__"]]
+        assert df["SourceRow"].to_list() == chosen["__row_position__"].to_list()
+
+    def test_rows_out_of_file_order_or_named_twice_are_not_in_file_order(self):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        def in_order(files, positions):
+            return samplers_module._in_file_order(
+                pl.DataFrame({"__row_file__": files, "__row_position__": positions})
+            )
+
+        assert in_order([0, 0, 1, 2, 2], [3, 9, 0, 5, 6])
+        assert in_order([4], [7])
+        assert not in_order([0, 1, 0], [1, 2, 3])
+        assert not in_order([0, 0, 1], [5, 2, 3])
+        assert not in_order([0, 0, 1], [2, 2, 3])
 
     def test_with_provenance_each_row_names_its_own_file_and_position(self, tmp_path):
         folder = tmp_path / "data"
