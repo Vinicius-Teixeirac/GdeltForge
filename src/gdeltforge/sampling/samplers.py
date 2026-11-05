@@ -765,20 +765,32 @@ def _gather_rows(
     converted file's name).
     """
     target = {c: target_schema[c] for c in columns}
-    # In one chunk, so each part's labels below are too: labels in more
-    # chunks than their part's columns rechunked the sample, every row.
-    chosen = (
-        chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER).rechunk()
-    )
+    # Rows chosen in file order (every row of a week, say) are read as
+    # they are; any others are sorted into file order, each numbered with
+    # its place in `chosen` to be put back there. Numbering and sorting a
+    # week's rows, unneeded, kept it 5 % above 0.14.2's peak. In one
+    # chunk, so each part's labels below are too: labels in more chunks
+    # than their part's columns rechunked the sample, every row.
+    in_order = _in_file_order(chosen)
+    if not in_order:
+        chosen = chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER)
+    if provenance or not in_order:
+        chosen = chosen.rechunk()
+    # Each file's rows, as runs of `chosen`.
+    file_of_row = chosen[_ROW_FILE].to_numpy()
+    starts = np.flatnonzero(np.diff(file_of_row, prepend=-1)).tolist()
+    ends = [*starts[1:], len(file_of_row)] if starts else []
+    runs = zip(starts, ends, strict=True)
     reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]] = []
     with clearer_dataset_errors(label):
-        for (file_index,), rows in chosen.group_by(_ROW_FILE, maintain_order=True):
-            f = files[int(file_index)]  # type: ignore[arg-type]
+        for start, end in runs:
+            f = files[int(file_of_row[start])]
             lf = scan_file_against_schema(f, target, real_schema=index.schemas[f])
             for first, count, at, _ in _row_group_reads(
-                rows[_ROW_POSITION].to_numpy(), index.row_groups[f]
+                chosen[_ROW_POSITION].slice(start, end - start).to_numpy(), index.row_groups[f]
             ):
                 reads.append((lf, first, count, at))
+        del file_of_row
         parts = _collect_reads(reads, columns)
     # The reads cover the rows of `chosen` once each, in its order. Each
     # part takes its own rows' labels, chunked as its columns are: a label
@@ -789,21 +801,35 @@ def _gather_rows(
     for i, part in enumerate(parts):
         rows = chosen.slice(start, part.height)
         start += part.height
-        labels = [rows[_ROW_ORDER]]
+        labels = [] if in_order else [rows[_ROW_ORDER]]
         if provenance:
             labels += [
                 rows[_ROW_FILE].replace_strict(paths, return_dtype=pl.String).alias(SOURCE_FILE),
                 rows[_ROW_POSITION].alias(SOURCE_ROW),
             ]
-        lengths = part.to_series(0).chunk_lengths()
-        parts[i] = part.with_columns(_chunked_as(s, lengths) for s in labels)
+        if labels:
+            lengths = part.to_series(0).chunk_lengths()
+            parts[i] = part.with_columns(_chunked_as(s, lengths) for s in labels)
     sample = pl.concat(parts, how="vertical_relaxed")
     del parts
-    # Sorting copies every row; a sample already in file order (every row
-    # of a week, say) skips it.
+    if in_order:
+        return sample
+    # Sorting copies every row; rows already read in their chosen order
+    # skip it (a draw with replacement names its rows in file order).
     if not sample[_ROW_ORDER].is_sorted():
         sample = sample.sort(_ROW_ORDER)
     return sample.drop(_ROW_ORDER)
+
+
+def _in_file_order(chosen: pl.DataFrame) -> bool:
+    """Whether `chosen` names its rows file by file, each file's in
+    ascending position, none twice."""
+    if not chosen[_ROW_FILE].is_sorted():
+        return False
+    steps = chosen.select(
+        (pl.col(_ROW_POSITION).diff() > 0) | (pl.col(_ROW_FILE).diff() != 0)
+    ).to_series()
+    return bool(steps.slice(1).all())
 
 
 def _chunked_as(series: pl.Series, lengths: list[int]) -> pl.Series:

@@ -2711,6 +2711,39 @@ class TestFilteredSamplerTwoPass:
             ).drop("__row_file__", "__row_position__")
             assert df.equals(expected)
 
+    def test_rows_chosen_in_file_order_are_read_with_their_provenance(self, tmp_path):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        source = self._write(tmp_path / "data")
+        files = sorted((tmp_path / "data").glob("*.parquet"))
+        index = FileIndex(files)
+        every = pl.DataFrame({
+            "__row_file__": [k for k, n in enumerate(index.counts) for _ in range(n)],
+            "__row_position__": [p for n in index.counts for p in range(n)],
+        })
+        chosen = every.gather_every(3)
+        assert samplers_module._in_file_order(chosen)
+        df = samplers_module._gather_rows(
+            files, index, dict(source.schema), chosen, source.columns, True, "test"
+        )
+        assert df.drop("SourceFile", "SourceRow").equals(source.gather_every(3))
+        assert df["SourceFile"].to_list() == [str(files[k]) for k in chosen["__row_file__"]]
+        assert df["SourceRow"].to_list() == chosen["__row_position__"].to_list()
+
+    def test_rows_out_of_file_order_or_named_twice_are_not_in_file_order(self):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        def in_order(files, positions):
+            return samplers_module._in_file_order(
+                pl.DataFrame({"__row_file__": files, "__row_position__": positions})
+            )
+
+        assert in_order([0, 0, 1, 2, 2], [3, 9, 0, 5, 6])
+        assert in_order([4], [7])
+        assert not in_order([0, 1, 0], [1, 2, 3])
+        assert not in_order([0, 0, 1], [5, 2, 3])
+        assert not in_order([0, 0, 1], [2, 2, 3])
+
     def test_with_provenance_each_row_names_its_own_file_and_position(self, tmp_path):
         folder = tmp_path / "data"
         source = self._write(folder)
