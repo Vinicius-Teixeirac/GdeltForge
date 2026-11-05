@@ -637,11 +637,15 @@ def _row_group_reads(
 # by one read. A row group decodes whole, whatever rows a filter keeps,
 # and the converted 1979 to 2005 yearly Events files hold a million rows
 # per group: four of those, every column, peaked at 3.1 GiB. A larger
-# row group is read a few columns at a time: a converted daily file's
-# (about 200,000 rows) in two reads, a converted yearly file's in about
-# seven. A random draw over a month of daily files peaked at 1.1 GiB
-# with 8M values per read, 1.5 with 16M (0.14.2's single pass: 2.8).
-_CELLS_PER_READ = 8_000_000
+# row group is read a few columns at a time: a cleaned daily file's
+# (about 100,000 rows) in two reads, a converted daily file's (about
+# 200,000) in three, a converted yearly file's in about fifteen. A
+# random draw over a month of daily files peaked at 1.1 GiB with 8M
+# values per read, 1.5 with 16M (0.14.2's single pass: 2.8). Over the
+# 4,634 cleaned daily files it peaked at 1.0 to 1.1 GiB with 8M and 0.7
+# with 2M (0.14.2: 1.0 to 1.1), on Linux; 2M doubled a one-year draw's
+# time.
+_CELLS_PER_READ = 4_000_000
 
 
 def _read_units(
