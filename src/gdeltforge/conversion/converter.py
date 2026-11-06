@@ -57,6 +57,7 @@ from gdeltforge.scraping.scraper import date_parser_for, filter_paths_by_date, s
 from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
     DATASET_NAMES,
+    config_for_stream,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
@@ -1401,9 +1402,15 @@ def run_converter(
     force: bool = False,
     dry_run: bool = False,
     recover_unzipped: bool = False,
+    stream: str = "english",
 ) -> tuple[list[str], list[str]]:
     """
     Convenience wrapper so main.py can call the converter cleanly.
+
+    stream ("english", the default, or "translated") picks which of
+    GDELT's two streams of the dataset to convert: the translated one
+    reads and writes the dataset's paths.translated_* directories
+    (config_for_stream).
 
     Returns (outputs, failed): see GDELTConverter.process_all_files.
 
@@ -1429,6 +1436,7 @@ def run_converter(
     downloaded_data_directory: see GDELTConverter.recover_unzipped_files
     for when this is for.
     """
+    config = config_for_stream(config, dataset, stream)
     # convert reads no Parquet, so io.max_concurrent_reads doesn't apply to
     # it, but it is checked here all the same: an invalid value fails at
     # the first stage, before hours of conversion, not at the next one.

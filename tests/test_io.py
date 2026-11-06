@@ -1490,3 +1490,22 @@ class TestWarnIfFolderHoldsCleanedFiles:
         assert str(tmp_path) in message
         assert "paths.mentions_parquet_data_directory" in message
         assert "paths.mentions_cleaned_data_directory" in message
+
+    def test_the_translated_stream_warning_names_the_translated_keys(self, tmp_path, caplog):
+        import json as _json
+        import logging as _logging
+
+        from gdeltforge.utils.io import CLEAN_MARKER_KEY, warn_if_folder_holds_cleaned_files
+
+        pl.DataFrame({"a": [1]}).write_parquet(
+            tmp_path / "20200102.parquet", metadata={CLEAN_MARKER_KEY: _json.dumps({})}
+        )
+        with caplog.at_level(_logging.WARNING):
+            warn_if_folder_holds_cleaned_files(
+                tmp_path, "here", _logging.getLogger("t"), dataset="gdelt_mentions",
+                stream="translated",
+            )
+        message = caplog.records[-1].message
+        assert "paths.translated_mentions_parquet_data_directory" in message
+        assert "paths.translated_mentions_cleaned_data_directory" in message
+        assert " paths.mentions_" not in message

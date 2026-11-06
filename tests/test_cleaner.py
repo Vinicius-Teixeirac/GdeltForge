@@ -1794,6 +1794,52 @@ class TestCleanedFileMarker:
                 "paths.mentions_cleaned_data_directory") in message
 
 
+class TestRunCleanerTranslatedStream:
+    """run_cleaner(stream="translated") cleans the dataset's translated
+    directories, and its messages name the translated keys."""
+
+    @staticmethod
+    def _config(tmp_path):
+        paths = {}
+        for stream in ("en", "tr"):
+            (tmp_path / stream / "in").mkdir(parents=True)
+            prefix = "" if stream == "en" else "translated_"
+            paths[f"{prefix}mentions_parquet_data_directory"] = str(tmp_path / stream / "in")
+            paths[f"{prefix}mentions_cleaned_data_directory"] = str(tmp_path / stream / "out")
+        return {
+            "paths": paths,
+            "clean": {"columns_to_check": {"gdelt_mentions": []}},
+            "converter": {"partitioning": {"enabled": False}},
+        }
+
+    def test_cleans_the_translated_directories_only(self, tmp_path):
+        cfg = self._config(tmp_path)
+        pl.DataFrame({"GLOBALEVENTID": [1]}).write_parquet(tmp_path / "tr" / "in" / "a.parquet")
+        pl.DataFrame({"GLOBALEVENTID": [2]}).write_parquet(tmp_path / "en" / "in" / "b.parquet")
+
+        processed, failed = run_cleaner(cfg, dataset="gdelt_mentions", stream="translated")
+
+        assert (processed, failed) == (1, 0)
+        assert (tmp_path / "tr" / "out" / "a_cleaned.parquet").exists()
+        assert not (tmp_path / "en" / "out").exists()
+
+    def test_the_warning_names_the_translated_keys(self, tmp_path, caplog):
+        cfg = self._config(tmp_path)
+        source = tmp_path / "tr" / "in" / "a.parquet"
+        pl.DataFrame({"GLOBALEVENTID": [1]}).write_parquet(source)
+        GDELTCleaner(
+            str(tmp_path / "tr" / "in"), str(tmp_path / "x"), columns_to_check=[]
+        ).clean_all_files()
+        (tmp_path / "x" / "a_cleaned.parquet").replace(source)
+
+        with caplog.at_level(logging.WARNING):
+            run_cleaner(cfg, dataset="gdelt_mentions", stream="translated")
+
+        message = next(r.message for r in caplog.records if "marker" in r.message)
+        assert ("paths.translated_mentions_parquet_data_directory and "
+                "paths.translated_mentions_cleaned_data_directory") in message
+
+
 class TestRunAudit:
     def _run(self, tmp_path, **kwargs):
         in_dir = tmp_path / "in"

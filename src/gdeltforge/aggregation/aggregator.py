@@ -49,6 +49,7 @@ from tqdm import tqdm
 from gdeltforge.scraping.scraper import filter_paths_by_date, parse_file_date
 from gdeltforge.utils.concurrency import plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
+    config_for_stream,
     dataset_is_aggregation_eligible,
     dataset_path_key,
     get_dict,
@@ -411,9 +412,15 @@ def run_aggregator(
     quiet: bool = False,
     force: bool = False,
     dry_run: bool = False,
+    stream: str = "english",
 ) -> tuple[int, int]:
     """
     Convenience wrapper so cli.py can call the aggregator cleanly.
+
+    stream ("english", the default, or "translated") picks which of
+    GDELT's two streams of the dataset to aggregate: the translated one
+    reads and writes the dataset's paths.translated_* directories
+    (config_for_stream), and messages name those keys.
 
     Rejects a dataset outside gdelt_gkg_v2/gdelt_mentions/
     gdelt_event_15min explicitly: those are the only datasets discovered
@@ -435,13 +442,15 @@ def run_aggregator(
     # YYYYMMDD-style fixture.
     from gdeltforge.scraping.scraper import date_parser_for
 
+    config = config_for_stream(config, dataset, stream)
     input_base_key = (
         "cleaned_data_directory" if source == "cleaned" else "parquet_data_directory"
     )
     input_folder = config["paths"][dataset_path_key(dataset, input_base_key)]
     if source == "converted":
         warn_if_folder_holds_cleaned_files(
-            input_folder, "aggregate --source converted", logger, dataset=dataset
+            input_folder, "aggregate --source converted", logger, dataset=dataset,
+            stream=stream,
         )
     output_base_key = f"aggregated_{period}_data_directory"
     output_folder = config["paths"][dataset_path_key(dataset, output_base_key)]

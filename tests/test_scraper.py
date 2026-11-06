@@ -632,6 +632,106 @@ class TestCollectGdeltv2Links:
         assert len(files) == 1
 
 
+class TestCollectGdeltv2TranslatedLinks:
+    # One English and one translated line per dataset. The translated
+    # names are the real ones GDELT lists in masterfilelist-translation.txt
+    # (20230601080000.translation.{export,mentions,gkg}...). They end with
+    # the English suffix too, so the English match must exclude them.
+    _LIST = (
+        "100 11111111111111111111111111111111 "
+        "http://data.gdeltproject.org/gdeltv2/20230601080000.export.CSV.zip\n"
+        "200 22222222222222222222222222222222 "
+        "http://data.gdeltproject.org/gdeltv2/20230601080000.translation.export.CSV.zip\n"
+        "300 33333333333333333333333333333333 "
+        "http://data.gdeltproject.org/gdeltv2/20230601080000.translation.mentions.CSV.zip\n"
+        "400 44444444444444444444444444444444 "
+        "http://data.gdeltproject.org/gdeltv2/20230601080000.translation.gkg.csv.zip\n"
+        "500 55555555555555555555555555555555 "
+        "http://data.gdeltproject.org/gdeltv2/20230601080000.gkg.csv.zip\n"
+    )
+
+    def _fake_get(self, monkeypatch):
+        requested = []
+
+        class FakeResponse:
+            text = self._LIST
+
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, *a, **kw):
+            requested.append(url)
+            return FakeResponse()
+
+        monkeypatch.setattr(scraper.requests, "get", fake_get)
+        return requested
+
+    def test_translated_stream_reads_the_translated_list(self, monkeypatch):
+        requested = self._fake_get(monkeypatch)
+        scraper._collect_gdeltv2_links({}, "gdelt_mentions", "translated")
+        assert requested == [
+            "http://data.gdeltproject.org/gdeltv2/masterfilelist-translation.txt"
+        ]
+
+    def test_english_stream_reads_the_english_list(self, monkeypatch):
+        requested = self._fake_get(monkeypatch)
+        scraper._collect_gdeltv2_links({}, "gdelt_mentions")
+        assert requested == ["http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"]
+
+    @pytest.mark.parametrize("dataset, size", [
+        ("gdelt_event_15min", 200), ("gdelt_mentions", 300), ("gdelt_gkg_v2", 400),
+    ])
+    def test_translated_stream_keeps_only_the_datasets_translated_files(
+        self, monkeypatch, dataset, size
+    ):
+        self._fake_get(monkeypatch)
+        files = scraper._collect_gdeltv2_links({}, dataset, "translated")
+        assert [f.size for f in files] == [size]
+        assert ".translation." in files[0].url
+
+    @pytest.mark.parametrize("dataset, size", [("gdelt_event_15min", 100), ("gdelt_gkg_v2", 500)])
+    def test_english_stream_never_keeps_a_translated_file(self, monkeypatch, dataset, size):
+        self._fake_get(monkeypatch)
+        files = scraper._collect_gdeltv2_links({}, dataset)
+        assert [f.size for f in files] == [size]
+
+    def test_a_dataset_without_a_translated_stream_raises(self):
+        with pytest.raises(ValueError, match="has no translated stream"):
+            collect_gdelt_links({}, dataset="gdelt_event", stream="translated")
+
+    def test_pipeline_downloads_translated_files_into_the_translated_directory(
+        self, monkeypatch, tmp_path
+    ):
+        english, translated = tmp_path / "en", tmp_path / "tr"
+        translated.mkdir()
+        (translated / "20230601080000.translation.mentions.CSV.zip").write_bytes(b"x")
+        seen = {}
+
+        def fake_collect(config, dataset, stream="english"):
+            seen["stream"] = stream
+            return [
+                GdeltFile(url="http://x/20230601080000.translation.mentions.CSV.zip"),
+                GdeltFile(url="http://x/20230601081500.translation.mentions.CSV.zip"),
+            ]
+
+        monkeypatch.setattr(scraper, "collect_gdelt_links", fake_collect)
+        config = {
+            "paths": {
+                "mentions_downloaded_data_directory": str(english),
+                "translated_mentions_downloaded_data_directory": str(translated),
+            },
+            "scraping": {},
+        }
+
+        result = scraper.run_scraping_pipeline(
+            config, dataset="gdelt_mentions", dry_run=True, stream="translated"
+        )
+
+        # The file already in the translated directory counts as done.
+        assert seen["stream"] == "translated"
+        assert result == {"success": 1, "skipped": 1, "failed": []}
+
+
 # ------------------------------------------------------------
 # _collect_gdelt_gkg_v1_links: GKG 1.0 HTML index parsing
 # ------------------------------------------------------------
@@ -763,11 +863,15 @@ class TestCollectGdeltLinksDispatch:
         assert collect_gdelt_links(cfg) == "selenium-result"
 
     def test_gkg_v2_dispatches_to_masterfilelist_collector(self, monkeypatch):
-        monkeypatch.setattr(scraper, "_collect_gdeltv2_links", lambda cfg, ds: f"v2-result-{ds}")
+        monkeypatch.setattr(
+            scraper, "_collect_gdeltv2_links", lambda cfg, ds, _stream: f"v2-result-{ds}"
+        )
         assert collect_gdelt_links({}, dataset="gdelt_gkg_v2") == "v2-result-gdelt_gkg_v2"
 
     def test_mentions_dispatches_to_masterfilelist_collector(self, monkeypatch):
-        monkeypatch.setattr(scraper, "_collect_gdeltv2_links", lambda cfg, ds: f"v2-result-{ds}")
+        monkeypatch.setattr(
+            scraper, "_collect_gdeltv2_links", lambda cfg, ds, _stream: f"v2-result-{ds}"
+        )
         assert collect_gdelt_links({}, dataset="gdelt_mentions") == "v2-result-gdelt_mentions"
 
     def test_gkg_v1_dispatches_to_html_index_collector(self, monkeypatch):
@@ -1328,7 +1432,7 @@ class TestRunScrapingPipelineVerboseLogging:
         # Isolates the verbose/logger-level behavior from real network
         # access: collect_gdelt_links/download_gdelt_files are the two
         # network-touching calls run_scraping_pipeline makes.
-        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: [])
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset, **_: [])
         monkeypatch.setattr(
             scraper, "download_gdelt_files",
             lambda files, config, dataset, force=False: {
@@ -1371,7 +1475,7 @@ class TestRunScrapingPipelineForceAndDryRun:
     def _stub_links(monkeypatch, files):
         # Isolates the preview from real network access: collect_gdelt_links
         # is the only network-touching call a dry run still makes.
-        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: files)
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset, **_: files)
 
     def test_dry_run_makes_no_network_call_and_returns_a_preview(self, monkeypatch, tmp_path):
         (tmp_path / "20200101.export.CSV.zip").write_bytes(b"already downloaded")
@@ -1442,7 +1546,7 @@ class TestRunScrapingPipelineOrder:
 
     @staticmethod
     def _stub_links(monkeypatch, files):
-        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset: files)
+        monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset, **_: files)
 
     def _files(self):
         return [

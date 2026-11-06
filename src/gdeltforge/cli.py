@@ -35,6 +35,8 @@ from gdeltforge.scraping.scraper import date_parser_for, parse_file_date, run_sc
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
 from gdeltforge.utils.concurrency import exported_scan_limit, polars_scan_limit
 from gdeltforge.utils.config import (
+    STREAMS,
+    config_for_stream,
     dataset_is_aggregation_eligible,
     dataset_is_always_historical,
     dataset_path_key,
@@ -193,6 +195,25 @@ _DATASET_CLI_TO_CONFIG = {
     "gkg-v2": "gdelt_gkg_v2",
     "mentions": "gdelt_mentions",
 }
+
+# GDELT 2.0's two streams (utils.config.STREAMS): --stream picks one for
+# scrape/convert/clean/aggregate/sample. Only gkg-v2, mentions and
+# events-15min have a translated stream; config_for_stream rejects the rest.
+_STREAM_HELP = (
+    "english (the default) or translated: GDELT's machine-translated coverage of "
+    "gkg-v2, mentions and events-15min, read from and written to the dataset's "
+    "paths.translated_* directories"
+)
+
+
+def _stream_config(config: dict, args: argparse.Namespace) -> dict:
+    """The config the command runs with for its --stream (config_for_stream)."""
+    return config_for_stream(config, _DATASET_CLI_TO_CONFIG[args.dataset], _stream(args))
+
+
+def _stream(args: argparse.Namespace) -> str:
+    return getattr(args, "stream", None) or "english"
+
 
 # aggregate's own --dataset choices: only the three datasets discovered
 # from GDELT's 15-minute gdeltv2 master file list (see
@@ -396,6 +417,7 @@ def _write_manifest(
         "command": ["gdeltforge", *sys.argv[1:]],
         "draw": {
             "dataset": args.dataset,
+            "stream": _stream(args),
             "source": args.source,
             "mode": args.mode,
             "seed": args.seed,
@@ -480,7 +502,7 @@ def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     result = run_scraping_pipeline(
         config, start_date=start_date, end_date=end_date, dataset=dataset, order=args.order,
         verbose=args.verbose, quiet=args.quiet,
-        force=args.force, dry_run=args.dry_run,
+        force=args.force, dry_run=args.dry_run, stream=_stream(args),
     )
     failed = result["failed"]
     # "completed" only for a run without failures: a failed one ends with
@@ -505,6 +527,7 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
         config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
         force=args.force, dry_run=args.dry_run, recover_unzipped=args.recover_unzipped,
+        stream=_stream(args),
     )
     logger.info(f"Created {len(outputs)} parquet files.")
     if not failed:
@@ -552,7 +575,7 @@ def run_clean_cmd(config: dict, args: argparse.Namespace) -> None:
     files_processed, files_failed = run_cleaner(
         config, dataset=dataset, start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force, dry_run=args.dry_run, report=args.report,
+        force=args.force, dry_run=args.dry_run, report=args.report, stream=_stream(args),
     )
     if not files_failed:
         logger.info("Cleaning completed.")
@@ -575,7 +598,7 @@ def run_aggregate_cmd(config: dict, args: argparse.Namespace) -> None:
         config, dataset=dataset, period=args.period, source=args.source,
         start_date=start_date, end_date=end_date, order=args.order,
         delete_source=args.delete_source, verbose=args.verbose, quiet=args.quiet,
-        force=args.force, dry_run=args.dry_run,
+        force=args.force, dry_run=args.dry_run, stream=_stream(args),
     )
     if not periods_failed:
         logger.info("Aggregation completed.")
@@ -588,6 +611,8 @@ def run_aggregate_cmd(config: dict, args: argparse.Namespace) -> None:
 
 
 def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
+    config = _stream_config(config, args)
+    stream = _stream(args)
     start_date, end_date = _parse_date_range(args)
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     date_parser = date_parser_for(dataset)
@@ -646,7 +671,10 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             )
         period = getattr(args, "period", None) or "day"
         source_key = dataset_path_key(dataset, f"aggregated_{period}_data_directory")
-        source_folder = ensure_exists(config["paths"][source_key], source_key)
+        source_folder = ensure_exists(
+            config["paths"][source_key],
+            dataset_path_key(dataset, f"aggregated_{period}_data_directory", stream),
+        )
         hist_folder = None
         # Aggregated output files are named plainly (20200101.parquet /
         # 202001.parquet / 2020.parquet), the same convention Events' own
@@ -661,12 +689,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             if args.source == "cleaned"
             else ("parquet_data_directory", "parquet_historical_directory")
         )
+        source_label = dataset_path_key(dataset, source_key, stream)
         source_key = dataset_path_key(dataset, source_key)
         historical_key = dataset_path_key(dataset, historical_key)
-        source_folder = ensure_exists(config["paths"][source_key], source_key)
+        source_folder = ensure_exists(config["paths"][source_key], source_label)
         if args.source == "converted":
             warn_if_folder_holds_cleaned_files(
-                source_folder, "sample --source converted", logger, dataset=dataset
+                source_folder, "sample --source converted", logger, dataset=dataset,
+                stream=stream,
             )
         hist_folder = _historical_folder(config, historical_key, dataset)
 
@@ -1093,6 +1123,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which GDELT dataset to scrape (required)"
     )
     scrape.add_argument(
+        "--stream",
+        choices=list(STREAMS),
+        default="english",
+        help=_STREAM_HELP,
+    )
+    scrape.add_argument(
         "--start-date",
         metavar="YYYY-MM-DD",
         help="Only download files whose period starts on or after this date",
@@ -1145,6 +1181,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=_DATASET_CHOICES,
         required=True,
         help="Which GDELT dataset to convert (required)"
+    )
+    convert.add_argument(
+        "--stream",
+        choices=list(STREAMS),
+        default="english",
+        help=_STREAM_HELP,
     )
     convert.add_argument(
         "--start-date",
@@ -1223,6 +1265,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Which GDELT dataset to clean (required)"
     )
     clean_.add_argument(
+        "--stream",
+        choices=list(STREAMS),
+        default="english",
+        help=_STREAM_HELP,
+    )
+    clean_.add_argument(
         "--start-date",
         metavar="YYYY-MM-DD",
         help="Only clean files whose period starts on or after this date",
@@ -1299,6 +1347,12 @@ def build_parser() -> argparse.ArgumentParser:
              "gkg-v2/mentions/events-15min publish at 15-minute granularity; every "
              "other dataset already publishes at day-or-coarser granularity, so "
              "there's no many-small-files problem for this to solve"
+    )
+    aggregate.add_argument(
+        "--stream",
+        choices=list(STREAMS),
+        default="english",
+        help=_STREAM_HELP,
     )
     aggregate.add_argument(
         "--period",
@@ -1384,6 +1438,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=_DATASET_CHOICES,
         required=True,
         help="Which GDELT dataset to sample from (required)"
+    )
+    sample.add_argument(
+        "--stream",
+        choices=list(STREAMS),
+        default="english",
+        help=_STREAM_HELP,
     )
     sample.add_argument(
         "--mode",

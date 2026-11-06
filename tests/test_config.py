@@ -8,6 +8,8 @@ import yaml
 import gdeltforge.utils.config as config_module
 from gdeltforge.utils.config import (
     CONFIG_ENV_VAR,
+    config_for_stream,
+    dataset_has_translated_stream,
     dataset_is_aggregation_eligible,
     dataset_path_key,
     get_dict,
@@ -63,6 +65,112 @@ class TestDatasetPathKey:
     def test_unknown_dataset_raises(self):
         with pytest.raises(ValueError, match="Unknown dataset"):
             dataset_path_key("not_a_real_dataset", "downloaded_data_directory")
+
+
+class TestTranslatedStreamPathKeys:
+    def test_translated_key_prefixes_the_english_one(self):
+        assert dataset_path_key("gdelt_mentions", "parquet_data_directory", "translated") == (
+            "translated_mentions_parquet_data_directory"
+        )
+        assert dataset_path_key(
+            "gdelt_event_15min", "downloaded_data_directory", "translated"
+        ) == "translated_event_15min_downloaded_data_directory"
+
+    def test_english_is_the_default_stream(self):
+        assert dataset_path_key("gdelt_gkg_v2", "parquet_data_directory", "english") == (
+            dataset_path_key("gdelt_gkg_v2", "parquet_data_directory")
+        )
+
+    def test_only_the_three_15_minute_datasets_have_a_translated_stream(self):
+        assert {
+            name for name in config_module.DATASET_NAMES if dataset_has_translated_stream(name)
+        } == {"gdelt_gkg_v2", "gdelt_mentions", "gdelt_event_15min"}
+
+    @pytest.mark.parametrize("dataset", ["gdelt_event", "gdelt_gkg_v1", "gdelt_event_reduced"])
+    def test_a_dataset_without_a_translated_stream_raises(self, dataset):
+        with pytest.raises(ValueError, match="has no translated stream"):
+            dataset_path_key(dataset, "parquet_data_directory", "translated")
+
+    def test_unknown_stream_raises(self):
+        with pytest.raises(ValueError, match="Unknown stream"):
+            dataset_path_key("gdelt_mentions", "parquet_data_directory", "spanish")
+
+    def test_bundled_default_has_a_translated_key_for_every_english_key(self):
+        paths = config_module._bundled_default_dict()["paths"]
+        for dataset in ("gdelt_gkg_v2", "gdelt_mentions", "gdelt_event_15min"):
+            prefix = dataset_path_key(dataset, "")
+            english = {k for k in paths if k.startswith(prefix)}
+            assert english
+            for key in english:
+                translated = f"translated_{key}"
+                assert translated in paths, translated
+                assert paths[translated] != paths[key]
+
+
+class TestConfigForStream:
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "parquet_data_directory": "/events/parquet",
+                "mentions_parquet_data_directory": "/en/mentions/parquet",
+                "mentions_cleaned_data_directory": "/en/mentions/cleaned",
+                "mentions_clean_runs_directory": "/en/mentions/runs",
+                "translated_mentions_parquet_data_directory": "/tr/mentions/parquet",
+                "translated_mentions_cleaned_data_directory": "/tr/mentions/cleaned",
+                "gkg_v2_parquet_data_directory": "/en/gkg/parquet",
+                "translated_gkg_v2_parquet_data_directory": "/tr/gkg/parquet",
+            },
+            "clean": {"max_workers": 2},
+        }
+
+    def test_english_returns_the_config_unchanged(self):
+        config = self._config()
+        assert config_for_stream(config, "gdelt_mentions", "english") is config
+
+    def test_translated_points_the_datasets_keys_at_the_translated_directories(self):
+        config = self._config()
+        out = config_for_stream(config, "gdelt_mentions", "translated")
+        assert out["paths"]["mentions_parquet_data_directory"] == "/tr/mentions/parquet"
+        assert out["paths"]["mentions_cleaned_data_directory"] == "/tr/mentions/cleaned"
+        # Other datasets' keys and other sections are untouched, and so is
+        # the caller's own dict.
+        assert out["paths"]["gkg_v2_parquet_data_directory"] == "/en/gkg/parquet"
+        assert out["paths"]["parquet_data_directory"] == "/events/parquet"
+        assert out["clean"] == {"max_workers": 2}
+        assert config["paths"]["mentions_parquet_data_directory"] == "/en/mentions/parquet"
+
+    def test_an_english_only_key_is_dropped_not_reused(self):
+        # A run audit of the translated stream must not land in the English
+        # stream's runs directory: without its own key, the stage's default
+        # (beside the translated cleaned directory) applies.
+        out = config_for_stream(self._config(), "gdelt_mentions", "translated")
+        assert "mentions_clean_runs_directory" not in out["paths"]
+
+    def test_a_translated_directory_equal_to_the_english_one_raises(self):
+        config = self._config()
+        config["paths"]["translated_mentions_cleaned_data_directory"] = "/en/mentions/cleaned"
+        with pytest.raises(ValueError, match="translated_mentions_cleaned_data_directory"):
+            config_for_stream(config, "gdelt_mentions", "translated")
+
+    def test_the_same_directory_spelled_differently_raises(self, tmp_path):
+        config = self._config()
+        config["paths"]["mentions_cleaned_data_directory"] = str(tmp_path / "cleaned")
+        config["paths"]["translated_mentions_cleaned_data_directory"] = (
+            str(tmp_path / "x" / ".." / "cleaned")
+        )
+        with pytest.raises(ValueError, match="its own directory"):
+            config_for_stream(config, "gdelt_mentions", "translated")
+
+    def test_a_null_translated_directory_raises(self):
+        config = self._config()
+        config["paths"]["translated_mentions_parquet_data_directory"] = None
+        with pytest.raises(ValueError, match="its own directory"):
+            config_for_stream(config, "gdelt_mentions", "translated")
+
+    def test_a_dataset_without_a_translated_stream_raises(self):
+        with pytest.raises(ValueError, match="has no translated stream"):
+            config_for_stream(self._config(), "gdelt_event", "translated")
 
 
 class TestDatasetIsAggregationEligible:

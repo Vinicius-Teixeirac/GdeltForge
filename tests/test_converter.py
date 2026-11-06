@@ -2572,3 +2572,37 @@ class TestProcessReducedFile:
         assert failed == []
         assert len(outputs) == 1
         assert "Year=1979" in outputs[0]
+
+
+class TestRunConverterTranslatedStream:
+    def test_converts_from_and_into_the_translated_directories(self, tmp_path, monkeypatch):
+        captured = {}
+
+        class FakeConverter:
+            def __init__(self, config, dataset, **kwargs):
+                captured["paths"] = config["paths"]
+
+            def process_all_files(self):
+                return [], []
+
+        monkeypatch.setattr(converter_module, "GDELTConverter", FakeConverter)
+        cfg = {
+            "paths": {
+                "mentions_downloaded_data_directory": str(tmp_path / "en_raw"),
+                "mentions_parquet_data_directory": str(tmp_path / "en_parquet"),
+                "translated_mentions_downloaded_data_directory": str(tmp_path / "tr_raw"),
+                "translated_mentions_parquet_data_directory": str(tmp_path / "tr_parquet"),
+            },
+            "converter": {},
+        }
+
+        run_converter(cfg, dataset="gdelt_mentions", stream="translated")
+
+        assert captured["paths"]["mentions_downloaded_data_directory"] == str(tmp_path / "tr_raw")
+        assert captured["paths"]["mentions_parquet_data_directory"] == str(
+            tmp_path / "tr_parquet"
+        )
+
+    def test_a_dataset_without_a_translated_stream_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="has no translated stream"):
+            run_converter(_make_config(tmp_path), stream="translated")

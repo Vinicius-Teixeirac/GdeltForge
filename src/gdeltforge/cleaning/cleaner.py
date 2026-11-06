@@ -102,6 +102,7 @@ from gdeltforge.scraping.scraper import (
 from gdeltforge.utils.concurrency import WorkerPlan, plan_workers, polars_worker_env
 from gdeltforge.utils.config import (
     DATASET_NAMES,
+    config_for_stream,
     dataset_is_always_historical,
     dataset_path_key,
     get_dict,
@@ -196,12 +197,15 @@ class GDELTCleaner:
         runs_folder: str | None = None,
         other_data_folders: list[str] | None = None,
         dataset: str | None = None,
+        stream: str = "english",
     ):
         # Names the dataset's own setting and path keys in messages
-        # (clean.errata.gdelt_event..., paths.mentions_...); nothing the
-        # cleaner does depends on it. None (a direct caller) names the
+        # (clean.errata.gdelt_event..., paths.mentions_..., and with
+        # stream="translated" paths.translated_mentions_...); nothing the
+        # cleaner does depends on them. None (a direct caller) names the
         # section only.
         self.dataset = dataset
+        self.stream = stream
         self.input_folder  = Path(input_folder)
         self.output_folder = Path(output_folder)
         self.columns_to_check = columns_to_check
@@ -503,7 +507,8 @@ class GDELTCleaner:
             return 0, 0
 
         warn_if_cleaned_files(
-            [p for p, _ in all_files], "clean's input directory", logger, dataset=self.dataset
+            [p for p, _ in all_files], "clean's input directory", logger, dataset=self.dataset,
+            stream=self.stream,
         )
 
         to_process = []
@@ -1219,7 +1224,7 @@ class GDELTCleaner:
         without a dataset, the base key and a note that a dataset's own key
         may apply."""
         if self.dataset:
-            return f"paths.{dataset_path_key(self.dataset, base_key)}"
+            return f"paths.{dataset_path_key(self.dataset, base_key, self.stream)}"
         return f"paths.{base_key} (or the dataset's own key)"
 
     def _refuse_runs_inside_data(self) -> None:
@@ -1488,9 +1493,15 @@ def run_cleaner(
     force: bool = False,
     dry_run: bool = False,
     report: bool = False,
+    stream: str = "english",
 ) -> tuple[int, int]:
     """
     Convenience wrapper so the CLI can call the clean stage.
+
+    stream ("english", the default, or "translated") picks which of
+    GDELT's two streams of the dataset to clean: the translated one reads
+    and writes the dataset's paths.translated_* directories
+    (config_for_stream), and messages name those keys.
 
     verbose raises this module's own logger to DEBUG, revealing the
     per-file "{name}: rows -> rows"/"Skipping already cleaned"/"Deleted
@@ -1514,6 +1525,7 @@ def run_cleaner(
     anything; it sees force's effect on the skip list, since it runs
     after that check.
     """
+    config = config_for_stream(config, dataset, stream)
     _validate_clean_section(config, dataset)
     part_cfg = get_dict(get_dict(config, "converter"), "partitioning")
     historical_input = historical_output = None
@@ -1577,6 +1589,7 @@ def run_cleaner(
             if key.endswith(_PARQUET_DIRECTORY_KEYS) and isinstance(value, str) and value
         ],
         dataset=dataset,
+        stream=stream,
     )
     # After GDELTCleaner, which refuses --delete-source under a lossy step
     # added in 0.12.0: a run that won't happen gets no warning about it.

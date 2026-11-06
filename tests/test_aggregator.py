@@ -429,3 +429,63 @@ class TestRunAggregatorDatasetEligibility:
 
         assert captured["input_folder"] == str(tmp_path / "converted")
         assert captured["source"] == "converted"
+
+
+class TestRunAggregatorTranslatedStream:
+    def test_reads_and_writes_the_translated_directories(self, tmp_path, monkeypatch):
+        captured = {}
+
+        class FakeAggregator:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def aggregate_all_periods(self):
+                return (0, 0)
+
+        monkeypatch.setattr(aggregator_module, "GDELTAggregator", FakeAggregator)
+        config = {
+            "paths": {
+                "mentions_cleaned_data_directory": str(tmp_path / "en_cleaned"),
+                "mentions_aggregated_day_data_directory": str(tmp_path / "en_day"),
+                "translated_mentions_cleaned_data_directory": str(tmp_path / "tr_cleaned"),
+                "translated_mentions_aggregated_day_data_directory": str(tmp_path / "tr_day"),
+            },
+            "aggregation": {},
+        }
+
+        run_aggregator(config, dataset="gdelt_mentions", stream="translated")
+
+        assert captured["input_folder"] == str(tmp_path / "tr_cleaned")
+        assert captured["output_folder"] == str(tmp_path / "tr_day")
+
+    def test_the_converted_source_warning_is_given_the_stream(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake_warn(folder, where, logger, dataset=None, stream="english"):
+            seen["stream"] = stream
+            return False
+
+        class FakeAggregator:
+            def __init__(self, **kwargs):
+                pass
+
+            def aggregate_all_periods(self):
+                return (0, 0)
+
+        monkeypatch.setattr(aggregator_module, "warn_if_folder_holds_cleaned_files", fake_warn)
+        monkeypatch.setattr(aggregator_module, "GDELTAggregator", FakeAggregator)
+        config = {
+            "paths": {
+                "mentions_parquet_data_directory": str(tmp_path / "en"),
+                "mentions_aggregated_day_data_directory": str(tmp_path / "en_day"),
+                "translated_mentions_parquet_data_directory": str(tmp_path / "tr"),
+                "translated_mentions_aggregated_day_data_directory": str(tmp_path / "tr_day"),
+            },
+            "aggregation": {},
+        }
+
+        run_aggregator(
+            config, dataset="gdelt_mentions", source="converted", stream="translated"
+        )
+
+        assert seen["stream"] == "translated"

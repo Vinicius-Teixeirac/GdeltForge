@@ -78,12 +78,30 @@ def dataset_is_aggregation_eligible(dataset: str) -> bool:
     return dataset in _AGGREGATION_ELIGIBLE_DATASETS
 
 
-def dataset_path_key(dataset: str, base_key: str) -> str:
+# GDELT 2.0 publishes two streams of the same three datasets: the English
+# one (masterfilelist.txt) and the machine-translated one
+# (masterfilelist-translation.txt, coverage in 65 languages), with the same
+# columns and separate files. Every stage treats a translated dataset the
+# way it treats the English one, reading and writing its own directories:
+# the dataset's paths.* keys with a "translated_" prefix.
+STREAMS = ("english", "translated")
+_TRANSLATED_STREAM_PREFIX = "translated_"
+_TRANSLATED_STREAM_DATASETS = frozenset({
+    "gdelt_gkg_v2", "gdelt_mentions", "gdelt_event_15min",
+})
+
+
+def dataset_has_translated_stream(dataset: str) -> bool:
+    return dataset in _TRANSLATED_STREAM_DATASETS
+
+
+def dataset_path_key(dataset: str, base_key: str, stream: str = "english") -> str:
     """
     Map a dataset name and a base paths.* key (e.g. "downloaded_data_directory")
     to that dataset's actual config key, e.g.
     dataset_path_key("gdelt_gkg_v2", "downloaded_data_directory")
-    -> "gkg_v2_downloaded_data_directory".
+    -> "gkg_v2_downloaded_data_directory", and with stream="translated"
+    -> "translated_gkg_v2_downloaded_data_directory".
     """
     try:
         prefix = _DATASET_PATH_PREFIXES[dataset]
@@ -92,7 +110,60 @@ def dataset_path_key(dataset: str, base_key: str) -> str:
             f"Unknown dataset {dataset!r}. Known datasets: "
             f"{', '.join(_DATASET_PATH_PREFIXES)}"
         ) from None
-    return f"{prefix}{base_key}"
+    if stream == "english":
+        return f"{prefix}{base_key}"
+    if stream != "translated":
+        raise ValueError(f"Unknown stream {stream!r}. Known streams: {', '.join(STREAMS)}")
+    if not dataset_has_translated_stream(dataset):
+        raise ValueError(
+            f"{dataset} has no translated stream. GDELT translates "
+            f"{', '.join(sorted(_TRANSLATED_STREAM_DATASETS))} only."
+        )
+    return f"{_TRANSLATED_STREAM_PREFIX}{prefix}{base_key}"
+
+
+def config_for_stream(config: dict, dataset: str, stream: str) -> dict:
+    """
+    The config a stage runs with for one stream of `dataset`: for the
+    English stream, `config` itself; for the translated one, a copy whose
+    paths.* keys for `dataset` hold the translated directories, so every
+    stage reads and writes those without knowing about streams. Raises
+    for a dataset GDELT doesn't translate, and for a translated directory
+    that is missing or equal to its English one (the two streams' files
+    would then mix: their names differ, so nothing would stop it).
+
+    An English key of `dataset` with no translated sibling (an optional
+    one, such as clean_runs_directory) is dropped rather than kept, so
+    the stage falls back to its default beside the translated
+    directories instead of writing into the English stream's.
+    """
+    if stream == "english":
+        return config
+    dataset_path_key(dataset, "downloaded_data_directory", stream)  # validates
+    original = get_dict(config, "paths")
+    english_prefix = _DATASET_PATH_PREFIXES[dataset]
+    translated_prefix = _TRANSLATED_STREAM_PREFIX + english_prefix
+    paths = {
+        key: value for key, value in original.items()
+        if not key.startswith(english_prefix)
+        or f"{_TRANSLATED_STREAM_PREFIX}{key}" in original
+    }
+    for key, value in original.items():
+        if not key.startswith(translated_prefix):
+            continue
+        english_key = dataset_path_key(dataset, key[len(translated_prefix):])
+        english = original.get(english_key)
+        same = (
+            isinstance(value, str) and isinstance(english, str) and bool(english)
+            and Path(value).resolve() == Path(english).resolve()
+        )
+        if not isinstance(value, str) or not value or same:
+            raise ValueError(
+                f"paths.{key} must name its own directory for the translated stream, "
+                f"not {value!r} (paths.{english_key} is {original.get(english_key)!r})."
+            )
+        paths[english_key] = value
+    return {**config, "paths": paths}
 
 
 def validate_max_workers(value: int | None, label: str) -> int | None:
