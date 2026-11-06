@@ -1,30 +1,94 @@
 from __future__ import annotations
 
+import hashlib
+import os
 from bisect import bisect_right
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pyarrow.dataset as ds
+import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from gdeltforge.utils.io import clearer_dataset_errors
+from gdeltforge.utils.io import _imap_files, _map_files, clearer_dataset_errors
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Bumped whenever the saved index's columns or their meaning change: a
+# saved index of another version is rebuilt, never read.
+_INDEX_VERSION = "1"
+_INDEX_METADATA_KEY = "gdeltforge:file_index"
+# Not .parquet: a saved index inside a data directory would otherwise be
+# globbed and sampled as data (index_path_for also refuses that).
+INDEX_SUFFIX = ".index"
+
+
+@dataclass(frozen=True)
+class _Entry:
+    """One file's footer facts, and the size and mtime they were read at."""
+    size: int
+    mtime_ns: int
+    row_groups: tuple[int, ...]
+    schema: bytes  # Arrow IPC-serialized schema
+
+
+def index_path_for(index_directory: str | Path, roots: list[Path]) -> Path:
+    """
+    The saved index for a sample reading `roots` (its source directory,
+    and historical directory if any): one file per set of roots, named
+    after the first and a hash of all their absolute paths. Refused when
+    it would sit inside one of them.
+    """
+    directory = Path(index_directory)
+    _refuse_inside_roots(directory, roots, "The index directory")
+    key = "\n".join(os.path.abspath(r) for r in roots)
+    digest = hashlib.sha256(key.encode()).hexdigest()[:12]
+    first = Path(os.path.abspath(roots[0]))
+    return directory / f"{first.parent.name}_{first.name}-{digest}{INDEX_SUFFIX}"
+
+
+def _refuse_inside_roots(path: Path, roots: list[Path], what: str = "The file index") -> None:
+    target = Path(os.path.abspath(path))
+    for root in roots:
+        if target.is_relative_to(os.path.abspath(root)):
+            raise ValueError(
+                f"{what} {path} would sit inside {root}, which the sample reads. "
+                f"Point paths.index_directory (or --file-index) outside every data directory."
+            )
+
 
 class FileIndex:
     """
-    Efficient global-row-index -> (file, relative-row) mapping.
-    Uses PyArrow Dataset metadata + binary search for fast lookup.
+    Efficient global-row-index -> (file, relative-row) mapping, with each
+    file's row groups and schema.
+
+    Every file's footer is read once, a few at a time (_imap_files). With
+    `saved`, the footer facts are kept in that file and reused while a
+    file's size and mtime are unchanged, so a later sample over the same
+    files reads no footers at all (one stat per file instead).
     """
 
-    def __init__(self, folder_or_files: Iterable[Path]):
+    def __init__(
+        self,
+        folder_or_files: Iterable[Path],
+        saved: Path | None = None,
+        roots: list[Path] | None = None,
+        label: str | None = None,
+    ):
         # Accept folder or list of paths
         self.folder, self.files = self._resolve_paths(folder_or_files)
+        self.saved = saved
+        # What a footer-read error names (clearer_dataset_errors).
+        self._label = label or f"{len(self.files)} parquet file(s)"
+        self._roots = roots or ([self.folder] if self.folder else [])
+        if saved is not None:
+            _refuse_inside_roots(saved, self._roots)
 
-        logger.info("Building FileIndex using PyArrow metadata...")
-        self._build_arrow_metadata()
+        logger.info("Building FileIndex from Parquet footers...")
+        self._build_metadata()
         logger.info(
             f"FileIndex: {len(self.files)} files, {self.total_rows:,} total rows."
         )
@@ -46,37 +110,154 @@ class FileIndex:
         return folder, files
 
     # ----------------------------------------------------------
-    # Build metadata via PyArrow
+    # Build metadata from the footers (or the saved index)
     # ----------------------------------------------------------
-    def _build_arrow_metadata(self):
+    def _build_metadata(self):
         self.stops: list[int] = []    # cumulative row end positions (+1)
         self.starts: list[int] = []   # starting global index for each file
         self.counts: list[int] = []   # rows per file
 
-        # ds.dataset() itself can raise here: schema inference reads at
-        # least the first file in the list, so a corrupt/non-parquet file
-        # can surface at construction, not just at the fragment.metadata
-        # access below (which opens the rest to read their footers) --
-        # confirmed empirically that which one raises depends on where in
-        # the list the bad file happens to land, so both are wrapped.
-        with clearer_dataset_errors(f"{len(self.files)} parquet file(s)"):
-            dataset = ds.dataset(self.files, format="parquet")
-            # Exposed for IndexedSampler's own --columns validation: the
-            # dataset object itself is otherwise dropped once this method
-            # returns, so its schema would need re-reading from disk again
-            # to check a caller-requested column list against it.
-            self.schema_names: list[str] = dataset.schema.names
-            fragments = list(dataset.get_fragments())
-            cumulative = 0
-            for fragment in fragments:
-                nrows = fragment.metadata.num_rows
-                self.starts.append(cumulative)
-                cumulative += nrows
-                self.stops.append(cumulative)
-                self.counts.append(nrows)
+        stats = _map_files(os.stat, self.files)
+        known = self._load_saved()
+        keys = [os.path.abspath(f) for f in self.files]
+        entries: list[_Entry | None] = []
+        for key, st in zip(keys, stats, strict=True):
+            entry = known.get(key)
+            fresh = entry is not None and (entry.size, entry.mtime_ns) == (
+                st.st_size, st.st_mtime_ns
+            )
+            entries.append(entry if fresh else None)
+
+        missing = [i for i, e in enumerate(entries) if e is None]
+        if missing:
+            facts = _FooterFacts({e.schema: e.schema for e in known.values()})
+            # The footers are read a few at a time on worker threads; each
+            # one's facts are taken here, on this thread. Taken on the
+            # workers, on Linux, they kept about 114 KiB per file: 43 GiB
+            # over 368,388 files, against about 3 KiB here. A corrupt or
+            # non-parquet file raises here, named clearly.
+            with clearer_dataset_errors(self._label):
+                footers = _imap_files(_read_footer, [self.files[i] for i in missing])
+                for i, metadata in zip(missing, footers, strict=True):
+                    row_groups, schema = facts(metadata)
+                    entries[i] = _Entry(stats[i].st_size, stats[i].st_mtime_ns, row_groups, schema)
+        logger.info(
+            f"FileIndex: {len(missing):,} footer(s) read, "
+            f"{len(self.files) - len(missing):,} from the saved index."
+        )
+
+        # One polars schema per distinct Arrow schema: most files share
+        # one, and a dict per file over hundreds of thousands of files
+        # costs gigabytes.
+        converted: dict[bytes, dict[str, pl.DataType]] = {}
+        self.schemas: dict[Path, dict[str, pl.DataType]] = {}
+        self.row_groups: dict[Path, tuple[int, ...]] = {}
+        cumulative = 0
+        for f, entry in zip(self.files, entries, strict=True):
+            assert entry is not None
+            if entry.schema not in converted:
+                converted[entry.schema] = _polars_schema(entry.schema)
+            self.schemas[f] = converted[entry.schema]
+            self.row_groups[f] = entry.row_groups
+            nrows = sum(entry.row_groups)
+            self.starts.append(cumulative)
+            cumulative += nrows
+            self.stops.append(cumulative)
+            self.counts.append(nrows)
 
         self.total_rows = cumulative
-        self.files = [Path(f.path) for f in fragments]
+        # Every column any file has, in first-seen order: IndexedSampler
+        # checks --columns against it.
+        names: dict[str, None] = {}
+        for schema in converted.values():
+            names.update(dict.fromkeys(schema))
+        self.schema_names: list[str] = list(names)
+
+        if self.saved is not None and missing:
+            known.update(zip(keys, (e for e in entries if e is not None), strict=True))
+            self._save(self._without_removed_files(known))
+
+    # ----------------------------------------------------------
+    # The saved index
+    # ----------------------------------------------------------
+    def _load_saved(self) -> dict[str, _Entry]:
+        """The saved index's entries by absolute path; empty when there's
+        none yet, or it can't be read (it's then rebuilt)."""
+        if self.saved is None or not self.saved.exists():
+            return {}
+        try:
+            metadata = pq.read_schema(self.saved).metadata or {}
+            version = metadata.get(_INDEX_METADATA_KEY.encode(), b"").decode()
+            if version != _INDEX_VERSION:
+                logger.warning(
+                    f"The file index {self.saved} has version {version or 'unknown'!r}, "
+                    f"not {_INDEX_VERSION!r}; rebuilding it."
+                )
+                return {}
+            table = pq.read_table(self.saved)
+            # Dictionary-encoded: one bytes object per distinct schema,
+            # shared by every file holding it.
+            encoded = table.column("schema").combine_chunks()
+            schemas = [s.as_py() for s in encoded.dictionary]
+            schema_ids = encoded.indices.to_pylist()
+            columns = table.select(["path", "size", "mtime_ns", "row_groups"]).to_pydict()
+        except (OSError, KeyError, AttributeError, pa.ArrowException) as e:
+            logger.warning(f"Could not read the file index {self.saved} ({e}); rebuilding it.")
+            return {}
+        return {
+            path: _Entry(size, mtime_ns, tuple(row_groups), schemas[schema_id])
+            for path, size, mtime_ns, row_groups, schema_id in zip(
+                columns["path"], columns["size"], columns["mtime_ns"],
+                columns["row_groups"], schema_ids, strict=True,
+            )
+        }
+
+    def _without_removed_files(self, entries: dict[str, _Entry]) -> dict[str, _Entry]:
+        """`entries` less those of files gone from the roots (one listing
+        per root): over a directory whose files are renamed or rotated,
+        the saved index would otherwise only grow. An entry outside every
+        root, or with no roots known, is kept."""
+        if not self._roots:
+            return entries
+        roots = {os.path.abspath(r) for r in self._roots}
+        present = {
+            os.path.abspath(f) for root in self._roots for f in Path(root).glob("*.parquet")
+        }
+        return {
+            path: entry for path, entry in entries.items()
+            if path in present or os.path.dirname(path) not in roots
+        }
+
+    def _save(self, entries: dict[str, _Entry]) -> None:
+        """Write the saved index; a failure (read-only directory, full
+        disk) only warns, since the index is a cache."""
+        assert self.saved is not None
+        paths = sorted(entries)
+        table = pa.table(
+            {
+                "path": pa.array(paths, pa.string()),
+                "size": pa.array([entries[p].size for p in paths], pa.int64()),
+                "mtime_ns": pa.array([entries[p].mtime_ns for p in paths], pa.int64()),
+                "row_groups": pa.array(
+                    [list(entries[p].row_groups) for p in paths], pa.list_(pa.int64())
+                ),
+                "schema": pa.array(
+                    [entries[p].schema for p in paths], pa.binary()
+                ).dictionary_encode(),
+            }
+        ).replace_schema_metadata({_INDEX_METADATA_KEY: _INDEX_VERSION})
+        # Written through a temp file and a rename, as utils.io's atomic
+        # writers do: a run stopped mid-write leaves the old index or none.
+        tmp = self.saved.with_name(f"{self.saved.name}.{os.getpid()}.tmp")
+        try:
+            self.saved.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(table, tmp)
+            os.replace(tmp, self.saved)
+        except OSError as e:
+            tmp.unlink(missing_ok=True)
+            logger.warning(f"Could not save the file index {self.saved}: {e}")
+        else:
+            logger.info(f"Saved the file index ({len(paths):,} files) -> {self.saved}")
 
     # ----------------------------------------------------------
     # Fast lookup via binary search
@@ -112,3 +293,45 @@ class FileIndex:
             result.setdefault(file_path, []).append(rel)
 
         return result
+
+
+def _read_footer(file: Path) -> pq.FileMetaData:
+    """A file's footer."""
+    return pq.ParquetFile(file).metadata
+
+
+class _FooterFacts:
+    """
+    A footer's row-group sizes and Arrow schema (serialized), the schema
+    interned in `interned` (most files share one). Converting a footer's
+    schema to Arrow costs about 300 us, so a footer whose schema matches
+    the one before reuses that one's (about 6 us to compare).
+    """
+
+    def __init__(self, interned: dict[bytes, bytes]):
+        self.interned = interned
+        self.last: tuple[pq.ParquetSchema, bytes | None, bytes] | None = None
+
+    def __call__(self, metadata: pq.FileMetaData) -> tuple[tuple[int, ...], bytes]:
+        row_groups = tuple(metadata.row_group(i).num_rows for i in range(metadata.num_row_groups))
+        # The Arrow schema pyarrow derives depends on this key as well.
+        arrow = (metadata.metadata or {}).get(b"ARROW:schema")
+        if self.last is not None:
+            parquet_schema, last_arrow, schema = self.last
+            if arrow == last_arrow and metadata.schema.equals(parquet_schema):
+                return row_groups, schema
+        # Without the file's metadata (a cleaned file's marker names its
+        # own source), so files with the same columns share one schema.
+        serialized = metadata.schema.to_arrow_schema().remove_metadata().serialize().to_pybytes()
+        schema = self.interned.setdefault(serialized, serialized)
+        self.last = (metadata.schema, arrow, schema)
+        return row_groups, schema
+
+
+def _polars_schema(serialized: bytes) -> dict[str, pl.DataType]:
+    """The polars schema of a serialized Arrow schema: the one
+    pl.read_parquet_schema reads from the same footer."""
+    schema = pa.ipc.read_schema(pa.py_buffer(serialized))
+    frame = pl.from_arrow(schema.empty_table())
+    assert isinstance(frame, pl.DataFrame)
+    return dict(frame.schema.items())

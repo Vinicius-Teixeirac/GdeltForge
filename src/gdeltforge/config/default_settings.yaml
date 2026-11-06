@@ -378,6 +378,14 @@ paths:
   parquet_historical_directory: "./data/events/historical"
   cleaned_historical_directory: "./data/events/cleaned_historical"
 
+  # Where `sample` keeps its saved file index: each Parquet file's rows,
+  # row groups and schema, reused while the file's size and mtime are
+  # unchanged, so a later sample reads no footers. One index per source
+  # directory, for every dataset. null keeps none (every footer is read on
+  # every run); --file-index names one explicitly. Must sit outside every
+  # data directory.
+  index_directory: "./data/index"
+
   gkg_v2_downloaded_data_directory: "./data/gkg_v2/raw"
   gkg_v2_unzipped_data_directory: "./data/gkg_v2/csv"
   gkg_v2_parquet_data_directory: "./data/gkg_v2/parquet"

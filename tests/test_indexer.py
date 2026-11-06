@@ -1,8 +1,18 @@
+import logging
+import os
+import threading
+import time
+from pathlib import Path
+
 import numpy as np
 import polars as pl
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from gdeltforge.sampling.indexer import FileIndex
+from gdeltforge.sampling import indexer as indexer_module
+from gdeltforge.sampling.indexer import INDEX_SUFFIX, FileIndex, index_path_for
+from gdeltforge.sampling.samplers import CalendarSampler, FilteredSampler, IndexedSampler
 
 
 def _write_parquet(path, n_rows, start_id=0):
@@ -76,3 +86,327 @@ class TestGroupIndicesByFile:
         (_, rows_a), (_, rows_b) = sorted(result.items())
         assert rows_a == [0, 2, 4]
         assert rows_b == [0, 3, 4]
+
+
+def _write_days(folder, days=("20200101", "20200102", "20200103"), rows=50):
+    """One events-like file per day, several row groups each."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for k, day in enumerate(days):
+        pl.DataFrame({
+            "GlobalEventID": range(k * rows, (k + 1) * rows),
+            "Day": [int(day)] * rows,
+            "QuadClass": [(i % 4) + 1 for i in range(rows)],
+        }).write_parquet(folder / f"{day}.export.parquet", row_group_size=16)
+
+
+def _footers_read(monkeypatch):
+    """Record every footer FileIndex reads."""
+    read = []
+    original = indexer_module._read_footer
+
+    def spy(f):
+        read.append(Path(f).name)
+        return original(f)
+
+    monkeypatch.setattr(indexer_module, "_read_footer", spy)
+    return read
+
+
+class TestSavedIndex:
+    def test_a_second_index_reads_no_footer_and_matches_the_first(self, tmp_path, monkeypatch):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "index" / "events.index"
+        read = _footers_read(monkeypatch)
+
+        first = FileIndex(data, saved=saved)
+        assert sorted(read) == sorted(f.name for f in data.glob("*.parquet"))
+        assert saved.exists()
+
+        read.clear()
+        second = FileIndex(data, saved=saved)
+        assert read == []
+        assert second.files == first.files
+        assert second.counts == first.counts == [50, 50, 50]
+        assert second.row_groups == first.row_groups
+        assert second.schemas == first.schemas
+        assert second.schema_names == first.schema_names
+
+    def test_row_groups_and_schemas_are_the_files_own(self, tmp_path):
+        data = tmp_path / "data"
+        _write_days(data)
+        index = FileIndex(data, saved=tmp_path / "x.index")
+        for f in index.files:
+            metadata = pq.ParquetFile(f).metadata
+            assert index.row_groups[f] == tuple(
+                metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)
+            )
+            assert index.schemas[f] == dict(pl.read_parquet_schema(f).items())
+        # 50 rows in groups of 16: several row groups, however the polars
+        # writer cuts the last one (16, 16, 18 at polars 1.34; 16, 16, 16,
+        # 2 later).
+        assert all(len(index.row_groups[f]) > 1 for f in index.files)
+
+    def test_only_a_changed_or_new_file_is_read_again(self, tmp_path, monkeypatch):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        FileIndex(data, saved=saved)
+
+        changed = data / "20200102.export.parquet"
+        pl.DataFrame(
+            {"GlobalEventID": range(7), "Day": [20200102] * 7, "QuadClass": [1] * 7}
+        ).write_parquet(changed)
+        stat = changed.stat()
+        os.utime(changed, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000_000))
+        _write_days(data, days=("20200104",), rows=5)
+
+        read = _footers_read(monkeypatch)
+        index = FileIndex(data, saved=saved)
+        assert sorted(read) == ["20200102.export.parquet", "20200104.export.parquet"]
+        assert index.counts == [50, 7, 50, 5]
+
+        read.clear()
+        FileIndex(data, saved=saved)
+        assert read == []
+
+    def test_files_with_the_same_columns_share_one_schema_object(self, tmp_path):
+        # A cleaned file's own metadata names its source, so every file's
+        # footer metadata differs; the schemas are still shared.
+        data = tmp_path / "data"
+        data.mkdir()
+        for day in ("20200101", "20200102"):
+            table = pa.table({"GlobalEventID": [1, 2]}).replace_schema_metadata(
+                {"gdeltforge:clean": day}
+            )
+            pq.write_table(table, data / f"{day}.export.parquet")
+        saved = tmp_path / "events.index"
+        for index in (FileIndex(data, saved=saved), FileIndex(data, saved=saved)):
+            a, b = (index.schemas[f] for f in index.files)
+            assert a is b
+
+    def test_schema_names_cover_every_file(self, tmp_path):
+        data = tmp_path / "data"
+        data.mkdir()
+        pl.DataFrame({"a": [1]}).write_parquet(data / "1.parquet")
+        pl.DataFrame({"a": [1], "b": ["x"]}).write_parquet(data / "2.parquet")
+        assert FileIndex(data).schema_names == ["a", "b"]
+
+    def test_an_unreadable_saved_index_is_rebuilt_with_a_warning(self, tmp_path, caplog):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        saved.write_text("not an index")
+
+        with caplog.at_level(logging.WARNING):
+            index = FileIndex(data, saved=saved)
+        assert "Could not read the file index" in caplog.text
+        assert index.total_rows == 150
+        assert pq.read_table(saved).num_rows == 3
+
+    def test_a_saved_index_of_another_version_is_rebuilt(self, tmp_path, monkeypatch, caplog):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        monkeypatch.setattr(indexer_module, "_INDEX_VERSION", "0")
+        FileIndex(data, saved=saved)
+        monkeypatch.undo()
+
+        read = _footers_read(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            FileIndex(data, saved=saved)
+        assert "has version '0'" in caplog.text
+        assert len(read) == 3
+
+    def test_a_failed_save_warns_and_the_index_still_works(self, tmp_path, monkeypatch, caplog):
+        data = tmp_path / "data"
+        _write_days(data)
+
+        def full_disk(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(indexer_module.pq, "write_table", full_disk)
+        saved = tmp_path / "events.index"
+        with caplog.at_level(logging.WARNING):
+            index = FileIndex(data, saved=saved)
+        assert "Could not save the file index" in caplog.text
+        assert index.total_rows == 150
+        assert not saved.exists()
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_a_saved_index_inside_a_data_directory_is_refused(self, tmp_path):
+        data = tmp_path / "data"
+        _write_days(data)
+        with pytest.raises(ValueError, match="outside every data directory"):
+            FileIndex(data, saved=data / "events.index")
+        with pytest.raises(ValueError, match="outside every data directory"):
+            index_path_for(data / "index", [tmp_path / "other", data])
+
+    def test_index_path_for_differs_per_set_of_roots(self, tmp_path):
+        a, b = tmp_path / "events" / "cleaned", tmp_path / "gkg_v2" / "cleaned"
+        hist = tmp_path / "events" / "cleaned_historical"
+        paths = {
+            index_path_for(tmp_path / "index", roots)
+            for roots in ([a], [b], [a, hist])
+        }
+        assert len(paths) == 3
+        assert all(p.parent == tmp_path / "index" for p in paths)
+        assert all(p.name.startswith(("events_cleaned-", "gkg_v2_cleaned-")) for p in paths)
+        assert all(p.suffix == INDEX_SUFFIX for p in paths)
+
+    def test_footer_reads_stay_under_the_scan_limit(self, tmp_path, monkeypatch):
+        data = tmp_path / "data"
+        _write_days(data, days=tuple(f"202001{d:02d}" for d in range(1, 21)), rows=3)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "2")
+        lock = threading.Lock()
+        in_flight, peak = 0, 0
+        original = indexer_module._read_footer
+
+        def slow(f):
+            nonlocal in_flight, peak
+            with lock:
+                in_flight += 1
+                peak = max(peak, in_flight)
+            time.sleep(0.01)
+            try:
+                return original(f)
+            finally:
+                with lock:
+                    in_flight -= 1
+
+        monkeypatch.setattr(indexer_module, "_read_footer", slow)
+        FileIndex(data)
+        assert peak == 2
+
+
+class TestSamplersWithASavedIndex:
+    """Every sampler draws the same rows with a saved index as without,
+    and reads no footer on a second run over unchanged files."""
+
+    def _draws(self, data, saved):
+        indexed = IndexedSampler(
+            str(data), random_state=7, file_index=saved
+        ).get_random_sample(40)
+        calendar = CalendarSampler(
+            str(data), random_state=7, file_index=saved
+        ).get_calendar_samples(5)
+        filtered = FilteredSampler(
+            str(data), gdelt_columns=["GlobalEventID", "Day", "QuadClass"],
+            filter_dict={"QuadClass": [1, 2]}, random_state=7, file_index=saved,
+        )
+        return (
+            indexed, calendar, filtered.get_random_sample(20),
+            filtered.get_stratified_sample("QuadClass", 3),
+        )
+
+    def test_same_rows_with_and_without_and_no_footer_read_twice(self, tmp_path, monkeypatch):
+        data = tmp_path / "data"
+        _write_days(data)
+        without = self._draws(data, None)
+        saved = tmp_path / "events.index"
+        first = self._draws(data, saved)
+        read = _footers_read(monkeypatch)
+        second = self._draws(data, saved)
+
+        assert read == []
+        for a, b, c in zip(without, first, second, strict=True):
+            assert a.equals(b) and b.equals(c)
+
+
+class TestFooterReads:
+    def test_footer_facts_are_taken_on_the_calling_thread(self, tmp_path, monkeypatch):
+        # On Linux, taking them on the worker threads kept about 114 KiB
+        # per file: 43 GiB over 368,388 files.
+        data = tmp_path / "data"
+        _write_days(data, days=tuple(f"202001{d:02d}" for d in range(1, 13)), rows=3)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "4")
+        threads = set()
+        original = indexer_module._FooterFacts.__call__
+
+        def spy(self, metadata):
+            threads.add(threading.get_ident())
+            return original(self, metadata)
+
+        monkeypatch.setattr(indexer_module._FooterFacts, "__call__", spy)
+        index = FileIndex(data)
+        assert threads == {threading.get_ident()}
+        assert index.counts == [3] * 12
+
+    def test_a_schema_like_the_one_before_is_not_mistaken_for_it(self, tmp_path):
+        # The last footer's schema is reused only when it matches.
+        data = tmp_path / "data"
+        data.mkdir()
+        pl.DataFrame({"a": [1]}).write_parquet(data / "1.parquet")
+        pl.DataFrame({"a": [1]}).write_parquet(data / "2.parquet")
+        pl.DataFrame({"a": [1]}, schema={"a": pl.Int32}).write_parquet(data / "3.parquet")
+        pq.write_table(pa.table({"a": pa.array([1], pa.int32())}), data / "4.parquet")
+        pl.DataFrame({"a": ["x"]}).write_parquet(data / "5.parquet")
+        index = FileIndex(data)
+        assert [index.schemas[f] for f in index.files] == [
+            dict(pl.read_parquet_schema(f).items()) for f in index.files
+        ]
+        assert [index.schemas[f]["a"] for f in index.files] == [
+            pl.Int64, pl.Int64, pl.Int32, pl.Int32, pl.String,
+        ]
+
+    def test_reads_run_only_a_few_ahead_and_come_back_in_order(self, monkeypatch):
+        from gdeltforge.utils import io as io_module
+
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "2")
+        started = []
+
+        def fn(k):
+            started.append(k)
+            return k * 10
+
+        results = io_module._imap_files(fn, list(range(100)))
+        assert next(results) == 0
+        time.sleep(0.05)
+        # Two workers, eight calls in flight at most, plus the next one
+        # the first result made room for.
+        assert len(started) <= 9
+        assert [0, *results] == [k * 10 for k in range(100)]
+
+    def test_an_error_in_a_read_reaches_the_caller(self, monkeypatch):
+        from gdeltforge.utils import io as io_module
+
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "2")
+
+        def fn(k):
+            if k == 5:
+                raise OSError("unreadable")
+            return k
+
+        with pytest.raises(OSError, match="unreadable"):
+            list(io_module._imap_files(fn, list(range(20))))
+
+
+class TestSavedIndexUpkeep:
+    def test_a_removed_file_leaves_the_saved_index_at_its_next_save(self, tmp_path):
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        FileIndex(data, saved=saved)
+        (data / "20200101.export.parquet").unlink()
+        _write_days(data, days=("20200104",), rows=5)
+        FileIndex(data, saved=saved)
+        paths = pq.read_table(saved, columns=["path"])["path"].to_pylist()
+        assert sorted(Path(p).name for p in paths) == [
+            "20200102.export.parquet", "20200103.export.parquet", "20200104.export.parquet",
+        ]
+
+    def test_entries_of_files_not_sampled_this_time_are_kept(self, tmp_path):
+        # A sample over some dates reads only some of the root's files.
+        data = tmp_path / "data"
+        _write_days(data)
+        saved = tmp_path / "events.index"
+        files = sorted(data.glob("*.parquet"))
+        FileIndex(files[:1], saved=saved, roots=[data])
+        FileIndex(files[1:], saved=saved, roots=[data])
+        assert pq.read_table(saved).num_rows == 3
+
+    def test_the_refusal_names_the_index_directory(self, tmp_path):
+        data = tmp_path / "data"
+        data.mkdir()
+        with pytest.raises(ValueError, match=r"The index directory \S*idx would sit inside"):
+            index_path_for(data / "idx", [data])

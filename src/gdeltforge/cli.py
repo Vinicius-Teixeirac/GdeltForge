@@ -21,6 +21,7 @@ from gdeltforge.crossref.crossref import (
 
 # Samplers
 from gdeltforge.sampling import cameo_codes
+from gdeltforge.sampling.indexer import index_path_for
 from gdeltforge.sampling.samplers import (
     CalendarSampler,
     FilteredSampler,
@@ -338,6 +339,21 @@ def _write_strata_sidecar(out: Path, group_by: str, counts: dict) -> None:
         logger.warning(f"Could not write strata sidecar {sidecar}: {e}")
 
 
+def _sample_file_index(
+    config: dict, args: argparse.Namespace, roots: list[Path]
+) -> Path | None:
+    """
+    The saved file index a sample reads and updates: --file-index when
+    given, else one per set of source directories under
+    paths.index_directory, or None (no saved index) when that is unset.
+    """
+    named = getattr(args, "file_index", None)
+    if named:
+        return Path(named)
+    directory = config["paths"].get("index_directory")
+    return index_path_for(directory, roots) if directory else None
+
+
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
     start_date, end_date = _parse_date_range(args)
@@ -543,6 +559,9 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     columns = set(args.columns) if args.columns else None
+    file_index = _sample_file_index(
+        config, args, [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
+    )
 
     # -----------------------------
     # Indexed Sampling
@@ -557,6 +576,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
             date_parser=date_parser,
             provenance=args.provenance,
+            file_index=file_index,
         )
         df = sampler.get_random_sample(n, replace=args.replace)
         _write_sample_output(df, out, args.export_format)
@@ -600,6 +620,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
             date_parser=date_parser,
             provenance=args.provenance,
+            file_index=file_index,
         )
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period)
         _write_sample_output(df, out, args.export_format)
@@ -649,6 +670,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
             date_parser=date_parser,
             provenance=args.provenance,
+            file_index=file_index,
         )
 
         if args.stratify:
@@ -1227,6 +1249,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add SourceFile and SourceRow to every sampled row: the converted "
              "file it comes from and its 0-based position there (for --source "
              "cleaned, the file the clean marker names). Off by default"
+    )
+    sample.add_argument(
+        "--file-index", metavar="PATH", default=None,
+        help="The saved file index to read and update (each file's rows, row "
+             "groups and schema, reused while its size and mtime are unchanged). "
+             "Default: one per source directory under paths.index_directory"
     )
     sample.add_argument(
         "--per-period", type=int, default=10,

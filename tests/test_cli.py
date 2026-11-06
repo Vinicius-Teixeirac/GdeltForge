@@ -909,6 +909,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
@@ -949,6 +950,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
@@ -990,6 +992,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["folder_path"] = folder_path
 
@@ -1042,6 +1045,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["historical_folder"] = historical_folder
 
@@ -1080,6 +1084,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["historical_folder"] = historical_folder
 
@@ -1122,6 +1127,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["columns"] = columns
 
@@ -1155,6 +1161,7 @@ class TestRunSamplingCmdSource:
                 self, folder_path, historical_folder, random_state, columns=None,
                 date_column="Day", period="day",
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["date_column"] = date_column
 
@@ -1194,6 +1201,7 @@ class TestRunSamplingCmdSource:
                 self, folder_path, historical_folder, random_state, columns=None,
                 date_column="Day", period="day",
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["columns"] = columns
 
@@ -1226,6 +1234,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 pass
 
@@ -1248,6 +1257,59 @@ class TestRunSamplingCmdSource:
         result = pl.read_csv(out_csv)
         assert result["GlobalEventID"].to_list() == [1, 2]
         assert result["QuadClass"].to_list() == [1, 3]
+
+
+class TestRunSamplingCmdFileIndex:
+    """sample keeps its saved file index under paths.index_directory, one
+    per set of source directories, or where --file-index says."""
+
+    @staticmethod
+    def _setup(tmp_path, index_directory):
+        cleaned = tmp_path / "events" / "cleaned"
+        cleaned.mkdir(parents=True)
+        for day in ("20200101", "20200102"):
+            pl.DataFrame({"GlobalEventID": [1, 2, 3], "Day": [int(day)] * 3}).write_parquet(
+                cleaned / f"{day}.export.parquet"
+            )
+        config = {
+            "paths": {"cleaned_data_directory": str(cleaned), "index_directory": index_directory},
+            "columns": {"gdelt_event": ["GlobalEventID", "Day"]},
+        }
+        return config, cleaned
+
+    def _sample(self, config, tmp_path, *extra):
+        args = cli.build_parser().parse_args([
+            "sample", "--dataset", "events", "--mode", "indexed", "-n", "4",
+            "--out", str(tmp_path / "out.parquet"), *extra,
+        ])
+        cli.run_sampling_cmd(config, args)
+        return pl.read_parquet(tmp_path / "out.parquet")
+
+    def test_the_index_is_saved_under_index_directory(self, tmp_path):
+        config, cleaned = self._setup(tmp_path, str(tmp_path / "index"))
+        self._sample(config, tmp_path)
+        assert [p.name for p in (tmp_path / "index").iterdir()] == [
+            cli.index_path_for(tmp_path / "index", [cleaned]).name
+        ]
+
+    def test_file_index_names_the_index_instead(self, tmp_path):
+        config, _ = self._setup(tmp_path, str(tmp_path / "index"))
+        named = tmp_path / "mine.index"
+        self._sample(config, tmp_path, "--file-index", str(named))
+        assert named.exists()
+        assert not (tmp_path / "index").exists()
+
+    def test_a_null_index_directory_keeps_no_index(self, tmp_path):
+        config, _ = self._setup(tmp_path, None)
+        first = self._sample(config, tmp_path)
+        assert sorted(p.name for p in tmp_path.rglob("*.index")) == []
+        assert len(first) == 4
+
+    def test_an_index_directory_inside_the_data_is_refused(self, tmp_path):
+        config, cleaned = self._setup(tmp_path, "")
+        config["paths"]["index_directory"] = str(cleaned / "index")
+        with pytest.raises(ValueError, match="outside every data directory"):
+            self._sample(config, tmp_path)
 
 
 class TestRunSamplingCmdReplace:
@@ -1275,6 +1337,7 @@ class TestRunSamplingCmdReplace:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 pass
 
@@ -1694,6 +1757,7 @@ class TestRunSamplingCmdDateFiltering:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
+                file_index=None,
             ):
                 captured["start_date"] = start_date
                 captured["end_date"] = end_date
