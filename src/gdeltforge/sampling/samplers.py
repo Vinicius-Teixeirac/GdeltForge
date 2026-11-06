@@ -308,6 +308,28 @@ def _group_rng(
     return cache[key]
 
 
+def _check_quotas(quotas: dict[str, int] | None) -> None:
+    """Refuse a negative per-group quota (gdeltforge sample --quota-file)."""
+    negative = {g: n for g, n in (quotas or {}).items() if n < 0}
+    if negative:
+        raise ValueError(f"Quotas must be non-negative, got {negative}")
+
+
+def _warn_absent_quota_groups(
+    quotas: dict[str, int] | None, seen: dict[Any, int], kind: str
+) -> None:
+    """Warn about the groups quotas lists that no row fell in: most likely
+    a mistyped key, which would otherwise draw nothing without a word."""
+    absent = [g for g in (quotas or {}) if g not in seen]
+    if absent:
+        shown = ", ".join(repr(g) for g in absent[:10])
+        more = f" and {len(absent) - 10} more" if len(absent) > 10 else ""
+        logger.warning(
+            f"{len(absent)} {kind}(s) in the quotas have no rows here: {shown}{more}. "
+            f"Keys are matched as the .strata.json sidecar writes them."
+        )
+
+
 def _reservoir_to_dataframe(
     reservoir_cols: dict[str, np.ndarray], schema: dict[str, pl.DataType]
 ) -> pl.DataFrame:
@@ -981,7 +1003,15 @@ class CalendarSampler:
             f"default) and sample --source cleaned; see docs/data-cleaning.md."
         )
 
-    def get_calendar_samples(self, samples_per_period: int = 10) -> pl.DataFrame:
+    def get_calendar_samples(
+        self, samples_per_period: int = 10, quotas: dict[str, int] | None = None
+    ) -> pl.DataFrame:
+        """
+        samples_per_period rows per calendar period, or, with quotas, the
+        count quotas gives a period (keyed as period_row_counts_ is, e.g.
+        "202001" for a month) and samples_per_period for one it doesn't
+        list. A listed period with no rows is warned about.
+        """
         # A negative value used to reach the reservoir machinery below
         # unchecked, same as 0, producing a nonsensical but "successful"
         # 0-row result: "Saved calendar sample (0 rows, period=day)" logged
@@ -993,7 +1023,8 @@ class CalendarSampler:
             raise ValueError(
                 f"samples_per_period must be non-negative, got {samples_per_period}"
             )
-        if samples_per_period == 0:
+        _check_quotas(quotas)
+        if samples_per_period == 0 and not any((quotas or {}).values()):
             return pl.DataFrame()
 
         prefix_len = self._PERIOD_PREFIX_LENGTH[self.period]
@@ -1054,6 +1085,7 @@ class CalendarSampler:
         reservoir_cols:   dict[Any, dict[str, np.ndarray]]   = {}
         reservoir_schema: dict[Any, dict[str, pl.DataType]]  = {}
         total_seen:       dict[Any, int]                     = {}
+        capacity:         dict[Any, int]                     = {}
         group_rngs:       dict[Any, np.random.Generator]     = {}
         n_unparseable = 0
         n_before_1979 = 0
@@ -1117,16 +1149,23 @@ class CalendarSampler:
                         total_seen[period_key]  = 0
                         fill_chunks[period_key] = []
                         filled[period_key]      = 0
+                        capacity[period_key]    = (quotas or {}).get(
+                            period_key, samples_per_period
+                        )
+                    cap = capacity[period_key]
+                    if cap == 0:
+                        total_seen[period_key] += group_size
+                        continue
 
                     # Fill phase: see FilteredSampler.get_random_sample's fill
                     # phase, same pattern, once per calendar period.
-                    if filled[period_key] < samples_per_period:
-                        take = min(samples_per_period - filled[period_key], group_size)
+                    if filled[period_key] < cap:
+                        take = min(cap - filled[period_key], group_size)
                         fill_chunks[period_key].append(group_df.head(take))
                         filled[period_key]     += take
                         total_seen[period_key] += take
 
-                        if filled[period_key] == samples_per_period:
+                        if filled[period_key] == cap:
                             filled_df = pl.concat(fill_chunks[period_key])
                             reservoir_schema[period_key] = dict(filled_df.schema)
                             reservoir_cols[period_key] = {
@@ -1147,7 +1186,7 @@ class CalendarSampler:
                         self.rng.seed, period_key, group_rngs
                     ).integers(0, positions + 1)
                     _apply_reservoir_replacements(
-                        reservoir_cols[period_key], group_df, rand_slots, samples_per_period
+                        reservoir_cols[period_key], group_df, rand_slots, cap
                     )
 
                     total_seen[period_key] += group_size
@@ -1161,6 +1200,7 @@ class CalendarSampler:
             )
         if n_before_1979:
             self._warn_before_1979(n_before_1979)
+        _warn_absent_quota_groups(quotas, total_seen, "period")
 
         reservoirs: dict[Any, pl.DataFrame] = {
             g: _reservoir_to_dataframe(cols, reservoir_schema[g])
@@ -1906,7 +1946,15 @@ class FilteredSampler:
     # there, not the literal string "__NA__").
     _STRATIFY_GROUP_KEY = "__stratify_group_key__"
 
-    def get_stratified_sample(self, stratify_col: str, n_per_group: int) -> pl.DataFrame:
+    def get_stratified_sample(
+        self, stratify_col: str, n_per_group: int, quotas: dict[str, int] | None = None
+    ) -> pl.DataFrame:
+        """
+        n_per_group rows per stratify_col value, or, with quotas, the count
+        quotas gives a group (keyed as stratum_row_counts_ is: the value as
+        a string, "__NA__" for null) and n_per_group for one it doesn't
+        list. A listed group with no rows is warned about.
+        """
         # Same reasoning as CalendarSampler.get_calendar_samples' identical
         # check: a negative value used to reach the reservoir machinery
         # below unchecked, same as 0, producing "Saved stratified sample
@@ -1915,12 +1963,13 @@ class FilteredSampler:
         # "sample nothing" request.
         if n_per_group < 0:
             raise ValueError(f"n_per_group must be non-negative, got {n_per_group}")
+        _check_quotas(quotas)
         # Checked like --columns and --filter names: without it, an unknown
         # name reached the available-columns check, whose message blames
         # output_columns pruning.
         if stratify_col not in self._valid_columns:
             raise ValueError(f"Invalid stratify column: {stratify_col}")
-        if n_per_group == 0:
+        if n_per_group == 0 and not any((quotas or {}).values()):
             return pl.DataFrame()
 
         needed = self._needed_columns(extra_required={stratify_col})
@@ -1930,6 +1979,7 @@ class FilteredSampler:
         reservoir_cols:   dict[Any, dict[str, np.ndarray]]  = {}
         reservoir_schema: dict[Any, dict[str, pl.DataType]] = {}
         total_seen:       dict[Any, int]                    = {}
+        capacity:         dict[Any, int]                    = {}
         group_rngs:       dict[Any, np.random.Generator]    = {}
 
         # Two passes: the reservoirs hold row identities, drawn over the
@@ -1967,16 +2017,21 @@ class FilteredSampler:
                         total_seen[g]   = 0
                         fill_chunks[g]  = []
                         filled[g]       = 0
+                        capacity[g]     = (quotas or {}).get(g, n_per_group)
+                    cap = capacity[g]
+                    if cap == 0:
+                        total_seen[g] += group_size
+                        continue
 
                     # Fill phase: see get_random_sample's fill phase, same
                     # pattern, once per stratify group.
-                    if filled[g] < n_per_group:
-                        take = min(n_per_group - filled[g], group_size)
+                    if filled[g] < cap:
+                        take = min(cap - filled[g], group_size)
                         fill_chunks[g].append(group_df.head(take))
                         filled[g]      += take
                         total_seen[g]  += take
 
-                        if filled[g] == n_per_group:
+                        if filled[g] == cap:
                             filled_df = pl.concat(fill_chunks[g])
                             # writable=True: see get_random_sample's identical
                             # fill-phase comment for why this can't be omitted.
@@ -1998,7 +2053,7 @@ class FilteredSampler:
                         0, positions + 1
                     )
                     _apply_reservoir_replacements(
-                        reservoir_cols[g], group_df, rand_slots, n_per_group
+                        reservoir_cols[g], group_df, rand_slots, cap
                     )
 
                     total_seen[g] += group_size
@@ -2020,6 +2075,7 @@ class FilteredSampler:
         # draws the same count per stratum regardless of the stratum's
         # real size, see docs/limitations-and-roadmap.md#representativeness).
         self.stratum_row_counts_ = dict(total_seen)
+        _warn_absent_quota_groups(quotas, total_seen, f"{stratify_col!r} group")
 
         if not reservoirs:
             return pl.DataFrame()

@@ -487,7 +487,7 @@ gdeltforge sample \
 
 This produces a balanced dataset with 500 USA events per QuadClass value, regardless of the natural class distribution.
 
-`--stratify` requires `--n-per-group`. The `-n` flag is ignored when `--stratify` is set.
+`--stratify` requires `--n-per-group`, or `--quota-file`, a `group,count` CSV giving each group its own count (also for `--mode calendar`). The `-n` flag is ignored when `--stratify` is set.
 
 ### Cross-Referencing Events with GKG
 

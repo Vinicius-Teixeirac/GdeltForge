@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import logging
 import os
@@ -339,6 +340,37 @@ def _write_strata_sidecar(out: Path, group_by: str, counts: dict) -> None:
         logger.warning(f"Could not write strata sidecar {sidecar}: {e}")
 
 
+def _read_quota_file(path: Path) -> dict[str, int]:
+    """
+    --quota-file: a CSV with the header group,count, one row per group: a
+    calendar period or stratum, written as the .strata.json sidecar writes
+    its keys, and the rows to draw from it.
+    """
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+    except OSError as e:
+        raise ValueError(f"Could not read --quota-file {path}: {e}") from e
+    if not rows or [c.strip() for c in rows[0]] != ["group", "count"]:
+        raise ValueError(f"--quota-file {path} must start with the header 'group,count'")
+    quotas: dict[str, int] = {}
+    for line, row in enumerate(rows[1:], start=2):
+        if not row:
+            continue
+        if len(row) != 2:
+            raise ValueError(f"--quota-file {path}, line {line}: expected group,count, got {row}")
+        group, count = row[0], row[1].strip()
+        if not (count.isascii() and count.isdigit()):
+            raise ValueError(
+                f"--quota-file {path}, line {line}: count must be a whole number "
+                f"of 0 or more, got {count!r}"
+            )
+        if group in quotas:
+            raise ValueError(f"--quota-file {path}, line {line}: group {group!r} listed twice")
+        quotas[group] = int(count)
+    return quotas
+
+
 def _sample_file_index(
     config: dict, args: argparse.Namespace, roots: list[Path]
 ) -> Path | None:
@@ -553,6 +585,16 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             )
         hist_folder = _historical_folder(config, historical_key, dataset)
 
+    quota_file = getattr(args, "quota_file", None)
+    if quota_file and not (args.mode in ("calendar", "daily") or args.stratify):
+        raise ValueError(
+            "--quota-file sets the rows per group: it applies to --mode calendar and "
+            "to --mode filtered with --stratify."
+        )
+    quotas = _read_quota_file(Path(quota_file)) if quota_file else None
+    # Passed only with a quota file: the per-group count alone otherwise.
+    quota_kwargs = {"quotas": quotas} if quotas is not None else {}
+
     out = _out_path_for_export_format(Path(args.out), args.export_format)
 
     # Create parent folder if it does not exist
@@ -604,8 +646,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         if args.per_day is not None:
             logger.warning("--per-day is deprecated; use --per-period instead")
             samples_per_period = args.per_day
-        else:
+        elif args.per_period is not None:
             samples_per_period = args.per_period
+        else:
+            # A period the quota file doesn't list draws nothing, unless
+            # --per-period gives it a count.
+            samples_per_period = 0 if quotas is not None else 10
 
         date_column = args.date_column or _CALENDAR_DATE_SPECS[args.dataset]
 
@@ -622,7 +668,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             provenance=args.provenance,
             file_index=file_index,
         )
-        df = sampler.get_calendar_samples(samples_per_period=samples_per_period)
+        df = sampler.get_calendar_samples(samples_per_period=samples_per_period, **quota_kwargs)
         _write_sample_output(df, out, args.export_format)
         # is not None, not truthiness: a real run that legitimately matched
         # zero periods (e.g. a date range excluding every row) still sets
@@ -632,7 +678,11 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         # the sampler never actually ran, which can't happen here.
         if sampler.period_row_counts_ is not None:
             _write_strata_sidecar(out, date_column, sampler.period_row_counts_)
-        logger.info(f"Saved calendar sample ({len(df)} rows, period={period}) -> {out}")
+        logger.info(
+            f"Saved calendar sample ({len(df)} rows, period={period}"
+            + (f", quotas from {quota_file}" if quotas is not None else "")
+            + f") -> {out}"
+        )
         return
 
     # -----------------------------
@@ -674,9 +724,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
         if args.stratify:
-            if args.n_per_group is None:
-                raise ValueError("--n-per-group is required when --stratify is set")
-            df = sampler.get_stratified_sample(args.stratify, args.n_per_group)
+            if args.n_per_group is None and quotas is None:
+                raise ValueError(
+                    "--n-per-group (or --quota-file) is required when --stratify is set"
+                )
+            # A group the quota file doesn't list draws nothing, unless
+            # --n-per-group gives it a count.
+            n_per_group = args.n_per_group if args.n_per_group is not None else 0
+            df = sampler.get_stratified_sample(args.stratify, n_per_group, **quota_kwargs)
             _write_sample_output(df, out, args.export_format)
             # is not None: see the identical reasoning on the calendar
             # branch above. A --filter that legitimately matches nothing
@@ -686,7 +741,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 _write_strata_sidecar(out, args.stratify, sampler.stratum_row_counts_)
             logger.info(
                 f"Saved stratified sample ({len(df)} rows) "
-                f"stratified by '{args.stratify}' ({args.n_per_group} per group) -> {out}"
+                f"stratified by '{args.stratify}' ("
+                + (
+                    f"quotas from {quota_file}, {n_per_group} per unlisted group"
+                    if quotas is not None else f"{n_per_group} per group"
+                )
+                + f") -> {out}"
             )
         else:
             df = sampler.get_random_sample(n, replace=args.replace)
@@ -1257,8 +1317,10 @@ def build_parser() -> argparse.ArgumentParser:
              "Default: one per source directory under paths.index_directory"
     )
     sample.add_argument(
-        "--per-period", type=int, default=10,
-        help="Rows per calendar period (calendar mode only, default 10)"
+        "--per-period", type=int, default=None,
+        help="Rows per calendar period (calendar mode only, default 10); with "
+             "--quota-file, the rows of each period the file doesn't list "
+             "(default 0)"
     )
     sample.add_argument(
         "--per-day", type=int, default=None,
@@ -1305,7 +1367,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--n-per-group",
         type=int,
         metavar="N",
-        help="Rows per stratum when --stratify is set"
+        help="Rows per stratum when --stratify is set; with --quota-file, the "
+             "rows of each stratum the file doesn't list (default 0)"
+    )
+    sample.add_argument(
+        "--quota-file",
+        metavar="PATH",
+        default=None,
+        help="CSV with the header group,count: the rows to draw from each "
+             "calendar period (--mode calendar) or stratum (--stratify), keyed "
+             "as the .strata.json sidecar writes them"
     )
     sample.add_argument(
         "--start-date",

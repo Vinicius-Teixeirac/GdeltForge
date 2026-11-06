@@ -238,14 +238,15 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--seed N` | all | RNG seed (default 42) |
 | `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there (see [Row provenance](#row-provenance)). Off by default |
 | `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
-| `--per-period N` | calendar | Rows per calendar period (default 10) |
+| `--per-period N` | calendar | Rows per calendar period (default 10); with `--quota-file`, the rows of each period the file doesn't list (default 0) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
 | `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for events-reduced/gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
 | `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
 | `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
-| `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` |
-| `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set |
+| `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` or `--quota-file` |
+| `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set; with `--quota-file`, the rows of each stratum the file doesn't list (default 0) |
+| `--quota-file PATH` | calendar, `--stratify` | CSV with the header `group,count`: the rows to draw from each period or stratum (see [Quotas per group](#quotas-per-group)) |
 | `--start-date YYYY-MM-DD` | all | Only sample from files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | all | Only sample from files whose period ends on or before this date |
 | `--out PATH` | all | Output parquet file (default `sample.parquet`) |
@@ -411,9 +412,26 @@ gdeltforge sample \
     --out stratified.parquet
 ```
 
-This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group`; `-n` is ignored when `--stratify` is set.
+This produces 500 USA events per `QuadClass` value. `--stratify` requires `--n-per-group` or `--quota-file`; `-n` is ignored when `--stratify` is set.
 
 Alongside `stratified.parquet`, this also writes `stratified.parquet.strata.json`, recording each `QuadClass` value's true row count in the (USA-filtered) archive, independent of `--n-per-group`. Calendar sampling writes the equivalent `<out>.strata.json` keyed by period instead. Either sidecar is the `N_h` a caller needs to post-stratification-reweight the equal-allocation sample back toward the population; see [Filtered Sampling](filtered-sampling.md) and [Limitations](limitations-and-roadmap.md#representativeness). Writing it is best-effort: a failure (a read-only output directory) logs a warning rather than failing the sample.
+
+### Quotas per group
+
+`--quota-file PATH` gives each calendar period or stratum a count of its own, for a design that isn't the same count everywhere (proportional or Neyman allocation, a pilot's sizes, a top-up of chosen groups). The file is a CSV with the header `group,count` and one row per group:
+
+```text
+group,count
+1,4000
+2,1500
+4,800
+```
+
+```bash
+gdeltforge sample --dataset events --mode filtered --stratify QuadClass     --quota-file quadclass_quotas.csv --out stratified.parquet
+```
+
+A group is named as the `.strata.json` sidecar names it: a stratum by its value as text (`1`, `USA`), with `__NA__` for a null value; a period by the date column's first digits (`20200101` for a day, `202001` for a month, `2020` for a year). The sidecar of an earlier run lists every group with its true row count, ready to turn into quotas. A group the file doesn't list draws `--n-per-group` (or `--per-period`) rows when that flag is given, and none otherwise; a group listed with a count of 0 draws none. A listed group no row falls in, most likely a mistyped name, is warned about. Each group draws from its own random stream, so a group's rows are the ones it draws with that count as `--n-per-group`, whatever the other groups' counts. `--quota-file` applies to `--mode calendar` and to `--stratify`; other draws refuse it.
 
 ### Sampling from aggregated files
 
