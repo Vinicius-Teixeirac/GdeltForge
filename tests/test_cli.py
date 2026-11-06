@@ -1390,6 +1390,57 @@ class TestRunSamplingCmdSource:
         assert result["QuadClass"].to_list() == [1, 3]
 
 
+class TestRunSamplingCmdAggregateSources:
+    """With --source aggregated --provenance the sampler gets the dataset's
+    cleaned and converted directories, where the sources of a file
+    aggregated before 0.16.0 are read from."""
+
+    def _run(self, tmp_path, monkeypatch, source, provenance):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(self, folder_path, historical_folder, random_state, **kwargs):
+                captured.update(kwargs)
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GLOBALEVENTID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+        config = {
+            "paths": {
+                "mentions_parquet_data_directory": "/converted",
+                "mentions_cleaned_data_directory": "/cleaned",
+                "mentions_aggregated_day_data_directory": "/day",
+            },
+            "columns": {"gdelt_mentions": ["GLOBALEVENTID"]},
+        }
+        args = argparse.Namespace(
+            dataset="mentions", mode="indexed", source=source, period="day", n=1, seed=1,
+            replace=False, provenance=provenance, out=str(tmp_path / "o.parquet"),
+            columns=None, export_format="parquet", start_date=None, end_date=None,
+            file_index=None,
+        )
+        cli.run_sampling_cmd(config, args)
+        return captured
+
+    def test_aggregated_with_provenance_passes_both_directories(self, tmp_path, monkeypatch):
+        captured = self._run(tmp_path, monkeypatch, "aggregated", True)
+        assert captured["aggregate_sources"] == {
+            "cleaned": cli.Path("/cleaned"), "converted": cli.Path("/converted"),
+        }
+
+    @pytest.mark.parametrize("source, provenance", [
+        ("aggregated", False), ("cleaned", True), ("converted", True),
+    ])
+    def test_otherwise_the_sampler_default_holds(
+        self, tmp_path, monkeypatch, source, provenance
+    ):
+        captured = self._run(tmp_path, monkeypatch, source, provenance)
+        assert "aggregate_sources" not in captured
+
+
 class TestRunSamplingCmdFileIndex:
     """sample keeps its saved file index under paths.index_directory, one
     per set of source directories, or where --file-index says."""

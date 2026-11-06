@@ -35,6 +35,7 @@ Provides:
 from __future__ import annotations
 
 import glob
+import json
 import logging
 import multiprocessing
 from collections.abc import Callable
@@ -57,6 +58,8 @@ from gdeltforge.utils.config import (
     validate_max_workers,
 )
 from gdeltforge.utils.io import (
+    AGGREGATE_MARKER_KEY,
+    aggregate_sources_record,
     config_fingerprint,
     delete_done_marker,
     is_marked_done,
@@ -371,8 +374,16 @@ class GDELTAggregator:
         logger.debug(f"Aggregating {len(group_files)} file(s) -> {output_path.name}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # The output records its sources, in the order their rows are
+        # written, with the converted file each holds and its rows, so a
+        # sample's --provenance can name a row's 15-minute file and
+        # position there (samplers._label_provenance).
+        record = {"sources": aggregate_sources_record(group_files)}
         lf = scan_dataset_reconciled(group_files)
-        sink_parquet_atomic(lf, output_path, compression=cast(ParquetCompression, self.compression))
+        sink_parquet_atomic(
+            lf, output_path, compression=cast(ParquetCompression, self.compression),
+            metadata={AGGREGATE_MARKER_KEY: json.dumps(record)},
+        )
 
     def _delete_source(self, source_path: Path) -> None:
         """
