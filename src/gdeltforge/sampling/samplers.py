@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import zlib
+from collections import Counter
 from collections.abc import Callable
 from datetime import date, datetime
 from enum import Enum
@@ -102,25 +103,6 @@ def _discover_dataset_files(
             + (f" within [{start_date} - {end_date}]" if start_date or end_date else "")
         )
     return all_files
-
-
-def _scan_dataset(
-    files: list[Path], file_schemas: dict[Path, dict[str, pl.DataType]]
-) -> pl.LazyFrame:
-    # polars' scan_parquet infers its schema from a single file rather
-    # than the union of every file's schema the way pyarrow.dataset.
-    # dataset() does, confirmed directly: a column present in some files
-    # and absent from others (e.g. a historical partition file converted
-    # under an older, narrower output_columns) raises "extra column ...
-    # outside of expected schema" for whichever file doesn't match the
-    # schema scan_parquet happened to infer, regardless of file order. A
-    # column present in every file but typed differently in some of them
-    # (e.g. events' own Actor2Geo_Type, Float64 through 2007-10 and Int64
-    # from 2007-11 onward) raises a different but related "data type
-    # mismatch" once scan_parquet hits a file whose own dtype disagrees
-    # with the schema it inferred. scan_dataset_reconciled resolves both:
-    # see its own docstring for the full mechanism.
-    return scan_dataset_reconciled(files, file_schemas=file_schemas)
 
 
 # ----------------------------------------------------------
@@ -271,25 +253,6 @@ def _apply_reservoir_replacements(
     accepted = batch[source_pos]
     for col, arr in reservoir_cols.items():
         reservoir_cols[col] = _assign_column(arr, target_slots, accepted[col].to_numpy())
-
-
-def _restore_integer_dtypes(
-    df: pl.DataFrame, schema: dict[str, pl.DataType]
-) -> pl.DataFrame:
-    """
-    df with every integer column the reservoir turned into Float64 cast
-    back to its own type from `schema` (the dataset's, captured when the
-    reservoir filled). numpy, which holds the reservoir, has no nullable
-    integers, so a column that drew a null comes back Float64 with NaN:
-    NaN goes back to null, and the values, integers below 2**53, convert
-    exactly.
-    """
-    exprs = [
-        pl.col(c).fill_nan(None).cast(dtype)
-        for c, dtype in schema.items()
-        if c in df.columns and dtype.is_integer() and df.schema[c].is_float()
-    ]
-    return df.with_columns(exprs) if exprs else df
 
 
 def _group_rng(
@@ -551,7 +514,7 @@ class IndexedSampler:
         read_columns = list(self.columns) if self.columns else None
 
         # Reconciled schema across just the files this call actually
-        # touches, the same reconciliation _scan_dataset/
+        # touches, the same reconciliation
         # scan_dataset_reconciled already applies for CalendarSampler/
         # FilteredSampler: a real accumulated data directory can hold
         # files whose own physical schema genuinely differs, whether a
@@ -642,28 +605,241 @@ def _read_rows(
     footer isn't read again.
     """
     lf = scan_file_against_schema(file, target_schema, real_schema=real_schema)
-    # (first row, row count, chosen positions within it) per row group read.
-    wanted: list[tuple[int, int, np.ndarray]] = []
+    reads = [(lf, first, count, at) for first, count, at, _ in _row_group_reads(rows, row_groups)]
+    return pl.concat(_collect_reads(reads, list(target_schema)))
+
+
+def _row_group_reads(
+    rows: np.ndarray, row_groups: tuple[int, ...]
+) -> list[tuple[int, int, np.ndarray, slice]]:
+    """
+    The row groups holding a row of `rows` (sorted, ascending) in a file
+    whose row groups have the sizes `row_groups`: per row group, its first
+    row, its row count, the chosen positions within it, and which of
+    `rows` they are. A position chosen twice (a draw with replacement) is
+    read twice.
+    """
+    wanted: list[tuple[int, int, np.ndarray, slice]] = []
     start = taken = 0
     for group_rows in row_groups:
         end = start + group_rows
         upto = int(np.searchsorted(rows, end, side="left"))
         if upto > taken:
-            wanted.append((start, end - start, rows[taken:upto] - start))
+            wanted.append((start, end - start, rows[taken:upto] - start, slice(taken, upto)))
             taken = upto
         if taken == len(rows):
             break
         start = end
+    return wanted
+
+
+# At most this many values (rows x columns) of one row group are decoded
+# by one read. A row group decodes whole, whatever rows a filter keeps,
+# and the converted 1979 to 2005 yearly Events files hold a million rows
+# per group: four of those, every column, peaked at 3.1 GiB. A larger
+# row group is read a few columns at a time: a cleaned daily file's
+# (about 100,000 rows) in two reads, a converted daily file's (about
+# 200,000) in three, a converted yearly file's in about fifteen. A
+# random draw over a month of daily files peaked at 1.1 GiB with 8M
+# values per read, 1.5 with 16M (0.14.2's single pass: 2.8). Over the
+# 4,634 cleaned daily files it peaked at 1.0 to 1.1 GiB with 8M and 0.7
+# with 2M (0.14.2: 1.0 to 1.1), on Linux; 2M doubled a one-year draw's
+# time.
+_CELLS_PER_READ = 4_000_000
+
+
+def _read_units(
+    reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]], columns: list[str]
+) -> list[tuple[int, list[str]]]:
+    """Each read of `reads` as one or more (read, columns) units of at
+    most _CELLS_PER_READ values, a single column being the smallest."""
+    units = []
+    for k, (_, _, count, _) in enumerate(reads):
+        width = max(1, _CELLS_PER_READ // max(1, count))
+        units.extend((k, columns[i:i + width]) for i in range(0, len(columns), width))
+    return units
+
+
+# The chosen rows of this many row groups, or of row groups holding this
+# many rows in all, are copied into one frame as they come in. With a
+# frame per read, a random draw of 20,000 rows over the 4,634 cleaned
+# daily Events files kept about 13,000 frames of 58 columns (13,000
+# frames of two rows hold 1.3 GiB for 10 MiB of values), and it peaked
+# at 2.0 GiB on Linux where 0.14.2 took 1.1.
+_READS_PER_COPY = 256
+_ROWS_PER_COPY = 65_536
+
+
+def _collect_reads(
+    reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]], columns: list[str]
+) -> list[pl.DataFrame]:
+    """
+    The chosen rows of each (scan, first row, row count, positions) row
+    group, in order, its `columns` collected a few reads at a time (the
+    scan limit, as _read_rows explains; a large row group in several
+    reads, _read_units), each copied out (detach) unless every row of the
+    row group is kept. The rows come back in a few frames: the small
+    reads' rows copied together (_READS_PER_COPY), a row group kept whole
+    or a read of _ROWS_PER_COPY rows or more in a frame of its own.
+    """
     at_once = exported_scan_limit() or 4
-    parts = []
-    for i in range(0, len(wanted), at_once):
-        batch = wanted[i:i + at_once]
-        chunks = pl.collect_all([lf.slice(first, count) for first, count, _ in batch])
-        for chunk, (_, _, positions) in zip(chunks, batch, strict=True):
-            # Bracket indexing: DataFrame.gather() postdates polars 1.34.
-            parts.append(detach(chunk[positions]))
+    units = _read_units(reads, columns)
+    left = Counter(k for k, _ in units)
+    pieces: dict[int, list[pl.Series]] = {}
+    whole: set[int] = set()
+    frames: list[pl.DataFrame] = []
+    small: list[pl.DataFrame] = []
+    small_rows = 0
+
+    def copy_small() -> None:
+        nonlocal small_rows
+        if small:
+            frames.append(
+                small[0] if len(small) == 1 else detach(pl.concat(small, how="vertical_relaxed"))
+            )
+            small.clear()
+            small_rows = 0
+
+    for i in range(0, len(units), at_once):
+        batch = units[i:i + at_once]
+        # Reads of one file share its scan, and common-subplan elimination
+        # would read that scan once, whole, and slice it afterwards: four
+        # row groups of a cleaned monthly Events file (42 groups) peaked
+        # at 1.4 GiB that way, 0.13 GiB without it.
+        chunks = pl.collect_all(
+            [reads[k][0].select(names).slice(reads[k][1], reads[k][2]) for k, names in batch],
+            optimizations=pl.QueryOptFlags(comm_subplan_elim=False),
+        )
+        for chunk, (k, _) in zip(chunks, batch, strict=True):
+            positions, count = reads[k][3], reads[k][2]
+            if len(positions) == count and np.array_equal(positions, np.arange(count)):
+                pieces.setdefault(k, []).extend(chunk.get_columns())
+                whole.add(k)
+            else:
+                # Bracket indexing: DataFrame.gather() postdates polars 1.34.
+                pieces.setdefault(k, []).extend(detach(chunk[positions]).get_columns())
+            left[k] -= 1
+            if left[k]:
+                continue
+            frame = pl.DataFrame(pieces.pop(k))
+            # A row group kept whole is never copied: every row of a week
+            # copied again peaked at 2.2 GiB, 1.2 without.
+            if k in whole or frame.height >= _ROWS_PER_COPY:
+                copy_small()
+                frames.append(frame)
+            else:
+                small.append(frame)
+                small_rows += frame.height
+                if len(small) >= _READS_PER_COPY or small_rows >= _ROWS_PER_COPY:
+                    copy_small()
         del chunks
-    return pl.concat(parts)
+    copy_small()
+    return frames
+
+
+# A two-pass draw's row identity: the row's file (an index into the
+# scanned file list) and its position within that file; and its place in
+# the sample.
+_ROW_FILE = "__row_file__"
+_ROW_POSITION = "__row_position__"
+_ROW_ORDER = "__row_order__"
+
+
+def _gather_rows(
+    files: list[Path],
+    index: FileIndex,
+    target_schema: dict[str, pl.DataType],
+    chosen: pl.DataFrame,
+    columns: list[str],
+    provenance: bool,
+    label: str,
+) -> pl.DataFrame:
+    """
+    The second pass of a two-pass draw: the `columns` of the rows `chosen`
+    names (_ROW_FILE, _ROW_POSITION), in the order of `chosen`, read with
+    the dataset's own column types. Only the row groups holding a chosen
+    row are read, a few at a time across files (_collect_reads): one at a
+    time per file, a sample spread over hundreds of files of one row group
+    each decoded them one after another. With provenance, each row's file
+    path and position too (_label_provenance turns the path into the
+    converted file's name).
+    """
+    target = {c: target_schema[c] for c in columns}
+    # Rows chosen in file order (every row of a week, say) are read as
+    # they are; any others are sorted into file order, each numbered with
+    # its place in `chosen` to be put back there. Numbering and sorting a
+    # week's rows, unneeded, kept it 5 % above 0.14.2's peak. In one
+    # chunk, so each part's labels below are too: labels in more chunks
+    # than their part's columns rechunked the sample, every row.
+    in_order = _in_file_order(chosen)
+    if not in_order:
+        chosen = chosen.with_row_index(_ROW_ORDER).sort(_ROW_FILE, _ROW_POSITION, _ROW_ORDER)
+    if provenance or not in_order:
+        chosen = chosen.rechunk()
+    # Each file's rows, as runs of `chosen`.
+    file_of_row = chosen[_ROW_FILE].to_numpy()
+    starts = np.flatnonzero(np.diff(file_of_row, prepend=-1)).tolist()
+    ends = [*starts[1:], len(file_of_row)] if starts else []
+    runs = zip(starts, ends, strict=True)
+    reads: list[tuple[pl.LazyFrame, int, int, np.ndarray]] = []
+    with clearer_dataset_errors(label):
+        for start, end in runs:
+            f = files[int(file_of_row[start])]
+            lf = scan_file_against_schema(f, target, real_schema=index.schemas[f])
+            for first, count, at, _ in _row_group_reads(
+                chosen[_ROW_POSITION].slice(start, end - start).to_numpy(), index.row_groups[f]
+            ):
+                reads.append((lf, first, count, at))
+        del file_of_row
+        parts = _collect_reads(reads, columns)
+    # The reads cover the rows of `chosen` once each, in its order. Each
+    # part takes its own rows' labels, chunked as its columns are: a label
+    # column chunked otherwise rechunks the whole sample, and polars 1.34
+    # collects a row group kept whole in several chunks.
+    paths = {k: str(files[k]) for k in chosen[_ROW_FILE].unique().to_list()}
+    start = 0
+    for i, part in enumerate(parts):
+        rows = chosen.slice(start, part.height)
+        start += part.height
+        labels = [] if in_order else [rows[_ROW_ORDER]]
+        if provenance:
+            labels += [
+                rows[_ROW_FILE].replace_strict(paths, return_dtype=pl.String).alias(SOURCE_FILE),
+                rows[_ROW_POSITION].alias(SOURCE_ROW),
+            ]
+        if labels:
+            lengths = part.to_series(0).chunk_lengths()
+            parts[i] = part.with_columns(_chunked_as(s, lengths) for s in labels)
+    sample = pl.concat(parts, how="vertical_relaxed")
+    del parts
+    if in_order:
+        return sample
+    # Sorting copies every row; rows already read in their chosen order
+    # skip it (a draw with replacement names its rows in file order).
+    if not sample[_ROW_ORDER].is_sorted():
+        sample = sample.sort(_ROW_ORDER)
+    return sample.drop(_ROW_ORDER)
+
+
+def _in_file_order(chosen: pl.DataFrame) -> bool:
+    """Whether `chosen` names its rows file by file, each file's in
+    ascending position, none twice."""
+    if not chosen[_ROW_FILE].is_sorted():
+        return False
+    steps = chosen.select(
+        (pl.col(_ROW_POSITION).diff() > 0) | (pl.col(_ROW_FILE).diff() != 0)
+    ).to_series()
+    return bool(steps.slice(1).all())
+
+
+def _chunked_as(series: pl.Series, lengths: list[int]) -> pl.Series:
+    """`series` (in one chunk) in chunks of `lengths`, without a copy."""
+    if len(lengths) <= 1:
+        return series
+    starts = np.cumsum([0, *lengths[:-1]])
+    return pl.concat(
+        [series.slice(int(a), n) for a, n in zip(starts, lengths, strict=True)], rechunk=False
+    )
 
 
 # ----------------------------------------------------------
@@ -701,12 +877,7 @@ class CalendarSampler:
     """
 
     _PERIOD_KEY = "__calendar_period_key__"
-    # The first pass's row identity: file (index into the scanned file
-    # list) and position within that file.
     _FILE_PATH = "__calendar_file__"
-    _FILE_INDEX = "__calendar_file_index__"
-    _ROW = "__calendar_row__"
-    _ORDER = "__calendar_order__"
     # Length of the YYYYMMDD.../YYYYMMDDHHMMSS... date-column prefix that
     # identifies each period: works for both GDELT's 8-digit plain-date
     # columns (Day, GKG 1.0's Date) and 14-digit timestamp columns (GKG
@@ -778,46 +949,16 @@ class CalendarSampler:
                 file_index = paths.replace_strict(to_index, return_dtype=pl.Int64)
                 offsets = {i: rows_read[i] for i in to_index.values()}
                 keyed = batch.select(self.date_column).with_columns(
-                    file_index.alias(self._FILE_INDEX)
+                    file_index.alias(_ROW_FILE)
                 ).with_columns(
                     (
-                        pl.int_range(pl.len()).over(self._FILE_INDEX)
-                        + pl.col(self._FILE_INDEX).replace_strict(offsets, return_dtype=pl.Int64)
-                    ).alias(self._ROW)
+                        pl.int_range(pl.len()).over(_ROW_FILE)
+                        + pl.col(_ROW_FILE).replace_strict(offsets, return_dtype=pl.Int64)
+                    ).alias(_ROW_POSITION)
                 )
-                for i, n in keyed.group_by(self._FILE_INDEX).len().iter_rows():
+                for i, n in keyed.group_by(_ROW_FILE).len().iter_rows():
                     rows_read[i] += n
                 yield keyed
-
-    def _gather(
-        self,
-        files: list[Path],
-        index: FileIndex,
-        target_schema: dict[str, pl.DataType],
-        chosen: pl.DataFrame,
-        columns: list[str],
-    ) -> pl.DataFrame:
-        """
-        The second pass: the chosen rows' `columns`, file by file, in the
-        order of `chosen`.
-        """
-        target = {c: target_schema[c] for c in columns}
-        chosen = chosen.with_row_index(self._ORDER).sort(self._FILE_INDEX, self._ROW)
-        parts = []
-        with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
-            for (file_index,), rows in chosen.group_by(self._FILE_INDEX, maintain_order=True):
-                f = files[int(file_index)]  # type: ignore[arg-type]
-                df = _read_rows(
-                    f, rows[self._ROW].to_numpy(), target, index.schemas[f], index.row_groups[f]
-                )
-                df = df.with_columns(rows[self._ORDER])
-                if self.provenance:
-                    df = df.with_columns(
-                        pl.lit(str(f)).alias(SOURCE_FILE), rows[self._ROW].alias(SOURCE_ROW)
-                    )
-                parts.append(df)
-        sample = pl.concat(parts, how="vertical_relaxed").sort(self._ORDER).drop(self._ORDER)
-        return _label_provenance(sample, self._roots)
 
     @property
     def _roots(self) -> list[Path]:
@@ -859,7 +1000,7 @@ class CalendarSampler:
 
         # A dataset scan built over files with differing schemas fills a
         # column absent from SOME of them with null when it's present in
-        # at least one (missing_columns="insert" on _scan_dataset), so a
+        # at least one (missing_columns="insert" in scan_dataset_reconciled), so a
         # single stray file missing date_column doesn't need special
         # handling here: those rows just come back null and get counted
         # as unparseable below. But date_column absent from EVERY file
@@ -969,7 +1110,7 @@ class CalendarSampler:
                 ):
                     # The reservoir holds row identities; the second pass
                     # reads the rows themselves.
-                    group_df   = group_df.select(self._FILE_INDEX, self._ROW)
+                    group_df   = group_df.select(_ROW_FILE, _ROW_POSITION)
                     group_size = len(group_df)
 
                     if period_key not in total_seen:
@@ -1048,7 +1189,11 @@ class CalendarSampler:
         # null).
         chosen = pl.concat(list(reservoirs.values()))
         columns = needed if needed is not None else list(target_schema)
-        return self._gather(files, index, target_schema, chosen, columns)
+        sample = _gather_rows(
+            files, index, target_schema, chosen, columns, self.provenance,
+            f"calendar sample dataset in {self.folder}",
+        )
+        return _label_provenance(sample, self._roots)
 
 
 # ----------------------------------------------------------
@@ -1425,40 +1570,81 @@ class FilteredSampler:
             self._indexed = (files, index)
         return self._indexed
 
-    def _dataset(self) -> pl.LazyFrame:
-        files, index = self._indexed_files()
-        if self.provenance:
-            # Each row's file and its position there, numbered before the
-            # filter.
-            return scan_dataset_reconciled(
-                files, file_schemas=index.schemas,
-                include_file_paths=SOURCE_FILE, row_index=SOURCE_ROW,
-            )
-        return _scan_dataset(files, index.schemas)
-
     def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
         """A sample with its provenance labelled (_label_provenance)."""
         return _label_provenance(df, self._roots)
 
+    # A key pass's row number across the scanned files, in scan order,
+    # numbered before the filter.
+    _SCAN_ROW = "__scan_row__"
+
     def _batches(self, needed_columns: list[str]):
         """
         Yield polars DataFrame batches matching the configured filter, via
-        a lazy scan with predicate pushdown.
+        a lazy scan with predicate pushdown, of needed_columns and each
+        row's identity (_ROW_FILE, _ROW_POSITION; the provenance columns,
+        when needed, come from it). The scan reads only needed_columns, so
+        a draw streams the filter's and the strata's columns alone and
+        reads its chosen rows afterwards (_gather); rows come in the order
+        a scan of every column reads them, so the draw picks the same rows.
         """
-        # Wrapped from dataset construction onward: _dataset() itself can
-        # raise (every file's footer schema is read there), not only the
-        # later batch collection. Confirmed empirically that which one
-        # raises depends on where in the list a corrupt/non-parquet file
-        # happens to land.
+        # Wrapped from dataset construction onward: the files' footers are
+        # read there, not only in the later batch collection. Confirmed
+        # empirically that which one raises depends on where in the list
+        # a corrupt/non-parquet file happens to land.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            lf = self._dataset()
-            schema = lf.collect_schema()
-            date_columns = frozenset(c for c in schema.names() if schema[c] == pl.Date)
+            files, index = self._indexed_files()
+            target = reconcile_file_schemas(index.schemas)
+            date_columns = frozenset(c for c, t in target.items() if t == pl.Date)
+            read = [c for c in needed_columns if c in target] or [next(iter(target))]
+            lf = scan_dataset_reconciled(
+                files, target_schema={c: target[c] for c in read},
+                file_schemas=index.schemas,
+            ).with_row_index(self._SCAN_ROW)
             expr = self._build_expression(self.filter_dict, date_columns=date_columns)
             if expr is not None:
                 lf = lf.filter(expr)
-            lf = lf.select(needed_columns)
-            yield from lf.collect_batches(chunk_size=64_000)
+            starts = self._scan_starts()
+            paths = [str(f) for f in files]
+            for batch in lf.select(self._SCAN_ROW, *read).collect_batches(chunk_size=64_000):
+                batch = self._identify(batch, starts)
+                if self.provenance:
+                    batch = batch.with_columns(
+                        pl.col(_ROW_FILE).replace_strict(
+                            range(len(paths)), paths, return_dtype=pl.String
+                        ).alias(SOURCE_FILE),
+                        pl.col(_ROW_POSITION).alias(SOURCE_ROW),
+                    )
+                yield batch
+
+    def _scan_starts(self) -> np.ndarray:
+        """Each scanned file's first row in a scan over all of them, in
+        scan order."""
+        files, index = self._indexed_files()
+        rows = dict(zip(index.files, index.counts, strict=True))
+        return np.cumsum([0] + [rows[f] for f in files[:-1]], dtype=np.int64)
+
+    def _identify(self, batch: pl.DataFrame, starts: np.ndarray) -> pl.DataFrame:
+        """A batch with its scan row number turned into the row's file and
+        position there."""
+        scan_row = batch[self._SCAN_ROW].cast(pl.Int64).to_numpy()
+        file = np.searchsorted(starts, scan_row, side="right") - 1
+        return batch.drop(self._SCAN_ROW).with_columns(
+            pl.Series(_ROW_FILE, file, dtype=pl.Int64),
+            pl.Series(_ROW_POSITION, scan_row - starts[file], dtype=pl.Int64),
+        )
+
+    def _gather(self, chosen: pl.DataFrame, needed: list[str]) -> pl.DataFrame:
+        """The second pass: the chosen rows' needed columns, in the order of
+        `chosen`, the provenance labelled and the columns in output order."""
+        files, index = self._indexed_files()
+        target = reconcile_file_schemas(index.schemas)
+        columns = [c for c in needed if c not in PROVENANCE_COLUMNS]
+        sample = _gather_rows(
+            files, index, target, chosen.select(_ROW_FILE, _ROW_POSITION), columns,
+            self.provenance, f"filtered sample dataset in {self.folder}",
+        )
+        return self._finish(sample.select(c for c in self._output_order if c in sample.columns))
 
     def _needed_columns(self, extra_required: set[str] | None = None) -> list[str]:
         """
@@ -1476,12 +1662,20 @@ class FilteredSampler:
         the same strict way the filter's own columns are, rather than
         being treated as a droppable, output-only request.
         """
-        # Wrapped the same as _batches below: _dataset() itself can raise
-        # (every file's footer schema is read there), and this runs
-        # before _batches ever does, so a corrupt/non-parquet file needs
-        # the same clear error here too, not a bare arrow one.
+        # Wrapped the same as _batches below: the file index reads every
+        # file's footer, and this runs before _batches ever does, so a
+        # corrupt/non-parquet file needs the same clear error here too,
+        # not a bare arrow one.
+        # The schema comes from the footers the index already holds. A
+        # lazy scan of every file for it peaked at 3.2 GiB over the whole
+        # cleaned Events archive, and kept 2.7 GiB of that through the
+        # second pass. Each file's Int64 -> Float64 widening is checked
+        # where its rows are read.
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
-            schema = self._dataset().collect_schema()
+            _, index = self._indexed_files()
+            schema = reconcile_file_schemas(index.schemas)
+        if self.provenance:
+            schema |= {SOURCE_FILE: pl.String(), SOURCE_ROW: pl.Int64()}
 
         # Checked against the real schema, before _batches ever runs: see
         # _validate_filter_value_types' own docstring for why a --filter
@@ -1489,7 +1683,7 @@ class FilteredSampler:
         # from inside the scan below.
         self._validate_filter_value_types(schema)
 
-        available = set(schema.names())
+        available = set(schema)
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
         if self.provenance:
             required |= set(PROVENANCE_COLUMNS)
@@ -1552,14 +1746,19 @@ class FilteredSampler:
         reservoir_schema: dict[str, pl.DataType] | None = None
         total_seen = 0
 
+        # Two passes: the reservoir holds row identities, drawn over the
+        # filter's columns alone; _gather reads the chosen rows.
+        keys = sorted(self._filter_columns(self.filter_dict))
+
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why.
         with tqdm(total=None, desc="Sampling (random)") as pbar:
-            for df_batch in self._batches(needed):
+            for df_batch in self._batches(keys):
                 batch_size = len(df_batch)
                 if batch_size == 0:
                     pbar.update(1)
                     continue
+                df_batch = df_batch.select(_ROW_FILE, _ROW_POSITION)
 
                 # Fill phase: accumulate chunks until the reservoir has n rows,
                 # then turn it into plain per-column numpy arrays; see
@@ -1605,9 +1804,7 @@ class FilteredSampler:
                 pbar.update(1)
 
         reservoir = (
-            _restore_integer_dtypes(
-                _reservoir_to_dataframe(reservoir_cols, reservoir_schema), reservoir_schema
-            )
+            _reservoir_to_dataframe(reservoir_cols, reservoir_schema)
             if reservoir_cols is not None and reservoir_schema is not None
             else pl.concat(fill_chunks) if fill_chunks
             else None
@@ -1616,8 +1813,7 @@ class FilteredSampler:
         if reservoir is None or reservoir.is_empty():
             return pl.DataFrame()
 
-        keep_cols = [c for c in self._output_order if c in reservoir.columns]
-        return self._finish(reservoir.select(keep_cols))
+        return self._gather(reservoir, needed)
 
     # ---------- with-replacement sampling (two-pass) ----------
     def _get_random_sample_with_replacement(
@@ -1638,9 +1834,10 @@ class FilteredSampler:
         Pass 1 counts the filtered rows (filter columns only, or a single
         arbitrary column when there's no filter at all; no output columns
         are read or materialized). Pass 2 draws n indices in [0, count)
-        with replacement, sorts them, and streams the filtered rows a
-        second time, gathering whichever (possibly repeated) positions
-        land in each batch. The two passes see the same filter over the
+        with replacement, sorts them, and streams the same columns a
+        second time, taking the identities of whichever (possibly
+        repeated) positions land in each batch; _gather reads those rows.
+        The two passes see the same filter over the
         same file list, so they see the same row count; a mismatch (the
         underlying files changed between passes) is detected rather than
         silently returning a short or wrong sample.
@@ -1649,7 +1846,7 @@ class FilteredSampler:
         batched path every other scan in this class already uses (get_
         random_sample's own without-replacement reservoir loop, filter_
         dataset, get_stratified_sample), rather than a plain lf.collect()
-        on the reconciled multi-file union self._dataset() builds. A bare
+        on a reconciled multi-file union of every file. A bare
         .collect() there is not just slower: against this project's own
         documented real-archive shape (thousands of files spanning
         decades, reconciled to a common schema across per-file dtype
@@ -1661,20 +1858,20 @@ class FilteredSampler:
         same property that already lets every other method in this class
         run against an archive far larger than RAM.
         """
-        count_cols = list(self._filter_columns(self.filter_dict)) or [
-            self._gdelt_columns_ordered[0]
-        ]
-        count = sum(len(batch) for batch in self._batches(count_cols))
+        keys = sorted(self._filter_columns(self.filter_dict))
+        count = sum(len(batch) for batch in self._batches(keys))
 
         if count == 0:
             return pl.DataFrame()
 
         targets = np.sort(self.rng.choice(count, n, replace=True))
 
+        # The second scan picks the drawn rows' identities from the
+        # filter's columns alone; _gather then reads the rows.
         frames: list[pl.DataFrame] = []
         pos = 0
         with tqdm(total=None, desc="Sampling (random, with replacement)") as pbar:
-            for df_batch in self._batches(needed):
+            for df_batch in self._batches(keys):
                 batch_size = len(df_batch)
                 if batch_size == 0:
                     pbar.update(1)
@@ -1698,9 +1895,7 @@ class FilteredSampler:
         if not frames:
             return pl.DataFrame()
 
-        sample = pl.concat(frames)
-        keep_cols = [c for c in self._output_order if c in sample.columns]
-        return self._finish(sample.select(keep_cols))
+        return self._gather(pl.concat(frames), needed)
 
     # ---------- stratified reservoir sampling ----------
     # A dedicated grouping-key column, added and dropped inside the loop
@@ -1737,10 +1932,15 @@ class FilteredSampler:
         total_seen:       dict[Any, int]                    = {}
         group_rngs:       dict[Any, np.random.Generator]    = {}
 
+        # Two passes: the reservoirs hold row identities, drawn over the
+        # filter's and stratify_col's columns alone; _gather reads the
+        # chosen rows.
+        keys = sorted(self._filter_columns(self.filter_dict) | {stratify_col})
+
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why.
         with tqdm(total=None, desc="Sampling (stratified)") as pbar:
-            for df_batch in self._batches(needed):
+            for df_batch in self._batches(keys):
                 if df_batch.is_empty() or stratify_col not in df_batch.columns:
                     pbar.update(1)
                     continue
@@ -1760,7 +1960,7 @@ class FilteredSampler:
                 for (g,), group_df in keyed_batch.group_by(
                     self._STRATIFY_GROUP_KEY, maintain_order=True
                 ):
-                    group_df   = group_df.drop([self._STRATIFY_GROUP_KEY])
+                    group_df   = group_df.select(_ROW_FILE, _ROW_POSITION)
                     group_size = len(group_df)
 
                     if g not in total_seen:
@@ -1806,9 +2006,7 @@ class FilteredSampler:
                 pbar.update(1)
 
         reservoirs: dict[Any, pl.DataFrame] = {
-            g: _restore_integer_dtypes(
-                _reservoir_to_dataframe(cols, reservoir_schema[g]), reservoir_schema[g]
-            )
+            g: _reservoir_to_dataframe(cols, reservoir_schema[g])
             for g, cols in reservoir_cols.items()
         }
         for g, chunks in fill_chunks.items():
@@ -1826,10 +2024,7 @@ class FilteredSampler:
         if not reservoirs:
             return pl.DataFrame()
 
-        # vertical_relaxed: see CalendarSampler.get_calendar_samples' own
-        # identical concat for why a plain vertical concat can raise here,
-        # one stratify group's reservoir Int64 for a column, a sibling
-        # group's Float64 for the same column, both correct on their own.
-        sample    = pl.concat(list(reservoirs.values()), how="vertical_relaxed")
-        keep_cols = [c for c in self._output_order if c in sample.columns]
-        return self._finish(sample.select(keep_cols))
+        # The reservoirs hold row identities, in group order and, within a
+        # group, in reservoir slot order; _gather reads those rows, in that
+        # order, with the dataset's own column types.
+        return self._gather(pl.concat(list(reservoirs.values())), needed)

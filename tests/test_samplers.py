@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 from tqdm import tqdm
 
+from gdeltforge.sampling.indexer import FileIndex
 from gdeltforge.sampling.samplers import (
     CalendarSampler,
     FilteredSampler,
@@ -474,7 +475,7 @@ class TestCalendarSampler:
     def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
         self, tmp_path
     ):
-        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # Mirrors the real Actor2Geo_Type split via scan_dataset_reconciled, the
         # single shared scan CalendarSampler and FilteredSampler both go
         # through: scan_parquet's own schema= parameter is an assertion,
         # so a plain union scan crashed ("data type mismatch ...
@@ -1410,7 +1411,7 @@ class TestFilteredSamplerValidation:
     def test_a_numeric_column_typed_differently_across_files_is_reconciled_not_crashed(
         self, tmp_path
     ):
-        # Mirrors the real Actor2Geo_Type split via _scan_dataset, the
+        # Mirrors the real Actor2Geo_Type split via scan_dataset_reconciled, the
         # same shared scan CalendarSampler's own identical test above
         # covers; see that test's comment for the exact failure this
         # replaces.
@@ -2358,9 +2359,9 @@ class TestStratifiedSampling:
         # a numeric column upcasts to Float64 only within whichever
         # group's own reservoir actually drew a null; a sibling group
         # with no null stays Int64. Plain vertical concat raised on that
-        # disagreement instead of reconciling it. Each group's reservoir
-        # is now cast back to the dataset's type, so the column stays
-        # Int64, null included.
+        # disagreement instead of reconciling it. The chosen rows are now
+        # read with the dataset's own types, so the column stays Int64,
+        # null included.
         folder = tmp_path / "data"
         folder.mkdir()
         pl.DataFrame({
@@ -2400,6 +2401,360 @@ class TestStratifiedSampling:
         assert all(
             source[g] == n for g, n in df.select("GlobalEventID", "NumArticles").iter_rows()
         )
+
+class TestFilteredSamplerTwoPass:
+    """Every FilteredSampler draw runs over row identities, scanning only
+    the filter's and the strata's columns; a second pass reads the chosen
+    rows."""
+
+    COLUMNS = ["GlobalEventID", "Day", "QuadClass", "Actor1Name", "NumArticles"]
+
+    @staticmethod
+    def _write(folder, sizes=(23, 7, 31), quad_type: type[pl.DataType] = pl.Int64):
+        """Files of different sizes and small row groups, a null every
+        few rows, QuadClass typed quad_type in the last file."""
+        folder.mkdir()
+        frames, start = [], 0
+        for k, size in enumerate(sizes):
+            ids = range(start, start + size)
+            df = pl.DataFrame({
+                "GlobalEventID": list(ids),
+                "Day": [20200101 + k] * size,
+                "QuadClass": [(i % 4) + 1 for i in ids],
+                "Actor1Name": [None if i % 5 == 0 else f"actor{i}" for i in ids],
+                "NumArticles": [None if i % 6 == 0 else i for i in ids],
+            })
+            frames.append(df)
+            if k == len(sizes) - 1:
+                df = df.with_columns(pl.col("QuadClass").cast(quad_type))
+            df.write_parquet(folder / f"2020010{k + 1}.export.parquet", row_group_size=4)
+            start += size
+        return pl.concat(frames)
+
+    @staticmethod
+    def _draws(folder, **kwargs):
+        sampler = FilteredSampler(
+            str(folder), TestFilteredSamplerTwoPass.COLUMNS,
+            filter_dict={"QuadClass": [1, 2, 3]}, random_state=11, **kwargs,
+        )
+        return {
+            "random": sampler.get_random_sample(15),
+            "replace": sampler.get_random_sample(40, replace=True),
+            "stratified": sampler.get_stratified_sample("QuadClass", 4),
+        }
+
+    @staticmethod
+    def _assert_whole_source_rows(df, source):
+        assert df.schema == source.schema
+        joined = df.join(source, on="GlobalEventID", how="left", suffix="_src")
+        for column in source.columns[1:]:
+            assert joined[column].equals(joined[f"{column}_src"], null_equal=True)
+        assert set(df["QuadClass"].to_list()) <= {1, 2, 3}
+
+    def test_rows_come_back_whole_across_files_and_row_groups(self, tmp_path):
+        source = self._write(tmp_path / "data")
+        draws = self._draws(tmp_path / "data")
+        assert draws["random"].height == 15
+        assert draws["random"]["GlobalEventID"].n_unique() == 15
+        assert draws["replace"].height == 40
+        assert draws["replace"]["GlobalEventID"].n_unique() < 40
+        assert _size_by_group(draws["stratified"], "QuadClass") == {1: 4, 2: 4, 3: 4}
+        for df in draws.values():
+            self._assert_whole_source_rows(df, source)
+
+    def test_the_columns_come_from_the_file_index_without_a_scan(self, tmp_path, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        self._write(tmp_path / "data", quad_type=pl.Int32)
+        sampler = FilteredSampler(
+            str(tmp_path / "data"), self.COLUMNS, filter_dict={"QuadClass": [1]},
+            provenance=True,
+        )
+        sampler._indexed_files()
+
+        def no_scan(*args, **kwargs):
+            raise AssertionError("the columns were read with a scan")
+
+        monkeypatch.setattr(pl, "scan_parquet", no_scan)
+        monkeypatch.setattr(samplers_module, "scan_dataset_reconciled", no_scan)
+        assert set(sampler._needed_columns()) == {*self.COLUMNS, "SourceFile", "SourceRow"}
+
+    def test_a_file_unsafe_to_widen_fails_only_a_draw_that_reads_its_rows(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2, 3], "QuadClass": [1, 2, 3], "NumArticles": [1.0, 2.0, 3.0],
+        }).write_parquet(folder / "20200101.export.parquet")
+        pl.DataFrame({
+            "GlobalEventID": [4, 5], "QuadClass": [4, 4], "NumArticles": [2**53 + 2, 7],
+        }).write_parquet(folder / "20200102.export.parquet")
+        columns = ["GlobalEventID", "QuadClass", "NumArticles"]
+
+        def draw(quads):
+            return FilteredSampler(
+                str(folder), columns, filter_dict={"QuadClass": quads}, random_state=1,
+            ).get_random_sample(3)
+
+        assert sorted(draw([1, 2, 3])["GlobalEventID"].to_list()) == [1, 2, 3]
+        with pytest.raises(Exception, match="without losing precision"):
+            draw([4])
+
+    def test_a_filter_column_typed_differently_across_files(self, tmp_path):
+        # The key scan then reads file by file; the row numbers must still
+        # count across the files in scan order.
+        source = self._write(tmp_path / "data", quad_type=pl.Int32)
+        for df in self._draws(tmp_path / "data").values():
+            self._assert_whole_source_rows(df, source)
+
+    def test_output_columns_do_not_change_the_rows_drawn(self, tmp_path):
+        self._write(tmp_path / "data")
+        every = self._draws(tmp_path / "data")
+        few = self._draws(tmp_path / "data", columns={"GlobalEventID"})
+        for name, df in every.items():
+            assert few[name]["GlobalEventID"].equals(df["GlobalEventID"])
+
+    def test_the_draw_scans_only_the_filter_and_strata_columns(self, tmp_path, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        self._write(tmp_path / "data")
+        scanned = []
+        real = samplers_module.scan_dataset_reconciled
+
+        def spy(files, target_schema=None, **kwargs):
+            if target_schema is not None:
+                scanned.append(set(target_schema))
+            return real(files, target_schema=target_schema, **kwargs)
+
+        monkeypatch.setattr(samplers_module, "scan_dataset_reconciled", spy)
+        self._draws(tmp_path / "data")
+        # random, replace's two scans, stratified.
+        assert scanned == [{"QuadClass"}] * 4
+
+    def test_the_chosen_rows_are_read_a_few_row_groups_at_a_time_across_files(
+        self, tmp_path, monkeypatch
+    ):
+        # One row group per file, as converted Events files are: read one
+        # file at a time, a sample over many files decoded them serially.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        folder = tmp_path / "data"
+        folder.mkdir()
+        for k in range(5):
+            pl.DataFrame({
+                "GlobalEventID": range(k * 10, k * 10 + 10), "QuadClass": [1] * 10,
+            }).write_parquet(folder / f"2020010{k + 1}.export.parquet")
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "3")
+        batches = []
+        real = samplers_module.pl.collect_all
+
+        def spy(frames, *args, **kwargs):
+            batches.append(len(frames))
+            return real(frames, *args, **kwargs)
+
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        df = FilteredSampler(
+            str(folder), ["GlobalEventID", "QuadClass"], random_state=2
+        ).get_random_sample(50)
+        assert sorted(df["GlobalEventID"].to_list()) == list(range(50))
+        assert batches == [3, 2]
+
+    def test_a_large_row_group_is_read_a_few_columns_at_a_time(self, tmp_path, monkeypatch):
+        # A row group decodes whole: the yearly Events files' million-row
+        # groups, every column, four at once, peaked far above a full scan.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        self._write(tmp_path / "data")
+        whole = self._draws(tmp_path / "data", provenance=True)
+        widths = []
+        real = samplers_module.pl.collect_all
+
+        def spy(frames, *args, **kwargs):
+            widths.extend(len(f.collect_schema()) for f in frames)
+            return real(frames, *args, **kwargs)
+
+        # Row groups of 4 rows: 2 columns per read.
+        monkeypatch.setattr(samplers_module, "_CELLS_PER_READ", 8)
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        split = self._draws(tmp_path / "data", provenance=True)
+        assert widths and max(widths) == 2
+        for name, df in whole.items():
+            assert split[name].equals(df)
+
+    def test_reads_of_one_file_are_not_merged_into_one_scan(self, tmp_path, monkeypatch):
+        # Common-subplan elimination turned row-group slices of one file,
+        # collected together, into one cached read of the whole file: four
+        # row groups of a 42-group file peaked at ten times their size.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        path = tmp_path / "f.parquet"
+        pl.DataFrame({"a": range(40), "b": range(40)}).write_parquet(path, row_group_size=10)
+        lf = pl.scan_parquet(path)
+        reads = [(lf, first, 10, np.array([1, 3])) for first in (0, 10, 20, 30)]
+        real = pl.collect_all
+        flags = []
+
+        def spy(frames, *args, **kwargs):
+            flags.append(kwargs.get("optimizations", pl.QueryOptFlags()).comm_subplan_elim)
+            return real(frames, *args, **kwargs)
+
+        monkeypatch.setattr(samplers_module.pl, "collect_all", spy)
+        parts = samplers_module._collect_reads(reads, ["a", "b"])
+        assert pl.concat(parts)["a"].to_list() == [1, 3, 11, 13, 21, 23, 31, 33]
+        assert flags == [False]
+
+    def test_the_rows_of_many_small_reads_are_copied_into_a_few_frames(
+        self, tmp_path, monkeypatch
+    ):
+        # One frame per read: 13,000 reads of two rows, 58 columns, held
+        # 1.3 GiB for 10 MiB of values.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        path = tmp_path / "f.parquet"
+        pl.DataFrame({
+            "a": range(200), "s": [f"v{i}" for i in range(200)],
+        }).write_parquet(path, row_group_size=10)
+        lf = pl.scan_parquet(path)
+        # 18 reads of two rows, then a whole row group, then 1 more read.
+        reads = [(lf, first, 10, np.array([2, 7])) for first in range(0, 180, 10)]
+        reads.append((lf, 180, 10, np.arange(10)))
+        reads.append((lf, 190, 10, np.array([4])))
+        monkeypatch.setattr(samplers_module, "_READS_PER_COPY", 4)
+        monkeypatch.setattr(samplers_module, "_ROWS_PER_COPY", 1000)
+        parts = samplers_module._collect_reads(reads, ["a", "s"])
+        expected = [f + p for f in range(0, 180, 10) for p in (2, 7)]
+        expected += [*range(180, 190), 194]
+        df = pl.concat(parts)
+        assert df["a"].to_list() == expected
+        assert df["s"].to_list() == [f"v{i}" for i in expected]
+        # 36 rows in copies of 4 reads (8 rows each), the last two reads
+        # of the 18 copied alone, the whole row group as it is (a week of
+        # whole row groups copied again peaked 80 % higher), then 194.
+        assert [p.height for p in parts] == [8, 8, 8, 8, 4, 10, 1]
+
+    def test_a_sample_of_whole_row_groups_is_not_copied_into_one_chunk(self, tmp_path):
+        # The chosen rows came in several chunks, and labels sliced from
+        # them made polars rechunk the whole sample: every row of a week
+        # peaked at 2.3 GiB, 1.6 without.
+        import gdeltforge.sampling.samplers as samplers_module
+
+        # polars sorts a frame this large into several chunks.
+        n = 100_000
+        folder = tmp_path / "data"
+        folder.mkdir()
+        for k in range(3):
+            pl.DataFrame({"a": range(k * n, k * n + n)}).write_parquet(folder / f"{k}.parquet")
+        files = sorted(folder.glob("*.parquet"))
+        index = FileIndex(files)
+        chosen = pl.DataFrame({
+            "__row_file__": [k for k in range(3) for _ in range(n)],
+            "__row_position__": [p for _ in range(3) for p in range(n)],
+        })
+        df = samplers_module._gather_rows(
+            files, index, {"a": pl.Int64()}, chosen, ["a"], False, "test"
+        )
+        assert df["a"].to_list() == list(range(3 * n))
+        # A chunk per part at least (polars 1.34 collects each in several).
+        assert df.n_chunks("all")[0] >= 3
+
+    def test_a_read_of_many_chosen_rows_is_kept_in_a_frame_of_its_own(
+        self, tmp_path, monkeypatch
+    ):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        path = tmp_path / "f.parquet"
+        pl.DataFrame({"a": range(60)}).write_parquet(path, row_group_size=20)
+        lf = pl.scan_parquet(path)
+        reads = [
+            (lf, 0, 20, np.array([1])), (lf, 20, 20, np.arange(0, 20, 2)),
+            (lf, 40, 20, np.array([3])),
+        ]
+        monkeypatch.setattr(samplers_module, "_ROWS_PER_COPY", 10)
+        parts = samplers_module._collect_reads(reads, ["a"])
+        assert [p["a"].to_list() for p in parts] == [[1], list(range(20, 40, 2)), [43]]
+
+    def test_read_units_split_only_a_row_group_above_the_budget(self, monkeypatch):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        monkeypatch.setattr(samplers_module, "_CELLS_PER_READ", 100)
+        lf = pl.LazyFrame()
+        reads = [
+            (lf, 0, 10, np.arange(3)), (lf, 10, 40, np.arange(3)), (lf, 50, 1000, np.arange(3)),
+        ]
+        units = samplers_module._read_units(reads, ["a", "b", "c", "d", "e"])
+        assert units == [
+            (0, ["a", "b", "c", "d", "e"]),
+            (1, ["a", "b"]), (1, ["c", "d"]), (1, ["e"]),
+            (2, ["a"]), (2, ["b"]), (2, ["c"]), (2, ["d"]), (2, ["e"]),
+        ]
+
+    def test_the_gathered_rows_keep_the_order_they_were_chosen_in(self, tmp_path):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        source = self._write(tmp_path / "data")
+        files = sorted((tmp_path / "data").glob("*.parquet"))
+        index = FileIndex(files)
+        target = dict(source.schema)
+        every = pl.DataFrame({
+            "__row_file__": [k for k, n in enumerate(index.counts) for _ in range(n)],
+            "__row_position__": [p for n in index.counts for p in range(n)],
+        })
+        for chosen in (every, every.reverse(), every.sample(fraction=1.0, shuffle=True, seed=3)):
+            df = samplers_module._gather_rows(
+                files, index, target, chosen, list(target), False, "test"
+            )
+            expected = chosen.join(
+                source.with_columns(
+                    pl.Series("__row_file__", every["__row_file__"]),
+                    pl.Series("__row_position__", every["__row_position__"]),
+                ),
+                on=["__row_file__", "__row_position__"], how="left", maintain_order="left",
+            ).drop("__row_file__", "__row_position__")
+            assert df.equals(expected)
+
+    def test_rows_chosen_in_file_order_are_read_with_their_provenance(self, tmp_path):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        source = self._write(tmp_path / "data")
+        files = sorted((tmp_path / "data").glob("*.parquet"))
+        index = FileIndex(files)
+        every = pl.DataFrame({
+            "__row_file__": [k for k, n in enumerate(index.counts) for _ in range(n)],
+            "__row_position__": [p for n in index.counts for p in range(n)],
+        })
+        chosen = every.gather_every(3)
+        assert samplers_module._in_file_order(chosen)
+        df = samplers_module._gather_rows(
+            files, index, dict(source.schema), chosen, source.columns, True, "test"
+        )
+        assert df.drop("SourceFile", "SourceRow").equals(source.gather_every(3))
+        assert df["SourceFile"].to_list() == [str(files[k]) for k in chosen["__row_file__"]]
+        assert df["SourceRow"].to_list() == chosen["__row_position__"].to_list()
+
+    def test_rows_out_of_file_order_or_named_twice_are_not_in_file_order(self):
+        import gdeltforge.sampling.samplers as samplers_module
+
+        def in_order(files, positions):
+            return samplers_module._in_file_order(
+                pl.DataFrame({"__row_file__": files, "__row_position__": positions})
+            )
+
+        assert in_order([0, 0, 1, 2, 2], [3, 9, 0, 5, 6])
+        assert in_order([4], [7])
+        assert not in_order([0, 1, 0], [1, 2, 3])
+        assert not in_order([0, 0, 1], [5, 2, 3])
+        assert not in_order([0, 0, 1], [2, 2, 3])
+
+    def test_with_provenance_each_row_names_its_own_file_and_position(self, tmp_path):
+        folder = tmp_path / "data"
+        source = self._write(folder)
+        for df in self._draws(folder, provenance=True).values():
+            for gid, name, row in df.select(
+                "GlobalEventID", "SourceFile", "SourceRow"
+            ).iter_rows():
+                in_file = pl.read_parquet(folder / name)
+                assert in_file["GlobalEventID"][row] == gid
+            assert df.drop("SourceFile", "SourceRow").schema == source.schema
+
 
 class TestStratifiedSamplingSeedReproducibility:
     """--stratify's own version of TestCalendarSamplerSeedReproducibility

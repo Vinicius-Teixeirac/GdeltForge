@@ -391,7 +391,7 @@ gdeltforge sample \
 
 Filters support nested `AND`/`OR` blocks; see the example pipelines below for an `OR` example across multiple columns.
 
-`--replace` also works here (without `--stratify`): `gdeltforge sample --dataset events --mode filtered --filter '{"QuadClass": [1, 2]}' -n 5000 --replace` samples the filtered rows with replacement. Unlike `indexed`, the filtered row count isn't known upfront, so this runs a first counting pass (filter columns only, no rows materialized) before drawing `n` positions with replacement and streaming the filtered rows a second time to gather them; expect roughly double the I/O of the same call without `--replace`.
+`--replace` also works here (without `--stratify`): `gdeltforge sample --dataset events --mode filtered --filter '{"QuadClass": [1, 2]}' -n 5000 --replace` samples the filtered rows with replacement. Unlike `indexed`, the filtered row count isn't known upfront, so this first counts the filtered rows (a scan of the filter's columns only) before drawing `n` positions with replacement. The chosen rows are then read as for any filtered draw: the only extra cost is that one scan of the filter's columns.
 
 !!! warning "Two country-code schemes, easy to mix up"
 
