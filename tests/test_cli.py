@@ -2867,6 +2867,102 @@ class TestRunCrossrefCmd:
         assert captured == {"n_events": 1, "ids": [1001]}
 
 
+class TestRunCrossrefCmdStream:
+    """crossref --stream picks the Mentions and GKG 2.1 directories: one
+    stream's, or both as a {stream: folder} mapping."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "gkg_v1_cleaned_data_directory": "/gkg_v1",
+                "mentions_cleaned_data_directory": "/en_mentions",
+                "gkg_v2_cleaned_data_directory": "/en_gkg",
+                "translated_mentions_cleaned_data_directory": "/tr_mentions",
+                "translated_gkg_v2_cleaned_data_directory": "/tr_gkg",
+            },
+            "columns": {
+                "gdelt_gkg_v1": ["Date", "EventIds"],
+                "gdelt_gkg_v2": ["V2DOCUMENTIDENTIFIER"],
+            },
+        }
+
+    @staticmethod
+    def _args(tmp_path, **overrides):
+        events = tmp_path / "events.parquet"
+        pl.DataFrame({"GlobalEventID": [1], "DATEADDED": [20200101]}).write_parquet(events)
+        defaults = dict(
+            events=str(events), gkg_version="v2", source="cleaned", stream="english",
+            columns=None, out=str(tmp_path / "o.parquet"), export_format="parquet",
+            on_duplicate_document="all", collapse_duplicate_mentions=False,
+            start_date=None, end_date=None,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def _run(self, tmp_path, monkeypatch, function, **overrides):
+        captured = {}
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        def fake(events_df, *folders, **kwargs):
+            captured["folders"] = folders
+            return pl.DataFrame()
+
+        monkeypatch.setattr(cli, function, fake)
+        cli.run_crossref_cmd(self._config(), self._args(tmp_path, **overrides))
+        return captured["folders"]
+
+    @pytest.mark.parametrize("stream, mentions, gkg", [
+        ("english", "/en_mentions", "/en_gkg"),
+        ("translated", "/tr_mentions", "/tr_gkg"),
+        ("both", {"english": "/en_mentions", "translated": "/tr_mentions"},
+         {"english": "/en_gkg", "translated": "/tr_gkg"}),
+    ])
+    def test_v2_reads_the_streams_directories(
+        self, tmp_path, monkeypatch, stream, mentions, gkg
+    ):
+        folders = self._run(tmp_path, monkeypatch, "crossref_events_gkg_v2", stream=stream)
+        assert folders[:2] == (mentions, gkg)
+
+    def test_auto_reads_english_gkg_10_and_both_streams_of_gkg_21(self, tmp_path, monkeypatch):
+        folders = self._run(
+            tmp_path, monkeypatch, "crossref_events_gkg_auto", gkg_version="auto", stream="both"
+        )
+        assert folders[0] == "/gkg_v1"
+        assert folders[2] == {"english": "/en_mentions", "translated": "/tr_mentions"}
+        assert folders[3] == {"english": "/en_gkg", "translated": "/tr_gkg"}
+
+    @pytest.mark.parametrize("version", ["v1", "v1-counts"])
+    @pytest.mark.parametrize("stream", ["translated", "both"])
+    def test_gkg_10_rejects_another_stream(self, tmp_path, version, stream):
+        with pytest.raises(ValueError, match="English only"):
+            cli.run_crossref_cmd(
+                self._config(), self._args(tmp_path, gkg_version=version, stream=stream)
+            )
+
+    def test_a_missing_translated_directory_is_named_by_its_key(self, tmp_path):
+        config = self._config()
+        config["paths"]["translated_mentions_cleaned_data_directory"] = str(tmp_path / "none")
+        config["paths"]["mentions_cleaned_data_directory"] = str(tmp_path)
+        with pytest.raises(
+            FileNotFoundError, match="paths.translated_mentions_cleaned_data_directory"
+        ):
+            cli.run_crossref_cmd(config, self._args(tmp_path, stream="both"))
+
+    def test_both_is_a_crossref_choice_only(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["crossref", "--events", "e.parquet", "--gkg-version", "v2",
+                                  "--stream", "both"])
+        assert args.stream == "both"
+        assert parser.parse_args(
+            ["crossref", "--events", "e.parquet", "--gkg-version", "v2"]
+        ).stream == "english"
+        with pytest.raises(SystemExit):
+            parser.parse_args(["sample", "--dataset", "mentions", "--mode", "indexed",
+                               "--stream", "both"])
+
+
 class TestRunCodesCmd:
     def test_bare_lists_known_columns(self, capsys):
         cli.run_codes_cmd(argparse.Namespace(column=None, search=None))

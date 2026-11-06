@@ -49,6 +49,13 @@ differently (see docs/comparison.md):
       pushdown, so neither the full Mentions nor the full GKG 2.1 archive
       is ever materialized, only the rows relevant to events_df.
 
+crossref_events_gkg_v2 (and the GKG 2.1 path of crossref_events_gkg_auto)
+can read GDELT's two streams at once: given a {stream: folder} mapping for
+Mentions and for GKG 2.1, an event's mentions are found in every stream,
+and each mention's document in its own stream's GKG 2.1 files (no GKG
+document of either stream has a mention in the other stream). The output
+then carries a Mention_Stream column naming each mention's stream.
+
 Both preserve the underlying many-to-many structure rather than collapsing
 it: one event can join to several GKG rows (several articles covered it),
 and one GKG row/article can join to several events (it covered several).
@@ -215,6 +222,38 @@ def _list_files(
     # docstring), rather than silently dropped just because a range was
     # given.
     return filter_paths_by_date(files, start_date, end_date, date_parser=date_parser)
+
+
+# The stream each Mentions/GKG 2.1 row came from, while crossref_events_
+# gkg_v2 joins them: Mention_Stream in a multi-stream result, dropped
+# otherwise.
+_STREAM_COLUMN = "Mention_Stream"
+_GKG_STREAM_COLUMN = "__gdeltforge_gkg_stream"
+
+
+def _folders_by_stream(
+    mentions_folder: str | Mapping[str, str], gkg_v2_folder: str | Mapping[str, str]
+) -> tuple[dict[str, str], dict[str, str], bool]:
+    """
+    crossref_events_gkg_v2's folders as {stream: folder} for each side,
+    and whether the caller named streams (a mapping, whose result carries
+    Mention_Stream). One plain folder per side is one unnamed stream.
+    """
+    if not isinstance(mentions_folder, Mapping) and not isinstance(gkg_v2_folder, Mapping):
+        return {"": str(mentions_folder)}, {"": str(gkg_v2_folder)}, False
+    if not isinstance(mentions_folder, Mapping) or not isinstance(gkg_v2_folder, Mapping):
+        raise ValueError(
+            "mentions_folder and gkg_v2_folder must both be folders, or both "
+            "{stream: folder} mappings."
+        )
+    mentions_by = {str(k): str(v) for k, v in mentions_folder.items()}
+    gkg_by = {str(k): str(v) for k, v in gkg_v2_folder.items()}
+    if not mentions_by or set(mentions_by) != set(gkg_by):
+        raise ValueError(
+            f"mentions_folder and gkg_v2_folder must name the same streams, got "
+            f"{sorted(mentions_by)} and {sorted(gkg_by)}."
+        )
+    return mentions_by, gkg_by, True
 
 
 def _dataset(files: list[Path], folder: str, start_date: date | None = None,
@@ -782,8 +821,8 @@ def crossref_events_gkg_v1(
 
 def crossref_events_gkg_v2(
     events_df: pl.DataFrame,
-    mentions_folder: str,
-    gkg_v2_folder: str,
+    mentions_folder: str | Mapping[str, str],
+    gkg_v2_folder: str | Mapping[str, str],
     gkg_v2_columns: list[str],
     columns: set[str] | None = None,
     on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
@@ -847,6 +886,14 @@ def crossref_events_gkg_v2(
     in both mentions_folder and gkg_v2_folder get listed and opened at
     all, independent of events_df; see the module docstring for what
     this does and doesn't affect.
+
+    mentions_folder and gkg_v2_folder can instead both be {stream:
+    folder} mappings with the same keys (CLI: --stream both passes
+    {"english": ..., "translated": ...}). Mentions are then read from
+    every stream, each mention's document is looked up in its own
+    stream's GKG 2.1 folder, and the result gains a last column,
+    Mention_Stream, naming each row's stream. on_duplicate_document and
+    dedupe_mentions apply within a stream.
     """
     if on_duplicate_document not in _ON_DUPLICATE_DOCUMENT_MODES:
         raise ValueError(
@@ -869,10 +916,28 @@ def crossref_events_gkg_v2(
     # date_parser reads the files' names for --start-date/--end-date:
     # 15-minute names by default, parse_file_date for `aggregate`'s plain
     # 20200101.parquet / 202001.parquet / 2020.parquet.
-    mentions_files = _list_files(mentions_folder, date_parser, start_date, end_date)
-    gkg_v2_files = _list_files(gkg_v2_folder, date_parser, start_date, end_date)
-    warn_if_directory_is_large(mentions_files, mentions_folder, "Mentions", start_date, end_date)
-    warn_if_directory_is_large(gkg_v2_files, gkg_v2_folder, "GKG 2.1", start_date, end_date)
+    mentions_by, gkg_by, named_streams = _folders_by_stream(mentions_folder, gkg_v2_folder)
+    mentions_files_by = {
+        stream: _list_files(folder, date_parser, start_date, end_date)
+        for stream, folder in mentions_by.items()
+    }
+    gkg_v2_files_by = {
+        stream: _list_files(folder, date_parser, start_date, end_date)
+        for stream, folder in gkg_by.items()
+    }
+    for stream in mentions_by:
+        suffix = f" ({stream})" if named_streams else ""
+        warn_if_directory_is_large(
+            mentions_files_by[stream], mentions_by[stream], f"Mentions{suffix}",
+            start_date, end_date,
+        )
+        warn_if_directory_is_large(
+            gkg_v2_files_by[stream], gkg_by[stream], f"GKG 2.1{suffix}", start_date, end_date,
+        )
+    mentions_files = [f for files in mentions_files_by.values() for f in files]
+    gkg_v2_files = [f for files in gkg_v2_files_by.values() for f in files]
+    mentions_where = ", ".join(mentions_by.values())
+    gkg_v2_where = ", ".join(gkg_by.values())
 
     columns = _validate_columns(columns, gkg_v2_columns, "GKG_")
     requested_gkg_columns = columns if columns is not None else set(gkg_v2_columns)
@@ -888,8 +953,8 @@ def crossref_events_gkg_v2(
     # Each collect_schema() call is cheap and metadata-only, the same
     # footer read _dataset() itself already pays to build its own union
     # schema; nothing here is a real data read.
-    with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
-        mentions_lf = _dataset(mentions_files, mentions_folder, start_date, end_date)
+    with clearer_dataset_errors(f"Mentions dataset in {mentions_where}"):
+        mentions_lf = _dataset(mentions_files, mentions_where, start_date, end_date)
         mentions_schema = mentions_lf.collect_schema()
         for required in REQUIRED_JOIN_COLUMNS["gdelt_mentions"]:
             _require_column(mentions_schema.names(), required, "mentions_folder")
@@ -905,8 +970,8 @@ def crossref_events_gkg_v2(
             list(REQUIRED_JOIN_COLUMNS["gdelt_mentions"]) + mentions_payload_columns
         )
 
-    with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
-        gkg_lf = _dataset(gkg_v2_files, gkg_v2_folder, start_date, end_date)
+    with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_where}"):
+        gkg_lf = _dataset(gkg_v2_files, gkg_v2_where, start_date, end_date)
         gkg_schema = gkg_lf.collect_schema()
         # requested_gkg_columns defaults to this dataset's full declared
         # schema when the caller doesn't pass --columns, which isn't the
@@ -917,18 +982,22 @@ def crossref_events_gkg_v2(
         # below to fail outright with a raw "unable to find column"
         # error, is what makes that pruning and this join coexist.
         read_gkg_columns = narrow_to_available_columns(
-            logger, f"GKG 2.1 dataset in {gkg_v2_folder}",
+            logger, f"GKG 2.1 dataset in {gkg_v2_where}",
             requested_gkg_columns, {"V2DOCUMENTIDENTIFIER"}, set(gkg_schema.names()),
         )
 
-    empty_extra = {"Mention_Count": pl.UInt32} if dedupe_mentions else None
+    empty_extra: dict[str, PolarsDataType] = {}
+    if dedupe_mentions:
+        empty_extra["Mention_Count"] = pl.UInt32
+    if named_streams:
+        empty_extra[_STREAM_COLUMN] = pl.String
 
     def empty_result() -> pl.DataFrame:
         return _empty_crossref_result(
             events_df,
             (mentions_schema, mentions_payload_columns, "Mention_"),
             (gkg_schema, read_gkg_columns, "GKG_"),
-            extra=empty_extra,
+            extra=empty_extra or None,
         )
 
     # Hop 1: Mentions, by GLOBALEVENTID, in two passes like hop 2 below
@@ -938,28 +1007,30 @@ def crossref_events_gkg_v2(
     # matched row as a view into its decoded row group (see detach), so
     # memory followed every row group holding a match: 15,000 events
     # peaked at 38 GB.
-    with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
+    # Each stream's files are looked up on their own, and every row read
+    # is tagged with its stream (one unnamed stream for a plain folder).
+    with clearer_dataset_errors(f"Mentions dataset in {mentions_where}"):
         logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
-        matched_mentions = _files_with_matches(
-            mentions_files, "GLOBALEVENTID", event_id_set, mentions_schema["GLOBALEVENTID"]
-        )
-        if not matched_mentions:
-            return empty_result()
         mentions_target = {c: mentions_schema[c] for c in mentions_read_columns}
         batch = _files_per_batch()
-        bridge_df = pl.concat(
-            [
+        bridge_parts = []
+        for stream, files in mentions_files_by.items():
+            matched_mentions = _files_with_matches(
+                files, "GLOBALEVENTID", event_id_set, mentions_schema["GLOBALEVENTID"]
+            )
+            bridge_parts.extend(
                 detach(
                     scan_dataset_reconciled(
                         matched_mentions[i:i + batch], target_schema=mentions_target
                     )
                     .filter(pl.col("GLOBALEVENTID").is_in(event_id_set))
                     .collect()
-                )
+                ).with_columns(pl.lit(stream).alias(_STREAM_COLUMN))
                 for i in range(0, len(matched_mentions), batch)
-            ],
-            how="vertical_relaxed",
-        )
+            )
+        if not bridge_parts:
+            return empty_result()
+        bridge_df = pl.concat(bridge_parts, how="vertical_relaxed")
 
     if bridge_df.is_empty():
         return empty_result()
@@ -979,8 +1050,9 @@ def crossref_events_gkg_v2(
         # whichever row the read happened to return first) means the
         # kept row is the highest-confidence one when Confidence is
         # available at all.
+        pair = ["GLOBALEVENTID", "MentionIdentifier", _STREAM_COLUMN]
         mention_counts = (
-            bridge_df.group_by(["GLOBALEVENTID", "MentionIdentifier"], maintain_order=False)
+            bridge_df.group_by(pair, maintain_order=False)
             .len()
             .rename({"len": "Mention_Count"})
         )
@@ -988,15 +1060,18 @@ def crossref_events_gkg_v2(
             bridge_df = bridge_df.sort(
                 "Confidence", descending=True, nulls_last=True, maintain_order=True
             )
-        bridge_df = bridge_df.unique(
-            subset=["GLOBALEVENTID", "MentionIdentifier"], keep="first", maintain_order=True
-        )
-        bridge_df = bridge_df.join(
-            mention_counts, on=["GLOBALEVENTID", "MentionIdentifier"], how="left"
-        )
+        bridge_df = bridge_df.unique(subset=pair, keep="first", maintain_order=True)
+        bridge_df = bridge_df.join(mention_counts, on=pair, how="left")
 
-    urls = set(bridge_df["MentionIdentifier"].drop_nulls().unique().to_list())
-    if not urls:
+    urls_by_stream = {
+        stream: set(
+            bridge_df.filter(pl.col(_STREAM_COLUMN) == stream)["MentionIdentifier"]
+            .drop_nulls().unique().to_list()
+        )
+        for stream in gkg_v2_files_by
+    }
+    urls_by_stream = {stream: urls for stream, urls in urls_by_stream.items() if urls}
+    if not urls_by_stream:
         return empty_result()
 
     # Hop 2: GKG 2.1, by document URL, in two passes (see
@@ -1007,47 +1082,60 @@ def crossref_events_gkg_v2(
     # dtype it peaked above 100 GB. read_gkg_columns and gkg_schema were
     # resolved above, over every file, so the second pass casts the
     # matched files to the whole dataset's dtypes.
-    logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
-    with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
-        matched_files = _files_with_matches(gkg_v2_files, "V2DOCUMENTIDENTIFIER", urls)
-        if not matched_files:
-            return empty_result()
-        logger.info(
-            f"{len(matched_files)} of {len(gkg_v2_files)} GKG 2.1 file(s) hold a match; "
-            f"reading their rows."
-        )
-        # A few files at a time, each batch's matches copied out (detach)
-        # before the next batch is read: kept rows otherwise hold the whole
-        # row group they came from, and a realistic sample matches nearly
-        # every file, so memory followed every matched file's row groups.
-        batch = _files_per_batch()
-        parts = [
-            detach(
-                scan_dataset_reconciled(
-                    matched_files[i:i + batch], target_schema=dict(gkg_schema)
-                )
-                .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
-                .select(read_gkg_columns)
-                .collect()
+    # Each stream's URLs are looked up in that stream's GKG 2.1 files only.
+    batch = _files_per_batch()
+    parts = []
+    for stream, urls in urls_by_stream.items():
+        label = f"GKG 2.1 ({stream})" if named_streams else "GKG 2.1"
+        logger.info(f"Cross-referencing {len(urls)} article URL(s) against {label}...")
+        with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_by[stream]}"):
+            files = gkg_v2_files_by[stream]
+            matched_files = _files_with_matches(files, "V2DOCUMENTIDENTIFIER", urls)
+            if not matched_files:
+                continue
+            logger.info(
+                f"{len(matched_files)} of {len(files)} {label} file(s) hold a match; "
+                f"reading their rows."
             )
-            for i in range(0, len(matched_files), batch)
-        ]
-        gkg_df = pl.concat(parts, how="vertical_relaxed")
+            # A few files at a time, each batch's matches copied out
+            # (detach) before the next batch is read: kept rows otherwise
+            # hold the whole row group they came from, and a realistic
+            # sample matches nearly every file, so memory followed every
+            # matched file's row groups.
+            parts.extend(
+                detach(
+                    scan_dataset_reconciled(
+                        matched_files[i:i + batch], target_schema=dict(gkg_schema)
+                    )
+                    .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
+                    .select(read_gkg_columns)
+                    .collect()
+                ).with_columns(pl.lit(stream).alias(_GKG_STREAM_COLUMN))
+                for i in range(0, len(matched_files), batch)
+            )
+    if not parts:
+        return empty_result()
+    gkg_df = pl.concat(parts, how="vertical_relaxed")
 
     if gkg_df.is_empty():
         return empty_result()
 
+    document = ["V2DOCUMENTIDENTIFIER", _GKG_STREAM_COLUMN]
     if on_duplicate_document == "latest":
-        gkg_df = gkg_df.unique(subset=["V2DOCUMENTIDENTIFIER"], keep="last", maintain_order=True)
+        gkg_df = gkg_df.unique(subset=document, keep="last", maintain_order=True)
     elif on_duplicate_document == "earliest":
-        gkg_df = gkg_df.unique(subset=["V2DOCUMENTIDENTIFIER"], keep="first", maintain_order=True)
+        gkg_df = gkg_df.unique(subset=document, keep="first", maintain_order=True)
     # "all": no dedup, every GKG record for a shared URL flows through.
-    gkg_df = gkg_df.rename({c: f"GKG_{c}" for c in gkg_df.columns})
+    gkg_df = gkg_df.rename(
+        {c: f"GKG_{c}" for c in gkg_df.columns if c != _GKG_STREAM_COLUMN}
+    )
 
     bridge_df = bridge_df.rename({c: f"Mention_{c}" for c in mentions_payload_columns})
 
     joined = bridge_df.join(
-        gkg_df, left_on="MentionIdentifier", right_on="GKG_V2DOCUMENTIDENTIFIER",
+        gkg_df,
+        left_on=["MentionIdentifier", _STREAM_COLUMN],
+        right_on=["GKG_V2DOCUMENTIDENTIFIER", _GKG_STREAM_COLUMN],
         how="inner", coalesce=False,
     )
     if joined.is_empty():
@@ -1058,15 +1146,21 @@ def crossref_events_gkg_v2(
         joined, left_on="_GlobalEventID_int64", right_on="GLOBALEVENTID",
         how="inner", coalesce=False,
     )
-    return result.drop(["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier"])
+    result = result.drop(
+        ["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier", _GKG_STREAM_COLUMN]
+    )
+    if not named_streams:
+        return result.drop(_STREAM_COLUMN)
+    # Last, as in the empty result.
+    return result.select(pl.exclude(_STREAM_COLUMN), pl.col(_STREAM_COLUMN))
 
 
 def crossref_events_gkg_auto(
     events_df: pl.DataFrame,
     gkg_v1_folder: str,
     gkg_v1_columns: list[str],
-    mentions_folder: str,
-    gkg_v2_folder: str,
+    mentions_folder: str | Mapping[str, str],
+    gkg_v2_folder: str | Mapping[str, str],
     gkg_v2_columns: list[str],
     v1_columns: set[str] | None = None,
     v2_columns: set[str] | None = None,
@@ -1121,6 +1215,10 @@ def crossref_events_gkg_auto(
     as the "columns" parameter on crossref_events_gkg_v1/_v2 directly);
     there is no single "columns" covering both, since a column name
     meaningful for one schema is usually meaningless for the other.
+
+    mentions_folder and gkg_v2_folder may be {stream: folder} mappings,
+    forwarded to the GKG 2.1 path (crossref_events_gkg_v2); GKG 1.0 has
+    one stream in gdeltforge, the English one.
 
     on_duplicate_document and dedupe_mentions are forwarded to the GKG
     2.1 path unchanged; see crossref_events_gkg_v2's docstring. GKG 1.0

@@ -2226,3 +2226,133 @@ class TestTqdmInterruptDoesNotLeakATraceback:
             sys.unraisablehook = original_hook
 
         assert events == [], f"tqdm leaked an unraisable exception: {events}"
+
+
+class TestCrossrefEventsGkgV2BothStreams:
+    """With {stream: folder} mappings, crossref_events_gkg_v2 reads the
+    mentions of every stream, finds each mention's document in its own
+    stream's GKG 2.1 files, and names each row's stream in a last
+    column, Mention_Stream."""
+
+    @staticmethod
+    def _events_df():
+        return pl.DataFrame({"GlobalEventID": [1, 2, 3], "Actor1Name": ["A", "B", "C"]})
+
+    @staticmethod
+    def _write(tmp_path):
+        folders = {}
+        for stream, mentions, gkg in (
+            (
+                "english",
+                {"GLOBALEVENTID": [1, 3], "MentionIdentifier": ["http://en/a", "http://en/c"],
+                 "Confidence": [80, 60]},
+                {"V2DOCUMENTIDENTIFIER": ["http://en/a", "http://en/c"],
+                 "GKGRECORDID": ["EN-A", "EN-C"], "V1THEMES": ["T1", "T3"]},
+            ),
+            (
+                # Event 1 (an English event) also has a translated mention.
+                # http://en/a sits in the translated GKG too: an English
+                # mention of it must not join that record.
+                "translated",
+                {"GLOBALEVENTID": [1, 2], "MentionIdentifier": ["http://tr/x", "http://tr/y"],
+                 "Confidence": [50, 40]},
+                {"V2DOCUMENTIDENTIFIER": ["http://tr/x", "http://tr/y", "http://en/a"],
+                 "GKGRECORDID": ["TR-X", "TR-Y", "TR-STRAY"], "V1THEMES": ["T4", "T5", "T6"]},
+            ),
+        ):
+            m, g = tmp_path / stream / "mentions", tmp_path / stream / "gkg"
+            m.mkdir(parents=True)
+            g.mkdir()
+            pl.DataFrame(mentions).write_parquet(m / "20200101000000.mentions.parquet")
+            pl.DataFrame(gkg).write_parquet(g / "20200101000000.gkg.parquet")
+            folders[stream] = (str(m), str(g))
+        mentions = {s: f[0] for s, f in folders.items()}
+        gkg = {s: f[1] for s, f in folders.items()}
+        return mentions, gkg
+
+    def test_each_mention_joins_its_own_streams_document(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+
+        result = crossref_events_gkg_v2(self._events_df(), mentions, gkg, GKG_V2_COLUMNS)
+
+        rows = sorted(result.select(
+            "GlobalEventID", "GKG_GKGRECORDID", "Mention_Stream"
+        ).iter_rows())
+        assert rows == [
+            (1, "EN-A", "english"), (1, "TR-X", "translated"),
+            (2, "TR-Y", "translated"), (3, "EN-C", "english"),
+        ]
+        assert result.columns[-1] == "Mention_Stream"
+        assert "__gdeltforge_gkg_stream" not in result.columns
+
+    def test_one_stream_alone_matches_its_plain_folder_result(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+
+        named = crossref_events_gkg_v2(
+            self._events_df(), {"translated": mentions["translated"]},
+            {"translated": gkg["translated"]}, GKG_V2_COLUMNS,
+        )
+        plain = crossref_events_gkg_v2(
+            self._events_df(), mentions["translated"], gkg["translated"], GKG_V2_COLUMNS,
+        )
+
+        assert "Mention_Stream" not in plain.columns
+        pl_testing.assert_frame_equal(
+            named.drop("Mention_Stream"), plain, check_row_order=False
+        )
+
+    def test_no_match_gives_an_empty_result_with_the_stream_column_last(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+        events = pl.DataFrame({"GlobalEventID": [404], "Actor1Name": ["Z"]})
+
+        result = crossref_events_gkg_v2(
+            events, mentions, gkg, GKG_V2_COLUMNS, dedupe_mentions=True
+        )
+
+        assert result.is_empty()
+        assert result.columns[-2:] == ["Mention_Count", "Mention_Stream"]
+        assert result.schema["Mention_Stream"] == pl.String
+
+    def test_collapsing_duplicate_mentions_keeps_the_streams_apart(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions, gkg, GKG_V2_COLUMNS, dedupe_mentions=True
+        )
+
+        assert sorted(result.filter(pl.col("GlobalEventID") == 1)["Mention_Stream"]) == [
+            "english", "translated",
+        ]
+        assert result["Mention_Count"].to_list() == [1] * len(result)
+
+    def test_mismatched_streams_raise(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+        with pytest.raises(ValueError, match="same streams"):
+            crossref_events_gkg_v2(
+                self._events_df(), mentions, {"english": gkg["english"]}, GKG_V2_COLUMNS
+            )
+
+    def test_a_mapping_on_one_side_only_raises(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+        with pytest.raises(ValueError, match="both be folders"):
+            crossref_events_gkg_v2(
+                self._events_df(), mentions, gkg["english"], GKG_V2_COLUMNS
+            )
+
+    def test_auto_forwards_the_streams_to_its_gkg_21_path(self, tmp_path):
+        mentions, gkg = self._write(tmp_path)
+        gkg_v1 = tmp_path / "gkg_v1"
+        gkg_v1.mkdir()
+        pl.DataFrame({
+            "Date": [20200101], "EventIds": ["999"], "NumArticles": [1], "Themes": ["X"],
+        }).write_parquet(gkg_v1 / "20200101.gkg.parquet")
+        events = self._events_df().with_columns(pl.lit(20200101).alias("DATEADDED"))
+
+        result = crossref_events_gkg_auto(
+            events, str(gkg_v1), GKG_V1_COLUMNS, mentions, gkg, GKG_V2_COLUMNS,
+        )
+
+        v2 = result.filter(pl.col("CrossrefSource") == "v2")
+        assert sorted(v2["Mention_Stream"].to_list()) == [
+            "english", "english", "translated", "translated",
+        ]
