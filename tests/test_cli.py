@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -1310,6 +1311,169 @@ class TestRunSamplingCmdFileIndex:
         config["paths"]["index_directory"] = str(cleaned / "index")
         with pytest.raises(ValueError, match="outside every data directory"):
             self._sample(config, tmp_path)
+
+
+class TestSampleManifest:
+    """<out>.manifest.json beside every sample: version, command, the
+    draw's settings, the files read and the output written."""
+
+    @staticmethod
+    def _setup(tmp_path):
+        cleaned = tmp_path / "events" / "cleaned"
+        cleaned.mkdir(parents=True)
+        for k, day in enumerate(("20200101", "20200102", "20200201")):
+            pl.DataFrame({
+                "GlobalEventID": range(k * 10, k * 10 + 10),
+                "Day": [int(day)] * 10,
+                "QuadClass": [(i % 4) + 1 for i in range(10)],
+            }).write_parquet(cleaned / f"{day}.export.parquet")
+        config = {
+            "paths": {"cleaned_data_directory": str(cleaned), "index_directory": None},
+            "columns": {"gdelt_event": ["GlobalEventID", "Day", "QuadClass"]},
+        }
+        return config, cleaned
+
+    @staticmethod
+    def _sample(config, out, *flags):
+        args = cli.build_parser().parse_args(
+            ["sample", "--dataset", "events", "--out", str(out), *flags]
+        )
+        cli.run_sampling_cmd(config, args)
+        return json.loads(out.with_name(out.name + ".manifest.json").read_text())
+
+    @staticmethod
+    def _files_sha256(lines):
+        return hashlib.sha256("".join(sorted(lines)).encode("utf-8")).hexdigest()
+
+    def test_an_indexed_sample(self, tmp_path):
+        config, cleaned = self._setup(tmp_path)
+        out = tmp_path / "out.parquet"
+        manifest = self._sample(config, out, "--mode", "indexed", "-n", "7", "--seed", "3")
+        assert manifest["manifest_version"] == 1
+        assert manifest["gdeltforge"] == cli.__version__
+        assert manifest["command"][0] == "gdeltforge"
+        assert manifest["draw"] == {
+            "dataset": "events", "source": "cleaned", "mode": "indexed", "seed": 3,
+            "start_date": None, "end_date": None, "columns": None, "provenance": False,
+            "n": 7, "replace": False,
+        }
+        assert manifest["input"] == {
+            "directories": [str(cleaned)], "files": 3, "rows": 30,
+            "sha256": self._files_sha256([
+                f"{name}\t{(cleaned / name).stat().st_size}\t10\n" for name in (
+                    "20200101.export.parquet", "20200102.export.parquet",
+                    "20200201.export.parquet",
+                )
+            ]),
+        }
+        assert manifest["output"] == {
+            "file": "out.parquet", "format": "parquet", "rows": 7,
+            "columns": ["GlobalEventID", "Day", "QuadClass"],
+            "sha256": hashlib.sha256(out.read_bytes()).hexdigest(),
+        }
+        assert manifest["strata"] is None
+
+    def test_a_stratified_sample_with_quotas(self, tmp_path):
+        config, _ = self._setup(tmp_path)
+        quotas = tmp_path / "quotas.csv"
+        quotas.write_text("group,count\n1,2\n3,1\n", encoding="utf-8")
+        out = tmp_path / "strat.parquet"
+        manifest = self._sample(
+            config, out, "--mode", "filtered", "--stratify", "QuadClass",
+            "--quota-file", str(quotas), "--n-per-group", "1",
+        )
+        assert manifest["draw"]["filter"] == {}
+        assert manifest["draw"]["stratify"] == "QuadClass"
+        assert manifest["draw"]["n_per_group"] == 1
+        assert manifest["draw"]["quotas"] == {"1": 2, "3": 1}
+        assert manifest["draw"]["quota_file"] == str(quotas)
+        assert manifest["output"]["rows"] == 2 + 1 + 1 + 1
+        assert manifest["strata"] == "strat.parquet.strata.json"
+        assert (tmp_path / "strat.parquet.strata.json").exists()
+
+    def test_a_calendar_and_a_filtered_sample(self, tmp_path):
+        config, _ = self._setup(tmp_path)
+        manifest = self._sample(
+            config, tmp_path / "cal.parquet", "--mode", "calendar", "--period", "month",
+            "--per-period", "4", "--start-date", "2020-01-01", "--end-date", "2020-01-31",
+        )
+        assert manifest["draw"]["period"] == "month"
+        assert manifest["draw"]["per_period"] == 4
+        assert manifest["draw"]["start_date"] == "2020-01-01"
+        assert manifest["input"]["files"] == 2
+        manifest = self._sample(
+            config, tmp_path / "filt.parquet", "--mode", "filtered",
+            "--filter", '{"QuadClass": [1]}', "-n", "3", "--columns", "GlobalEventID",
+        )
+        assert manifest["draw"]["filter"] == {"QuadClass": [1]}
+        assert manifest["draw"]["columns"] == ["GlobalEventID"]
+        assert manifest["output"]["rows"] == 3
+
+    def test_the_files_fingerprint_follows_the_files_read(self, tmp_path):
+        config, cleaned = self._setup(tmp_path)
+        first = self._sample(config, tmp_path / "a.parquet", "--mode", "indexed", "-n", "2")
+        again = self._sample(config, tmp_path / "b.parquet", "--mode", "indexed", "-n", "2")
+        assert first["input"]["sha256"] == again["input"]["sha256"]
+        pl.DataFrame({"GlobalEventID": [99], "Day": [20200301], "QuadClass": [1]}).write_parquet(
+            cleaned / "20200301.export.parquet"
+        )
+        grown = self._sample(config, tmp_path / "c.parquet", "--mode", "indexed", "-n", "2")
+        assert grown["input"]["files"] == 4
+        assert grown["input"]["sha256"] != first["input"]["sha256"]
+
+    def test_a_file_rewritten_to_another_size_with_its_row_count_changes_it(self, tmp_path):
+        config, cleaned = self._setup(tmp_path)
+        first = self._sample(config, tmp_path / "a.parquet", "--mode", "indexed", "-n", "2")
+        day = cleaned / "20200102.export.parquet"
+        size = day.stat().st_size
+        pl.read_parquet(day).with_columns(pl.col("GlobalEventID") + 1000).write_parquet(
+            day, compression="uncompressed"
+        )
+        assert day.stat().st_size != size
+        rewritten = self._sample(config, tmp_path / "b.parquet", "--mode", "indexed", "-n", "2")
+        assert rewritten["input"]["rows"] == first["input"]["rows"]
+        assert rewritten["input"]["sha256"] != first["input"]["sha256"]
+
+    def test_a_count_only_the_quota_file_gives_is_null(self, tmp_path):
+        config, _ = self._setup(tmp_path)
+        quotas = tmp_path / "quotas.csv"
+        quotas.write_text("group,count\n1,2\n", encoding="utf-8")
+        strat = self._sample(
+            config, tmp_path / "s.parquet", "--mode", "filtered", "--stratify", "QuadClass",
+            "--quota-file", str(quotas),
+        )
+        assert strat["draw"]["n_per_group"] is None
+        months = tmp_path / "months.csv"
+        months.write_text("group,count\n2020-01,2\n", encoding="utf-8")
+        calendar = self._sample(
+            config, tmp_path / "c.parquet", "--mode", "calendar", "--period", "month",
+            "--quota-file", str(months),
+        )
+        assert calendar["draw"]["per_period"] is None
+        explicit = self._sample(
+            config, tmp_path / "c0.parquet", "--mode", "calendar", "--period", "month",
+            "--quota-file", str(months), "--per-period", "0",
+        )
+        assert explicit["draw"]["per_period"] == 0
+
+    def test_a_failed_write_only_warns(self, tmp_path, monkeypatch, caplog):
+        config, _ = self._setup(tmp_path)
+        real = Path.write_text
+
+        def refuse_manifest(self, *args, **kwargs):
+            if self.name.endswith(".manifest.json"):
+                raise OSError("read-only")
+            return real(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", refuse_manifest)
+        args = cli.build_parser().parse_args([
+            "sample", "--dataset", "events", "--mode", "indexed", "-n", "2",
+            "--out", str(tmp_path / "out.parquet"),
+        ])
+        with caplog.at_level(logging.WARNING):
+            cli.run_sampling_cmd(config, args)
+        assert "Could not write sample manifest" in caplog.text
+        assert (tmp_path / "out.parquet").exists()
 
 
 class TestRunSamplingCmdReplace:

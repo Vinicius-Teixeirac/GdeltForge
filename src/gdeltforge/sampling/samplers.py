@@ -938,6 +938,8 @@ class CalendarSampler:
         self.provenance = provenance
         self.file_index = file_index
         self.rng = ReproducibleRNG(random_state)
+        # The FileIndex of the files the last get_calendar_samples read.
+        self.index: FileIndex | None = None
 
         # Populated by get_calendar_samples with each period's true row
         # count in the archive, independent of samples_per_period; None
@@ -1052,6 +1054,7 @@ class CalendarSampler:
                 files, saved=self.file_index, roots=self._roots,
                 label=f"calendar sample dataset in {self.folder}",
             )
+            self.index = index
             file_schemas = index.schemas
             target_schema = reconcile_file_schemas(file_schemas)
         available = set(target_schema)
@@ -1593,6 +1596,11 @@ class FilteredSampler:
     @property
     def _roots(self) -> list[Path]:
         return [self.folder] + ([self.historical_folder] if self.historical_folder else [])
+
+    @property
+    def index(self) -> FileIndex | None:
+        """The FileIndex of the files a draw reads, once one has run."""
+        return self._indexed[1] if self._indexed is not None else None
 
     def _indexed_files(self) -> tuple[list[Path], FileIndex]:
         """The files to scan, in scan order, and their FileIndex: every

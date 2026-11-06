@@ -316,6 +316,32 @@ A file removed from the directory leaves the index at its next save.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
 sets.
 
+### Sample manifest
+
+Every sample is written with `<out>.manifest.json` beside it, a record of how
+it was drawn:
+
+- `gdeltforge`: the version that drew it, and `command`, the command line.
+- `draw`: the settings: dataset, source, mode, seed, date range, columns,
+  provenance, and the mode's own: `-n` and `--replace`, `--filter`,
+  `--stratify` and `--n-per-group`, `--period` and `--per-period`, and the
+  quotas of a `--quota-file`, written out in full. With a quota file and
+  no `--n-per-group` or `--per-period`, that count is `null`: a group the
+  file doesn't list draws no rows.
+- `input`: the source directories, how many files were read and their rows,
+  and `sha256`, a hash over each file's path within its directory, its size
+  in bytes and its row count. A file added, removed, renamed, or rewritten
+  to another size or row count changes it. A file rewritten to the same
+  size and row count leaves it unchanged: it names the files read, it does
+  not hash their content. For that, keep the files' own checksums.
+- `output`: the file's name, format, rows, columns and `sha256`.
+- `strata`: the name of the `.strata.json` sidecar, for a calendar or
+  stratified sample.
+
+The command and the directories are local paths, so read the manifest
+before sharing it. Writing it is best-effort, as the strata sidecar's is: a
+failure logs a warning and leaves the sample in place.
+
 ### Indexed sampling (uniform random)
 
 ```bash
