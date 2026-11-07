@@ -75,7 +75,7 @@ gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
-| `--dry-run` | Report how many files would be downloaded and skipped without downloading anything. Off by default |
+| `--dry-run` | Report how many files would be downloaded and skipped, and the directory they would go to, without downloading anything. Off by default |
 
 `--dataset gkg-v2`/`mentions`/`events-15min` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent daily `events` scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like `events`, so this doesn't apply to them.
 

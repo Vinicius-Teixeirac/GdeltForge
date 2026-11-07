@@ -85,7 +85,7 @@ Two further keys exist for Events and `events-reduced`: `parquet_historical_dire
 
 `events-15min`, `mentions` and `gkg-v2` each have a second set of directories for GDELT's translated stream ([`--stream translated`](cli-reference.md#-stream)): every key above for the dataset, with `translated_` in front, e.g. `translated_mentions_parquet_data_directory`. The bundled default puts them under `./data/translated/<dataset>/<stage>`. A config that doesn't set them gets those defaults, relative to the directory gdeltforge runs in, even when it sets the English ones elsewhere; set them beside the English ones for a real archive.
 
-Each must name its own directory: a translated key equal to its English sibling stops the command with an error, since the two streams' files have different names and would otherwise mix in one directory without a word. An optional key such as `clean_runs_directory` falls back to its default beside the translated directories unless its `translated_` key is set, never to the English stream's value.
+Each must name its own directory: a translated key equal to its English sibling stops a `--stream translated` command with an error, since the two streams' files have different names and would otherwise mix in one directory without a word. An English command doesn't read the translated keys, so it runs either way. An optional key such as `clean_runs_directory` falls back to its default beside the translated directories unless its `translated_` key is set, never to the English stream's value.
 
 ## `scraping`
 

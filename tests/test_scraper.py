@@ -1516,7 +1516,8 @@ class TestRunScrapingPipelineForceAndDryRun:
             scraper.run_scraping_pipeline(config, dry_run=True)
 
         assert any(
-            "[dry run] Would download 1 file(s), skip 0 already-downloaded file(s)" in r.message
+            "[dry run] Would download 1 file(s), skip 0 already-downloaded file(s), "
+            f"in {tmp_path}." in r.message
             for r in caplog.records
         )
 
