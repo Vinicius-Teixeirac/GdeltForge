@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import re
 import zlib
 from collections import Counter
@@ -21,7 +22,6 @@ from typing import Any
 
 import numpy as np
 import polars as pl
-import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gdeltforge.cleaning.steps import added_columns
@@ -32,6 +32,7 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
+    _map_files,
     aggregate_sources_record,
     aggregated_marker,
     cleaned_keeps_positions,
@@ -40,7 +41,7 @@ from gdeltforge.utils.io import (
     detach,
     done_marker_fields,
     narrow_to_available_columns,
-    parquet_kv_metadata,
+    parquet_footer_facts,
     reconcile_file_schemas,
     scan_dataset_reconciled,
     scan_file_against_schema,
@@ -156,24 +157,34 @@ _DROPPED_ROWS_HINT = (
 
 
 def _aggregated_parts(
-    path: Path, aggregate_sources: Mapping[str, Path] | None, metadata: dict[str, str]
-) -> list[tuple[str, int]] | None:
+    path: Path,
+    aggregate_sources: Mapping[str, Path] | None,
+    metadata: dict[str, str],
+    rows: int,
+    cached: str | None = None,
+) -> tuple[list[tuple[str, int]] | None, str | None]:
     """
-    For an aggregated file, its sources in row order, each as (converted
-    15-minute file, rows); None for any other file. The record the
-    aggregate stage keeps in the file gives them. A file aggregated before
-    that record existed is recognised by its .done marker, which lists its
-    sources and the stage they were read from (cleaned or converted): they
-    are then read from that directory of `aggregate_sources`, and one that
-    is gone stops the sample.
+    For an aggregated file of `rows` rows, its sources in row order, each
+    as (converted 15-minute file, rows); None for any other file. The
+    record the aggregate stage keeps in the file gives them. A file
+    aggregated before that record existed is recognised by its .done
+    marker, which lists its sources and the stage they were read from
+    (cleaned or converted): they are then read from that directory of
+    `aggregate_sources`, a few footers at a time, and one that is gone
+    stops the sample. `cached` is that derived record as the saved file
+    index keeps it (FileIndex.provenance_record); a record derived here is
+    returned second, as JSON, for the caller to keep there.
     """
+    derived = None
     record = aggregated_marker(path, metadata)
     if record is not None:
         sources = record["sources"]
+    elif cached is not None:
+        sources = json.loads(cached)
     else:
         fields = done_marker_fields(path)
         if not fields or "sources" not in fields or "source" not in fields:
-            return None
+            return None, None
         names = [n for n in fields["sources"].split(",") if n]
         # "filtered" is the cleaned stage's pre-0.12 name.
         stage = {"filtered": "cleaned"}.get(fields["source"], fields["source"])
@@ -189,19 +200,20 @@ def _aggregated_parts(
                 f"sample it without --provenance."
             )
         sources = aggregate_sources_record([Path(folder) / n for n in names])
+        derived = json.dumps(sources)
     parts = []
     for source in sources:
         if source["converted"] is None:
             raise ValueError(f"{path.name}: its source {source['file']}: {_DROPPED_ROWS_HINT}")
         parts.append((source["converted"], int(source["rows"])))
-    recorded, actual = sum(rows for _, rows in parts), pq.read_metadata(path).num_rows
-    if recorded != actual:
+    recorded = sum(n for _, n in parts)
+    if recorded != rows:
         raise ValueError(
-            f"{path.name} holds {actual:,} rows but its sources hold {recorded:,}: one of "
+            f"{path.name} holds {rows:,} rows but its sources hold {recorded:,}: one of "
             f"them changed after `gdeltforge aggregate` wrote it. Re-run `gdeltforge "
             f"aggregate --force` for its period."
         )
-    return parts
+    return parts, derived
 
 
 def _label_aggregated_rows(
@@ -239,25 +251,39 @@ def _label_aggregated_rows(
 
 
 def _label_provenance(
-    df: pl.DataFrame, roots: list[Path], aggregate_sources: Mapping[str, Path] | None = None
+    df: pl.DataFrame,
+    roots: list[Path],
+    aggregate_sources: Mapping[str, Path] | None = None,
+    index: FileIndex | None = None,
 ) -> pl.DataFrame:
     """df with SourceFile turned from the path read into the converted
     file's name (_source_label), and the provenance columns last. A row of
     an aggregated file names its converted 15-minute file and its position
     there (_aggregated_parts; aggregate_sources locates the sources of a
-    file aggregated before 0.16.0)."""
+    file aggregated before 0.16.0, and `index`, the sample's FileIndex,
+    keeps what they say so a later sample doesn't read them again)."""
     if df.is_empty() or SOURCE_FILE not in df.columns:
         return df
     labels: dict[str, str] = {}
     parts: dict[str, list[tuple[str, int]]] = {}
-    for p in df[SOURCE_FILE].unique().to_list():
-        # One footer read per file serves both markers.
-        metadata = parquet_kv_metadata(p)
-        file_parts = _aggregated_parts(Path(p), aggregate_sources, metadata)
+    derived: dict[str, str] = {}
+    paths = df[SOURCE_FILE].unique().to_list()
+    # One footer read per file, a few files at a time, serves both markers
+    # and the row count.
+    footers = _map_files(parquet_footer_facts, paths)
+    for p, (rows, metadata) in zip(paths, footers, strict=True):
+        cached = index.provenance_record(p) if index is not None else None
+        file_parts, record = _aggregated_parts(
+            Path(p), aggregate_sources, metadata, rows, cached
+        )
         if file_parts is None:
             labels[p] = _source_label(Path(p), roots, metadata)
         else:
             parts[p] = file_parts
+            if record is not None:
+                derived[p] = record
+    if derived and index is not None:
+        index.remember_provenance(derived)
     df = df.with_columns(pl.col(SOURCE_ROW).cast(pl.Int64))
     if parts:
         df = df.with_row_index("__order")
@@ -713,7 +739,9 @@ class IndexedSampler:
                 sampled.append(part)
                 pbar.update(1)
 
-        return _label_provenance(pl.concat(sampled), self._roots, self.aggregate_sources)
+        return _label_provenance(
+            pl.concat(sampled), self._roots, self.aggregate_sources, self.index
+        )
 
 
 def _read_rows(
@@ -1350,7 +1378,7 @@ class CalendarSampler:
             files, index, target_schema, chosen, columns, self.provenance,
             f"calendar sample dataset in {self.folder}",
         )
-        return _label_provenance(sample, self._roots, self.aggregate_sources)
+        return _label_provenance(sample, self._roots, self.aggregate_sources, self.index)
 
 
 # ----------------------------------------------------------
@@ -1737,7 +1765,8 @@ class FilteredSampler:
 
     def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
         """A sample with its provenance labelled (_label_provenance)."""
-        return _label_provenance(df, self._roots, self.aggregate_sources)
+        index = self._indexed[1] if self._indexed is not None else None
+        return _label_provenance(df, self._roots, self.aggregate_sources, index)
 
     # A key pass's row number across the scanned files, in scan order,
     # numbered before the filter.

@@ -4,7 +4,7 @@ import hashlib
 import os
 from bisect import bisect_right
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +18,11 @@ from gdeltforge.utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Bumped whenever the saved index's columns or their meaning change: a
-# saved index of another version is rebuilt, never read.
-_INDEX_VERSION = "1"
+# saved index of another version is rebuilt, never read. Version 2 added
+# the optional provenance column; a version 1 index reads as one without
+# any, so it is extended, not rebuilt.
+_INDEX_VERSION = "2"
+_READABLE_VERSIONS = ("1", "2")
 _INDEX_METADATA_KEY = "gdeltforge:file_index"
 # Not .parquet: a saved index inside a data directory would otherwise be
 # globbed and sampled as data (index_path_for also refuses that).
@@ -33,6 +36,11 @@ class _Entry:
     mtime_ns: int
     row_groups: tuple[int, ...]
     schema: bytes  # Arrow IPC-serialized schema
+    # For a file `aggregate` wrote before 0.16.0: its sources' record
+    # (JSON, the sources entry of utils.io.AGGREGATE_MARKER_KEY), derived
+    # from its sources' footers the first time a sample labels its rows
+    # (samplers._label_provenance), then reused while the file is unchanged.
+    provenance: str | None = None
 
 
 def index_path_for(index_directory: str | Path, roots: list[Path]) -> Path:
@@ -175,9 +183,33 @@ class FileIndex:
             names.update(dict.fromkeys(schema))
         self.schema_names: list[str] = list(names)
 
+        known.update(zip(keys, (e for e in entries if e is not None), strict=True))
+        self._entries = known
         if self.saved is not None and missing:
-            known.update(zip(keys, (e for e in entries if e is not None), strict=True))
             self._save(self._without_removed_files(known))
+
+    # ----------------------------------------------------------
+    # Provenance records of files aggregated before 0.16.0
+    # ----------------------------------------------------------
+    def provenance_record(self, path: str | Path) -> str | None:
+        """The sources' record kept for `path` (see _Entry.provenance), or
+        None when there is none yet."""
+        entry = self._entries.get(os.path.abspath(path))
+        return entry.provenance if entry is not None else None
+
+    def remember_provenance(self, records: dict[str, str]) -> None:
+        """Keep each file's sources' record (path -> JSON) in its entry,
+        and in the saved index when there is one, so a later sample over
+        an unchanged file derives it no more."""
+        changed = False
+        for path, record in records.items():
+            key = os.path.abspath(path)
+            entry = self._entries.get(key)
+            if entry is not None and entry.provenance != record:
+                self._entries[key] = replace(entry, provenance=record)
+                changed = True
+        if changed and self.saved is not None:
+            self._save(self._without_removed_files(self._entries))
 
     # ----------------------------------------------------------
     # The saved index
@@ -190,7 +222,7 @@ class FileIndex:
         try:
             metadata = pq.read_schema(self.saved).metadata or {}
             version = metadata.get(_INDEX_METADATA_KEY.encode(), b"").decode()
-            if version != _INDEX_VERSION:
+            if version not in _READABLE_VERSIONS:
                 logger.warning(
                     f"The file index {self.saved} has version {version or 'unknown'!r}, "
                     f"not {_INDEX_VERSION!r}; rebuilding it."
@@ -203,14 +235,18 @@ class FileIndex:
             schemas = [s.as_py() for s in encoded.dictionary]
             schema_ids = encoded.indices.to_pylist()
             columns = table.select(["path", "size", "mtime_ns", "row_groups"]).to_pydict()
+            provenance = (
+                table.column("provenance").to_pylist()
+                if "provenance" in table.column_names else [None] * table.num_rows
+            )
         except (OSError, KeyError, AttributeError, pa.ArrowException) as e:
             logger.warning(f"Could not read the file index {self.saved} ({e}); rebuilding it.")
             return {}
         return {
-            path: _Entry(size, mtime_ns, tuple(row_groups), schemas[schema_id])
-            for path, size, mtime_ns, row_groups, schema_id in zip(
+            path: _Entry(size, mtime_ns, tuple(row_groups), schemas[schema_id], record)
+            for path, size, mtime_ns, row_groups, schema_id, record in zip(
                 columns["path"], columns["size"], columns["mtime_ns"],
-                columns["row_groups"], schema_ids, strict=True,
+                columns["row_groups"], schema_ids, provenance, strict=True,
             )
         }
 
@@ -246,6 +282,7 @@ class FileIndex:
                 "schema": pa.array(
                     [entries[p].schema for p in paths], pa.binary()
                 ).dictionary_encode(),
+                "provenance": pa.array([entries[p].provenance for p in paths], pa.string()),
             }
         ).replace_schema_metadata({_INDEX_METADATA_KEY: _INDEX_VERSION})
         # Written through a temp file and a rename, as utils.io's atomic

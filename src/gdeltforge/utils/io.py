@@ -305,6 +305,18 @@ def parquet_kv_metadata(path: str | Path) -> dict[str, str]:
         return {}
 
 
+def parquet_footer_facts(path: str | Path) -> tuple[int, dict[str, str]]:
+    """A Parquet file's row count and key/value metadata, from one footer
+    read. Unlike parquet_kv_metadata, an unreadable file raises: callers
+    need its rows."""
+    footer = pq.read_metadata(path)
+    metadata = {
+        k.decode("utf-8", "replace"): v.decode("utf-8", "replace")
+        for k, v in (footer.metadata or {}).items()
+    }
+    return footer.num_rows, metadata
+
+
 def cleaned_marker(path: str | Path, metadata: dict[str, str] | None = None) -> dict | None:
     """The clean stage's marker in this Parquet file's metadata (read from
     the file unless `metadata` gives it), or None for a file the stage
@@ -338,12 +350,15 @@ def cleaned_keeps_positions(marker: dict) -> bool:
     return True
 
 
-def converted_source_name(path: str | Path) -> str | None:
+def converted_source_name(
+    path: str | Path, metadata: dict[str, str] | None = None
+) -> str | None:
     """The converted file whose rows `path` holds at the same positions:
     path's own name for a converted file, the source its clean marker
     names for a cleaned file, or None for a cleaned file whose clean run
-    dropped rows (its positions no longer match any converted file)."""
-    marker = cleaned_marker(path)
+    dropped rows (its positions no longer match any converted file).
+    `metadata` is the file's key/value metadata, when already read."""
+    marker = cleaned_marker(path, metadata)
     if marker is None:
         return Path(path).name
     if not cleaned_keeps_positions(marker) or "source" not in marker:
@@ -359,17 +374,16 @@ def converted_source_name(path: str | Path) -> str | None:
 AGGREGATE_MARKER_KEY = "gdeltforge:aggregate"
 
 
+def _aggregate_source_entry(file: Path) -> dict:
+    rows, metadata = parquet_footer_facts(file)
+    return {"file": file.name, "converted": converted_source_name(file, metadata), "rows": rows}
+
+
 def aggregate_sources_record(files: list[Path]) -> list[dict]:
     """The sources entry of AGGREGATE_MARKER_KEY for an output built by
-    concatenating `files` in this order. Reads each file's footer."""
-    return [
-        {
-            "file": f.name,
-            "converted": converted_source_name(f),
-            "rows": pq.read_metadata(f).num_rows,
-        }
-        for f in files
-    ]
+    concatenating `files` in this order. Reads each file's footer once, a
+    few files at a time (_map_files, under io.max_concurrent_reads)."""
+    return _map_files(_aggregate_source_entry, files)
 
 
 def aggregated_marker(path: str | Path, metadata: dict[str, str] | None = None) -> dict | None:

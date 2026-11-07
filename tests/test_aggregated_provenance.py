@@ -258,3 +258,72 @@ class TestAFileThatNoLongerMatchesItsRecord:
         sampler = IndexedSampler(str(tmp_path / "day"), random_state=1, provenance=True)
         with pytest.raises(ValueError, match="dropped rows"):
             sampler.get_random_sample(2)
+
+
+class TestTheFileIndexKeepsDerivedRecords:
+    """The record derived for a file aggregated before 0.16.0 is kept in
+    the saved file index, so a later sample over the unchanged file reads
+    none of its sources' footers."""
+
+    @staticmethod
+    def _old_day_files(tmp_path):
+        converted = _converted(tmp_path)
+        out = _aggregate(converted, tmp_path / "day")
+        for f in out.glob("*.parquet"):
+            _strip_record(f)
+        return converted, out
+
+    @staticmethod
+    def _sample(out, converted, index_path, seed=1):
+        return IndexedSampler(
+            str(out), random_state=seed, provenance=True, file_index=index_path,
+            aggregate_sources={"converted": converted},
+        ).get_random_sample(9)
+
+    def test_a_second_sample_reads_no_source(self, tmp_path):
+        converted, out = self._old_day_files(tmp_path)
+        index_path = tmp_path / "index" / "day.index"
+
+        first = self._sample(out, converted, index_path)
+        _assert_rows_match_their_source(first, converted)
+        # Moved away: a sample that read them again would stop.
+        moved = tmp_path / "moved"
+        converted.rename(moved)
+        second = self._sample(out, converted, index_path)
+
+        assert second.equals(first)
+        records = pq.read_table(index_path).column("provenance").to_pylist()
+        assert sum(r is not None for r in records) == 2
+
+    def test_a_changed_day_file_is_derived_again(self, tmp_path):
+        converted, out = self._old_day_files(tmp_path)
+        index_path = tmp_path / "index" / "day.index"
+        self._sample(out, converted, index_path)
+
+        day = out / "20200101.parquet"
+        table = pq.read_table(day)
+        pq.write_table(table.slice(0, 4), day)  # one row fewer than its sources
+        sampler = IndexedSampler(
+            str(out), random_state=1, provenance=True, file_index=index_path,
+            aggregate_sources={"converted": converted},
+        )
+        with pytest.raises(ValueError, match="holds 4 rows but its sources hold 5"):
+            sampler.get_random_sample(8)
+
+    def test_an_index_saved_by_0150_is_extended_not_rebuilt(self, tmp_path, caplog):
+        converted, out = self._old_day_files(tmp_path)
+        index_path = tmp_path / "index" / "day.index"
+        IndexedSampler(str(out), random_state=1, file_index=index_path).get_random_sample(3)
+        # As 0.15.0 wrote it: version 1, no provenance column.
+        table = pq.read_table(index_path).drop(["provenance"])
+        pq.write_table(table.replace_schema_metadata({"gdeltforge:file_index": "1"}), index_path)
+
+        with caplog.at_level("INFO"):
+            sample = self._sample(out, converted, index_path)
+
+        _assert_rows_match_their_source(sample, converted)
+        assert any("0 footer(s) read, 2 from the saved index" in r.message
+                   for r in caplog.records)
+        saved = pq.read_table(index_path)
+        assert saved.schema.metadata[b"gdeltforge:file_index"] == b"2"
+        assert sum(r is not None for r in saved.column("provenance").to_pylist()) == 2

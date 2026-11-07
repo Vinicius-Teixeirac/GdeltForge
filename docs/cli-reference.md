@@ -318,7 +318,12 @@ files would. `aggregate` records in each file it writes the files it
 concatenated, in order, with the converted file each holds and its rows.
 A file aggregated before 0.16.0 has no such record: its `.done` marker
 lists its sources and whether they were the cleaned or the converted
-files, and they are read from that directory. A source that is gone
+files, and they are read from that directory: about 96 footers per day
+file, a few at a time under `io.max_concurrent_reads`: about 340,000
+footers for a draw over the whole translated Events archive. The record
+derived is kept in the [saved file index](#saved-file-index), so a later
+sample over the same unchanged files reads none of those footers again;
+`aggregate --force` for a period writes the record into its file. A source that is gone
 stops the sample with an error naming the aggregated file; re-run
 `gdeltforge aggregate --force` for its period while its sources are on
 disk, or sample it without `--provenance`. An aggregated file whose rows
@@ -346,7 +351,10 @@ reads, and one that can't be read or written is rebuilt or skipped with a
 warning. Like the clean run audit, it must sit outside every data directory.
 A file removed from the directory leaves the index at its next save.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
-sets.
+sets. For an aggregated file written before 0.16.0, the index also keeps
+the record of its sources a `--provenance` sample derived (see
+[Row provenance](#row-provenance)); an index saved by 0.15.0 is read and
+extended, not rebuilt.
 
 ### Sample manifest
 
