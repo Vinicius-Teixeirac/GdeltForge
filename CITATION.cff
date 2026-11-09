@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If GdeltForge contributes to published work, please cite it as below, and cite the GDELT Project, whose data it processes."
 title: "GdeltForge: reproducible sampling and cross-referencing of the full GDELT archive"
 type: software
-version: "0.15.0"
-date-released: "2026-11-06"
+version: "0.16.0"
+date-released: "2026-11-09"
 authors:
   - family-names: Freitas
     given-names: Vinícius Teixeira Carvalho
