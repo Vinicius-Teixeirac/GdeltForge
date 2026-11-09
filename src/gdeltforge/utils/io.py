@@ -294,20 +294,123 @@ def sink_parquet_atomic(lf: pl.LazyFrame, out: str | Path, **sink_parquet_kwargs
 CLEAN_MARKER_KEY = "gdeltforge:clean"
 
 
-def cleaned_marker(path: str | Path) -> dict | None:
-    """The clean stage's marker in this Parquet file's metadata, or None
-    for a file the stage didn't write (including an unreadable one: this
-    is a best-effort check, never a reason to fail a run)."""
+def parquet_kv_metadata(path: str | Path) -> dict[str, str]:
+    """A Parquet file's key/value metadata, empty for an unreadable file
+    (the markers read from it are best-effort, never a reason to fail a
+    run). Read once and passed to cleaned_marker/aggregated_marker when
+    both are needed."""
     try:
-        raw = pl.read_parquet_metadata(path).get(CLEAN_MARKER_KEY)
+        return pl.read_parquet_metadata(path)
     except Exception:
-        return None
+        return {}
+
+
+def parquet_footer_facts(path: str | Path) -> tuple[int, dict[str, str]]:
+    """A Parquet file's row count and key/value metadata, from one footer
+    read. Unlike parquet_kv_metadata, an unreadable file raises: callers
+    need its rows."""
+    footer = pq.read_metadata(path)
+    metadata = {
+        k.decode("utf-8", "replace"): v.decode("utf-8", "replace")
+        for k, v in (footer.metadata or {}).items()
+    }
+    return footer.num_rows, metadata
+
+
+def cleaned_marker(path: str | Path, metadata: dict[str, str] | None = None) -> dict | None:
+    """The clean stage's marker in this Parquet file's metadata (read from
+    the file unless `metadata` gives it), or None for a file the stage
+    didn't write (including an unreadable one: this is a best-effort
+    check, never a reason to fail a run)."""
+    if metadata is None:
+        metadata = parquet_kv_metadata(path)
+    raw = metadata.get(CLEAN_MARKER_KEY)
     if raw is None:
         return None
     try:
         return json.loads(raw)
     except ValueError:
         return {}
+
+
+def cleaned_keeps_positions(marker: dict) -> bool:
+    """Whether a cleaned file holds every row of its source, in order, so a
+    row's position in it is its position in the source. The marker's row
+    counts say so; a marker written before they were recorded says so when
+    no step that drops rows ran (a null check, event_markers: drop)."""
+    if "rows_in" in marker and "rows_out" in marker:
+        return marker["rows_in"] == marker["rows_out"]
+    for step in marker.get("steps", []):
+        if step.get("skipped"):
+            continue
+        if step.get("step") == "require" or (
+            step.get("rule") == "event_markers" and step.get("mode") == "drop"
+        ):
+            return False
+    return True
+
+
+def converted_source_name(
+    path: str | Path, metadata: dict[str, str] | None = None
+) -> str | None:
+    """The converted file whose rows `path` holds at the same positions:
+    path's own name for a converted file, the source its clean marker
+    names for a cleaned file, or None for a cleaned file whose clean run
+    dropped rows (its positions no longer match any converted file).
+    `metadata` is the file's key/value metadata, when already read."""
+    marker = cleaned_marker(path, metadata)
+    if marker is None:
+        return Path(path).name
+    if not cleaned_keeps_positions(marker) or "source" not in marker:
+        return None
+    return marker["source"]
+
+
+# Parquet key/value metadata written into every file `aggregate` produces
+# (see aggregation/aggregator.py): its source files in the order their
+# rows were concatenated, each with the converted file it holds
+# (converted_source_name) and its row count, so a row of an aggregated
+# file can be traced to its 15-minute file and position there.
+AGGREGATE_MARKER_KEY = "gdeltforge:aggregate"
+
+
+def _aggregate_source_entry(file: Path) -> dict:
+    rows, metadata = parquet_footer_facts(file)
+    return {"file": file.name, "converted": converted_source_name(file, metadata), "rows": rows}
+
+
+def aggregate_sources_record(files: list[Path]) -> list[dict]:
+    """The sources entry of AGGREGATE_MARKER_KEY for an output built by
+    concatenating `files` in this order. Reads each file's footer once, a
+    few files at a time (_map_files, under io.max_concurrent_reads)."""
+    return _map_files(_aggregate_source_entry, files)
+
+
+def aggregated_marker(path: str | Path, metadata: dict[str, str] | None = None) -> dict | None:
+    """The aggregate stage's record in this Parquet file's metadata (read
+    from the file unless `metadata` gives it), or None for a file without
+    one (one `aggregate` wrote before 0.16.0, or any other file)."""
+    if metadata is None:
+        metadata = parquet_kv_metadata(path)
+    raw = metadata.get(AGGREGATE_MARKER_KEY)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def done_marker_fields(path: str | Path) -> dict[str, str] | None:
+    """The name=value fields of path's .done marker (config_fingerprint's
+    format), or None when it has none."""
+    for marker in (_done_marker_path(path), _legacy_done_marker_path(path)):
+        try:
+            text = marker.read_text()
+        except OSError:
+            continue
+        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    return None
 
 
 def warn_if_cleaned_files(

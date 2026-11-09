@@ -14,9 +14,8 @@ from gdeltforge.sampling.samplers import (
     CalendarSampler,
     FilteredSampler,
     IndexedSampler,
-    _keeps_positions,
 )
-from gdeltforge.utils.io import cleaned_marker
+from gdeltforge.utils.io import cleaned_keeps_positions, cleaned_marker
 
 COLUMNS = ["GlobalEventID", "Day", "QuadClass"]
 FILES = {
@@ -125,4 +124,4 @@ class TestThroughClean:
         ({"steps": [{"step": "errata", "rule": "event_markers", "mode": "keep"}]}, True),
     ])
     def test_whether_a_cleaned_file_keeps_its_rows_positions(self, marker, keeps):
-        assert _keeps_positions(json.loads(json.dumps(marker))) is keeps
+        assert cleaned_keeps_positions(json.loads(json.dumps(marker))) is keeps

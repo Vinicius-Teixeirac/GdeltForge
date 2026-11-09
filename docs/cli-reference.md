@@ -208,7 +208,7 @@ GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDEL
 | `--force` | Reprocess periods already marked done instead of skipping them, overwriting their aggregated output. Off by default |
 | `--dry-run` | Report how many periods would be aggregated without aggregating anything. Off by default |
 
-Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
+Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. The output file itself records its sources, in the order their rows were written, with the converted 15-minute file each holds and its row count (Parquet metadata, key `gdeltforge:aggregate`), so a sample's `--provenance` can name a row's 15-minute file (see [Row provenance](#row-provenance)). A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
 
 `--order`, `--verbose`/`--quiet`, `--force`, and `--dry-run` all match `convert`'s/`clean`'s own identically-named flags exactly, including the worker-pool interrupt handling (Ctrl+C/SIGTERM cancel not-yet-started periods immediately rather than draining the whole batch).
 
@@ -257,7 +257,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000). Not with `--stratify`, where `--n-per-group` sizes the sample: given there, or in calendar mode, it's ignored with a warning |
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
-| `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there (see [Row provenance](#row-provenance)). Off by default |
+| `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there, the 15-minute file for `--source aggregated` (see [Row provenance](#row-provenance)). Off by default |
 | `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
 | `--per-period N` | calendar | Rows per calendar period (default 10); with `--quota-file`, the rows of each period the file doesn't list (default 0) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
@@ -310,9 +310,32 @@ file's. The default `clean` settings drop no row.
 
 A draw's rows can then be read again from any other version of the same
 files, cleaned with other settings, at the same (`SourceFile`,
-`SourceRow`), and paired row for row with the draw. With
-`--source aggregated`, `SourceFile` names the aggregated file, since an
-aggregated file has no single source.
+`SourceRow`), and paired row for row with the draw.
+
+With `--source aggregated`, a row names the converted 15-minute file it
+came from and its position there, the same as a draw from the 15-minute
+files would. `aggregate` records in each file it writes the files it
+concatenated, in order, with the converted file each holds and its rows.
+A file aggregated before 0.16.0 has no such record: its `.done` marker
+lists its sources and whether they were the cleaned or the converted
+files, and they are read from that directory: about 96 footers per day
+file, a few at a time under `io.max_concurrent_reads`: about 340,000
+footers for a draw over the whole translated Events archive. Read cold
+from a network share, that first draw ran for about 25 minutes. The
+record derived is kept in the [saved file index](#saved-file-index), so
+a later sample over the same unchanged files reads none of those footers
+again and runs about as fast as one without `--provenance`;
+`aggregate --force` for a period writes the record into its file.
+
+The sources are checked when the record is derived. A source that is
+gone stops the sample with an error naming the aggregated file; re-run
+`gdeltforge aggregate --force` for its period while its sources are on
+disk, or sample it without `--provenance`. An aggregated file whose rows
+no longer add up to its sources' (a source rewritten since) stops the
+sample the same way. A record kept in the saved file index is reused
+while the aggregated file keeps its size and modification time, whatever
+happens to its sources afterwards: a draw still labels its rows once the
+sources are moved away or deleted.
 
 ```bash
 gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance --out draw.parquet
@@ -335,7 +358,10 @@ reads, and one that can't be read or written is rebuilt or skipped with a
 warning. Like the clean run audit, it must sit outside every data directory.
 A file removed from the directory leaves the index at its next save.
 Footers are read a few at a time, under the limit `io.max_concurrent_reads`
-sets.
+sets. For an aggregated file written before 0.16.0, the index also keeps
+the record of its sources a `--provenance` sample derived (see
+[Row provenance](#row-provenance)); an index saved by 0.15.0 is read and
+extended, not rebuilt.
 
 ### Sample manifest
 

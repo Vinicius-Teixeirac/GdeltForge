@@ -10,10 +10,11 @@ Provides:
 
 from __future__ import annotations
 
+import json
 import re
 import zlib
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -31,10 +32,16 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
+    _map_files,
+    aggregate_sources_record,
+    aggregated_marker,
+    cleaned_keeps_positions,
     cleaned_marker,
     clearer_dataset_errors,
     detach,
+    done_marker_fields,
     narrow_to_available_columns,
+    parquet_footer_facts,
     reconcile_file_schemas,
     scan_dataset_reconciled,
     scan_file_against_schema,
@@ -112,30 +119,15 @@ def _discover_dataset_files(
 # file a row comes from, relative to its directory, and the row's 0-based
 # position in that file. A row read from a cleaned file names the
 # converted file its marker records, at the same position: clean keeps
-# every row in order unless a step drops rows.
+# every row in order unless a step drops rows. A row read from an
+# aggregated file names the converted 15-minute file it came from and its
+# position there, from the record the aggregate stage keeps in the file.
 SOURCE_FILE = "SourceFile"
 SOURCE_ROW = "SourceRow"
 PROVENANCE_COLUMNS = (SOURCE_FILE, SOURCE_ROW)
 
 
-def _keeps_positions(marker: dict) -> bool:
-    """Whether a cleaned file holds every row of its source, in order, so a
-    row's position in it is its position in the source. The marker's row
-    counts say so; a marker written before they were recorded says so when
-    no step that drops rows ran (a null check, event_markers: drop)."""
-    if "rows_in" in marker and "rows_out" in marker:
-        return marker["rows_in"] == marker["rows_out"]
-    for step in marker.get("steps", []):
-        if step.get("skipped"):
-            continue
-        if step.get("step") == "require" or (
-            step.get("rule") == "event_markers" and step.get("mode") == "drop"
-        ):
-            return False
-    return True
-
-
-def _source_label(path: Path, roots: list[Path]) -> str:
+def _source_label(path: Path, roots: list[Path], metadata: dict[str, str]) -> str:
     """The converted file `path`'s rows come from, relative to its
     directory: path itself, or, for a cleaned file, the source its marker
     names, in the same subdirectory (a historical partition's)."""
@@ -144,10 +136,10 @@ def _source_label(path: Path, roots: list[Path]) -> str:
         (full.relative_to(r.resolve()) for r in roots if full.is_relative_to(r.resolve())),
         Path(path.name),
     )
-    marker = cleaned_marker(path)
+    marker = cleaned_marker(path, metadata)
     if marker is None:
         return rel.as_posix()
-    if not _keeps_positions(marker) or "source" not in marker:
+    if not cleaned_keeps_positions(marker) or "source" not in marker:
         raise ValueError(
             f"{path.name}: its clean run dropped rows (columns_to_check, or "
             f"errata.event_markers: drop), so a row's position in it isn't its position in "
@@ -157,16 +149,156 @@ def _source_label(path: Path, roots: list[Path]) -> str:
     return (rel.parent / marker["source"]).as_posix()
 
 
-def _label_provenance(df: pl.DataFrame, roots: list[Path]) -> pl.DataFrame:
+_DROPPED_ROWS_HINT = (
+    "its clean run dropped rows (columns_to_check, or errata.event_markers: drop), so a "
+    "row's position in it isn't its position in the converted file it came from. Sample "
+    "with provenance from data cleaned without those, or from the converted data."
+)
+
+
+def _aggregated_parts(
+    path: Path,
+    aggregate_sources: Mapping[str, Path] | None,
+    metadata: dict[str, str],
+    rows: int,
+    cached: str | None = None,
+) -> tuple[list[tuple[str, int]] | None, str | None]:
+    """
+    For an aggregated file of `rows` rows, its sources in row order, each
+    as (converted 15-minute file, rows); None for any other file. The
+    record the aggregate stage keeps in the file gives them. A file
+    aggregated before that record existed is recognised by its .done
+    marker, which lists its sources and the stage they were read from
+    (cleaned or converted): they are then read from that directory of
+    `aggregate_sources`, a few footers at a time, and one that is gone
+    stops the sample. `cached` is that derived record as the saved file
+    index keeps it (FileIndex.provenance_record); a record derived here is
+    returned second, as JSON, for the caller to keep there.
+    """
+    derived = None
+    record = aggregated_marker(path, metadata)
+    if record is not None:
+        sources = record["sources"]
+    elif cached is not None:
+        sources = json.loads(cached)
+    else:
+        fields = done_marker_fields(path)
+        if not fields or "sources" not in fields or "source" not in fields:
+            return None, None
+        names = [n for n in fields["sources"].split(",") if n]
+        # "filtered" is the cleaned stage's pre-0.12 name.
+        stage = {"filtered": "cleaned"}.get(fields["source"], fields["source"])
+        folder = (aggregate_sources or {}).get(stage)
+        missing = [n for n in names if folder is None or not (Path(folder) / n).is_file()]
+        if folder is None or missing:
+            where = f"in {folder}" if folder is not None else "(no source directory given)"
+            raise ValueError(
+                f"{path.name} was aggregated before 0.16.0, when aggregate began recording "
+                f"each source's rows in the file, and {len(missing)} of its {len(names)} "
+                f"{fields['source']} source file(s) are not {where} (first: {missing[0]}). "
+                f"Re-run `gdeltforge aggregate --force` for its period from those files, or "
+                f"sample it without --provenance."
+            )
+        sources = aggregate_sources_record([Path(folder) / n for n in names])
+        derived = json.dumps(sources)
+    parts = []
+    for source in sources:
+        if source["converted"] is None:
+            raise ValueError(f"{path.name}: its source {source['file']}: {_DROPPED_ROWS_HINT}")
+        parts.append((source["converted"], int(source["rows"])))
+    recorded = sum(n for _, n in parts)
+    if recorded != rows:
+        raise ValueError(
+            f"{path.name} holds {rows:,} rows but its sources hold {recorded:,}: one of "
+            f"them changed after `gdeltforge aggregate` wrote it. Re-run `gdeltforge "
+            f"aggregate --force` for its period."
+        )
+    return parts, derived
+
+
+def _label_aggregated_rows(
+    df: pl.DataFrame, parts: dict[str, list[tuple[str, int]]]
+) -> pl.DataFrame:
+    """Rows of `df` read from aggregated files (keys of `parts`), with
+    SourceFile and SourceRow turned into the converted 15-minute file and
+    the row's position there. Each aggregated file gets its own range of
+    one position key, so one as-of join over the sorted key finds every
+    row's source."""
+    starts, bases = [], {}
+    base = 0
+    for path, file_parts in parts.items():
+        bases[path] = base
+        for label, rows in file_parts:
+            starts.append((base, base, label))
+            base += rows
+    table = pl.DataFrame(
+        starts, schema={"__key": pl.Int64, "__start": pl.Int64, "__label": pl.String},
+        orient="row",
+    )
+    return (
+        df.with_columns(
+            (pl.col(SOURCE_FILE).replace_strict(bases, return_dtype=pl.Int64)
+             + pl.col(SOURCE_ROW).cast(pl.Int64)).alias("__key")
+        )
+        .sort("__key")
+        .join_asof(table, on="__key", strategy="backward")
+        .with_columns(
+            pl.col("__label").alias(SOURCE_FILE),
+            (pl.col("__key") - pl.col("__start")).alias(SOURCE_ROW),
+        )
+        .drop("__key", "__start", "__label")
+    )
+
+
+def _label_provenance(
+    df: pl.DataFrame,
+    roots: list[Path],
+    aggregate_sources: Mapping[str, Path] | None = None,
+    index: FileIndex | None = None,
+) -> pl.DataFrame:
     """df with SourceFile turned from the path read into the converted
-    file's name (_source_label), and the provenance columns last."""
+    file's name (_source_label), and the provenance columns last. A row of
+    an aggregated file names its converted 15-minute file and its position
+    there (_aggregated_parts; aggregate_sources locates the sources of a
+    file aggregated before 0.16.0, and `index`, the sample's FileIndex,
+    keeps what they say so a later sample doesn't read them again)."""
     if df.is_empty() or SOURCE_FILE not in df.columns:
         return df
-    labels = {p: _source_label(Path(p), roots) for p in df[SOURCE_FILE].unique().to_list()}
-    return df.with_columns(
-        pl.col(SOURCE_FILE).replace_strict(labels, return_dtype=pl.String),
-        pl.col(SOURCE_ROW).cast(pl.Int64),
-    ).select(pl.exclude(PROVENANCE_COLUMNS), *PROVENANCE_COLUMNS)
+    labels: dict[str, str] = {}
+    parts: dict[str, list[tuple[str, int]]] = {}
+    derived: dict[str, str] = {}
+    paths = df[SOURCE_FILE].unique().to_list()
+    # One footer read per file, a few files at a time, serves both markers
+    # and the row count.
+    footers = _map_files(parquet_footer_facts, paths)
+    for p, (rows, metadata) in zip(paths, footers, strict=True):
+        cached = index.provenance_record(p) if index is not None else None
+        file_parts, record = _aggregated_parts(
+            Path(p), aggregate_sources, metadata, rows, cached
+        )
+        if file_parts is None:
+            labels[p] = _source_label(Path(p), roots, metadata)
+        else:
+            parts[p] = file_parts
+            if record is not None:
+                derived[p] = record
+    if derived and index is not None:
+        index.remember_provenance(derived)
+    df = df.with_columns(pl.col(SOURCE_ROW).cast(pl.Int64))
+    if parts:
+        df = df.with_row_index("__order")
+        aggregated = pl.col(SOURCE_FILE).is_in(list(parts))
+        df = pl.concat([
+            df.filter(~aggregated),
+            _label_aggregated_rows(df.filter(aggregated), parts),
+        ]).sort("__order").drop("__order")
+    if labels:
+        df = df.with_columns(
+            pl.col(SOURCE_FILE).replace_strict(
+                labels, default=pl.col(SOURCE_FILE), return_dtype=pl.String
+            ),
+        )
+    return df.select(pl.exclude(PROVENANCE_COLUMNS), *PROVENANCE_COLUMNS)
 
 
 # ----------------------------------------------------------
@@ -452,9 +584,14 @@ class IndexedSampler:
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
         provenance: bool = False,
         file_index: Path | None = None,
+        aggregate_sources: Mapping[str, Path] | None = None,
     ):
         self.folder = Path(folder_path)
         self.provenance = provenance
+        # Where an aggregated file's sources are, by the stage they were
+        # read from ({"cleaned": ..., "converted": ...}), for provenance of
+        # a file aggregated before 0.16.0 (_aggregated_parts).
+        self.aggregate_sources = aggregate_sources
         self._roots = [self.folder] + ([Path(historical_folder)] if historical_folder else [])
         parquet_files = sorted(self.folder.glob("*.parquet"))
 
@@ -602,7 +739,9 @@ class IndexedSampler:
                 sampled.append(part)
                 pbar.update(1)
 
-        return _label_provenance(pl.concat(sampled), self._roots)
+        return _label_provenance(
+            pl.concat(sampled), self._roots, self.aggregate_sources, self.index
+        )
 
 
 def _read_rows(
@@ -920,6 +1059,7 @@ class CalendarSampler:
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
         provenance: bool = False,
         file_index: Path | None = None,
+        aggregate_sources: Mapping[str, Path] | None = None,
     ):
         if period not in self._PERIOD_PREFIX_LENGTH:
             raise ValueError(
@@ -937,6 +1077,8 @@ class CalendarSampler:
         self.date_parser = date_parser
         self.provenance = provenance
         self.file_index = file_index
+        # See IndexedSampler.aggregate_sources.
+        self.aggregate_sources = aggregate_sources
         self.rng = ReproducibleRNG(random_state)
         # The FileIndex of the files the last get_calendar_samples read.
         self.index: FileIndex | None = None
@@ -1236,7 +1378,7 @@ class CalendarSampler:
             files, index, target_schema, chosen, columns, self.provenance,
             f"calendar sample dataset in {self.folder}",
         )
-        return _label_provenance(sample, self._roots)
+        return _label_provenance(sample, self._roots, self.aggregate_sources, self.index)
 
 
 # ----------------------------------------------------------
@@ -1266,9 +1408,12 @@ class FilteredSampler:
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
         provenance: bool = False,
         file_index: Path | None = None,
+        aggregate_sources: Mapping[str, Path] | None = None,
     ):
         self.provenance = provenance
         self.file_index = file_index
+        # See IndexedSampler.aggregate_sources.
+        self.aggregate_sources = aggregate_sources
         # The scanned files and their FileIndex, built once (_indexed_files).
         self._indexed: tuple[list[Path], FileIndex] | None = None
         self._gdelt_columns_ordered = list(gdelt_columns)
@@ -1620,7 +1765,8 @@ class FilteredSampler:
 
     def _finish(self, df: pl.DataFrame) -> pl.DataFrame:
         """A sample with its provenance labelled (_label_provenance)."""
-        return _label_provenance(df, self._roots)
+        index = self._indexed[1] if self._indexed is not None else None
+        return _label_provenance(df, self._roots, self.aggregate_sources, index)
 
     # A key pass's row number across the scanned files, in scan order,
     # numbered before the filter.

@@ -679,6 +679,8 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         logger.warning(f"-n is ignored here: {per_group} sets how many rows each group gets.")
     n = _DEFAULT_SAMPLE_ROWS if n is None else n
 
+    # Passed to the sampler only when needed, so its default holds otherwise.
+    sampler_extra: dict = {}
     if args.source == "aggregated":
         # --period picks which of the three aggregated directories to
         # read (default "day", same as calendar mode's own default),
@@ -707,6 +709,18 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         # dataset), resolved above) expects. parse_file_date reads that
         # generic form directly.
         date_parser = parse_file_date
+        # --provenance names a row's 15-minute file: an aggregated file
+        # written before 0.16.0 has no record of its sources, which are
+        # then read from the stage's directory its marker names.
+        if args.provenance:
+            sampler_extra["aggregate_sources"] = {
+                stage: Path(config["paths"][dataset_path_key(dataset, key)])
+                for stage, key in (
+                    ("cleaned", "cleaned_data_directory"),
+                    ("converted", "parquet_data_directory"),
+                )
+                if config["paths"].get(dataset_path_key(dataset, key))
+            }
     else:
         source_key, historical_key = (
             ("cleaned_data_directory", "cleaned_historical_directory")
@@ -757,6 +771,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             date_parser=date_parser,
             provenance=args.provenance,
             file_index=file_index,
+            **sampler_extra,
         )
         df = sampler.get_random_sample(n, replace=args.replace)
         _write_sample_output(df, out, args.export_format)
@@ -808,6 +823,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             date_parser=date_parser,
             provenance=args.provenance,
             file_index=file_index,
+            **sampler_extra,
         )
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period, **quota_kwargs)
         _write_sample_output(df, out, args.export_format)
@@ -875,6 +891,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             date_parser=date_parser,
             provenance=args.provenance,
             file_index=file_index,
+            **sampler_extra,
         )
 
         if args.stratify:
@@ -1516,7 +1533,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--provenance", action="store_true",
         help="Add SourceFile and SourceRow to every sampled row: the converted "
              "file it comes from and its 0-based position there (for --source "
-             "cleaned, the file the clean marker names). Off by default"
+             "cleaned, the file the clean marker names; for --source aggregated, "
+             "the 15-minute file the aggregated file holds it from). Off by default"
     )
     sample.add_argument(
         "--file-index", metavar="PATH", default=None,
