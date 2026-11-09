@@ -145,7 +145,7 @@ it's opt-in rather than silently applied.
 
 ## Both streams: each mention joins its own stream's GKG
 
-With `--stream both`, Mentions and GKG 2.1 come from GDELT's English and translated streams together. An event of either stream can have mentions in both, so its rows can carry `Mention_Stream` `english` and `translated` side by side. A mention's document is looked up in its own stream's GKG 2.1 files only: no GKG document of either stream has a mention in the other stream, so a URL that also appears in the other stream's GKG is a different record and is not joined. `--on-duplicate-document` picks among one stream's records for a URL, and `--collapse-duplicate-mentions` counts a stream's rows for an (event, article) pair, so the same pair under the two streams stays two rows.
+With `--stream both`, Mentions and GKG 2.1 come from GDELT's English and translated streams together. An event of either stream can have mentions in both, so its rows can carry `Mention_Stream` `english` and `translated` side by side. A mention's document is looked up in its own stream's GKG 2.1 files only: no GKG document of either stream has a mention in the other stream, so a URL that also appears in the other stream's GKG is a different record and is not joined. Each stream is joined on its own and the results are concatenated, English first, so each stream's rows are exactly what `--stream english` or `--stream translated` returns, in the same order. `--on-duplicate-document` picks among one stream's records for a URL, and `--collapse-duplicate-mentions` counts a stream's rows for an (event, article) pair, so the same pair under the two streams stays two rows.
 
 ## Methodology: verify schema uniformity before trusting a cross-file number
 

@@ -2285,6 +2285,24 @@ class TestCrossrefEventsGkgV2BothStreams:
         assert result.columns[-1] == "Mention_Stream"
         assert "__gdeltforge_gkg_stream" not in result.columns
 
+    @pytest.mark.parametrize("kwargs", [
+        {}, {"dedupe_mentions": True}, {"on_duplicate_document": "latest"},
+    ])
+    def test_both_is_the_english_run_then_the_translated_run_row_for_row(
+        self, tmp_path, kwargs
+    ):
+        mentions, gkg = self._write(tmp_path)
+
+        both = crossref_events_gkg_v2(self._events_df(), mentions, gkg, GKG_V2_COLUMNS, **kwargs)
+        runs = [
+            crossref_events_gkg_v2(
+                self._events_df(), mentions[s], gkg[s], GKG_V2_COLUMNS, **kwargs
+            ).with_columns(pl.lit(s).alias("Mention_Stream"))
+            for s in ("english", "translated")
+        ]
+
+        pl_testing.assert_frame_equal(both, pl.concat(runs))
+
     def test_one_stream_alone_matches_its_plain_folder_result(self, tmp_path):
         mentions, gkg = self._write(tmp_path)
 
