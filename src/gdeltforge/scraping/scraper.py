@@ -1103,9 +1103,11 @@ def _dry_run_preview(files: list[GdeltFile], download_dir: str, force: bool) -> 
         else:
             would_download.append(filename)
 
+    # The directory too: with --stream it is the stream's own, and this
+    # line is how a dry run shows which one a real run would fill.
     logger.info(
         f"[dry run] Would download {len(would_download)} file(s), "
-        f"skip {len(would_skip)} already-downloaded file(s)."
+        f"skip {len(would_skip)} already-downloaded file(s), in {download_dir}."
     )
     for filename in would_download:
         logger.debug(f"[dry run] Would download: {filename}")

@@ -75,7 +75,7 @@ gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
-| `--dry-run` | Report how many files would be downloaded and skipped without downloading anything. Off by default |
+| `--dry-run` | Report how many files would be downloaded and skipped, and the directory they would go to, without downloading anything. Off by default |
 
 `--dataset gkg-v2`/`mentions`/`events-15min` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent daily `events` scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like `events`, so this doesn't apply to them.
 
@@ -550,7 +550,7 @@ Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure ra
 
 ### Both streams
 
-An event's coverage is split across GDELT's two streams: translated mentions refer to English events, and English mentions to translated ones. `--stream both` reads Mentions and GKG 2.1 from both streams' directories, for `v2` and for `auto`'s GKG 2.1 path. Each mention's document is looked up in its own stream's GKG 2.1 files, since no GKG document of either stream has a mention in the other. The output gains a last column, `Mention_Stream` (`english` or `translated`), naming the stream of each row's mention. `--on-duplicate-document` and `--collapse-duplicate-mentions` apply within a stream. GKG 1.0 has no translated stream in gdeltforge, so `v1` and `v1-counts` stay English.
+An event's coverage is split across GDELT's two streams: translated mentions refer to English events, and English mentions to translated ones. `--stream both` reads Mentions and GKG 2.1 from both streams' directories, for `v2` and for `auto`'s GKG 2.1 path. Each mention's document is looked up in its own stream's GKG 2.1 files, since no GKG document of either stream has a mention in the other. The output gains a last column, `Mention_Stream` (`english` or `translated`), naming the stream of each row's mention. Each stream is joined on its own and the results follow each other, English first: the English rows equal `--stream english`'s output and the translated rows `--stream translated`'s, row for row. `--on-duplicate-document` and `--collapse-duplicate-mentions` apply within a stream. GKG 1.0 has no translated stream in gdeltforge, so `v1` and `v1-counts` stay English.
 
 ```bash
 gdeltforge crossref --events sample.parquet --gkg-version v2 --stream both --out enriched.parquet
