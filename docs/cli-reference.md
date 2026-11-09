@@ -320,15 +320,22 @@ A file aggregated before 0.16.0 has no such record: its `.done` marker
 lists its sources and whether they were the cleaned or the converted
 files, and they are read from that directory: about 96 footers per day
 file, a few at a time under `io.max_concurrent_reads`: about 340,000
-footers for a draw over the whole translated Events archive. The record
-derived is kept in the [saved file index](#saved-file-index), so a later
-sample over the same unchanged files reads none of those footers again;
-`aggregate --force` for a period writes the record into its file. A source that is gone
-stops the sample with an error naming the aggregated file; re-run
+footers for a draw over the whole translated Events archive. Read cold
+from a network share, that first draw ran for about 25 minutes. The
+record derived is kept in the [saved file index](#saved-file-index), so
+a later sample over the same unchanged files reads none of those footers
+again and runs about as fast as one without `--provenance`;
+`aggregate --force` for a period writes the record into its file.
+
+The sources are checked when the record is derived. A source that is
+gone stops the sample with an error naming the aggregated file; re-run
 `gdeltforge aggregate --force` for its period while its sources are on
 disk, or sample it without `--provenance`. An aggregated file whose rows
 no longer add up to its sources' (a source rewritten since) stops the
-sample the same way.
+sample the same way. A record kept in the saved file index is reused
+while the aggregated file keeps its size and modification time, whatever
+happens to its sources afterwards: a draw still labels its rows once the
+sources are moved away or deleted.
 
 ```bash
 gdeltforge sample --dataset events --mode calendar --per-period 20 --provenance --out draw.parquet
