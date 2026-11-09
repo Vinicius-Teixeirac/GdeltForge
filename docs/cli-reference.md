@@ -240,7 +240,7 @@ gdeltforge aggregate --dataset events-15min --stream translated --period day
 gdeltforge sample    --dataset events-15min --stream translated --mode indexed -n 1000 --source aggregated --out translated.parquet
 ```
 
-Each step works on one stream; a sample of both is two samples. Every other dataset has no translated stream, and `--stream translated` with it stops with an error. The directories are in [Configuration](configuration.md#translated-stream).
+Each step works on one stream; a sample of both is two samples. `crossref` also takes `--stream both`, joining an event's mentions from both streams at once ([Both streams](#both-streams)). Every other dataset has no translated stream, and `--stream translated` with it stops with an error. The directories are in [Configuration](configuration.md#translated-stream).
 
 ## `gdeltforge sample`
 
@@ -508,6 +508,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 |------|-------------|
 | `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/clean output directly); `.done` resumability markers in it are ignored |
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
+| `--stream {english,translated,both}` | Which GDELT 2.0 stream's Mentions and GKG 2.1 to join against (default `english`). `both` reads the two streams at once and adds a `Mention_Stream` column; see [Both streams](#both-streams) below. `v2`/`auto` only: `v1`/`v1-counts` reject any stream but `english`, and `auto`'s GKG 1.0 path stays English |
 | `--source {cleaned,converted,aggregated,filtered}` | Which stage's GKG/Mentions output to read from (default: `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output, `--gkg-version v2` only (GKG 1.0 has no 15-minute files to aggregate) |
 | `--period {day,month,year}` | With `--source aggregated`: which of the day/month/year aggregated directories to read (default `day`); rejected with any other `--source` |
 | `--columns COL [COL ...]` | Restrict GKG-side output to these columns, named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
@@ -527,6 +528,14 @@ GKG's two format generations relate to Events differently, so `--gkg-version` pi
 Both `v1`/`v1-counts` and `v2` preserve the underlying many-to-many structure rather than collapsing it: one event can produce several output rows (several articles covered it, each contributing its own GKG data), and one article covering several events contributes one row per event, not one merged row. An event with no GKG match contributes no rows at all, rather than a row full of nulls. GKG-side output columns are prefixed `GKG_` (and, for `v2`, Mentions bridge fields `Mention_`) to avoid colliding with an identically-named Events column, e.g. `NumArticles` exists on both Events and GKG 1.0.
 
 `v2`'s two-hop join has two further, independent sources of repeated rows for what's really the same (event, article) pair, each controlled by its own flag above, both defaulting to keeping everything rather than silently discarding anything: GKG 2.1 occasionally carries more than one record for the same document URL, all of them kept by default (`--on-duplicate-document`), and Mentions records one row per sentence that references an event, so an event quoted several times in one article produces several near-identical raw rows, also kept uncollapsed by default (`--collapse-duplicate-mentions` to fold them into one row with a `Mention_Count` column instead). See [Crossref Join Semantics](crossref-join-semantics.md) for the real-data numbers behind both.
+
+### Both streams
+
+An event's coverage is split across GDELT's two streams: translated mentions refer to English events, and English mentions to translated ones. `--stream both` reads Mentions and GKG 2.1 from both streams' directories, for `v2` and for `auto`'s GKG 2.1 path. Each mention's document is looked up in its own stream's GKG 2.1 files, since no GKG document of either stream has a mention in the other. The output gains a last column, `Mention_Stream` (`english` or `translated`), naming the stream of each row's mention. Each stream is joined on its own and the results follow each other, English first: the English rows equal `--stream english`'s output and the translated rows `--stream translated`'s, row for row. `--on-duplicate-document` and `--collapse-duplicate-mentions` apply within a stream. GKG 1.0 has no translated stream in gdeltforge, so `v1` and `v1-counts` stay English.
+
+```bash
+gdeltforge crossref --events sample.parquet --gkg-version v2 --stream both --out enriched.parquet
+```
 
 ```bash
 gdeltforge sample --dataset events --mode filtered --filter '{"ActionGeo_CountryCode": ["US"]}' -n 2000 --out us_events.parquet

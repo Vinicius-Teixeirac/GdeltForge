@@ -49,6 +49,14 @@ differently (see docs/comparison.md):
       pushdown, so neither the full Mentions nor the full GKG 2.1 archive
       is ever materialized, only the rows relevant to events_df.
 
+crossref_events_gkg_v2 (and the GKG 2.1 path of crossref_events_gkg_auto)
+can read GDELT's two streams: given a {stream: folder} mapping for Mentions
+and for GKG 2.1, it joins each stream on its own (each mention's document
+is in its own stream's GKG 2.1 files: no GKG document of either stream has
+a mention in the other) and concatenates the results in the mapping's
+order, with a last column, Mention_Stream, naming each row's stream. Each
+stream's rows are then exactly that stream's own join, row for row.
+
 Both preserve the underlying many-to-many structure rather than collapsing
 it: one event can join to several GKG rows (several articles covered it),
 and one GKG row/article can join to several events (it covered several).
@@ -215,6 +223,36 @@ def _list_files(
     # docstring), rather than silently dropped just because a range was
     # given.
     return filter_paths_by_date(files, start_date, end_date, date_parser=date_parser)
+
+
+# Names the stream of each row of a multi-stream crossref_events_gkg_v2.
+MENTION_STREAM_COLUMN = "Mention_Stream"
+
+
+def _folders_by_stream(
+    mentions_folder: str | Mapping[str, str], gkg_v2_folder: str | Mapping[str, str]
+) -> dict[str, tuple[str, str]] | None:
+    """
+    {stream: (Mentions folder, GKG 2.1 folder)} when crossref_events_gkg_v2
+    is given {stream: folder} mappings, in the mappings' order; None for
+    one plain folder each.
+    """
+    if not isinstance(mentions_folder, Mapping) and not isinstance(gkg_v2_folder, Mapping):
+        return None
+    if not isinstance(mentions_folder, Mapping) or not isinstance(gkg_v2_folder, Mapping):
+        raise ValueError(
+            "mentions_folder and gkg_v2_folder must both be folders, or both "
+            "{stream: folder} mappings."
+        )
+    if not mentions_folder or set(mentions_folder) != set(gkg_v2_folder):
+        raise ValueError(
+            f"mentions_folder and gkg_v2_folder must name the same streams, got "
+            f"{sorted(mentions_folder)} and {sorted(gkg_v2_folder)}."
+        )
+    return {
+        str(stream): (str(folder), str(gkg_v2_folder[stream]))
+        for stream, folder in mentions_folder.items()
+    }
 
 
 def _dataset(files: list[Path], folder: str, start_date: date | None = None,
@@ -782,8 +820,8 @@ def crossref_events_gkg_v1(
 
 def crossref_events_gkg_v2(
     events_df: pl.DataFrame,
-    mentions_folder: str,
-    gkg_v2_folder: str,
+    mentions_folder: str | Mapping[str, str],
+    gkg_v2_folder: str | Mapping[str, str],
     gkg_v2_columns: list[str],
     columns: set[str] | None = None,
     on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
@@ -847,7 +885,33 @@ def crossref_events_gkg_v2(
     in both mentions_folder and gkg_v2_folder get listed and opened at
     all, independent of events_df; see the module docstring for what
     this does and doesn't affect.
+
+    mentions_folder and gkg_v2_folder can instead both be {stream:
+    folder} mappings with the same keys (CLI: --stream both passes
+    {"english": ..., "translated": ...}). Each stream is then joined on
+    its own, with every other argument as given, and the results are
+    concatenated in the mapping's order with a last column,
+    Mention_Stream: each stream's rows equal that stream's own join, row
+    for row. on_duplicate_document and dedupe_mentions apply within a
+    stream.
     """
+    streams = _folders_by_stream(mentions_folder, gkg_v2_folder)
+    if streams is not None:
+        results = [
+            crossref_events_gkg_v2(
+                events_df, mentions, gkg, gkg_v2_columns, columns=columns,
+                on_duplicate_document=on_duplicate_document,
+                dedupe_mentions=dedupe_mentions, start_date=start_date,
+                end_date=end_date, date_parser=date_parser,
+            ).with_columns(pl.lit(stream, dtype=pl.String).alias(MENTION_STREAM_COLUMN))
+            for stream, (mentions, gkg) in streams.items()
+        ]
+        # Diagonal: a column only one stream's files have is null in the
+        # other's rows.
+        combined = pl.concat(results, how="diagonal_relaxed")
+        return combined.select(pl.exclude(MENTION_STREAM_COLUMN), MENTION_STREAM_COLUMN)
+    # One plain folder each from here on.
+    mentions_folder, gkg_v2_folder = str(mentions_folder), str(gkg_v2_folder)
     if on_duplicate_document not in _ON_DUPLICATE_DOCUMENT_MODES:
         raise ValueError(
             f"on_duplicate_document must be one of {sorted(_ON_DUPLICATE_DOCUMENT_MODES)}, "
@@ -1065,8 +1129,8 @@ def crossref_events_gkg_auto(
     events_df: pl.DataFrame,
     gkg_v1_folder: str,
     gkg_v1_columns: list[str],
-    mentions_folder: str,
-    gkg_v2_folder: str,
+    mentions_folder: str | Mapping[str, str],
+    gkg_v2_folder: str | Mapping[str, str],
     gkg_v2_columns: list[str],
     v1_columns: set[str] | None = None,
     v2_columns: set[str] | None = None,
@@ -1121,6 +1185,10 @@ def crossref_events_gkg_auto(
     as the "columns" parameter on crossref_events_gkg_v1/_v2 directly);
     there is no single "columns" covering both, since a column name
     meaningful for one schema is usually meaningless for the other.
+
+    mentions_folder and gkg_v2_folder may be {stream: folder} mappings,
+    forwarded to the GKG 2.1 path (crossref_events_gkg_v2); GKG 1.0 has
+    one stream in gdeltforge, the English one.
 
     on_duplicate_document and dedupe_mentions are forwarded to the GKG
     2.1 path unchanged; see crossref_events_gkg_v2's docstring. GKG 1.0

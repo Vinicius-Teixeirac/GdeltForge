@@ -215,6 +215,30 @@ def _stream(args: argparse.Namespace) -> str:
     return getattr(args, "stream", None) or "english"
 
 
+# crossref's --stream adds "both": Mentions and GKG 2.1 read from the two
+# streams at once (crossref_events_gkg_v2's {stream: folder} form).
+_CROSSREF_STREAMS = [*STREAMS, "both"]
+
+
+def _crossref_folders(
+    config: dict, dataset: str, base_key: str, label: str, stream: str
+) -> str | dict[str, str]:
+    """
+    The directory crossref reads `dataset` from for --stream: one folder
+    for english or translated, or {"english": ..., "translated": ...} for
+    both. Each must exist; a missing one is named by its own paths.* key.
+    """
+    streams = list(STREAMS) if stream == "both" else [stream]
+    folders = {}
+    for one in streams:
+        key = dataset_path_key(dataset, base_key, one)
+        value = get_dict(config, "paths").get(key)
+        if not value:
+            raise ValueError(f"paths.{key} is not set: crossref reads {label} from it.")
+        folders[one] = str(ensure_exists(value, f"{label} directory (paths.{key})"))
+    return folders if stream == "both" else folders[stream]
+
+
 # aggregate's own --dataset choices: only the three datasets discovered
 # from GDELT's 15-minute gdeltv2 master file list (see
 # dataset_is_aggregation_eligible), restricted at the argparse level
@@ -907,6 +931,14 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
 
 def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     start_date, end_date = _parse_date_range(args)
+    stream = _stream(args)
+
+    if stream != "english" and args.gkg_version in ("v1", "v1-counts"):
+        raise ValueError(
+            f"--stream {stream} applies to Mentions and GKG 2.1: --gkg-version "
+            f"{args.gkg_version} reads GKG 1.0, which gdeltforge has in English only. "
+            f"Use --gkg-version v2 or auto."
+        )
 
     if args.source == "aggregated" and args.gkg_version != "v2":
         raise ValueError(
@@ -933,11 +965,16 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         source_key = f"aggregated_{period or 'day'}_data_directory"
         date_parser_kwargs = {"date_parser": parse_file_date}
     if args.source == "converted":
-        for joined in ("gdelt_gkg_v1", "gdelt_gkg_v1_counts", "gdelt_mentions", "gdelt_gkg_v2"):
-            folder = config["paths"].get(dataset_path_key(joined, source_key))
+        v2_streams = list(STREAMS) if stream == "both" else [stream]
+        checks = [("gdelt_gkg_v1", "english"), ("gdelt_gkg_v1_counts", "english")] + [
+            (joined, one) for joined in ("gdelt_mentions", "gdelt_gkg_v2") for one in v2_streams
+        ]
+        for joined, one in checks:
+            folder = config["paths"].get(dataset_path_key(joined, source_key, one))
             if folder and Path(folder).is_dir():
                 warn_if_folder_holds_cleaned_files(
-                    folder, f"crossref --source converted ({joined})", logger, dataset=joined
+                    folder, f"crossref --source converted ({joined})", logger, dataset=joined,
+                    stream=one,
                 )
 
     out = _out_path_for_export_format(Path(args.out), args.export_format)
@@ -956,20 +993,18 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             config["paths"][dataset_path_key("gdelt_gkg_v1", source_key)],
             "GKG 1.0 directory",
         )
-        mentions_folder = ensure_exists(
-            config["paths"][dataset_path_key("gdelt_mentions", source_key)],
-            "Mentions directory",
+        mentions_folder = _crossref_folders(
+            config, "gdelt_mentions", source_key, "Mentions", stream
         )
-        gkg_v2_folder = ensure_exists(
-            config["paths"][dataset_path_key("gdelt_gkg_v2", source_key)],
-            "GKG 2.1 directory",
+        gkg_v2_folder = _crossref_folders(
+            config, "gdelt_gkg_v2", source_key, "GKG 2.1", stream
         )
         result = crossref_events_gkg_auto(
             events_df,
             str(gkg_v1_folder),
             config["columns"]["gdelt_gkg_v1"],
-            str(mentions_folder),
-            str(gkg_v2_folder),
+            mentions_folder,
+            gkg_v2_folder,
             config["columns"]["gdelt_gkg_v2"],
             on_duplicate_document=args.on_duplicate_document,
             dedupe_mentions=args.collapse_duplicate_mentions,
@@ -977,18 +1012,16 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             end_date=end_date,
         )
     elif args.gkg_version == "v2":
-        mentions_folder = ensure_exists(
-            config["paths"][dataset_path_key("gdelt_mentions", source_key)],
-            "Mentions directory",
+        mentions_folder = _crossref_folders(
+            config, "gdelt_mentions", source_key, "Mentions", stream
         )
-        gkg_v2_folder = ensure_exists(
-            config["paths"][dataset_path_key("gdelt_gkg_v2", source_key)],
-            "GKG 2.1 directory",
+        gkg_v2_folder = _crossref_folders(
+            config, "gdelt_gkg_v2", source_key, "GKG 2.1", stream
         )
         result = crossref_events_gkg_v2(
             events_df,
-            str(mentions_folder),
-            str(gkg_v2_folder),
+            mentions_folder,
+            gkg_v2_folder,
             config["columns"]["gdelt_gkg_v2"],
             columns=columns,
             on_duplicate_document=args.on_duplicate_document,
@@ -1596,6 +1629,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Parquet file of Events rows to enrich, e.g. the output of `gdeltforge sample`. "
              "A directory of parquet files (e.g. convert/clean output) also works; .done "
              "resumability markers in it are ignored"
+    )
+    crossref.add_argument(
+        "--stream",
+        choices=_CROSSREF_STREAMS,
+        default="english",
+        help="Which GDELT 2.0 stream's Mentions and GKG 2.1 to join against: english "
+             "(the default), translated, or both. With both, each mention's document is "
+             "looked up in its own stream and the output gains a Mention_Stream column. "
+             "v2/auto only; GKG 1.0 is English only",
     )
     crossref.add_argument(
         "--gkg-version",
