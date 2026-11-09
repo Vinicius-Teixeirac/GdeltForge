@@ -49,7 +49,7 @@ import requests.adapters
 import urllib3
 from tqdm import tqdm
 
-from gdeltforge.utils.config import dataset_path_key
+from gdeltforge.utils.config import config_for_stream, dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -69,6 +69,18 @@ _GDELT_SINGLE_FILE_URLS = {
 
 GDELT_V2_BASE_URL = "http://data.gdeltproject.org/gdeltv2/"
 GDELT_V2_MASTERFILELIST_URL = GDELT_V2_BASE_URL + "masterfilelist.txt"
+# The translated stream's own list, same "size md5 url" format: GDELT's
+# machine-translated coverage of the same three datasets, in separate
+# files whose names add ".translation" before the dataset's suffix, e.g.
+#   ...gdeltv2/20230601080000.translation.export.CSV.zip
+#   ...gdeltv2/20230601080000.translation.mentions.CSV.zip
+#   ...gdeltv2/20230601080000.translation.gkg.csv.zip
+GDELT_V2_TRANSLATED_MASTERFILELIST_URL = GDELT_V2_BASE_URL + "masterfilelist-translation.txt"
+_GDELT_V2_MASTERFILELIST_URLS = {
+    "english": GDELT_V2_MASTERFILELIST_URL,
+    "translated": GDELT_V2_TRANSLATED_MASTERFILELIST_URL,
+}
+_TRANSLATED_FILENAME_MARKER = ".translation"
 
 # Filename suffix identifying each dataset within the shared 15-minute
 # batch structure. Mentions follows Events' "CSV" capitalization; GKG uses
@@ -254,25 +266,38 @@ def _collect_gdelt_gkg_v1_links(config: dict, dataset: str) -> list[GdeltFile]:
     return files
 
 
-def _collect_gdeltv2_links(config: dict, dataset: str) -> list[GdeltFile]:
+def _gdeltv2_file_suffix(dataset: str, stream: str) -> str:
+    """The filename suffix of `dataset`'s files in `stream`."""
+    suffix = _GDELT_V2_SUFFIXES[dataset]
+    return _TRANSLATED_FILENAME_MARKER + suffix if stream == "translated" else suffix
+
+
+def _collect_gdeltv2_links(config: dict, dataset: str, stream: str = "english") -> list[GdeltFile]:
     """
     Fetches GDELT's v2 master file list (every export/mentions/gkg file
     published since Feb 2015, one per 15-minute batch) and filters it down
-    to the URLs for one dataset.
+    to the URLs for one dataset. `stream` picks the list: the English
+    masterfilelist.txt, or the translated stream's
+    masterfilelist-translation.txt.
+
+    An English file never matches a translated suffix, and a translated
+    file is excluded from an English match explicitly, since its name ends
+    with the English suffix too.
 
     This is a fundamentally different discovery mechanism from
     _collect_gdelt_links_requests's HTML-directory-listing scrape of the
     Events archive: one flat "size md5 url" text file that already covers
     every dataset in this family, rather than a page to parse per dataset.
     """
-    suffix = _GDELT_V2_SUFFIXES[dataset]
+    suffix = _gdeltv2_file_suffix(dataset, stream)
+    list_url = _GDELT_V2_MASTERFILELIST_URLS[stream]
     # See _scrape_html_index's own copy of this guard above.
     timeout = config.get("scraping", {}).get("timeout")
     if timeout is None:
         timeout = 30
 
-    logger.info(f"Fetching GDELT v2 master file list for {dataset}...")
-    response = requests.get(GDELT_V2_MASTERFILELIST_URL, timeout=timeout, verify=False)
+    logger.info(f"Fetching GDELT v2 master file list for {dataset} ({stream} stream)...")
+    response = requests.get(list_url, timeout=timeout, verify=False)
     response.raise_for_status()
 
     files = []
@@ -283,6 +308,8 @@ def _collect_gdeltv2_links(config: dict, dataset: str) -> list[GdeltFile]:
 
         size_str, md5, url = parts
         if not url.endswith(suffix):
+            continue
+        if stream == "english" and url.endswith(_TRANSLATED_FILENAME_MARKER + suffix):
             continue
 
         try:
@@ -460,9 +487,13 @@ def _collect_gdelt_links_selenium(config: dict) -> list[GdeltFile]:
     return files
 
 
-def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[GdeltFile]:
+def collect_gdelt_links(
+    config: dict, dataset: str = "gdelt_event", stream: str = "english"
+) -> list[GdeltFile]:
     """
-    Retrieves all downloadable GDELT file URLs for `dataset`.
+    Retrieves all downloadable GDELT file URLs for `dataset`, from its
+    English stream or, for GKG 2.1, Mentions and events-15min, its
+    translated one (see _collect_gdeltv2_links).
 
     Events dispatches to the method configured in scraping.method
     ("requests", default, or "selenium"). GKG 2.1 and Mentions use the v2
@@ -471,6 +502,8 @@ def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[Gdel
     per-dataset dispatch, not a fallback, so an unimplemented dataset fails
     clearly instead of silently scraping Events data.
     """
+    if stream != "english" and dataset not in _GDELT_V2_SUFFIXES:
+        dataset_path_key(dataset, "downloaded_data_directory", stream)  # raises
     if dataset == "gdelt_event":
         method = config.get("scraping", {}).get("method")
         if method is None:
@@ -486,7 +519,7 @@ def collect_gdelt_links(config: dict, dataset: str = "gdelt_event") -> list[Gdel
         return _collect_gdelt_links_requests(config)
 
     if dataset in _GDELT_V2_SUFFIXES:
-        return _collect_gdeltv2_links(config, dataset)
+        return _collect_gdeltv2_links(config, dataset, stream)
 
     if dataset in _GDELT_GKG_V1_SUFFIXES:
         return _collect_gdelt_gkg_v1_links(config, dataset)
@@ -1070,9 +1103,11 @@ def _dry_run_preview(files: list[GdeltFile], download_dir: str, force: bool) -> 
         else:
             would_download.append(filename)
 
+    # The directory too: with --stream it is the stream's own, and this
+    # line is how a dry run shows which one a real run would fill.
     logger.info(
         f"[dry run] Would download {len(would_download)} file(s), "
-        f"skip {len(would_skip)} already-downloaded file(s)."
+        f"skip {len(would_skip)} already-downloaded file(s), in {download_dir}."
     )
     for filename in would_download:
         logger.debug(f"[dry run] Would download: {filename}")
@@ -1101,10 +1136,15 @@ def run_scraping_pipeline(
     quiet: bool = False,
     force: bool = False,
     dry_run: bool = False,
+    stream: str = "english",
 ) -> DownloadResult:
     """
     Complete scraping step: collect URLs -> (optionally) filter by date ->
     sort by order -> warn if huge -> download.
+
+    stream ("english", the default, or "translated") picks which of
+    GDELT's two v2 file lists to read; the translated stream's files land
+    in the dataset's paths.translated_* directories (config_for_stream).
 
     order ("asc", the default, or "desc") only controls which files are
     submitted to the download thread pool first, not real completion
@@ -1151,7 +1191,8 @@ def run_scraping_pipeline(
     elif quiet:
         logger.setLevel(logging.WARNING)
 
-    files = collect_gdelt_links(config, dataset=dataset)
+    config = config_for_stream(config, dataset, stream)
+    files = collect_gdelt_links(config, dataset=dataset, stream=stream)
 
     date_parser = date_parser_for(dataset)
     files = filter_urls_by_date(files, start_date, end_date, date_parser=date_parser)

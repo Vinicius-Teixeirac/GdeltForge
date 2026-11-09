@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- GDELT's translated stream: `--stream translated` on `scrape`, `convert`, `clean`, `aggregate` and `sample` works on GDELT's machine-translated coverage of `events-15min`, `mentions` and `gkg-v2`, the files `masterfilelist-translation.txt` lists (`20230601080000.translation.export.CSV.zip` and so on). It holds about a third of GDELT 2.0's events, none of them in the daily `events` archive. gdeltforge read `masterfilelist.txt` only, and the translated files needed a second config pointing those datasets' paths elsewhere. Each stage now reads and writes the dataset's new `paths.translated_*` keys (default `./data/translated/<dataset>/<stage>`), so one config holds both streams; a translated key equal to its English one stops a `--stream translated` command with an error. The default, `--stream english`, does what every earlier release did. The sample manifest records the stream, and `scrape --dry-run` names the directory it would download into. See `docs/cli-reference.md#-stream` and `docs/configuration.md#translated-stream`.
+
 ## [0.15.0] - 2026-11-06
 
 ### Added

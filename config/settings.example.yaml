@@ -468,6 +468,35 @@ paths:
   event_15min_aggregated_month_data_directory: "./path_example/events_15min/aggregated_month"
   event_15min_aggregated_year_data_directory: "./path_example/events_15min/aggregated_year"
 
+  # GDELT's translated stream (--stream translated): the machine-translated
+  # coverage of events-15min, mentions and gkg-v2, same columns, separate
+  # files. Each key is its English sibling's with a "translated_" prefix
+  # and must name a different directory. See
+  # docs/configuration.md#translated-stream.
+  translated_gkg_v2_downloaded_data_directory: "./path_example/translated/gkg_v2/raw"
+  translated_gkg_v2_unzipped_data_directory: "./path_example/translated/gkg_v2/csv"
+  translated_gkg_v2_parquet_data_directory: "./path_example/translated/gkg_v2/parquet"
+  translated_gkg_v2_cleaned_data_directory: "./path_example/translated/gkg_v2/cleaned"
+  translated_gkg_v2_aggregated_day_data_directory: "./path_example/translated/gkg_v2/aggregated_day"
+  translated_gkg_v2_aggregated_month_data_directory: "./path_example/translated/gkg_v2/aggregated_month"
+  translated_gkg_v2_aggregated_year_data_directory: "./path_example/translated/gkg_v2/aggregated_year"
+
+  translated_mentions_downloaded_data_directory: "./path_example/translated/mentions/raw"
+  translated_mentions_unzipped_data_directory: "./path_example/translated/mentions/csv"
+  translated_mentions_parquet_data_directory: "./path_example/translated/mentions/parquet"
+  translated_mentions_cleaned_data_directory: "./path_example/translated/mentions/cleaned"
+  translated_mentions_aggregated_day_data_directory: "./path_example/translated/mentions/aggregated_day"
+  translated_mentions_aggregated_month_data_directory: "./path_example/translated/mentions/aggregated_month"
+  translated_mentions_aggregated_year_data_directory: "./path_example/translated/mentions/aggregated_year"
+
+  translated_event_15min_downloaded_data_directory: "./path_example/translated/events_15min/raw"
+  translated_event_15min_unzipped_data_directory: "./path_example/translated/events_15min/csv"
+  translated_event_15min_parquet_data_directory: "./path_example/translated/events_15min/parquet"
+  translated_event_15min_cleaned_data_directory: "./path_example/translated/events_15min/cleaned"
+  translated_event_15min_aggregated_day_data_directory: "./path_example/translated/events_15min/aggregated_day"
+  translated_event_15min_aggregated_month_data_directory: "./path_example/translated/events_15min/aggregated_month"
+  translated_event_15min_aggregated_year_data_directory: "./path_example/translated/events_15min/aggregated_year"
+
   # events-reduced is the one dataset whose historical directory is
   # populated unconditionally, regardless of converter.partitioning.enabled
   # (see utils.config.dataset_is_always_historical): a single static file

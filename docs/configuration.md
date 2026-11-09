@@ -81,6 +81,12 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 
 Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `cleaned_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
 
+### Translated stream
+
+`events-15min`, `mentions` and `gkg-v2` each have a second set of directories for GDELT's translated stream ([`--stream translated`](cli-reference.md#-stream)): every key above for the dataset, with `translated_` in front, e.g. `translated_mentions_parquet_data_directory`. The bundled default puts them under `./data/translated/<dataset>/<stage>`. A config that doesn't set them gets those defaults, relative to the directory gdeltforge runs in, even when it sets the English ones elsewhere; set them beside the English ones for a real archive.
+
+Each must name its own directory: a translated key equal to its English sibling stops a `--stream translated` command with an error, since the two streams' files have different names and would otherwise mix in one directory without a word. An English command doesn't read the translated keys, so it runs either way. An optional key such as `clean_runs_directory` falls back to its default beside the translated directories unless its `translated_` key is set, never to the English stream's value.
+
 ## `scraping`
 
 | Key | Default | Description |
@@ -93,7 +99,7 @@ Two further keys exist for Events and `events-reduced`: `parquet_historical_dire
 
 ### GKG 2.1 / Mentions discovery is a different mechanism entirely
 
-`method`/`chromedriver_path` below only apply to `--dataset events` (and, per below, `gkg-v1`/`gkg-v1-counts`). GKG 2.1 and Mentions publish at 15-minute granularity (not daily) under `data.gdeltproject.org/gdeltv2/`, discovered via a single master file list rather than an HTML page to scrape: there's no `requests`-vs-`selenium` choice for them. Because of that granularity, a multi-year `--dataset gkg-v2`/`mentions` scrape can easily imply hundreds of thousands of small files; GdeltForge logs a warning (not a hard stop) before starting a scrape that large, and `max_workers` below is worth raising for that many-small-files workload.
+`method`/`chromedriver_path` below only apply to `--dataset events` (and, per below, `gkg-v1`/`gkg-v1-counts`). GKG 2.1 and Mentions publish at 15-minute granularity (not daily) under `data.gdeltproject.org/gdeltv2/`, discovered via a single master file list rather than an HTML page to scrape: there's no `requests`-vs-`selenium` choice for them. `--stream translated` reads the translated stream's own list, `masterfilelist-translation.txt`, in the same format. Because of that granularity, a multi-year `--dataset gkg-v2`/`mentions` scrape can easily imply hundreds of thousands of small files; GdeltForge logs a warning (not a hard stop) before starting a scrape that large, and `max_workers` below is worth raising for that many-small-files workload.
 
 ### GKG 1.0 uses Events' HTML-listing mechanism, at a different URL
 

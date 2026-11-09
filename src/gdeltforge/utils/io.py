@@ -311,7 +311,8 @@ def cleaned_marker(path: str | Path) -> dict | None:
 
 
 def warn_if_cleaned_files(
-    files: list[Path], where: str, logger, sample_size: int = 3, dataset: str | None = None
+    files: list[Path], where: str, logger, sample_size: int = 3, dataset: str | None = None,
+    stream: str = "english",
 ) -> bool:
     """
     Warn when files expected to hold GDELT's own data (converted output, or
@@ -319,7 +320,8 @@ def warn_if_cleaned_files(
     first, middle and last of `files` (sample_size of them), since reading
     every footer of a full archive would cost real time for a warning.
     The warning names the directory and, when the caller knows its dataset,
-    that dataset's own path keys. Returns whether it warned.
+    that dataset's own path keys, those of its `stream`. Returns whether
+    it warned.
     """
     if not files:
         return False
@@ -327,8 +329,8 @@ def warn_if_cleaned_files(
     marked = [files[i] for i in picks if cleaned_marker(files[i]) is not None]
     if marked:
         keys = (
-            f"paths.{dataset_path_key(dataset, 'parquet_data_directory')} and "
-            f"paths.{dataset_path_key(dataset, 'cleaned_data_directory')}"
+            f"paths.{dataset_path_key(dataset, 'parquet_data_directory', stream)} and "
+            f"paths.{dataset_path_key(dataset, 'cleaned_data_directory', stream)}"
             if dataset else
             "paths.parquet_data_directory and paths.cleaned_data_directory (or the "
             "dataset's own keys)"
@@ -343,12 +345,14 @@ def warn_if_cleaned_files(
 
 
 def warn_if_folder_holds_cleaned_files(
-    folder: str | Path, where: str, logger, dataset: str | None = None
+    folder: str | Path, where: str, logger, dataset: str | None = None,
+    stream: str = "english",
 ) -> bool:
     """warn_if_cleaned_files over a directory's own top-level *.parquet
     files, for a caller that reads a converted directory by path."""
     return warn_if_cleaned_files(
-        sorted(Path(folder).glob("*.parquet")), where, logger, dataset=dataset
+        sorted(Path(folder).glob("*.parquet")), where, logger, dataset=dataset,
+        stream=stream,
     )
 
 

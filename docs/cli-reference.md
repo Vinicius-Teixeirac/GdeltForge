@@ -67,6 +67,7 @@ gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 | Flag | Description |
 |------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to scrape (required; see [`--dataset`](#-dataset) below) |
+| `--stream {english,translated}` | GDELT 2.0 stream (default `english`). `translated` works on GDELT's machine-translated coverage of `gkg-v2`, `mentions` and `events-15min`, in its own directories; see [`--stream`](#-stream) below |
 | `--start-date YYYY-MM-DD` | Only download files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only download files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -74,7 +75,7 @@ gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
-| `--dry-run` | Report how many files would be downloaded and skipped without downloading anything. Off by default |
+| `--dry-run` | Report how many files would be downloaded and skipped, and the directory they would go to, without downloading anything. Off by default |
 
 `--dataset gkg-v2`/`mentions`/`events-15min` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent daily `events` scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like `events`, so this doesn't apply to them.
 
@@ -107,6 +108,7 @@ Extracts all CSV files from the downloaded ZIP archives and converts them to Par
 | Flag | Description |
 |------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to convert (required; see [`--dataset`](#-dataset) below) |
+| `--stream {english,translated}` | GDELT 2.0 stream (default `english`). `translated` works on GDELT's machine-translated coverage of `gkg-v2`, `mentions` and `events-15min`, in its own directories; see [`--stream`](#-stream) below |
 | `--start-date YYYY-MM-DD` | Only convert files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only convert files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -152,6 +154,7 @@ The data-quality stage: drops rows with missing values in the columns defined un
 | Flag | Description |
 |------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | Which GDELT dataset to clean (required; see [`--dataset`](#-dataset) below) |
+| `--stream {english,translated}` | GDELT 2.0 stream (default `english`). `translated` works on GDELT's machine-translated coverage of `gkg-v2`, `mentions` and `events-15min`, in its own directories; see [`--stream`](#-stream) below |
 | `--start-date YYYY-MM-DD` | Only clean files whose period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only clean files whose period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest first, the default) or `desc` (newest first) |
@@ -192,6 +195,7 @@ GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDEL
 | Flag | Description |
 |------|-------------|
 | `--dataset {gkg-v2,mentions,events-15min}` | Which 15-minute-cadence GDELT dataset to aggregate (required). Every other dataset already publishes at day-or-coarser granularity, so there's nothing for this to solve there |
+| `--stream {english,translated}` | GDELT 2.0 stream (default `english`). `translated` works on GDELT's machine-translated coverage of `gkg-v2`, `mentions` and `events-15min`, in its own directories; see [`--stream`](#-stream) below |
 | `--period {day,month,year}` | Granularity to concatenate into (default `day`, matching `sample --mode calendar`'s own default) |
 | `--source {cleaned,converted,filtered}` | Which stage's output to aggregate from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). Recorded as part of this run's resumability fingerprint, so switching source for an already-aggregated period reprocesses and overwrites it rather than mixing the two |
 | `--start-date YYYY-MM-DD` | Only aggregate periods whose source files' period starts on or after this date |
@@ -222,6 +226,22 @@ Read the aggregated output back with `sample --source aggregated --period day` (
 - `gkg-v1`: the legacy GKG format (April 2013 through February 2015 as the primary feed, still published daily since). Unlike GKG 2.1, each row carries `EventIds` directly, so it joins to Events without the two-hop trip through Mentions. Daily files, discovered the same way as Events but from a different URL (see [Configuration](configuration.md#gkg-10-uses-events-html-listing-mechanism-at-a-different-url)).
 - `gkg-v1-counts`: GKG 1.0's separate "Counts" file, one row per individual count mention (e.g. one row per "12 killed" statement) rather than one row per document.
 
+## `--stream`
+
+GDELT 2.0 publishes two streams of `events-15min`, `mentions` and `gkg-v2`: the English one, and a machine-translated one covering news in 65 other languages, with the same columns in separate files (`20230601080000.translation.export.CSV.zip`, `...translation.mentions.CSV.zip`, `...translation.gkg.csv.zip`) listed in `masterfilelist-translation.txt`. The translated stream holds about a third of GDELT 2.0's events; the daily `events` archive holds none of them.
+
+`scrape`, `convert`, `clean`, `aggregate` and `sample` accept `--stream {english,translated}` (default `english`). With `translated`, `scrape` reads the translated list, and every command reads and writes the dataset's `paths.translated_*` directories in place of its English ones, so one config holds both streams side by side:
+
+```bash
+gdeltforge scrape    --dataset events-15min --stream translated --start-date 2023-06-01 --end-date 2023-06-30
+gdeltforge convert   --dataset events-15min --stream translated
+gdeltforge clean     --dataset events-15min --stream translated
+gdeltforge aggregate --dataset events-15min --stream translated --period day
+gdeltforge sample    --dataset events-15min --stream translated --mode indexed -n 1000 --source aggregated --out translated.parquet
+```
+
+Each step works on one stream; a sample of both is two samples. Every other dataset has no translated stream, and `--stream translated` with it stops with an error. The directories are in [Configuration](configuration.md#translated-stream).
+
 ## `gdeltforge sample`
 
 ![The three sampling modes, indexed, calendar and filtered, plus stratified as filtered's own optional sub-mode](assets/sampling-modes.svg)
@@ -231,6 +251,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | Flag | Applies to | Description |
 |------|-----------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
+| `--stream {english,translated}` | all | GDELT 2.0 stream to sample (default `english`); see [`--stream`](#-stream) |
 | `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
 | `--source {cleaned,converted,aggregated,filtered}` | all | Which stage's output to read from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000). Not with `--stratify`, where `--n-per-group` sizes the sample: given there, or in calendar mode, it's ignored with a warning |
@@ -322,7 +343,8 @@ Every sample is written with `<out>.manifest.json` beside it, a record of how
 it was drawn:
 
 - `gdeltforge`: the version that drew it, and `command`, the command line.
-- `draw`: the settings: dataset, source, mode, seed, date range, columns,
+- `draw`: the settings: dataset, stream (`english` or `translated`; a
+  manifest from before 0.16.0 has none, and its sample is English), source, mode, seed, date range, columns,
   provenance, and the mode's own: `-n` and `--replace`, `--filter`,
   `--stratify` and `--n-per-group`, `--period` and `--per-period`, and the
   quotas of a `--quota-file`, written out in full. With a quota file and

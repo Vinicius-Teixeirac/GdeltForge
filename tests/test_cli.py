@@ -70,6 +70,119 @@ class TestDatasetFlag:
             parser.parse_args(["convert", "--dataset", "not-a-real-dataset"])
 
 
+class TestStreamFlag:
+    """--stream picks GDELT 2.0's English or translated stream: the
+    translated one runs every stage against the dataset's
+    paths.translated_* directories (config_for_stream)."""
+
+    @staticmethod
+    def _config():
+        return {
+            "paths": {
+                "mentions_parquet_data_directory": "/en/parquet",
+                "mentions_cleaned_data_directory": "/en/cleaned",
+                "mentions_aggregated_day_data_directory": "/en/day",
+                "translated_mentions_parquet_data_directory": "/tr/parquet",
+                "translated_mentions_cleaned_data_directory": "/tr/cleaned",
+                "translated_mentions_aggregated_day_data_directory": "/tr/day",
+            },
+            "columns": {"gdelt_mentions": ["GLOBALEVENTID"]},
+        }
+
+    @pytest.mark.parametrize("command", ["scrape", "convert", "clean", "aggregate", "sample"])
+    def test_stream_defaults_to_english_and_accepts_translated(self, command):
+        parser = cli.build_parser()
+        extra = ["--mode", "indexed"] if command == "sample" else []
+        args = parser.parse_args([command, "--dataset", "mentions", *extra])
+        assert args.stream == "english"
+        args = parser.parse_args(
+            [command, "--dataset", "mentions", "--stream", "translated", *extra]
+        )
+        assert args.stream == "translated"
+
+    def test_an_unknown_stream_is_rejected(self):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["convert", "--dataset", "mentions", "--stream", "x"])
+
+    @pytest.mark.parametrize("command, stage, extra", [
+        ("convert", "run_converter", ["recover_unzipped", "delete_source"]),
+        ("clean", "run_cleaner", ["delete_source", "report"]),
+        ("aggregate", "run_aggregator", ["delete_source", "period", "source"]),
+    ])
+    @pytest.mark.parametrize("stream", ["english", "translated"])
+    def test_stage_is_given_the_stream(self, monkeypatch, command, stage, extra, stream):
+        # The stage applies config_for_stream itself (covered in each
+        # stage's own tests), so the CLI passes the config through as is.
+        captured = {}
+
+        def fake_stage(config, **kwargs):
+            captured["config"] = config
+            captured["stream"] = kwargs["stream"]
+            return ([], []) if stage == "run_converter" else (1, 0)
+
+        monkeypatch.setattr(cli, stage, fake_stage)
+        args = argparse.Namespace(
+            dataset="mentions", stream=stream, start_date=None, end_date=None, order="asc",
+            verbose=False, quiet=False, force=False, dry_run=False,
+            **{name: False for name in extra},
+        )
+        if command == "aggregate":
+            args.period, args.source = "day", "cleaned"
+
+        config = self._config()
+        getattr(cli, f"run_{command}_cmd")(config, args)
+
+        assert captured["stream"] == stream
+        assert captured["config"] is config
+
+    def test_sample_names_the_translated_key_when_its_directory_is_missing(self, tmp_path):
+        config = self._config()
+        config["paths"]["translated_mentions_cleaned_data_directory"] = str(tmp_path / "none")
+        args = argparse.Namespace(
+            dataset="mentions", stream="translated", mode="indexed", source="cleaned",
+            n=10, seed=42, replace=False, provenance=False,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None, file_index=None,
+        )
+        with pytest.raises(
+            FileNotFoundError, match="^translated_mentions_cleaned_data_directory does not exist"
+        ):
+            cli.run_sampling_cmd(config, args)
+
+    def test_sample_reads_the_translated_aggregated_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeIndexedSampler:
+            def __init__(self, folder_path, historical_folder, random_state, **kwargs):
+                captured["folder_path"] = folder_path
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GLOBALEVENTID": [1]})
+
+        monkeypatch.setattr(cli, "IndexedSampler", FakeIndexedSampler)
+        args = argparse.Namespace(
+            dataset="mentions", stream="translated", mode="indexed", source="aggregated",
+            period="day", n=10, seed=42, replace=False, provenance=False,
+            out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
+            start_date=None, end_date=None, file_index=None,
+        )
+
+        cli.run_sampling_cmd(self._config(), args)
+
+        assert captured["folder_path"] == "/tr/day"
+
+    def test_translated_stream_of_a_dataset_without_one_raises(self):
+        args = argparse.Namespace(
+            dataset="events", stream="translated", start_date=None, end_date=None,
+            order="asc", delete_source=False, verbose=False, quiet=False, force=False,
+            dry_run=False, recover_unzipped=False,
+        )
+        with pytest.raises(ValueError, match="has no translated stream"):
+            cli.run_convert_cmd({"paths": {}}, args)
+
+
 class TestTopLevelDescriptionScope:
     def test_help_description_does_not_claim_events_only_scope(self):
         # build_parser's own description previously read "a data pipeline
@@ -241,7 +354,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: {
+            quiet=False, force=False, dry_run=False, stream="english": {
                 "success": 2, "skipped": 0, "failed": ["20200101.export.CSV.zip"],
             },
         )
@@ -257,7 +370,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: {
+            quiet=False, force=False, dry_run=False, stream="english": {
                 "success": 2, "skipped": 0, "failed": ["20200101.export.CSV.zip"],
             },
         )
@@ -270,7 +383,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: {
+            quiet=False, force=False, dry_run=False, stream="english": {
                 "success": 5, "skipped": 0, "failed": [],
             },
         )
@@ -283,7 +396,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: (
+            quiet=False, force=False, dry_run=False, stream="english": (
                 captured.update(verbose=verbose)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -299,7 +412,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: (
+            quiet=False, force=False, dry_run=False, stream="english": (
                 captured.update(quiet=quiet)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -315,7 +428,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: (
+            quiet=False, force=False, dry_run=False, stream="english": (
                 captured.update(force=force)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -331,7 +444,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: (
+            quiet=False, force=False, dry_run=False, stream="english": (
                 captured.update(order=order)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -347,7 +460,7 @@ class TestRunScrapeCmd:
         monkeypatch.setattr(
             cli, "run_scraping_pipeline",
             lambda config, start_date, end_date, dataset, order="asc", verbose=False,
-            quiet=False, force=False, dry_run=False: (
+            quiet=False, force=False, dry_run=False, stream="english": (
                 captured.update(dry_run=dry_run)
                 or {"success": 0, "skipped": 0, "failed": []}
             ),
@@ -375,7 +488,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 ["a.parquet"], ["bad.zip"]
             ),
         )
@@ -393,7 +506,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 ["a.parquet"], ["bad.zip"]
             ),
         )
@@ -407,7 +520,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 ["a.parquet", "b.parquet"], []
             ),
         )
@@ -422,6 +535,7 @@ class TestRunConvertCmd:
             config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
             recover_unzipped=False,
+            stream="english",
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -452,7 +566,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(delete_source=delete_source) or ([], [])
             ),
         )
@@ -468,7 +582,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(verbose=verbose) or ([], [])
             ),
         )
@@ -484,7 +598,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(quiet=quiet) or ([], [])
             ),
         )
@@ -500,7 +614,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(force=force) or ([], [])
             ),
         )
@@ -516,7 +630,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(order=order) or ([], [])
             ),
         )
@@ -532,7 +646,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(dry_run=dry_run) or ([], [])
             ),
         )
@@ -548,7 +662,7 @@ class TestRunConvertCmd:
             cli, "run_converter",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False,
-            recover_unzipped=False: (
+            recover_unzipped=False, stream="english": (
                 captured.update(recover_unzipped=recover_unzipped) or ([], [])
             ),
         )
@@ -574,7 +688,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (8, 2),
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (8, 2),
         )
         args = self._args()
 
@@ -599,7 +714,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (10, 0),
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (10, 0),
         )
         args = self._args()
 
@@ -611,6 +727,7 @@ class TestRunCleanCmd:
         def fake_run_cleaner(
             config, dataset, start_date, end_date, order="asc", delete_source=False,
             verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english",
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -634,7 +751,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (
                 captured.update(delete_source=delete_source) or (0, 0)
             ),
         )
@@ -649,7 +767,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (
                 captured.update(verbose=verbose) or (0, 0)
             ),
         )
@@ -664,7 +783,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (
                 captured.update(quiet=quiet) or (0, 0)
             ),
         )
@@ -679,7 +799,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (
                 captured.update(force=force) or (0, 0)
             ),
         )
@@ -694,7 +815,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (
                 captured.update(order=order) or (0, 0)
             ),
         )
@@ -709,7 +831,8 @@ class TestRunCleanCmd:
         monkeypatch.setattr(
             cli, "run_cleaner",
             lambda config, dataset, start_date, end_date, order="asc", delete_source=False,
-            verbose=False, quiet=False, force=False, dry_run=False, report=False: (
+            verbose=False, quiet=False, force=False, dry_run=False, report=False,
+            stream="english": (
                 captured.update(dry_run=dry_run) or (0, 0)
             ),
         )
@@ -750,7 +873,8 @@ class TestRunAggregateCmd:
         monkeypatch.setattr(
             cli, "run_aggregator",
             lambda config, dataset, period, source, start_date, end_date, order="asc",
-            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (8, 2),
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english": (8, 2),
         )
         args = self._args()
 
@@ -761,7 +885,8 @@ class TestRunAggregateCmd:
         monkeypatch.setattr(
             cli, "run_aggregator",
             lambda config, dataset, period, source, start_date, end_date, order="asc",
-            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (10, 0),
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english": (10, 0),
         )
         args = self._args()
 
@@ -773,6 +898,7 @@ class TestRunAggregateCmd:
         def fake_run_aggregator(
             config, dataset, period, source, start_date, end_date, order="asc",
             delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english",
         ):
             captured["dataset"] = dataset
             captured["period"] = period
@@ -794,6 +920,7 @@ class TestRunAggregateCmd:
         def fake_run_aggregator(
             config, dataset, period, source, start_date, end_date, order="asc",
             delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english",
         ):
             captured["start_date"] = start_date
             captured["end_date"] = end_date
@@ -817,7 +944,8 @@ class TestRunAggregateCmd:
         monkeypatch.setattr(
             cli, "run_aggregator",
             lambda config, dataset, period, source, start_date, end_date, order="asc",
-            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english": (
                 captured.update(delete_source=delete_source) or (0, 0)
             ),
         )
@@ -832,7 +960,8 @@ class TestRunAggregateCmd:
         monkeypatch.setattr(
             cli, "run_aggregator",
             lambda config, dataset, period, source, start_date, end_date, order="asc",
-            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english": (
                 captured.update(force=force) or (0, 0)
             ),
         )
@@ -847,7 +976,8 @@ class TestRunAggregateCmd:
         monkeypatch.setattr(
             cli, "run_aggregator",
             lambda config, dataset, period, source, start_date, end_date, order="asc",
-            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False: (
+            delete_source=False, verbose=False, quiet=False, force=False, dry_run=False,
+            stream="english": (
                 captured.update(dry_run=dry_run) or (0, 0)
             ),
         )
@@ -1353,8 +1483,8 @@ class TestSampleManifest:
         assert manifest["gdeltforge"] == cli.__version__
         assert manifest["command"][0] == "gdeltforge"
         assert manifest["draw"] == {
-            "dataset": "events", "source": "cleaned", "mode": "indexed", "seed": 3,
-            "start_date": None, "end_date": None, "columns": None, "provenance": False,
+            "dataset": "events", "stream": "english", "source": "cleaned", "mode": "indexed",
+            "seed": 3, "start_date": None, "end_date": None, "columns": None, "provenance": False,
             "n": 7, "replace": False,
         }
         assert manifest["input"] == {
