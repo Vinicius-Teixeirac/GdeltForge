@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Security
+- The `dev` dependency group installs pre-commit on Python 3.11 and later only, so the development lock file no longer holds filelock 4.1.0, the last version for Python 3.10, which carries 17 advisories fixed in 4.2.1 (filelock comes only through pre-commit, a development tool, and 4.2.1 requires Python 3.11). On Python 3.10 the `dev` group installs pytest alone: the tests run as before, and the git hooks are set up from Python 3.11 or later. The package's own dependency ranges are unchanged; an installed wheel never pulled in filelock.
+
 ## [0.16.0] - 2026-11-09
 
 ### Added

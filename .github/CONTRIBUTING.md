@@ -16,7 +16,7 @@ cp config/settings.example.yaml config/settings.yaml
 uv run pre-commit install
 ```
 
-`pre-commit install` wires up git hooks (defined in `.pre-commit-config.yaml`) that run Ruff on every commit and Pyright + pytest on every push, so problems surface locally instead of in CI.
+`pre-commit install` wires up git hooks (defined in `.pre-commit-config.yaml`) that run Ruff on every commit and Pyright + pytest on every push, so problems surface locally instead of in CI. The `dev` group installs pre-commit on Python 3.11 and later only: a patched `filelock`, which pre-commit needs, requires 3.11. On Python 3.10, `uv run pytest` works as usual; set up the hooks from a 3.11+ environment.
 
 Run the test suite (pure unit tests: no network, no browser, no real GDELT data required):
 
