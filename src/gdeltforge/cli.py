@@ -37,6 +37,7 @@ from gdeltforge.utils.concurrency import exported_scan_limit, polars_scan_limit
 from gdeltforge.utils.config import (
     STREAMS,
     config_for_stream,
+    dataset_has_translated_stream,
     dataset_is_aggregation_eligible,
     dataset_is_always_historical,
     dataset_path_key,
@@ -212,7 +213,24 @@ def _stream_config(config: dict, args: argparse.Namespace) -> dict:
 
 
 def _stream(args: argparse.Namespace) -> str:
-    return getattr(args, "stream", None) or "english"
+    """The command's --stream. A translated stream of a --dataset GDELT
+    doesn't translate is refused here, naming datasets as --dataset takes
+    them (config_for_stream's own error names the config keys)."""
+    stream = getattr(args, "stream", None) or "english"
+    dataset = getattr(args, "dataset", None)
+    if (
+        stream == "translated" and dataset in _DATASET_CLI_TO_CONFIG
+        and not dataset_has_translated_stream(_DATASET_CLI_TO_CONFIG[dataset])
+    ):
+        translated = sorted(
+            name for name, key in _DATASET_CLI_TO_CONFIG.items()
+            if dataset_has_translated_stream(key)
+        )
+        raise ValueError(
+            f"--dataset {dataset} has no translated stream. GDELT translates "
+            f"{', '.join(translated)} only."
+        )
+    return stream
 
 
 # crossref's --stream adds "both": Mentions and GKG 2.1 read from the two
@@ -1574,7 +1592,9 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--filter",
         help="JSON dictionary for filtered sampling "
-             "(e.g. '{\"QuadClass\": [1,2]}')"
+             "(e.g. '{\"QuadClass\": [1,2]}'): column conditions, the ops "
+             "equals, in_list, gt, lt, between, is_null and is_blank, and the "
+             "blocks AND, OR, NOT, ANY and ALL; see docs/filtered-sampling.md"
     )
     sample.add_argument(
         "--columns",

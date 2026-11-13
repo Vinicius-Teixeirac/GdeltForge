@@ -6,7 +6,9 @@
 - lists (`IN`)
 - numeric ranges
 - relational operators (`>`, `<`)
-- nested `AND` / `OR` logical blocks
+- missing values (`is_null`, `is_blank`)
+- nested `AND` / `OR` / `NOT` logical blocks
+- one condition over a group of columns (`ANY` / `ALL`)
 
 !!! note "Filtered sampling vs the `clean` stage"
     Filtered sampling selects rows that are *relevant* to your study, per run, without writing anything but the sample. The [`clean`](data-cleaning.md) stage decides whether rows are *usable* at all, once, for the whole dataset. Row selection by content lives only here; see [Data Cleaning](data-cleaning.md#quality-not-relevance) for why.
@@ -60,8 +62,12 @@ All operator forms:
 | `gt` | `{ "NumArticles": { "op": "gt", "value": 20 } }` | `NumArticles > 20` |
 | `lt` | `{ "NumMentions": { "op": "lt", "value": 5 } }` | `NumMentions < 5` |
 | `between` / `range` | `{ "GoldsteinScale": { "op": "between", "min": -2, "max": 2 } }` | `-2 ≤ GoldsteinScale ≤ 2` |
+| `is_null` | `{ "ActionGeo_CountryCode": { "op": "is_null" } }` | `ActionGeo_CountryCode` is missing |
+| `is_blank` | `{ "Actor1Code": { "op": "is_blank" } }` | `Actor1Code` is missing, empty or whitespace only |
 
 All of the above apply to any numeric or categorical GDELT column.
+
+**Missing values.** A row whose column is null never matches a comparison on that column: `{"Actor1CountryCode": "USA"}` and `{"Actor1CountryCode": {"op": "gt", ...}}` both leave it out, as do `AND` and `OR` blocks built on them unless another branch of an `OR` matches. `is_null` selects those rows. `convert` reads an empty field as null; a string of spaces stays a string unless `clean`'s `blank_to_null` turns it into null (see [Data Cleaning](data-cleaning.md#normalize-whitespace)), so `is_blank` matches null, empty and whitespace-only strings. On a column that isn't a string, `is_blank` is `is_null`. Neither takes a value.
 
 **Dates.** GDELT's own date columns are numbers: `Day` and `DATEADDED` compare as `YYYYMMDD` (`{"Day": {"op": "between", "min": 20200101, "max": 20200131}}`). `EventDate`, the real date [`clean.derive`](data-cleaning.md#derive-added-columns) adds, takes a date in either form, the string `"2020-01-02"` (exactly `YYYY-MM-DD`) or the number `20200102`, in every operator above; anything else, the string `"20200102"` included, fails with a message naming both forms.
 
@@ -148,6 +154,47 @@ You can combine arbitrarily:
 
 Equivalent to `(IsRootEvent=1 AND QuadClass in {1,2}) OR (Actor1="CHN" OR Actor2="CHN")`.
 
+**NOT**
+
+`NOT` holds a block, like `AND`, and keeps the rows that block doesn't match. Keep every event not located in the United States:
+
+```json
+{ "NOT": { "ActionGeo_CountryCode": "US" } }
+```
+
+Rows where the block can't be decided because a column it reads is null count as not matching, so `NOT` keeps them: the example above keeps the events with no `ActionGeo_CountryCode`. To leave those out too, exclude them in a second `NOT`, nested in an `AND` since a block holds each key once: `{"NOT": {"ActionGeo_CountryCode": "US"}, "AND": {"NOT": {"ActionGeo_CountryCode": {"op": "is_null"}}}}`. `NOT` sits beside other keys like any condition, so `{"QuadClass": 4, "NOT": {...}}` means `QuadClass=4 AND NOT (...)`. An empty `NOT` block is an error.
+
+**ANY and ALL over a group of columns**
+
+`ANY` applies one condition to several columns and keeps a row where at least one of them meets it; `ALL` keeps a row where every one does. Either actor is Brazilian:
+
+```json
+{
+  "ANY": {
+    "columns": ["Actor1CountryCode", "Actor2CountryCode"],
+    "match": "BRA"
+  }
+}
+```
+
+Equivalent to `Actor1="BRA" OR Actor2="BRA"`. `match` takes any single-column condition: a value, a list, or an `{"op": ...}` dictionary, `is_null` and `is_blank` included. A null column counts as not meeting it, so `ANY` still matches through the other columns and `ALL` doesn't match. Both actors coded, with `NOT`:
+
+```json
+{
+  "NOT": {
+    "ANY": {
+      "columns": ["Actor1CountryCode", "Actor2CountryCode"],
+      "match": { "op": "is_blank" }
+    }
+  }
+}
+```
+
+The block holds exactly `columns` (one or more column names) and `match`. `ANY` and `ALL` sit beside other keys and inside `AND`, `OR` and `NOT` like any condition.
+
+!!! note "One key per block"
+    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. Nest an `AND` block for the second one: `{"NOT": {...}, "AND": {"NOT": {...}}}`.
+
 ## Selecting specific columns
 
 You may restrict the output to specific columns, which is a memory-friendly practice:
@@ -198,8 +245,13 @@ gdeltforge sample \
 | op:gt | `"X": {"op":"gt","value":0}` | `X > 0` |
 | op:lt | `"X": {"op":"lt","value":5}` | `X < 5` |
 | op:between | `"X":{"op":"between","min":0,"max":10}` | `0 ≤ X ≤ 10` |
+| op:is_null | `"X": {"op":"is_null"}` | `X` is missing |
+| op:is_blank | `"X": {"op":"is_blank"}` | `X` is missing, empty or whitespace only |
 | AND block | `"AND": {...}` | all conditions must match |
 | OR block | `"OR": {...}` | any condition may match |
+| NOT block | `"NOT": {...}` | the block doesn't match (a null counts as no match) |
+| ANY group | `"ANY": {"columns": ["X","Y"], "match": ...}` | `X` or `Y` meets `match` |
+| ALL group | `"ALL": {"columns": ["X","Y"], "match": ...}` | `X` and `Y` both meet `match` |
 | nested logic | `{"OR": {"X":1, "AND": {...}}}` | combine logic trees |
 
 See [Recipes](recipes.md) for complete, runnable examples built on this syntax.

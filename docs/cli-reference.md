@@ -75,7 +75,7 @@ gdeltforge scrape --dataset events --end-date   2015-12-31          # up to date
 | `--quiet` | Suppress even the default setup/summary lines, leaving only warnings and errors. Off by default |
 | `-q` | Shorthand for `--quiet` |
 | `--force` | Re-download files that already exist locally instead of skipping them. Off by default |
-| `--dry-run` | Report how many files would be downloaded and skipped, and the directory they would go to, without downloading anything. Off by default |
+| `--dry-run` | Report how many files would be downloaded and skipped, and the directory they would go to, without downloading anything. It still fetches the dataset's file listing. Off by default |
 
 `--dataset gkg-v2`/`mentions`/`events-15min` publish every 15 minutes rather than daily, so a wide date range can imply far more files than the equivalent daily `events` scrape; see [`--dataset`](#-dataset) below. `gkg-v1`/`gkg-v1-counts` are daily, like `events`, so this doesn't apply to them.
 
@@ -93,7 +93,7 @@ Downloads run concurrently (`scraping.max_workers`, default `8`) and are checksu
 
 `--quiet` raises the logger to WARNING, suppressing the setup and summary lines `scrape` otherwise always prints; mutually exclusive with `--verbose`.
 
-`--force` re-downloads a file even when one with the same name is already present, overwriting it. `--dry-run` reports how many files would be downloaded versus skipped, honoring `--force`'s effect on that count, without making any network request.
+`--force` re-downloads a file even when one with the same name is already present, overwriting it. `--dry-run` reports how many files would be downloaded versus skipped, honoring `--force`'s effect on that count, without downloading any file. It still fetches the dataset's file listing from GDELT, since that is what it counts: the HTML index for `events`, `gkg-v1` and `gkg-v1-counts`, and for `events-15min`, `gkg-v2` and `mentions` the 15-minute master file list, whose fetch takes several seconds. Only `events-reduced`, a single fixed file, needs no request.
 
 `--order` picks which files are submitted to the download pool first: `asc` (the default) matches `convert`/`clean`/`sample`/`crossref`'s own existing file order, so an interrupted scrape leaves a contiguous prefix of history those stages can already process cleanly; `desc` prioritizes the most recent files, useful when the goal is current data rather than a full backfill. It only controls submission order, not real completion order: downloads run concurrently, so a later-submitted small file can still finish before an earlier-submitted large one.
 
@@ -263,7 +263,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
 | `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for events-reduced/gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
-| `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
+| `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'`: column conditions, the operators `equals`, `in_list`, `gt`, `lt`, `between`, `is_null`, `is_blank`, and the blocks `AND`, `OR`, `NOT`, `ANY`, `ALL` ([syntax](filtered-sampling.md)) |
 | `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` or `--quota-file` |
 | `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set; with `--quota-file`, the rows of each stratum the file doesn't list (default 0) |
