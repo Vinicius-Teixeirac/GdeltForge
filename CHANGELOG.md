@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- `--stream translated` with a `--dataset` GDELT doesn't translate named the datasets by their configuration keys (`gdelt_event ... gdelt_event_15min, gdelt_gkg_v2, gdelt_mentions`). It now names them as `--dataset` takes them: `--dataset events has no translated stream. GDELT translates events-15min, gkg-v2, mentions only.` Every command checks before it starts.
+
 ## [0.16.0] - 2026-11-09
 
 ### Added
