@@ -1467,9 +1467,10 @@ class TestRunScrapingPipelineVerboseLogging:
 
 class TestRunScrapingPipelineForceAndDryRun:
     """dry_run mirrors _download_one's own existing-file check to report
-    what would be downloaded/skipped without making any network request;
-    force changes what counts as "would be skipped" the same way it
-    changes _download_one's real behavior."""
+    what would be downloaded/skipped without downloading anything (it
+    still fetches the file listing it counts); force changes what counts
+    as "would be skipped" the same way it changes _download_one's real
+    behavior."""
 
     @staticmethod
     def _stub_links(monkeypatch, files):
@@ -1477,7 +1478,22 @@ class TestRunScrapingPipelineForceAndDryRun:
         # is the only network-touching call a dry run still makes.
         monkeypatch.setattr(scraper, "collect_gdelt_links", lambda config, dataset, **_: files)
 
-    def test_dry_run_makes_no_network_call_and_returns_a_preview(self, monkeypatch, tmp_path):
+    def test_dry_run_fetches_the_file_listing_it_counts(self, monkeypatch, tmp_path):
+        fetched = []
+
+        def listing(config, dataset, **_):
+            fetched.append(dataset)
+            return [GdeltFile(url="http://x/20200101.export.CSV.zip")]
+
+        monkeypatch.setattr(scraper, "collect_gdelt_links", listing)
+        config = {"paths": {"downloaded_data_directory": str(tmp_path)}, "scraping": {}}
+
+        result = scraper.run_scraping_pipeline(config, dry_run=True)
+
+        assert fetched == ["gdelt_event"]
+        assert result == {"success": 1, "skipped": 0, "failed": []}
+
+    def test_dry_run_downloads_nothing_and_returns_a_preview(self, monkeypatch, tmp_path):
         (tmp_path / "20200101.export.CSV.zip").write_bytes(b"already downloaded")
         files = [
             GdeltFile(url="http://x/20200101.export.CSV.zip"),

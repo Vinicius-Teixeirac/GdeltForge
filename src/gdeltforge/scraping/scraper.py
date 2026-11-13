@@ -1167,8 +1167,12 @@ def run_scraping_pipeline(
 
     force re-downloads files already present locally instead of skipping
     them. dry_run reports what would be downloaded/skipped without
-    making any network request; it is checked after force so the preview
-    reflects force's effect on which files would be skipped.
+    downloading anything. It still fetches the dataset's file listing
+    (collect_gdelt_links: an HTML index, or the 15-minute master file
+    list, which takes seconds), since the preview counts that listing;
+    events-reduced, one fixed URL, needs no request. It is checked after
+    force so the preview reflects force's effect on which files would be
+    skipped.
     """
     if dataset == "gdelt_event_reduced" and (start_date or end_date):
         raise ValueError(
