@@ -1592,7 +1592,9 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--filter",
         help="JSON dictionary for filtered sampling "
-             "(e.g. '{\"QuadClass\": [1,2]}')"
+             "(e.g. '{\"QuadClass\": [1,2]}'): column conditions, the ops "
+             "equals, in_list, gt, lt, between, is_null and is_blank, and the "
+             "blocks AND, OR, NOT, ANY and ALL; see docs/filtered-sampling.md"
     )
     sample.add_argument(
         "--columns",

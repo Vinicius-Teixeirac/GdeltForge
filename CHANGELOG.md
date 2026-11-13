@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `sample --mode filtered --filter` selects on missing values and over groups of columns. The operators `is_null` and `is_blank` (null, empty or whitespace-only, and on a column that isn't a string the same as `is_null`) select rows whose column is missing: a comparison never matches a null, so those rows could not be selected, only drawn at random with the rest and dropped afterwards, which needed a larger draw to end up with n rows. A `NOT` block keeps the rows its block doesn't match, a null counting as no match, so `{"NOT": {"Actor1CountryCode": "USA"}}` keeps the events with no `Actor1CountryCode`. `ANY` and `ALL` apply one condition to several columns: `{"ANY": {"columns": ["Actor1CountryCode", "Actor2CountryCode"], "match": "BRA"}}` keeps the events with either actor Brazilian. A malformed block stops the command before any file is read. Filters valid before are unchanged. See `docs/filtered-sampling.md#not`.
+
 ### Fixed
 - `--stream translated` with a `--dataset` GDELT doesn't translate named the datasets by their configuration keys (`gdelt_event ... gdelt_event_15min, gdelt_gkg_v2, gdelt_mentions`). It now names them as `--dataset` takes them: `--dataset events has no translated stream. GDELT translates events-15min, gkg-v2, mentions only.` Every command checks before it starts.
 - `docs/cli-reference.md` said `scrape --dry-run` makes no network request. It downloads no file, but it fetches the dataset's file listing, which it counts: for `events-15min`, `gkg-v2` and `mentions` that is the 15-minute master file list, a fetch of several seconds. Only `events-reduced` needs no request.

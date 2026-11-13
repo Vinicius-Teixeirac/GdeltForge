@@ -263,7 +263,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
 | `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for events-reduced/gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
-| `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'` |
+| `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'`: column conditions, the operators `equals`, `in_list`, `gt`, `lt`, `between`, `is_null`, `is_blank`, and the blocks `AND`, `OR`, `NOT`, `ANY`, `ALL` ([syntax](filtered-sampling.md)) |
 | `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` or `--quota-file` |
 | `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set; with `--quota-file`, the rows of each stratum the file doesn't list (default 0) |
