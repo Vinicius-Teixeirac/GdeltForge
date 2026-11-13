@@ -1765,6 +1765,174 @@ class TestFilterExpressions:
         assert self._filtered_ids(tmp_path, cond) == {2, 6}
 
 
+
+# Missing values for is_null/is_blank/NOT/ANY/ALL. Actor1CountryCode holds
+# a null (2), whitespace (3) and an empty string (5): convert reads "" as
+# null, but a file written otherwise, or a whitespace-only value clean's
+# blank_to_null left alone, can hold them.
+#
+# ID  QuadClass  Actor1CC  Actor2CC  ActionGeoCC  Goldstein
+# 1   1          USA       CHN       US           -5.0
+# 2   2          null      USA       BR           null
+# 3   3          "  "      BRA       null          3.0
+# 4   4          CHN       null      CH            5.0
+# 5   1          ""        RUS       RU           -2.0
+# 6   2          BRA       BRA       BR            1.0
+def _make_dataset_with_missing_values(folder):
+    pl.DataFrame({
+        "GlobalEventID": [1, 2, 3, 4, 5, 6],
+        "Day": [20200101] * 6,
+        "QuadClass": [1, 2, 3, 4, 1, 2],
+        "IsRootEvent": [1, 0, 1, 0, 1, 1],
+        "Actor1CountryCode": ["USA", None, "  ", "CHN", "", "BRA"],
+        "Actor2CountryCode": ["CHN", "USA", "BRA", None, "RUS", "BRA"],
+        "ActionGeo_CountryCode": ["US", "BR", None, "CH", "RU", "BR"],
+        "GoldsteinScale": [-5.0, None, 3.0, 5.0, -2.0, 1.0],
+        "NumArticles": [1, 20, 5, 50, 3, 10],
+    }).write_parquet(folder / "data.parquet")
+
+
+ACTORS = ["Actor1CountryCode", "Actor2CountryCode"]
+
+
+class TestMissingValueAndGroupOperators:
+    def _sampler(self, tmp_path, filter_dict):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset_with_missing_values(folder)
+        return FilteredSampler(
+            str(folder), GDELT_COLUMNS, filter_dict=filter_dict, random_state=1
+        )
+
+    def _filtered_ids(self, tmp_path, filter_dict):
+        return set(self._sampler(tmp_path, filter_dict).filter_dataset()["GlobalEventID"])
+
+    def test_is_null(self, tmp_path):
+        cond = {"Actor1CountryCode": {"op": "is_null"}}
+        assert self._filtered_ids(tmp_path, cond) == {2}
+
+    def test_is_blank_matches_null_empty_and_whitespace_strings(self, tmp_path):
+        cond = {"Actor1CountryCode": {"op": "is_blank"}}
+        assert self._filtered_ids(tmp_path, cond) == {2, 3, 5}
+
+    def test_is_blank_on_a_numeric_column_is_is_null(self, tmp_path):
+        cond = {"GoldsteinScale": {"op": "is_blank"}}
+        assert self._filtered_ids(tmp_path, cond) == {2}
+
+    def test_not_keeps_the_rows_whose_column_is_null(self, tmp_path):
+        # Actor1CountryCode == "USA" is null on row 2; NOT keeps it.
+        cond = {"NOT": {"Actor1CountryCode": "USA"}}
+        assert self._filtered_ids(tmp_path, cond) == {2, 3, 4, 5, 6}
+
+    def test_not_is_null(self, tmp_path):
+        cond = {"NOT": {"ActionGeo_CountryCode": {"op": "is_null"}}}
+        assert self._filtered_ids(tmp_path, cond) == {1, 2, 4, 5, 6}
+
+    def test_not_over_an_or_block_with_a_null_operand(self, tmp_path):
+        # Row 4: Actor1 "CHN" is no match and Actor2 is null, so the OR is
+        # null; NOT counts that as no match and keeps the row.
+        cond = {"NOT": {"OR": {"Actor1CountryCode": "USA", "Actor2CountryCode": "USA"}}}
+        assert self._filtered_ids(tmp_path, cond) == {3, 4, 5, 6}
+
+    def test_a_second_not_nested_in_and_leaves_the_nulls_out(self, tmp_path):
+        cond = {
+            "NOT": {"Actor1CountryCode": "USA"},
+            "AND": {"NOT": {"Actor1CountryCode": {"op": "is_null"}}},
+        }
+        assert self._filtered_ids(tmp_path, cond) == {3, 4, 5, 6}
+
+    def test_not_combines_with_its_siblings_by_and(self, tmp_path):
+        cond = {"ActionGeo_CountryCode": "BR", "NOT": {"Actor1CountryCode": "BRA"}}
+        assert self._filtered_ids(tmp_path, cond) == {2}
+
+    def test_any_matches_a_row_whose_other_column_is_null(self, tmp_path):
+        cond = {"ANY": {"columns": ACTORS, "match": "USA"}}
+        assert self._filtered_ids(tmp_path, cond) == {1, 2}
+
+    def test_any_with_a_list(self, tmp_path):
+        cond = {"ANY": {"columns": ACTORS, "match": ["CHN", "RUS"]}}
+        assert self._filtered_ids(tmp_path, cond) == {1, 4, 5}
+
+    def test_all(self, tmp_path):
+        cond = {"ALL": {"columns": ACTORS, "match": "BRA"}}
+        assert self._filtered_ids(tmp_path, cond) == {6}
+
+    def test_all_with_a_null_column_is_no_match(self, tmp_path):
+        match = {"op": "in_list", "values": ["CHN", "USA"]}
+        cond = {"ALL": {"columns": ACTORS, "match": match}}
+        assert self._filtered_ids(tmp_path, cond) == {1}
+
+    def test_any_is_blank(self, tmp_path):
+        cond = {"ANY": {"columns": ACTORS, "match": {"op": "is_blank"}}}
+        assert self._filtered_ids(tmp_path, cond) == {2, 3, 4, 5}
+
+    def test_not_any_is_null_keeps_rows_with_both_columns_present(self, tmp_path):
+        cond = {"NOT": {"ANY": {"columns": ACTORS, "match": {"op": "is_null"}}}}
+        assert self._filtered_ids(tmp_path, cond) == {1, 3, 5, 6}
+
+    def test_any_and_all_inside_or(self, tmp_path):
+        cond = {"OR": {
+            "ANY": {"columns": ACTORS, "match": "RUS"},
+            "ALL": {"columns": ACTORS, "match": "BRA"},
+        }}
+        assert self._filtered_ids(tmp_path, cond) == {5, 6}
+
+    def test_random_sample_draws_exactly_n_matching_rows(self, tmp_path):
+        sampler = self._sampler(tmp_path, {"NOT": {"Actor1CountryCode": {"op": "is_blank"}}})
+        df = sampler.get_random_sample(3)
+        assert set(df["GlobalEventID"]) == {1, 4, 6}
+
+    def test_stratified_sample_with_any(self, tmp_path):
+        sampler = self._sampler(tmp_path, {"ANY": {"columns": ACTORS, "match": "BRA"}})
+        df = sampler.get_stratified_sample("QuadClass", n_per_group=5)
+        assert set(df["GlobalEventID"]) == {3, 6}
+
+    @pytest.mark.parametrize("filter_dict, message", [
+        ({"NOT": {}}, "NOT must contain a non-empty dict"),
+        ({"NOT": "USA"}, "NOT must contain a non-empty dict"),
+        ({"NOT": {"NotAColumn": 1}}, "Invalid filter column: NotAColumn"),
+        ({"ANY": {"columns": ACTORS}}, 'exactly "columns" and "match"'),
+        ({"ANY": {"columns": ACTORS, "match": "USA", "op": "x"}},
+         'exactly "columns" and "match"'),
+        ({"ALL": ["Actor1CountryCode"]}, 'exactly "columns" and "match"'),
+        ({"ANY": {"columns": [], "match": "USA"}}, "non-empty list of column names"),
+        ({"ANY": {"columns": "Actor1CountryCode", "match": "USA"}}, "non-empty list"),
+        ({"ANY": {"columns": ["Actor1CountryCode", "NotAColumn"], "match": "USA"}},
+         "Invalid filter column: NotAColumn"),
+        ({"ANY": {"columns": ACTORS, "match": {"Actor1CountryCode": "USA"}}},
+         "not a block of columns"),
+    ])
+    def test_malformed_blocks_are_rejected_at_construction(
+        self, tmp_path, filter_dict, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            self._sampler(tmp_path, filter_dict)
+
+    def test_any_checks_each_columns_value_type(self, tmp_path):
+        sampler = self._sampler(
+            tmp_path, {"ANY": {"columns": ["Actor1CountryCode", "NumArticles"], "match": "USA"}},
+        )
+        with pytest.raises(ValueError, match="'NumArticles' is numeric"):
+            sampler.filter_dataset()
+
+    def test_not_checks_its_value_types(self, tmp_path):
+        sampler = self._sampler(tmp_path, {"NOT": {"NumArticles": "many"}})
+        with pytest.raises(ValueError, match="'NumArticles' is numeric"):
+            sampler.filter_dataset()
+
+    def test_any_warns_on_a_code_from_the_wrong_family(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING):
+            self._sampler(
+                tmp_path, {"ANY": {"columns": ["ActionGeo_CountryCode"], "match": "USA"}},
+            )
+        assert "ActionGeo_CountryCode" in caplog.text
+        assert "FIPS geo" in caplog.text
+
+    def test_is_null_and_is_blank_take_no_code_warning(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING):
+            self._sampler(tmp_path, {"ANY": {"columns": ACTORS, "match": {"op": "is_blank"}}})
+        assert caplog.text == ""
+
 class TestFilteredSamplerReservoirSampling:
     def test_sample_size_matches_request(self, tmp_path):
         folder = tmp_path / "data"
