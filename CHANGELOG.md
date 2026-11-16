@@ -12,6 +12,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Changed
 - **Breaking**: `--filter` stops with an error when a block names a key twice (`{"Actor1CountryCode": "USA", "Actor1CountryCode": "BRA"}`, two `NOT`s). JSON keeps only the last value, so such a filter ran and selected on the last condition alone: that example selected the `BRA` events. Nest the second condition in an `AND` block.
 
+### Fixed
+- `--stream translated` with a `--dataset` GDELT doesn't translate named the datasets by their configuration keys (`gdelt_event ... gdelt_event_15min, gdelt_gkg_v2, gdelt_mentions`). It now names them as `--dataset` takes them: `--dataset events has no translated stream. GDELT translates events-15min, gkg-v2, mentions only.` Every command checks before it starts.
+- `docs/cli-reference.md` said `scrape --dry-run` makes no network request. It downloads no file, but it fetches the dataset's file listing, which it counts: for `events-15min`, `gkg-v2` and `mentions` that is the 15-minute master file list, a fetch of several seconds. Only `events-reduced` needs no request.
+
 ## [0.16.0] - 2026-11-09
 
 ### Added

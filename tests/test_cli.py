@@ -182,6 +182,35 @@ class TestStreamFlag:
         with pytest.raises(ValueError, match="has no translated stream"):
             cli.run_convert_cmd({"paths": {}}, args)
 
+    @pytest.mark.parametrize("dataset", ["events", "events-reduced", "gkg-v1", "gkg-v1-counts"])
+    def test_the_error_names_datasets_as_dataset_takes_them(self, dataset):
+        args = argparse.Namespace(dataset=dataset, stream="translated")
+        with pytest.raises(ValueError) as raised:
+            cli._stream(args)
+        message = str(raised.value)
+        assert message == (
+            f"--dataset {dataset} has no translated stream. GDELT translates "
+            "events-15min, gkg-v2, mentions only."
+        )
+        assert "gdelt_" not in message
+
+    def test_scrape_refuses_before_fetching_anything(self, monkeypatch):
+        monkeypatch.setattr(
+            cli, "run_scraping_pipeline",
+            lambda *a, **k: pytest.fail("the stream is checked before scraping"),
+        )
+        args = argparse.Namespace(
+            dataset="events", stream="translated", start_date=None, end_date=None,
+            order="asc", verbose=False, quiet=False, force=False, dry_run=True,
+        )
+        with pytest.raises(ValueError, match="--dataset events has no translated stream"):
+            cli.run_scrape_cmd({"paths": {}}, args)
+
+    @pytest.mark.parametrize("dataset", ["events-15min", "gkg-v2", "mentions", "events"])
+    def test_a_dataset_with_a_translated_stream_or_the_english_one_passes(self, dataset):
+        stream = "english" if dataset == "events" else "translated"
+        assert cli._stream(argparse.Namespace(dataset=dataset, stream=stream)) == stream
+
 
 class TestTopLevelDescriptionScope:
     def test_help_description_does_not_claim_events_only_scope(self):
