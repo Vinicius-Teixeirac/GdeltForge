@@ -559,6 +559,17 @@ class FilterType(Enum):
     GREATER_THAN = "gt"
     LESS_THAN = "lt"
     BETWEEN = "between"
+    IS_NULL = "is_null"
+    IS_BLANK = "is_blank"
+
+
+# Block keys of a filter dict, beside column names. AND/OR hold a block;
+# NOT holds a block and keeps the rows it doesn't match; ANY/ALL hold
+# {"columns": [...], "match": <one column's condition>} and keep the rows
+# where any/all of those columns meet it.
+_LOGIC_KEYS = ("AND", "OR")
+_NOT_KEY = "NOT"
+_GROUP_KEYS = ("ANY", "ALL")
 
 
 # ----------------------------------------------------------
@@ -1464,16 +1475,74 @@ class FilteredSampler:
                 raise ValueError("filter_dict must be dict/nested dicts")
 
             for key, val in block.items():
-                if key in ("AND", "OR"):
+                if key in _LOGIC_KEYS:
                     if not isinstance(val, dict):
                         raise ValueError(f"{key} must contain a dict")
                     validate_block(val)
+                elif key == _NOT_KEY:
+                    # An empty NOT would negate "every row" into no rows, or
+                    # be skipped as AND/OR's empty blocks are; neither is
+                    # something anyone means.
+                    if not isinstance(val, dict) or not val:
+                        raise ValueError(
+                            "NOT must contain a non-empty dict, e.g. "
+                            '{"NOT": {"Actor1CountryCode": "USA"}}'
+                        )
+                    validate_block(val)
+                elif key in _GROUP_KEYS:
+                    columns, match = self._group_parts(key, val)
+                    for column in columns:
+                        if column not in self._valid_columns:
+                            raise ValueError(f"Invalid filter column: {column}")
+                        self._check_condition(column, match)
+                        self._warn_unrecognized_codes(column, match)
                 else:
                     if key not in self._valid_columns:
                         raise ValueError(f"Invalid filter column: {key}")
+                    self._check_condition(key, val)
                     self._warn_unrecognized_codes(key, val)
 
         validate_block(self.filter_dict)
+
+    @staticmethod
+    def _check_condition(column: str, cond: Any) -> None:
+        """is_null and is_blank compare against nothing: a value given
+        with them would be ignored, so it is refused."""
+        if not isinstance(cond, dict):
+            return
+        op = cond.get("op")
+        if op in (FilterType.IS_NULL.value, FilterType.IS_BLANK.value) and set(cond) != {"op"}:
+            extra = sorted(set(cond) - {"op"})
+            raise ValueError(
+                f'{column}: "{op}" takes no other key, got {extra}. '
+                f'Write {{"op": "{op}"}}.'
+            )
+
+    @staticmethod
+    def _group_parts(key: str, val: Any) -> tuple[list[str], Any]:
+        """An ANY/ALL block's columns and the condition each is matched
+        against, checked: {"columns": [one or more names], "match": <one
+        column's condition>}, nothing else."""
+        example = (
+            f'{{"{key}": {{"columns": ["Actor1CountryCode", "Actor2CountryCode"], '
+            f'"match": "BRA"}}}}'
+        )
+        if not isinstance(val, dict) or set(val) != {"columns", "match"}:
+            raise ValueError(
+                f'{key} must contain a dict with exactly "columns" and "match", e.g. {example}'
+            )
+        columns, match = val["columns"], val["match"]
+        if (
+            not isinstance(columns, list) or not columns
+            or not all(isinstance(c, str) for c in columns)
+        ):
+            raise ValueError(f'{key}: "columns" must be a non-empty list of column names')
+        if isinstance(match, dict) and "op" not in match:
+            raise ValueError(
+                f'{key}: "match" takes one column\'s condition (a value, a list or '
+                f'an {{"op": ...}} dict), not a block of columns'
+            )
+        return columns, match
 
     @staticmethod
     def _condition_values(cond: Any) -> list[str]:
@@ -1517,9 +1586,12 @@ class FilteredSampler:
     def _filter_columns(self, block: dict[str, Any]) -> set[str]:
         cols: set[str] = set()
         for key, val in block.items():
-            if key in ("AND", "OR"):
+            if key in (*_LOGIC_KEYS, _NOT_KEY):
                 if isinstance(val, dict):
                     cols |= self._filter_columns(val)
+            elif key in _GROUP_KEYS:
+                if isinstance(val, dict):
+                    cols |= set(val.get("columns") or [])
             else:
                 cols.add(key)
         return cols
@@ -1572,10 +1644,23 @@ class FilteredSampler:
         return cls._as_date(cond, column)
 
     def _expr_for_condition(
-        self, column: str, cond: Any, is_date: bool = False
+        self, column: str, cond: Any, dtype: pl.DataType | None = None
     ) -> pl.Expr:
+        """One column's condition as an expression; dtype is the column's
+        type in the scanned files (None when unknown)."""
         f = pl.col(column)
-        if is_date:
+        if isinstance(cond, dict):
+            op = cond.get("op")
+            if op == FilterType.IS_NULL.value:
+                return f.is_null()
+            if op == FilterType.IS_BLANK.value:
+                # convert reads "" as null; a whitespace-only string stays
+                # unless clean's blank_to_null is on. A column of any other
+                # type has no blank value but null.
+                if dtype == pl.String:
+                    return f.is_null() | (f.str.strip_chars() == "")
+                return f.is_null()
+        if dtype == pl.Date:
             cond = self._dates_in(cond, column)
         if isinstance(cond, date):
             return f == cond
@@ -1629,6 +1714,7 @@ class FilteredSampler:
                 return [cond.get("value")]
             if op in (FilterType.RANGE.value, FilterType.BETWEEN.value):
                 return [cond.get("min"), cond.get("max")]
+            # is_null and is_blank compare against nothing.
         return []
 
     def _validate_filter_value_types(self, schema: dict[str, pl.DataType]) -> None:
@@ -1664,50 +1750,64 @@ class FilteredSampler:
         """
         def walk(block: dict[str, Any]) -> None:
             for key, val in block.items():
-                if key in ("AND", "OR"):
+                if key in (*_LOGIC_KEYS, _NOT_KEY):
                     if isinstance(val, dict):
                         walk(val)
-                    continue
+                elif key in _GROUP_KEYS:
+                    columns, match = self._group_parts(key, val)
+                    for column in columns:
+                        check(column, match)
+                else:
+                    check(key, val)
 
-                dtype = schema.get(key)
-                if dtype is None:
-                    continue
+        def check(key: str, val: Any) -> None:
+            dtype = schema.get(key)
+            if dtype is None:
+                return
 
-                operands = self._condition_operands(val)
-                if dtype.is_numeric():
-                    bad = [v for v in operands if isinstance(v, str)]
-                    if bad:
-                        raise ValueError(
-                            f"--filter: column {key!r} is numeric ({dtype}), but "
-                            f"the filter value(s) {bad} are string(s). Check the "
-                            f"--filter argument."
-                        )
-                elif dtype == pl.Date:
-                    for v in operands:
-                        self._as_date(v, key)
-                elif dtype == pl.Utf8:
-                    bad = [
-                        v for v in operands
-                        if isinstance(v, (int, float)) and not isinstance(v, bool)
-                    ]
-                    if bad:
-                        raise ValueError(
-                            f"--filter: column {key!r} is a string column "
-                            f"({dtype}), but the filter value(s) {bad} are "
-                            f"numeric. Check the --filter argument."
-                        )
+            operands = self._condition_operands(val)
+            if dtype.is_numeric():
+                bad = [v for v in operands if isinstance(v, str)]
+                if bad:
+                    raise ValueError(
+                        f"--filter: column {key!r} is numeric ({dtype}), but "
+                        f"the filter value(s) {bad} are string(s). Check the "
+                        f"--filter argument."
+                    )
+            elif dtype == pl.Date:
+                for v in operands:
+                    self._as_date(v, key)
+            elif dtype == pl.Utf8:
+                bad = [
+                    v for v in operands
+                    if isinstance(v, (int, float)) and not isinstance(v, bool)
+                ]
+                if bad:
+                    raise ValueError(
+                        f"--filter: column {key!r} is a string column "
+                        f"({dtype}), but the filter value(s) {bad} are "
+                        f"numeric. Check the --filter argument."
+                    )
 
         walk(self.filter_dict)
 
     # ---------- recursive builder: filter_dict -> polars expression ----------
     def _build_expression(
         self, block: dict[str, Any], _join_with: str = "AND",
-        date_columns: frozenset[str] = frozenset(),
+        dtypes: Mapping[str, pl.DataType] | None = None,
     ) -> pl.Expr | None:
         """
         Return a polars Expr or None if block is empty.
-        Supports nested AND/OR and base column conditions.
+        Supports nested AND/OR/NOT, ANY/ALL over a column group and base
+        column conditions; dtypes are the scanned files' column types.
+
+        A comparison with a null value is null, and filter drops a null
+        row, as AND/OR do. NOT and ANY/ALL count a null as "no match"
+        first (fill_null(False)): NOT {"Actor1CountryCode": "USA"} keeps
+        the rows with no Actor1CountryCode, and ANY over two columns
+        matches a row whose other column does.
         """
+        dtypes = dtypes or {}
         if not block:
             return None
 
@@ -1719,20 +1819,29 @@ class FilteredSampler:
             return (acc & new) if _join_with == "AND" else (acc | new)
 
         for key, val in block.items():
-            if key == "AND":
-                sub = self._build_expression(val, _join_with="AND", date_columns=date_columns)
+            if key in _LOGIC_KEYS:
+                sub = self._build_expression(val, _join_with=key, dtypes=dtypes)
                 if sub is None:
                     continue
                 expr = _combine(expr, sub)
 
-            elif key == "OR":
-                sub = self._build_expression(val, _join_with="OR", date_columns=date_columns)
+            elif key == _NOT_KEY:
+                sub = self._build_expression(val, dtypes=dtypes)
                 if sub is None:
                     continue
-                expr = _combine(expr, sub)
+                expr = _combine(expr, ~sub.fill_null(False))
+
+            elif key in _GROUP_KEYS:
+                columns, match = self._group_parts(key, val)
+                matches = [
+                    self._expr_for_condition(c, match, dtypes.get(c)).fill_null(False)
+                    for c in columns
+                ]
+                horizontal = pl.any_horizontal if key == "ANY" else pl.all_horizontal
+                expr = _combine(expr, horizontal(matches))
 
             else:
-                sub = self._expr_for_condition(key, val, is_date=key in date_columns)
+                sub = self._expr_for_condition(key, val, dtypes.get(key))
                 expr = _combine(expr, sub)
 
         return expr
@@ -1789,13 +1898,12 @@ class FilteredSampler:
         with clearer_dataset_errors(f"filtered sample dataset in {self.folder}"):
             files, index = self._indexed_files()
             target = reconcile_file_schemas(index.schemas)
-            date_columns = frozenset(c for c, t in target.items() if t == pl.Date)
             read = [c for c in needed_columns if c in target] or [next(iter(target))]
             lf = scan_dataset_reconciled(
                 files, target_schema={c: target[c] for c in read},
                 file_schemas=index.schemas,
             ).with_row_index(self._SCAN_ROW)
-            expr = self._build_expression(self.filter_dict, date_columns=date_columns)
+            expr = self._build_expression(self.filter_dict, dtypes=target)
             if expr is not None:
                 lf = lf.filter(expr)
             starts = self._scan_starts()
