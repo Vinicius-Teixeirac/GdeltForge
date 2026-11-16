@@ -237,28 +237,8 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "4.1.0"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version < '3.11'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/58/6fd434bec86eff7c38a3168454cb132b762b2bea9b3ac094101a2f7bc32a/filelock-4.1.0.tar.gz", hash = "sha256:ad7f724afef953e731b1cc39bcd3a09166d72ed7fcdf29e6e88b1c3235c6715d", size = 561277, upload-time = "2026-10-09T19:57:20.34Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/86/032133892a5de43b5a98200b01aadcad68cc255e274a762f08b8a76d2912/filelock-4.1.0-py3-none-any.whl", hash = "sha256:2ce9818e3e2d8f284c1a964414447ef148d42a5fd5e2a477a7118e574b293ec1", size = 133003, upload-time = "2026-10-09T19:57:18.716Z" },
-]
-
-[[package]]
-name = "filelock"
 version = "4.2.5"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.11' and python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-]
 sdist = { url = "https://files.pythonhosted.org/packages/aa/4b/2320d9fa03b65b4beb43b521fe1b12b7f87ab91ee42de3a286075016d205/filelock-4.2.5.tar.gz", hash = "sha256:37d8fa4f8b5e9233612e68ab23bf64cae41771322c8797361088ae2895b12894", size = 659943, upload-time = "2026-10-30T19:27:22.237Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/2d/2cf36eca330b7a97c0e9076e8fc4272127c29398fa2bb7b24d4321b8b476/filelock-4.2.5-py3-none-any.whl", hash = "sha256:46ce42d27e5cdde09ee7197349663e97cb106679bd9e75db3a09679fbc7aa1a8", size = 163877, upload-time = "2026-10-30T19:27:20.409Z" },
@@ -285,7 +265,7 @@ selenium = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "pre-commit" },
+    { name = "pre-commit", marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
 ]
 docs = [
@@ -312,7 +292,7 @@ provides-extras = ["selenium"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pre-commit", specifier = ">=3.8" },
+    { name = "pre-commit", marker = "python_full_version >= '3.11'", specifier = ">=3.8" },
     { name = "pytest", specifier = ">=8.0" },
 ]
 docs = [
@@ -807,11 +787,11 @@ name = "pre-commit"
 version = "4.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cfgv" },
-    { name = "identify" },
-    { name = "nodeenv" },
-    { name = "pyyaml" },
-    { name = "virtualenv" },
+    { name = "cfgv", marker = "python_full_version >= '3.11'" },
+    { name = "identify", marker = "python_full_version >= '3.11'" },
+    { name = "nodeenv", marker = "python_full_version >= '3.11'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.11'" },
+    { name = "virtualenv", marker = "python_full_version >= '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/25/3a/ddb78f32a0814e66b18a099377a106a2dcdce92d86a034d69d65df9b256e/pre_commit-4.6.1.tar.gz", hash = "sha256:03e809865c7d178b9979d06c761fcbfe6808fdaded8581a745bb110e52050421", size = 198646, upload-time = "2026-07-21T20:56:58.225Z" }
 wheels = [
@@ -964,8 +944,7 @@ name = "python-discovery"
 version = "1.6.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filelock", version = "4.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "filelock", version = "4.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "filelock", marker = "python_full_version >= '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a3/0b/908da9ef8a14b600fc188eee8d63ede071996114613721153f6fc9ea3cd5/python_discovery-1.6.7.tar.gz", hash = "sha256:7f7c28568c8ec3d988d8bddbdbec8e65f08e8767e52f734e18b8b498549b9b70", size = 117807, upload-time = "2026-10-28T06:24:21.878Z" }
 wheels = [
@@ -1289,13 +1268,11 @@ name = "virtualenv"
 version = "21.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "distlib" },
-    { name = "filelock", version = "4.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "filelock", version = "4.2.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "packaging" },
-    { name = "platformdirs" },
-    { name = "python-discovery" },
-    { name = "typing-extensions", version = "4.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "distlib", marker = "python_full_version >= '3.11'" },
+    { name = "filelock", marker = "python_full_version >= '3.11'" },
+    { name = "packaging", marker = "python_full_version >= '3.11'" },
+    { name = "platformdirs", marker = "python_full_version >= '3.11'" },
+    { name = "python-discovery", marker = "python_full_version >= '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b2/24/20282bc8e69ff8dee680dc2b95e9dc81fa7e7894b14c1a8d06330e97fef7/virtualenv-21.15.1.tar.gz", hash = "sha256:e79c90b8f601701599c25905e02839924fede2c798d52325670d24fbdaab74ee", size = 5517048, upload-time = "2026-10-28T01:12:50.919Z" }
 wheels = [

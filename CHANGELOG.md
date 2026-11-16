@@ -16,6 +16,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `--stream translated` with a `--dataset` GDELT doesn't translate named the datasets by their configuration keys (`gdelt_event ... gdelt_event_15min, gdelt_gkg_v2, gdelt_mentions`). It now names them as `--dataset` takes them: `--dataset events has no translated stream. GDELT translates events-15min, gkg-v2, mentions only.` Every command checks before it starts.
 - `docs/cli-reference.md` said `scrape --dry-run` makes no network request. It downloads no file, but it fetches the dataset's file listing, which it counts: for `events-15min`, `gkg-v2` and `mentions` that is the 15-minute master file list, a fetch of several seconds. Only `events-reduced` needs no request.
 
+### Security
+- The `dev` dependency group installs pre-commit on Python 3.11 and later only, so the development lock file no longer holds filelock 4.1.0, the last version for Python 3.10, which carries 17 advisories fixed in 4.2.1 (filelock comes only through pre-commit, a development tool, and 4.2.1 requires Python 3.11). On Python 3.10 the `dev` group installs pytest alone: the tests run as before, and the git hooks are set up from Python 3.11 or later. The package's own dependency ranges are unchanged; an installed wheel never pulled in filelock.
+
 ## [0.16.0] - 2026-11-09
 
 ### Added
