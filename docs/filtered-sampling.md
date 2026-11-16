@@ -67,7 +67,7 @@ All operator forms:
 
 All of the above apply to any numeric or categorical GDELT column.
 
-**Missing values.** A row whose column is null never matches a comparison on that column: `{"Actor1CountryCode": "USA"}` and `{"Actor1CountryCode": {"op": "gt", ...}}` both leave it out, as do `AND` and `OR` blocks built on them unless another branch of an `OR` matches. `is_null` selects those rows. `convert` reads an empty field as null; a string of spaces stays a string unless `clean`'s `blank_to_null` turns it into null (see [Data Cleaning](data-cleaning.md#normalize-whitespace)), so `is_blank` matches null, empty and whitespace-only strings. On a column that isn't a string, `is_blank` is `is_null`. Neither takes a value.
+**Missing values.** A row whose column is null never matches a comparison on that column: `{"Actor1CountryCode": "USA"}` and `{"Actor1CountryCode": {"op": "gt", ...}}` both leave it out, as do `AND` and `OR` blocks built on them unless another branch of an `OR` matches. `is_null` selects those rows. `convert` reads an empty field as null; a string of spaces stays a string unless `clean`'s `blank_to_null` turns it into null (see [Data Cleaning](data-cleaning.md#normalize-whitespace)), so `is_blank` matches null, empty and whitespace-only strings. On a column that isn't a string, `is_blank` is `is_null`. Neither takes a value: `{"op": "is_null", "value": ...}` is an error.
 
 **Dates.** GDELT's own date columns are numbers: `Day` and `DATEADDED` compare as `YYYYMMDD` (`{"Day": {"op": "between", "min": 20200101, "max": 20200131}}`). `EventDate`, the real date [`clean.derive`](data-cleaning.md#derive-added-columns) adds, takes a date in either form, the string `"2020-01-02"` (exactly `YYYY-MM-DD`) or the number `20200102`, in every operator above; anything else, the string `"20200102"` included, fails with a message naming both forms.
 
@@ -193,7 +193,7 @@ Equivalent to `Actor1="BRA" OR Actor2="BRA"`. `match` takes any single-column co
 The block holds exactly `columns` (one or more column names) and `match`. `ANY` and `ALL` sit beside other keys and inside `AND`, `OR` and `NOT` like any condition.
 
 !!! note "One key per block"
-    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. Nest an `AND` block for the second one: `{"NOT": {...}, "AND": {"NOT": {...}}}`.
+    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. JSON itself would keep only the last and drop the other condition, so `--filter` stops with an error naming the repeated key. Nest an `AND` block for the second one: `{"NOT": {...}, "AND": {"NOT": {...}}}`.
 
 ## Selecting specific columns
 

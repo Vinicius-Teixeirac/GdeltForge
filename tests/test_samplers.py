@@ -1901,6 +1901,12 @@ class TestMissingValueAndGroupOperators:
          "Invalid filter column: NotAColumn"),
         ({"ANY": {"columns": ACTORS, "match": {"Actor1CountryCode": "USA"}}},
          "not a block of columns"),
+        ({"Actor1CountryCode": {"op": "is_null", "value": 1}},
+         'Actor1CountryCode: "is_null" takes no other key'),
+        ({"ANY": {"columns": ACTORS, "match": {"op": "is_blank", "value": " "}}},
+         'Actor1CountryCode: "is_blank" takes no other key'),
+        ({"NOT": {"GoldsteinScale": {"op": "is_blank", "values": []}}},
+         'GoldsteinScale: "is_blank" takes no other key'),
     ])
     def test_malformed_blocks_are_rejected_at_construction(
         self, tmp_path, filter_dict, message
