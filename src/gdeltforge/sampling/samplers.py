@@ -1494,13 +1494,29 @@ class FilteredSampler:
                     for column in columns:
                         if column not in self._valid_columns:
                             raise ValueError(f"Invalid filter column: {column}")
+                        self._check_condition(column, match)
                         self._warn_unrecognized_codes(column, match)
                 else:
                     if key not in self._valid_columns:
                         raise ValueError(f"Invalid filter column: {key}")
+                    self._check_condition(key, val)
                     self._warn_unrecognized_codes(key, val)
 
         validate_block(self.filter_dict)
+
+    @staticmethod
+    def _check_condition(column: str, cond: Any) -> None:
+        """is_null and is_blank compare against nothing: a value given
+        with them would be ignored, so it is refused."""
+        if not isinstance(cond, dict):
+            return
+        op = cond.get("op")
+        if op in (FilterType.IS_NULL.value, FilterType.IS_BLANK.value) and set(cond) != {"op"}:
+            extra = sorted(set(cond) - {"op"})
+            raise ValueError(
+                f'{column}: "{op}" takes no other key, got {extra}. '
+                f'Write {{"op": "{op}"}}.'
+            )
 
     @staticmethod
     def _group_parts(key: str, val: Any) -> tuple[list[str], Any]:

@@ -3694,3 +3694,55 @@ class TestDeprecatedFilterNames:
             cli._migrate_deprecated_args(args)
         assert args.source == "cleaned"
         assert any("--source filtered is deprecated" in r.message for r in caplog.records)
+
+
+class TestFilterRepeatedKeys:
+    """A JSON object keeps only the last value of a key it names twice,
+    so a repeated NOT or column would drop a condition without a word.
+    --filter refuses it when parsed, before a sampler is built."""
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, filter_json):
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+        captured = {}
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, filter_dict=None, **kwargs):
+                captured["filter_dict"] = filter_dict
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+        args = TestRunSamplingCmdStratifyWithoutFilter._args(
+            filter=filter_json, out=str(tmp_path / "o.parquet"),
+        )
+        cli.run_sampling_cmd(TestRunSamplingCmdStratifyWithoutFilter._config(), args)
+        return captured
+
+    @pytest.mark.parametrize("filter_json, key", [
+        ('{"NOT": {"ActionGeo_CountryCode": "US"}, '
+         '"NOT": {"ActionGeo_CountryCode": {"op": "is_null"}}}', "NOT"),
+        ('{"Actor1CountryCode": "USA", "Actor1CountryCode": "BRA"}', "Actor1CountryCode"),
+        ('{"OR": {"QuadClass": 1, "AND": {"IsRootEvent": 1, "IsRootEvent": 0}}}',
+         "IsRootEvent"),
+        ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match"),
+    ])
+    def test_a_repeated_key_is_refused_before_sampling(
+        self, monkeypatch, tmp_path, filter_json, key
+    ):
+        with pytest.raises(ValueError, match=f"'{key}' appears twice in one block") as raised:
+            self._run(monkeypatch, tmp_path, filter_json)
+        assert "Nest the second in an AND block" in str(raised.value)
+
+    def test_the_same_key_in_sibling_blocks_is_fine(self, monkeypatch, tmp_path):
+        filter_json = (
+            '{"NOT": {"ActionGeo_CountryCode": "US"}, '
+            '"AND": {"NOT": {"ActionGeo_CountryCode": {"op": "is_null"}}}}'
+        )
+        captured = self._run(monkeypatch, tmp_path, filter_json)
+        assert captured["filter_dict"] == {
+            "NOT": {"ActionGeo_CountryCode": "US"},
+            "AND": {"NOT": {"ActionGeo_CountryCode": {"op": "is_null"}}},
+        }

@@ -8,6 +8,7 @@ import signal
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -205,6 +206,21 @@ _STREAM_HELP = (
     "gkg-v2, mentions and events-15min, read from and written to the dataset's "
     "paths.translated_* directories"
 )
+
+
+def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """One JSON object of --filter, refusing a key it names twice: JSON
+    keeps only the last, which would drop a condition without a word."""
+    block: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in block:
+            raise ValueError(
+                f"--filter: {key!r} appears twice in one block, and JSON keeps only "
+                f"the last. Nest the second in an AND block, e.g. "
+                f'{{"NOT": {{...}}, "AND": {{"NOT": {{...}}}}}}'
+            )
+        block[key] = value
+    return block
 
 
 def _stream_config(config: dict, args: argparse.Namespace) -> dict:
@@ -893,7 +909,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             filter_arg = args.filter
 
         try:
-            filter_dict = json.loads(filter_arg)
+            filter_dict = json.loads(filter_arg, object_pairs_hook=_filter_block)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON passed to --filter: {e}") from e
 
