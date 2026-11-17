@@ -1937,6 +1937,14 @@ class TestMissingValueAndGroupOperators:
          "Actor1CountryCode: a list holds plain values to match"),
         ({"ANY": {"columns": ACTORS, "match": ["USA", {"op": "is_blank"}]}},
          "Actor1CountryCode: a list holds plain values to match"),
+        ({"QuadClass": {"op": "equals", "value": [1, 2]}},
+         'QuadClass: "equals" compares with one value'),
+        ({"Actor1CountryCode": {"op": "equals", "value": ["USA", {"op": "is_null"}]}},
+         "Actor1CountryCode: a list holds plain values to match"),
+        ({"NumArticles": {"op": "gt", "value": [1, 2]}},
+         'NumArticles: "gt"\'s "value" takes one value'),
+        ({"NumArticles": {"op": "between", "min": {"op": "gt"}, "max": 5}},
+         'NumArticles: "between"\'s "min" takes one value'),
     ])
     def test_malformed_blocks_are_rejected_at_construction(
         self, tmp_path, filter_dict, message
@@ -1987,6 +1995,9 @@ class TestMissingValueAndGroupOperators:
         ({"Actor1CountryCode": ["CHN", {"op": "is_null"}]}, {2, 4}),
         ({"Actor1CountryCode": [["USA"], "BRA"]}, {1, 6}),
         ({"QuadClass": [3, {"op": "is_null"}]}, {3}),
+        ({"QuadClass": {"op": "equals", "value": [1, 2]}}, {1, 2, 5, 6}),
+        ({"Actor1CountryCode": {"op": "equals", "value": ["USA", {"op": "is_null"}]}},
+         {1, 2}),
         ({"ANY": {"columns": ACTORS, "match": ["CHN", {"op": "is_null"}]}}, {1, 2, 4}),
         ({"ANY": {"columns": ACTORS, "match": {
             "op": "in_list", "values": ["RUS", {"op": "is_null"}]}}}, {2, 4, 5}),

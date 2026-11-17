@@ -53,6 +53,8 @@ Equivalent to `0 ≤ GoldsteinScale ≤ 5`.
 
     An array holds plain values only. A condition inside one (`{"Actor1Code": [{"op": "is_null"}]}`) stops `--filter` before any file is read; to match the values or the condition, put them in an `OR` block: `{"OR": {"Actor1CountryCode": ["USA", "BRA"], "OR": {"Actor1CountryCode": {"op": "is_null"}}}}`. The same holds for `in_list`'s `values` and an `ANY`/`ALL` `match`; the error prints this fix with your own column, values and columns. For `ALL` it is one such `OR` block per column, since each column must match one of them.
 
+    `equals`, `gt`, `lt` and `between` compare with one value. For several, write the list on its own (`{"QuadClass": [1, 2]}`) or use `in_list`.
+
 ## Dictionary operator (explicit)
 
 All operator forms:

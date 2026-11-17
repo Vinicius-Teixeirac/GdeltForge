@@ -1515,11 +1515,11 @@ class FilteredSampler:
     ) -> None:
         """is_null and is_blank compare against nothing: a value given
         with them would be ignored, so it is refused. A list (or in_list's
-        "values") holds plain values to match: a condition or list inside
-        one passed validation and failed only after the footers were read,
-        in polars' is_in, so it is refused too. group is the (ANY/ALL,
-        columns) block the condition is the "match" of, so the suggested
-        fix keeps them."""
+        "values") holds plain values to match, and equals/gt/lt/between
+        compare with one value: a condition or list in their place passed
+        validation and failed only after the footers were read, in polars,
+        so it is refused too. group is the (ANY/ALL, columns) block the
+        condition is the "match" of, so the suggested fix keeps them."""
         values = cond.get("values") if isinstance(cond, dict) else cond
         if isinstance(values, list):
             nested = [v for v in values if isinstance(v, (dict, list))]
@@ -1544,6 +1544,22 @@ class FilteredSampler:
             raise ValueError(
                 f'{column}: "{op}" takes no other key, got {extra}. '
                 f'Write {{"op": "{op}"}}.'
+            )
+        for key in ("value", "min", "max"):
+            operand = cond.get(key)
+            if not isinstance(operand, (dict, list)):
+                continue
+            if op == FilterType.EQUALS.value and isinstance(operand, list):
+                # A condition inside the list gets the list's own hint first.
+                cls._check_condition(column, operand, group)
+                example = cls._either_example(column, group, operand, [])
+                raise ValueError(
+                    f'{column}: "equals" compares with one value, got {operand!r}. '
+                    f"To match any of several values, write the list itself, "
+                    f"e.g. {json.dumps(example)}"
+                )
+            raise ValueError(
+                f'{column}: "{op}"\'s "{key}" takes one value, got {operand!r}.'
             )
 
     @classmethod
