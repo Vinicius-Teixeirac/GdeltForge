@@ -789,12 +789,18 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         source_key = dataset_path_key(dataset, source_key)
         historical_key = dataset_path_key(dataset, historical_key)
         source_folder = ensure_exists(config["paths"][source_key], source_label)
+        hist_folder = _historical_folder(config, historical_key, dataset)
+
+    def check_converted_source() -> None:
+        """Warn when --source converted holds cleaned files. It opens a few
+        of them, so each mode calls it once its own arguments (--filter
+        above all) have been checked: a mistake there fails before any
+        file is read."""
         if args.source == "converted":
             warn_if_folder_holds_cleaned_files(
                 source_folder, "sample --source converted", logger, dataset=dataset,
                 stream=stream,
             )
-        hist_folder = _historical_folder(config, historical_key, dataset)
 
     quota_file = getattr(args, "quota_file", None)
     if quota_file and not (args.mode in ("calendar", "daily") or args.stratify):
@@ -819,6 +825,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Indexed Sampling
     # -----------------------------
     if args.mode == "indexed":
+        check_converted_source()
         sampler = IndexedSampler(
             folder_path=str(source_folder),
             historical_folder=hist_folder,
@@ -883,6 +890,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             file_index=file_index,
             **sampler_extra,
         )
+        check_converted_source()
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period, **quota_kwargs)
         _write_sample_output(df, out, args.export_format)
         # is not None, not truthiness: a real run that legitimately matched
@@ -952,11 +960,11 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             **sampler_extra,
         )
 
+        if args.stratify and args.n_per_group is None and quotas is None:
+            raise ValueError("--n-per-group (or --quota-file) is required when --stratify is set")
+        check_converted_source()
+
         if args.stratify:
-            if args.n_per_group is None and quotas is None:
-                raise ValueError(
-                    "--n-per-group (or --quota-file) is required when --stratify is set"
-                )
             # A group the quota file doesn't list draws nothing, unless
             # --n-per-group gives it a count.
             n_per_group = args.n_per_group if args.n_per_group is not None else 0
