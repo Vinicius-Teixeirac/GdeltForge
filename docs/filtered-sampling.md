@@ -51,7 +51,9 @@ Equivalent to `0 ≤ GoldsteinScale ≤ 5`.
 
     A JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), matching exactly 0 or 5, not the range 0-5. Ranges need the explicit `{"op": "between"}` form above.
 
-    An array holds plain values only. A condition inside one (`{"Actor1Code": [{"op": "is_null"}]}`) stops `--filter` before any file is read; to match the values or the condition, put them in an `OR` block: `{"OR": {"Actor1CountryCode": ["USA", "BRA"], "OR": {"Actor1CountryCode": {"op": "is_null"}}}}`. The same holds for `in_list`'s `values`.
+    An array holds plain values only. A condition inside one (`{"Actor1Code": [{"op": "is_null"}]}`) stops `--filter` before any file is read; to match the values or the condition, put them in an `OR` block: `{"OR": {"Actor1CountryCode": ["USA", "BRA"], "OR": {"Actor1CountryCode": {"op": "is_null"}}}}`. The same holds for `in_list`'s `values` and an `ANY`/`ALL` `match`; the error prints this fix with your own column, values and columns. For `ALL` it is one such `OR` block per column, since each column must match one of them.
+
+    `equals`, `gt`, `lt` and `between` compare with one value. For several, write the list on its own (`{"QuadClass": [1, 2]}`) or use `in_list`.
 
 ## Dictionary operator (explicit)
 
@@ -195,7 +197,9 @@ Equivalent to `Actor1="BRA" OR Actor2="BRA"`. `match` takes any single-column co
 The block holds exactly `columns` (one or more column names) and `match`. `ANY` and `ALL` sit beside other keys and inside `AND`, `OR` and `NOT` like any condition.
 
 !!! note "One key per block"
-    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. JSON itself would keep only the last and drop the other condition, so `--filter` stops with an error naming the repeated key and the fix for where it sits. For a column or `NOT`, `ANY` or `ALL`, nest an `AND` block for the second one: `{"NOT": {...}, "AND": {"NOT": {...}}}`. Inside an `ANY`/`ALL` block, `"match"` takes a list for several values (`"match": ["USA", "BRA"]`) and a second column group is a second `ANY`/`ALL` block one level up. Inside a column's `{"op": ...}` condition, a second condition on that column goes one level up, in an `AND` or `OR` block: `{"Day": {"op": "gt", "value": 20200101}, "AND": {"Day": {"op": "lt", "value": 20210101}}}`.
+    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. JSON itself would keep only the last and drop the other condition, so `--filter` stops with an error naming the repeated key and the fix for where it sits. For a column or `NOT`, `ANY` or `ALL`, nest the second one in an `AND` block when both must hold: `{"NOT": {...}, "AND": {"NOT": {...}}}`. Inside an `ANY`/`ALL` block, `"match"` takes a list for several values (`"match": ["USA", "BRA"]`) and a second column group is a second `ANY`/`ALL` block one level up. Inside a column's `{"op": ...}` condition, a second condition on that column goes one level up: `{"Day": {"op": "gt", "value": 20200101}, "AND": {"Day": {"op": "lt", "value": 20210101}}}` keeps the rows meeting both.
+
+    When either may hold, put both in one `OR` block: `{"OR": {"Day": {"op": "lt", "value": 20200101}, "OR": {"Day": {"op": "gt", "value": 20210101}}}}`. An `OR` key written beside the first condition is ANDed with it like any other key in the block, so `{"Day": {...}, "OR": {"Day": {...}}}` still keeps only the rows meeting both.
 
 ## Selecting specific columns
 

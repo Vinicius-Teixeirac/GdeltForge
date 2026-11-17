@@ -3786,11 +3786,11 @@ class TestFilterRepeatedKeys:
         ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match",
          '"match": ["USA", "BRA"]'),
         ('{"ALL": {"columns": ["Actor1Code"], "columns": ["Actor2Code"], "match": "X"}}',
-         "columns", "add a second ANY/ALL block one level up"),
+         "columns", "write a second ANY/ALL block one level up"),
         ('{"Day": {"op": "gt", "value": 20200101, "op": "lt"}}', "op",
-         "write it one level up in an AND or OR block"),
+         "write both one level up"),
         ('{"OR": {"Day": {"op": "gt", "value": 1, "value": 2}}}', "value",
-         "write it one level up in an AND or OR block"),
+         "write both one level up"),
     ])
     def test_a_repeated_key_inside_a_group_or_condition_gets_the_fix_for_that_place(
         self, monkeypatch, tmp_path, filter_json, key, hint
@@ -3801,6 +3801,23 @@ class TestFilterRepeatedKeys:
             self._run(monkeypatch, tmp_path, filter_json)
         assert hint in str(raised.value)
         assert "Nest the second in an AND block" not in str(raised.value)
+
+    @pytest.mark.parametrize("filter_json", [
+        '{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}',
+        '{"Day": {"op": "gt", "value": 20200101, "op": "lt"}}',
+        '{"QuadClass": 1, "QuadClass": 2}',
+    ], ids=["group", "condition", "column"])
+    def test_the_either_form_a_repeated_key_hint_shows_wraps_both_in_or(
+        self, monkeypatch, tmp_path, filter_json
+    ):
+        """An OR key beside a condition is ANDed with it, so the form
+        for "either may hold" is one OR block holding both."""
+        with pytest.raises(ValueError) as raised:
+            self._run(monkeypatch, tmp_path, filter_json)
+        message = str(raised.value)
+        assert "when either may" in message
+        either = message.split("when either may", 1)[1]
+        assert either[either.index("{"):].startswith('{"OR": {')
 
     def test_the_same_key_in_sibling_blocks_is_fine(self, monkeypatch, tmp_path):
         filter_json = (
