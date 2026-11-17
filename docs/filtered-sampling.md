@@ -51,7 +51,7 @@ Equivalent to `0 ≤ GoldsteinScale ≤ 5`.
 
     A JSON array such as `[0, 5]` is always treated as an IN-list (`isin`), matching exactly 0 or 5, not the range 0-5. Ranges need the explicit `{"op": "between"}` form above.
 
-    An array holds plain values only. A condition inside one (`{"Actor1Code": [{"op": "is_null"}]}`) stops `--filter` before any file is read; to match the values or the condition, put them in an `OR` block: `{"OR": {"Actor1CountryCode": ["USA", "BRA"], "OR": {"Actor1CountryCode": {"op": "is_null"}}}}`. The same holds for `in_list`'s `values` and an `ANY`/`ALL` `match`; the error prints this fix with your own column, values and columns. For `ALL` it is one such `OR` block per column, since each column must match one of them, all under one `AND` key, so the fix can replace the `ALL` key wherever it sits.
+    An array holds plain values only. A condition inside one (`{"Actor1Code": [{"op": "is_null"}]}`) stops `--filter` before any file is read; to match the values or the condition, put them in an `OR` block: `{"OR": {"Actor1CountryCode": ["USA", "BRA"], "OR": {"Actor1CountryCode": {"op": "is_null"}}}}`. The same holds for `in_list`'s `values` and an `ANY`/`ALL` `match`; the error prints this fix with your own column, values and columns. For `ALL` it is one such `OR` block per column, since each column must match one of them, all under one `AND` key. Every such fix has one key, so it can replace the refused key as it stands, inside `NOT` or an `OR` block too; in a block that already holds that key, nest it one level down.
 
     `equals`, `gt`, `lt` and `between` compare with one value. For several, write the list on its own (`{"QuadClass": [1, 2]}`) or use `in_list`.
 
