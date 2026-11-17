@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 import zlib
@@ -1980,6 +1981,29 @@ class TestMissingValueAndGroupOperators:
             "Actor1CountryCode": ["CHN"], "OR": {"Actor1CountryCode": {"op": "is_null"}},
         }}
         assert self._filtered_ids(tmp_path, cond) == {2, 4}
+
+    @pytest.mark.parametrize("filter_dict, ids", [
+        ({"Actor1CountryCode": [{"op": "is_null"}]}, {2}),
+        ({"Actor1CountryCode": ["CHN", {"op": "is_null"}]}, {2, 4}),
+        ({"Actor1CountryCode": [["USA"], "BRA"]}, {1, 6}),
+        ({"QuadClass": [3, {"op": "is_null"}]}, {3}),
+        ({"ANY": {"columns": ACTORS, "match": ["CHN", {"op": "is_null"}]}}, {1, 2, 4}),
+        ({"ANY": {"columns": ACTORS, "match": {
+            "op": "in_list", "values": ["RUS", {"op": "is_null"}]}}}, {2, 4, 5}),
+        ({"ALL": {"columns": ACTORS, "match": ["BRA", {"op": "is_blank"}]}}, {3, 6}),
+        ({"ALL": {"columns": ACTORS, "match": [{"op": "is_null"}]}}, set()),
+    ])
+    def test_the_fix_a_refused_list_prints_selects_what_the_list_meant(
+        self, tmp_path, filter_dict, ids
+    ):
+        """The example in the message is built from the filter's own
+        column, values and ANY/ALL columns, and runs as printed: for a
+        numeric column it keeps the numbers, for ANY/ALL every column."""
+        (tmp_path / "refused").mkdir()
+        with pytest.raises(ValueError) as raised:
+            self._sampler(tmp_path / "refused", filter_dict)
+        example = json.loads(str(raised.value).split("e.g. ", 1)[1])
+        assert self._filtered_ids(tmp_path, example) == ids
 
     def test_an_or_key_beside_a_condition_ands_and_an_or_block_around_both_ors(
         self, tmp_path

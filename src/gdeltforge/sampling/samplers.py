@@ -1499,7 +1499,7 @@ class FilteredSampler:
                     for column in columns:
                         if column not in self._valid_columns:
                             raise ValueError(f"Invalid filter column: {column}")
-                        self._check_condition(column, match)
+                        self._check_condition(column, match, group=(key, columns))
                         self._warn_unrecognized_codes(column, match)
                 else:
                     if key not in self._valid_columns:
@@ -1509,22 +1509,32 @@ class FilteredSampler:
 
         validate_block(self.filter_dict)
 
-    @staticmethod
-    def _check_condition(column: str, cond: Any) -> None:
+    @classmethod
+    def _check_condition(
+        cls, column: str, cond: Any, group: tuple[str, list[str]] | None = None
+    ) -> None:
         """is_null and is_blank compare against nothing: a value given
         with them would be ignored, so it is refused. A list (or in_list's
         "values") holds plain values to match: a condition or list inside
         one passed validation and failed only after the footers were read,
-        in polars' is_in, so it is refused too."""
+        in polars' is_in, so it is refused too. group is the (ANY/ALL,
+        columns) block the condition is the "match" of, so the suggested
+        fix keeps them."""
         values = cond.get("values") if isinstance(cond, dict) else cond
         if isinstance(values, list):
             nested = [v for v in values if isinstance(v, (dict, list))]
             if nested:
+                plain, conditions = cls._list_parts(values)
+                if not conditions:
+                    advice = "A list inside a list is not a value: write one flat list"
+                elif not plain and len(conditions) == 1:
+                    advice = "A condition goes on its own, not in a list"
+                else:
+                    advice = "For a condition beside the values, write each in an OR block"
+                example = cls._either_example(column, group, plain, conditions)
                 raise ValueError(
                     f"{column}: a list holds plain values to match, got {nested[0]!r} in "
-                    f"it. For a condition beside the values, write it in an OR block, "
-                    f'e.g. {{"OR": {{"{column}": ["USA", "BRA"], '
-                    f'"OR": {{"{column}": {{"op": "is_null"}}}}}}}}'
+                    f"it. {advice}, e.g. {json.dumps(example)}"
                 )
         if not isinstance(cond, dict):
             return
@@ -1535,6 +1545,53 @@ class FilteredSampler:
                 f'{column}: "{op}" takes no other key, got {extra}. '
                 f'Write {{"op": "{op}"}}.'
             )
+
+    @classmethod
+    def _list_parts(cls, values: list[Any]) -> tuple[list[Any], list[Any]]:
+        """A list's plain values and the conditions inside it, nested
+        lists flattened."""
+        plain: list[Any] = []
+        conditions: list[Any] = []
+        for v in values:
+            if isinstance(v, list):
+                inner_plain, inner_conditions = cls._list_parts(v)
+                plain += inner_plain
+                conditions += inner_conditions
+            elif isinstance(v, dict):
+                conditions.append(v)
+            else:
+                plain.append(v)
+        return plain, conditions
+
+    @staticmethod
+    def _either_example(
+        column: str, group: tuple[str, list[str]] | None,
+        plain: list[Any], conditions: list[Any],
+    ) -> dict[str, Any]:
+        """A filter matching the plain values or any of the conditions,
+        built from the user's own values, column and ANY/ALL columns. Each
+        alternative sits one OR block deeper, so no key repeats. ALL needs
+        each column to match one of them: one OR block per column, ANDed."""
+        branches = ([plain] if plain else []) + conditions
+
+        def any_of(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+            if len(blocks) == 1:
+                return blocks[0]
+            inner = blocks[-1]
+            for block in reversed(blocks[1:-1]):
+                inner = {**block, "OR": inner}
+            return {"OR": {**blocks[0], "OR": inner}}
+
+        if group is None:
+            return any_of([{column: b} for b in branches])
+        key, columns = group
+        if len(branches) == 1 or key == "ANY":
+            return any_of([{key: {"columns": columns, "match": b}} for b in branches])
+        per_column = [any_of([{c: b} for b in branches]) for c in columns]
+        example = per_column[-1]
+        for block in reversed(per_column[:-1]):
+            example = {**block, "AND": example}
+        return example
 
     @staticmethod
     def _group_parts(key: str, val: Any) -> tuple[list[str], Any]:
