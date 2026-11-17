@@ -193,7 +193,7 @@ Equivalent to `Actor1="BRA" OR Actor2="BRA"`. `match` takes any single-column co
 The block holds exactly `columns` (one or more column names) and `match`. `ANY` and `ALL` sit beside other keys and inside `AND`, `OR` and `NOT` like any condition.
 
 !!! note "One key per block"
-    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. JSON itself would keep only the last and drop the other condition, so `--filter` stops with an error naming the repeated key. Nest an `AND` block for the second one: `{"NOT": {...}, "AND": {"NOT": {...}}}`.
+    A JSON object holds each key once, so a block can't name the same column, or `NOT`, `ANY` or `ALL`, twice. JSON itself would keep only the last and drop the other condition, so `--filter` stops with an error naming the repeated key and the fix for where it sits. For a column or `NOT`, `ANY` or `ALL`, nest an `AND` block for the second one: `{"NOT": {...}, "AND": {"NOT": {...}}}`. Inside an `ANY`/`ALL` block, `"match"` takes a list for several values (`"match": ["USA", "BRA"]`) and a second column group is a second `ANY`/`ALL` block one level up. Inside a column's `{"op": ...}` condition, a second condition on that column goes one level up, in an `AND` or `OR` block: `{"Day": {"op": "gt", "value": 20200101}, "AND": {"Day": {"op": "lt", "value": 20210101}}}`.
 
 ## Selecting specific columns
 

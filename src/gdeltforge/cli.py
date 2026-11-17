@@ -208,15 +208,39 @@ _STREAM_HELP = (
 )
 
 
+# Keys that belong to an ANY/ALL block, and to one column's {"op": ...}
+# condition: repeated there, the fix is not an AND block around them.
+_GROUP_BLOCK_KEYS = frozenset({"columns", "match"})
+_CONDITION_KEYS = frozenset({"op", "value", "values", "min", "max"})
+
+
 def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """One JSON object of --filter, refusing a key it names twice: JSON
-    keeps only the last, which would drop a condition without a word."""
+    keeps only the last, which would drop a condition without a word. The
+    fix depends on where the key sits, so the message does too."""
     block: dict[str, Any] = {}
     for key, value in pairs:
         if key in block:
+            repeated = (
+                f"--filter: {key!r} appears twice in one block, and JSON keeps only the last."
+            )
+            if key in _GROUP_BLOCK_KEYS:
+                raise ValueError(
+                    f"{repeated} An ANY/ALL block takes one \"columns\" and one \"match\". "
+                    f'To match several values, give "match" a list ("match": ["USA", "BRA"]); '
+                    f"for another column group or condition, add a second ANY/ALL block one "
+                    f'level up, e.g. {{"ANY": {{...}}, "AND": {{"ANY": {{...}}}}}}'
+                )
+            if key in _CONDITION_KEYS:
+                raise ValueError(
+                    f'{repeated} A column\'s condition takes one "op". To match several '
+                    f'values, use a list ({{"Actor1CountryCode": ["USA", "BRA"]}}); for a '
+                    f"second condition on the column, write it one level up in an AND or "
+                    f'OR block, e.g. {{"Day": {{"op": "gt", "value": 20200101}}, '
+                    f'"AND": {{"Day": {{"op": "lt", "value": 20210101}}}}}}'
+                )
             raise ValueError(
-                f"--filter: {key!r} appears twice in one block, and JSON keeps only "
-                f"the last. Nest the second in an AND block, e.g. "
+                f"{repeated} Nest the second in an AND block, e.g. "
                 f'{{"NOT": {{...}}, "AND": {{"NOT": {{...}}}}}}'
             )
         block[key] = value

@@ -4,6 +4,10 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- A key repeated inside an `ANY`/`ALL` block (`"match"`, `"columns"`) or inside a column's `{"op": ...}` condition (`"op"`, `"value"`) stopped `--filter` with advice to nest the second in an `AND` block, which doesn't apply there. The error now gives the fix for where the key sits: a list for several values (`"match": ["USA", "BRA"]`), a second `ANY`/`ALL` block one level up, or a second condition on the column one level up in an `AND` or `OR` block.
 ## [0.17.0] - 2026-11-17
 
 ### Added

@@ -3727,7 +3727,6 @@ class TestFilterRepeatedKeys:
         ('{"Actor1CountryCode": "USA", "Actor1CountryCode": "BRA"}', "Actor1CountryCode"),
         ('{"OR": {"QuadClass": 1, "AND": {"IsRootEvent": 1, "IsRootEvent": 0}}}',
          "IsRootEvent"),
-        ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match"),
     ])
     def test_a_repeated_key_is_refused_before_sampling(
         self, monkeypatch, tmp_path, filter_json, key
@@ -3735,6 +3734,26 @@ class TestFilterRepeatedKeys:
         with pytest.raises(ValueError, match=f"'{key}' appears twice in one block") as raised:
             self._run(monkeypatch, tmp_path, filter_json)
         assert "Nest the second in an AND block" in str(raised.value)
+
+    @pytest.mark.parametrize("filter_json, key, hint", [
+        ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match",
+         '"match": ["USA", "BRA"]'),
+        ('{"ALL": {"columns": ["Actor1Code"], "columns": ["Actor2Code"], "match": "X"}}',
+         "columns", "add a second ANY/ALL block one level up"),
+        ('{"Day": {"op": "gt", "value": 20200101, "op": "lt"}}', "op",
+         "write it one level up in an AND or OR block"),
+        ('{"OR": {"Day": {"op": "gt", "value": 1, "value": 2}}}', "value",
+         "write it one level up in an AND or OR block"),
+    ])
+    def test_a_repeated_key_inside_a_group_or_condition_gets_the_fix_for_that_place(
+        self, monkeypatch, tmp_path, filter_json, key, hint
+    ):
+        """Inside ANY/ALL or a condition, an AND block around the key is no
+        fix: the message names the one that is."""
+        with pytest.raises(ValueError, match=f"'{key}' appears twice in one block") as raised:
+            self._run(monkeypatch, tmp_path, filter_json)
+        assert hint in str(raised.value)
+        assert "Nest the second in an AND block" not in str(raised.value)
 
     def test_the_same_key_in_sibling_blocks_is_fine(self, monkeypatch, tmp_path):
         filter_json = (
