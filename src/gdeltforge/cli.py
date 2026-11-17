@@ -212,6 +212,7 @@ _STREAM_HELP = (
 # condition: repeated there, the fix is not an AND block around them.
 _GROUP_BLOCK_KEYS = frozenset({"columns", "match"})
 _CONDITION_KEYS = frozenset({"op", "value", "values", "min", "max"})
+_BLOCK_HOLDING_KEYS = frozenset({"AND", "OR", "NOT", "ANY", "ALL"})
 
 
 def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -245,10 +246,14 @@ def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
                     f'may, an OR block around both: {{"OR": {{"Day": {{"op": "lt", '
                     f'"value": 20200101}}, "OR": {{"Day": {{"op": "gt", "value": 20210101}}}}}}}}'
                 )
+            # The example names the repeated key: a block key holds {...},
+            # a column its condition.
+            name = json.dumps(key)
+            held = "{...}" if key in _BLOCK_HOLDING_KEYS else "..."
             raise ValueError(
                 f"{repeated} Nest the second in an AND block when both must hold, e.g. "
-                f'{{"NOT": {{...}}, "AND": {{"NOT": {{...}}}}}}; when either may, put both '
-                f'in an OR block: {{"OR": {{"NOT": {{...}}, "OR": {{"NOT": {{...}}}}}}}}'
+                f'{{{name}: {held}, "AND": {{{name}: {held}}}}}; when either may, put '
+                f'both in an OR block: {{"OR": {{{name}: {held}, "OR": {{{name}: {held}}}}}}}'
             )
         block[key] = value
     return block
