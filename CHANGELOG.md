@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.17.1] - 2026-11-17
 
 ### Fixed
 - A filtered draw whose `--filter` matches no row (random, `--replace` and `--stratify` alike), and a calendar draw whose quotas leave every period with nothing to draw, wrote a Parquet file with no columns at all. The sample now has the columns a draw with rows would have, typed as the files type them, and 0 rows, so code reading it finds the columns it expects. (0.16.0 too.)
