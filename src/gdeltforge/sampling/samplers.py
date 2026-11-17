@@ -1587,7 +1587,9 @@ class FilteredSampler:
         """A filter matching the plain values or any of the conditions,
         built from the user's own values, column and ANY/ALL columns. Each
         alternative sits one OR block deeper, so no key repeats. ALL needs
-        each column to match one of them: one OR block per column, ANDed."""
+        each column to match one of them: one OR block per column, ANDed,
+        under a single AND key. The example always has one key, so it can
+        replace the ANY/ALL key inside an OR block as it stands."""
         branches = ([plain] if plain else []) + conditions
 
         def any_of(blocks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1604,10 +1606,12 @@ class FilteredSampler:
         if len(branches) == 1 or key == "ANY":
             return any_of([{key: {"columns": columns, "match": b}} for b in branches])
         per_column = [any_of([{c: b} for b in branches]) for c in columns]
+        if len(per_column) == 1:
+            return per_column[0]
         example = per_column[-1]
         for block in reversed(per_column[:-1]):
             example = {**block, "AND": example}
-        return example
+        return {"AND": example}
 
     @staticmethod
     def _group_parts(key: str, val: Any) -> tuple[list[str], Any]:

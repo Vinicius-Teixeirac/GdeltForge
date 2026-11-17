@@ -3781,6 +3781,9 @@ class TestFilterRepeatedKeys:
         with pytest.raises(ValueError, match=f"'{key}' appears twice in one block") as raised:
             self._run(monkeypatch, tmp_path, filter_json)
         assert "Nest the second in an AND block" in str(raised.value)
+        # The example names the repeated key, a column or a block.
+        held = "{...}" if key == "NOT" else "..."
+        assert f'{{"{key}": {held}, "AND": {{"{key}": {held}}}}}' in str(raised.value)
 
     @pytest.mark.parametrize("filter_json, key, hint", [
         ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match",

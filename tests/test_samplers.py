@@ -2003,18 +2003,27 @@ class TestMissingValueAndGroupOperators:
             "op": "in_list", "values": ["RUS", {"op": "is_null"}]}}}, {2, 4, 5}),
         ({"ALL": {"columns": ACTORS, "match": ["BRA", {"op": "is_blank"}]}}, {3, 6}),
         ({"ALL": {"columns": ACTORS, "match": [{"op": "is_null"}]}}, set()),
+        ({"ALL": {"columns": [*ACTORS, "ActionGeo_CountryCode"], "match": [
+            "BRA", "BR", {"op": "is_null"}, {"op": "is_blank"}]}}, {3, 6}),
     ])
     def test_the_fix_a_refused_list_prints_selects_what_the_list_meant(
         self, tmp_path, filter_dict, ids
     ):
         """The example in the message is built from the filter's own
         column, values and ANY/ALL columns, and runs as printed: for a
-        numeric column it keeps the numbers, for ANY/ALL every column."""
-        (tmp_path / "refused").mkdir()
+        numeric column it keeps the numbers, for ANY/ALL every column. It
+        has one key, so it can replace the refused key inside an OR block
+        as it stands."""
+        for name in ("refused", "printed", "in_or"):
+            (tmp_path / name).mkdir()
         with pytest.raises(ValueError) as raised:
             self._sampler(tmp_path / "refused", filter_dict)
         example = json.loads(str(raised.value).split("e.g. ", 1)[1])
-        assert self._filtered_ids(tmp_path, example) == ids
+        assert len(example) == 1
+        assert self._filtered_ids(tmp_path / "printed", example) == ids
+        # NumArticles > 40 is event 4 alone.
+        in_or = {"OR": {"NumArticles": {"op": "gt", "value": 40}, **example}}
+        assert self._filtered_ids(tmp_path / "in_or", in_or) == ids | {4}
 
     def test_an_or_key_beside_a_condition_ands_and_an_or_block_around_both_ors(
         self, tmp_path
