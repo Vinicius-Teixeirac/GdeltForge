@@ -1981,6 +1981,19 @@ class TestMissingValueAndGroupOperators:
         }}
         assert self._filtered_ids(tmp_path, cond) == {2, 4}
 
+    def test_an_or_key_beside_a_condition_ands_and_an_or_block_around_both_ors(
+        self, tmp_path
+    ):
+        """The two forms the repeated-key hint tells apart."""
+        beside = {"QuadClass": {"op": "lt", "value": 2},
+                  "OR": {"QuadClass": {"op": "gt", "value": 3}}}
+        around = {"OR": {"QuadClass": {"op": "lt", "value": 2},
+                         "OR": {"QuadClass": {"op": "gt", "value": 3}}}}
+        (tmp_path / "beside").mkdir()
+        (tmp_path / "around").mkdir()
+        assert self._filtered_ids(tmp_path / "beside", beside) == set()
+        assert self._filtered_ids(tmp_path / "around", around) == {1, 4, 5}
+
     def test_any_checks_each_columns_value_type(self, tmp_path):
         sampler = self._sampler(
             tmp_path, {"ANY": {"columns": ["Actor1CountryCode", "NumArticles"], "match": "USA"}},

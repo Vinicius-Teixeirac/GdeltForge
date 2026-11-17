@@ -224,24 +224,31 @@ def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             repeated = (
                 f"--filter: {key!r} appears twice in one block, and JSON keeps only the last."
             )
+            # An OR key beside a condition is ANDed with it like any other
+            # key, so "either may hold" needs the OR block around both.
             if key in _GROUP_BLOCK_KEYS:
                 raise ValueError(
                     f"{repeated} An ANY/ALL block takes one \"columns\" and one \"match\". "
-                    f'To match several values, give "match" a list ("match": ["USA", "BRA"]); '
-                    f"for another column group or condition, add a second ANY/ALL block one "
-                    f'level up, e.g. {{"ANY": {{...}}, "AND": {{"ANY": {{...}}}}}}'
+                    f'To match several values, give "match" a list ("match": ["USA", "BRA"]). '
+                    f"For another column group or condition, write a second ANY/ALL block "
+                    f'one level up. When both must hold: {{"ANY": {{...}}, "AND": '
+                    f'{{"ANY": {{...}}}}}}; when either may, an OR block around both: '
+                    f'{{"OR": {{"ANY": {{...}}, "OR": {{"ANY": {{...}}}}}}}}'
                 )
             if key in _CONDITION_KEYS:
                 raise ValueError(
                     f'{repeated} A column\'s condition takes one "op". To match several '
-                    f'values, use a list ({{"Actor1CountryCode": ["USA", "BRA"]}}); for a '
-                    f"second condition on the column, write it one level up in an AND or "
-                    f'OR block, e.g. {{"Day": {{"op": "gt", "value": 20200101}}, '
-                    f'"AND": {{"Day": {{"op": "lt", "value": 20210101}}}}}}'
+                    f'values, use a list ({{"Actor1CountryCode": ["USA", "BRA"]}}). For a '
+                    f"second condition on the column, write both one level up. When both "
+                    f'must hold: {{"Day": {{"op": "gt", "value": 20200101}}, '
+                    f'"AND": {{"Day": {{"op": "lt", "value": 20210101}}}}}}; when either '
+                    f'may, an OR block around both: {{"OR": {{"Day": {{"op": "lt", '
+                    f'"value": 20200101}}, "OR": {{"Day": {{"op": "gt", "value": 20210101}}}}}}}}'
                 )
             raise ValueError(
-                f"{repeated} Nest the second in an AND block, e.g. "
-                f'{{"NOT": {{...}}, "AND": {{"NOT": {{...}}}}}}'
+                f"{repeated} Nest the second in an AND block when both must hold, e.g. "
+                f'{{"NOT": {{...}}, "AND": {{"NOT": {{...}}}}}}; when either may, put both '
+                f'in an OR block: {{"OR": {{"NOT": {{...}}, "OR": {{"NOT": {{...}}}}}}}}'
             )
         block[key] = value
     return block
