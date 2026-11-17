@@ -1507,7 +1507,20 @@ class FilteredSampler:
     @staticmethod
     def _check_condition(column: str, cond: Any) -> None:
         """is_null and is_blank compare against nothing: a value given
-        with them would be ignored, so it is refused."""
+        with them would be ignored, so it is refused. A list (or in_list's
+        "values") holds plain values to match: a condition or list inside
+        one passed validation and failed only after the footers were read,
+        in polars' is_in, so it is refused too."""
+        values = cond.get("values") if isinstance(cond, dict) else cond
+        if isinstance(values, list):
+            nested = [v for v in values if isinstance(v, (dict, list))]
+            if nested:
+                raise ValueError(
+                    f"{column}: a list holds plain values to match, got {nested[0]!r} in "
+                    f"it. For a condition beside the values, write it in an OR block, "
+                    f'e.g. {{"OR": {{"{column}": ["USA", "BRA"], '
+                    f'"OR": {{"{column}": {{"op": "is_null"}}}}}}}}'
+                )
         if not isinstance(cond, dict):
             return
         op = cond.get("op")

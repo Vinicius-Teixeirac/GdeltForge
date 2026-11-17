@@ -1907,12 +1907,29 @@ class TestMissingValueAndGroupOperators:
          'Actor1CountryCode: "is_blank" takes no other key'),
         ({"NOT": {"GoldsteinScale": {"op": "is_blank", "values": []}}},
          'GoldsteinScale: "is_blank" takes no other key'),
+        ({"Actor1CountryCode": [{"op": "is_null"}]},
+         "Actor1CountryCode: a list holds plain values to match"),
+        ({"Actor1CountryCode": ["USA", ["BRA"]]},
+         "Actor1CountryCode: a list holds plain values to match"),
+        ({"Actor1CountryCode": {"op": "in_list", "values": ["USA", {"op": "is_null"}]}},
+         "Actor1CountryCode: a list holds plain values to match"),
+        ({"ANY": {"columns": ACTORS, "match": ["USA", {"op": "is_blank"}]}},
+         "Actor1CountryCode: a list holds plain values to match"),
     ])
     def test_malformed_blocks_are_rejected_at_construction(
         self, tmp_path, filter_dict, message
     ):
         with pytest.raises(ValueError, match=message):
             self._sampler(tmp_path, filter_dict)
+
+    def test_the_or_block_a_nested_list_is_pointed_to_selects_the_values_and_the_nulls(
+        self, tmp_path
+    ):
+        """The form the nested-list error suggests works as it says."""
+        cond = {"OR": {
+            "Actor1CountryCode": ["CHN"], "OR": {"Actor1CountryCode": {"op": "is_null"}},
+        }}
+        assert self._filtered_ids(tmp_path, cond) == {2, 4}
 
     def test_any_checks_each_columns_value_type(self, tmp_path):
         sampler = self._sampler(
