@@ -3783,17 +3783,19 @@ class TestFilterRepeatedKeys:
         assert "Nest the second in an AND block" in str(raised.value)
         # The example names the repeated key, a column or a block.
         held = "{...}" if key == "NOT" else "..."
-        assert f'{{"{key}": {held}, "AND": {{"{key}": {held}}}}}' in str(raised.value)
+        assert (
+            f'{{"AND": {{"{key}": {held}, "AND": {{"{key}": {held}}}}}}}' in str(raised.value)
+        )
 
     @pytest.mark.parametrize("filter_json, key, hint", [
         ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match",
          '"match": ["USA", "BRA"]'),
         ('{"ALL": {"columns": ["Actor1Code"], "columns": ["Actor2Code"], "match": "X"}}',
-         "columns", "write a second ANY/ALL block one level up"),
+         "columns", "write two ANY/ALL blocks in one block that replaces this one"),
         ('{"Day": {"op": "gt", "value": 20200101, "op": "lt"}}', "op",
-         "write both one level up"),
+         "write both conditions in one block that replaces the column's"),
         ('{"OR": {"Day": {"op": "gt", "value": 1, "value": 2}}}', "value",
-         "write both one level up"),
+         "write both conditions in one block that replaces the column's"),
     ])
     def test_a_repeated_key_inside_a_group_or_condition_gets_the_fix_for_that_place(
         self, monkeypatch, tmp_path, filter_json, key, hint
@@ -3821,6 +3823,49 @@ class TestFilterRepeatedKeys:
         assert "when either may" in message
         either = message.split("when either may", 1)[1]
         assert either[either.index("{"):].startswith('{"OR": {')
+
+    @pytest.mark.parametrize("filter_json", [
+        '{"QuadClass": 1, "QuadClass": 2}',
+        '{"NOT": {"QuadClass": 1}, "NOT": {"QuadClass": 2}}',
+        '{"ANY": {"columns": ["Actor1Code"], "match": "X"}, "ANY": {}}',
+        '{"ALL": {"columns": ["Actor1Code"], "match": "X"}, "ALL": {}}',
+        '{"AND": {"QuadClass": 1}, "AND": {"IsRootEvent": 1}}',
+        '{"OR": {"QuadClass": 1}, "OR": {"IsRootEvent": 1}}',
+        '{"OR": {"AND": {"QuadClass": 1}, "AND": {"IsRootEvent": 1}}}',
+        '{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}',
+        '{"Day": {"op": "gt", "value": 20200101, "op": "lt"}}',
+    ], ids=["column", "NOT", "ANY", "ALL", "AND", "OR", "AND-in-OR", "match", "op"])
+    def test_both_forms_a_repeated_key_hint_prints_parse_once_filled_in(
+        self, monkeypatch, tmp_path, filter_json
+    ):
+        """Each form is one AND or OR block that replaces the pair: filled
+        in, it names no key twice, so following the hint is not refused
+        again, and with one key it means the same inside an OR block."""
+        with pytest.raises(ValueError) as raised:
+            self._run(monkeypatch, tmp_path, filter_json)
+        message = str(raised.value)
+        forms = [
+            message[start:self._json_end(message, start)]
+            for start in (message.index("both must hold"), message.index("either may"))
+        ]
+        for form, join in zip(forms, ("AND", "OR"), strict=True):
+            form = form[form.index("{"):]
+            filled = (
+                form.replace("{...}", '{"IsRootEvent": 1}')
+                .replace(": ...", ": 1").replace("{..., ", '{"QuadClass": 1, ')
+            )
+            parsed = json.loads(filled, object_pairs_hook=cli._filter_block)
+            assert list(parsed) == [join]
+
+    @staticmethod
+    def _json_end(message: str, start: int) -> int:
+        """End of the first balanced {...} after start."""
+        depth = 0
+        for i in range(message.index("{", start), len(message)):
+            depth += {"{": 1, "}": -1}.get(message[i], 0)
+            if depth == 0:
+                return i + 1
+        raise AssertionError(message)
 
     def test_the_same_key_in_sibling_blocks_is_fine(self, monkeypatch, tmp_path):
         filter_json = (

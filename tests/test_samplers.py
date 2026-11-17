@@ -2038,6 +2038,18 @@ class TestMissingValueAndGroupOperators:
         assert self._filtered_ids(tmp_path / "beside", beside) == set()
         assert self._filtered_ids(tmp_path / "around", around) == {1, 4, 5}
 
+    def test_the_both_form_keeps_rows_meeting_both_inside_an_or_block(self, tmp_path):
+        """An AND key beside a condition inside an OR block is ORed with
+        it; the hint's single AND block replacing the pair is not."""
+        beside = {"OR": {"NumArticles": {"op": "gt", "value": 40},
+                         "QuadClass": [1, 2], "AND": {"QuadClass": [2, 3]}}}
+        single = {"OR": {"NumArticles": {"op": "gt", "value": 40},
+                         "AND": {"QuadClass": [1, 2], "AND": {"QuadClass": [2, 3]}}}}
+        (tmp_path / "beside").mkdir()
+        (tmp_path / "single").mkdir()
+        assert self._filtered_ids(tmp_path / "beside", beside) == {1, 2, 3, 4, 5, 6}
+        assert self._filtered_ids(tmp_path / "single", single) == {2, 4, 6}
+
     def test_any_checks_each_columns_value_type(self, tmp_path):
         sampler = self._sampler(
             tmp_path, {"ANY": {"columns": ["Actor1CountryCode", "NumArticles"], "match": "USA"}},

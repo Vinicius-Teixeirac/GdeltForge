@@ -215,6 +215,26 @@ _CONDITION_KEYS = frozenset({"op", "value", "values", "min", "max"})
 _BLOCK_HOLDING_KEYS = frozenset({"AND", "OR", "NOT", "ANY", "ALL"})
 
 
+def _pair_forms(
+    key: str, both: tuple[str, str], either: tuple[str, str]
+) -> tuple[str, str]:
+    """Two conditions on `key` written so both must hold, and so either
+    may: one AND block and one OR block, each with a single key, so it
+    replaces the pair wherever the pair sits. An AND key beside the first
+    condition would be ORed inside an OR block, and an OR key beside it
+    is ANDed, so neither form is written as a sibling. A repeated AND (or
+    OR) puts the two blocks' contents in one block of its kind, the
+    second nested, since an AND key inside that block would repeat."""
+    name = json.dumps(key)
+
+    def form(join: str, first: str, second: str) -> str:
+        if key == join:
+            return f'{{"{join}": {{..., "{join}": {{...}}}}}}'
+        return f'{{"{join}": {{{name}: {first}, "{join}": {{{name}: {second}}}}}}}'
+
+    return form("AND", *both), form("OR", *either)
+
+
 def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """One JSON object of --filter, refusing a key it names twice: JSON
     keeps only the last, which would drop a condition without a word. The
@@ -225,35 +245,39 @@ def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             repeated = (
                 f"--filter: {key!r} appears twice in one block, and JSON keeps only the last."
             )
-            # An OR key beside a condition is ANDed with it like any other
-            # key, so "either may hold" needs the OR block around both.
             if key in _GROUP_BLOCK_KEYS:
+                both, either = _pair_forms("ANY", ("{...}", "{...}"), ("{...}", "{...}"))
                 raise ValueError(
                     f"{repeated} An ANY/ALL block takes one \"columns\" and one \"match\". "
                     f'To match several values, give "match" a list ("match": ["USA", "BRA"]). '
-                    f"For another column group or condition, write a second ANY/ALL block "
-                    f'one level up. When both must hold: {{"ANY": {{...}}, "AND": '
-                    f'{{"ANY": {{...}}}}}}; when either may, an OR block around both: '
-                    f'{{"OR": {{"ANY": {{...}}, "OR": {{"ANY": {{...}}}}}}}}'
+                    f"For another column group or condition, write two ANY/ALL blocks in "
+                    f"one block that replaces this one: when both must hold, {both}; when "
+                    f"either may, {either}"
                 )
             if key in _CONDITION_KEYS:
+                both, either = _pair_forms(
+                    "Day",
+                    ('{"op": "gt", "value": 20200101}', '{"op": "lt", "value": 20210101}'),
+                    ('{"op": "lt", "value": 20200101}', '{"op": "gt", "value": 20210101}'),
+                )
                 raise ValueError(
                     f'{repeated} A column\'s condition takes one "op". To match several '
                     f'values, use a list ({{"Actor1CountryCode": ["USA", "BRA"]}}). For a '
-                    f"second condition on the column, write both one level up. When both "
-                    f'must hold: {{"Day": {{"op": "gt", "value": 20200101}}, '
-                    f'"AND": {{"Day": {{"op": "lt", "value": 20210101}}}}}}; when either '
-                    f'may, an OR block around both: {{"OR": {{"Day": {{"op": "lt", '
-                    f'"value": 20200101}}, "OR": {{"Day": {{"op": "gt", "value": 20210101}}}}}}}}'
+                    f"second condition on the column, write both conditions in one block "
+                    f"that replaces the column's: when both must hold, {both}; when either "
+                    f"may, {either}"
                 )
-            # The example names the repeated key: a block key holds {...},
-            # a column its condition.
-            name = json.dumps(key)
             held = "{...}" if key in _BLOCK_HOLDING_KEYS else "..."
+            both, either = _pair_forms(key, (held, held), (held, held))
             raise ValueError(
                 f"{repeated} Nest the second in an AND block when both must hold, e.g. "
-                f'{{{name}: {held}, "AND": {{{name}: {held}}}}}; when either may, put '
-                f'both in an OR block: {{"OR": {{{name}: {held}, "OR": {{{name}: {held}}}}}}}'
+                f"{both}; when either may, put both in an OR block: {either}. Either form "
+                f"replaces the two keys"
+                + (
+                    f"; for {key} twice, ... is the first block's contents and {{...}} "
+                    f"the second's"
+                    if key in ("AND", "OR") else ""
+                )
             )
         block[key] = value
     return block
