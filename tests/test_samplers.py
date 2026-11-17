@@ -440,6 +440,27 @@ class TestCalendarSampler:
 
         assert len(df) == 0
 
+    @pytest.mark.parametrize("provenance", [False, True])
+    def test_a_draw_of_no_row_keeps_the_schema_of_one_with_rows(self, tmp_path, provenance):
+        """Quotas naming only a period with no rows scan the files and draw
+        nothing: the sample keeps the columns, not none at all."""
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": [1, 2], "Day": [20200101, 20200102], "AvgTone": [1.5, None],
+        }).write_parquet(folder / "a.parquet")
+
+        def sample(**kwargs):
+            return CalendarSampler(
+                str(folder), random_state=1, provenance=provenance
+            ).get_calendar_samples(**kwargs)
+
+        matched = sample(samples_per_period=1)
+        empty = sample(samples_per_period=0, quotas={"20991231": 5})
+        assert matched.height == 2
+        assert empty.height == 0
+        assert empty.schema == matched.schema
+
     def test_negative_samples_per_period_raises_instead_of_a_nonsensical_success(
         self, tmp_path
     ):
@@ -1921,6 +1942,35 @@ class TestMissingValueAndGroupOperators:
     ):
         with pytest.raises(ValueError, match=message):
             self._sampler(tmp_path, filter_dict)
+
+    @pytest.mark.parametrize("provenance", [False, True])
+    @pytest.mark.parametrize("draw", [
+        lambda s: s.filter_dataset(),
+        lambda s: s.get_random_sample(2),
+        lambda s: s.get_random_sample(2, replace=True),
+        lambda s: s.get_stratified_sample("QuadClass", n_per_group=1),
+    ], ids=["filter_dataset", "random", "replace", "stratified"])
+    def test_a_draw_matching_no_row_keeps_the_schema_of_one_that_matches(
+        self, tmp_path, draw, provenance
+    ):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        _make_dataset_with_missing_values(folder)
+
+        def sample(filter_dict):
+            return draw(FilteredSampler(
+                str(folder), GDELT_COLUMNS, filter_dict=filter_dict, random_state=1,
+                provenance=provenance,
+            ))
+
+        matched = sample({"Actor1CountryCode": "BRA"})
+        empty = sample({"Actor1CountryCode": "XYZ"})
+        assert matched.height > 0
+        assert empty.height == 0
+        assert empty.schema == matched.schema
+        # Written and read back, the file keeps the columns too.
+        empty.write_parquet(tmp_path / "out.parquet")
+        assert pl.read_parquet_schema(tmp_path / "out.parquet") == dict(matched.schema)
 
     def test_the_or_block_a_nested_list_is_pointed_to_selects_the_values_and_the_nulls(
         self, tmp_path

@@ -916,6 +916,9 @@ _ROW_FILE = "__row_file__"
 _ROW_POSITION = "__row_position__"
 _ROW_ORDER = "__row_order__"
 
+# The provenance columns' types in a sample (_label_provenance).
+_PROVENANCE_SCHEMA: dict[str, pl.DataType] = {SOURCE_FILE: pl.String(), SOURCE_ROW: pl.Int64()}
+
 
 def _gather_rows(
     files: list[Path],
@@ -1374,8 +1377,11 @@ class CalendarSampler:
         # docs/limitations-and-roadmap.md#representativeness).
         self.period_row_counts_ = dict(total_seen)
 
+        columns = needed if needed is not None else list(target_schema)
         if not reservoirs:
-            return pl.DataFrame()
+            # The columns a sample with rows would have, not none at all.
+            provenance = _PROVENANCE_SCHEMA if self.provenance else {}
+            return pl.DataFrame(schema={c: target_schema[c] for c in columns} | provenance)
 
         # The reservoirs hold row identities, in period order and, within
         # a period, in reservoir slot order; the second pass reads those
@@ -1384,7 +1390,6 @@ class CalendarSampler:
         # data columns turned it into Float64 for the periods that drew a
         # null).
         chosen = pl.concat(list(reservoirs.values()))
-        columns = needed if needed is not None else list(target_schema)
         sample = _gather_rows(
             files, index, target_schema, chosen, columns, self.provenance,
             f"calendar sample dataset in {self.folder}",
@@ -1890,6 +1895,14 @@ class FilteredSampler:
         index = self._indexed[1] if self._indexed is not None else None
         return _label_provenance(df, self._roots, self.aggregate_sources, index)
 
+    def _empty(self, needed: list[str]) -> pl.DataFrame:
+        """A sample of no rows with the columns a draw that matched rows
+        would have, typed as the scanned files type them, in output order.
+        A plain pl.DataFrame() wrote a Parquet file with no columns at all."""
+        _, index = self._indexed_files()
+        schema = reconcile_file_schemas(index.schemas) | _PROVENANCE_SCHEMA
+        return pl.DataFrame(schema={c: schema[c] for c in self._output_order if c in needed})
+
     # A key pass's row number across the scanned files, in scan order,
     # numbered before the filter.
     _SCAN_ROW = "__scan_row__"
@@ -2026,7 +2039,8 @@ class FilteredSampler:
                 pbar.update(1)
 
         if not frames:
-            return pl.DataFrame()
+            # In `needed` order, as the rows of a filter that matches come.
+            return self._empty(needed).select(needed)
         return self._finish(pl.concat(frames))
 
     # ---------- reservoir sampling for random sample ----------
@@ -2126,7 +2140,7 @@ class FilteredSampler:
         )
 
         if reservoir is None or reservoir.is_empty():
-            return pl.DataFrame()
+            return self._empty(needed)
 
         return self._gather(reservoir, needed)
 
@@ -2177,7 +2191,7 @@ class FilteredSampler:
         count = sum(len(batch) for batch in self._batches(keys))
 
         if count == 0:
-            return pl.DataFrame()
+            return self._empty(needed)
 
         targets = np.sort(self.rng.choice(count, n, replace=True))
 
@@ -2208,7 +2222,7 @@ class FilteredSampler:
             )
 
         if not frames:
-            return pl.DataFrame()
+            return self._empty(needed)
 
         return self._gather(pl.concat(frames), needed)
 
@@ -2353,7 +2367,7 @@ class FilteredSampler:
         _warn_absent_quota_groups(quotas, total_seen, f"{stratify_col!r} group")
 
         if not reservoirs:
-            return pl.DataFrame()
+            return self._empty(needed)
 
         # The reservoirs hold row identities, in group order and, within a
         # group, in reservoir slot order; _gather reads those rows, in that
