@@ -2431,6 +2431,53 @@ class TestRunSamplingCmdStratifyWithoutFilter:
         assert captured["filter_dict"] == {"QuadClass": [1, 2]}
 
 
+class TestSampleChecksArgumentsBeforeOpeningConvertedFiles:
+    """--source converted opens a few files to warn about cleaned ones. A
+    mistake in the mode's own arguments fails before that."""
+
+    @staticmethod
+    def _run(tmp_path, monkeypatch, opened, **overrides):
+        folder = tmp_path / "converted"
+        folder.mkdir()
+        pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]}).write_parquet(
+            folder / "20200101.export.CSV.parquet"
+        )
+        monkeypatch.setattr(
+            cli, "warn_if_folder_holds_cleaned_files", lambda *a, **k: opened.append(a[0])
+        )
+        config = {
+            "paths": {"parquet_data_directory": str(folder), "index_directory": None},
+            "columns": {"gdelt_event": ["GlobalEventID", "QuadClass"]},
+        }
+        args = TestRunSamplingCmdStratifyWithoutFilter._args(
+            source="converted", out=str(tmp_path / "o.parquet"), file_index=None,
+            **overrides,
+        )
+        cli.run_sampling_cmd(config, args)
+
+    @pytest.mark.parametrize("overrides, message", [
+        ({"filter": "{not json"}, "Invalid JSON passed to --filter"),
+        ({"filter": '{"NotAColumn": 1}'}, "Invalid filter column: NotAColumn"),
+        ({"filter": '{"QuadClass": [{"op": "is_null"}]}'}, "a list holds plain values"),
+        ({"filter": '{"QuadClass": 1, "QuadClass": 2}'}, "appears twice"),
+        ({"filter": "{}", "stratify": "QuadClass"}, "--n-per-group"),
+    ])
+    def test_a_filtered_mode_mistake_fails_before_any_file_is_opened(
+        self, tmp_path, monkeypatch, overrides, message
+    ):
+        opened: list = []
+        with pytest.raises(ValueError, match=message):
+            self._run(tmp_path, monkeypatch, opened, **overrides)
+        assert opened == []
+
+    def test_a_valid_filtered_draw_still_checks_the_converted_source(
+        self, tmp_path, monkeypatch
+    ):
+        opened: list = []
+        self._run(tmp_path, monkeypatch, opened, filter='{"QuadClass": 1}', n=1)
+        assert [str(f) for f in opened] == [str(tmp_path / "converted")]
+
+
 class TestStratifyWithoutFilterThroughRealArgparse:
     """The three tests above call run_sampling_cmd directly with a
     hand-built argparse.Namespace, which never exercises build_parser's
@@ -3727,7 +3774,6 @@ class TestFilterRepeatedKeys:
         ('{"Actor1CountryCode": "USA", "Actor1CountryCode": "BRA"}', "Actor1CountryCode"),
         ('{"OR": {"QuadClass": 1, "AND": {"IsRootEvent": 1, "IsRootEvent": 0}}}',
          "IsRootEvent"),
-        ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match"),
     ])
     def test_a_repeated_key_is_refused_before_sampling(
         self, monkeypatch, tmp_path, filter_json, key
@@ -3735,6 +3781,26 @@ class TestFilterRepeatedKeys:
         with pytest.raises(ValueError, match=f"'{key}' appears twice in one block") as raised:
             self._run(monkeypatch, tmp_path, filter_json)
         assert "Nest the second in an AND block" in str(raised.value)
+
+    @pytest.mark.parametrize("filter_json, key, hint", [
+        ('{"ANY": {"columns": ["Actor1Code"], "match": "X", "match": "Y"}}', "match",
+         '"match": ["USA", "BRA"]'),
+        ('{"ALL": {"columns": ["Actor1Code"], "columns": ["Actor2Code"], "match": "X"}}',
+         "columns", "add a second ANY/ALL block one level up"),
+        ('{"Day": {"op": "gt", "value": 20200101, "op": "lt"}}', "op",
+         "write it one level up in an AND or OR block"),
+        ('{"OR": {"Day": {"op": "gt", "value": 1, "value": 2}}}', "value",
+         "write it one level up in an AND or OR block"),
+    ])
+    def test_a_repeated_key_inside_a_group_or_condition_gets_the_fix_for_that_place(
+        self, monkeypatch, tmp_path, filter_json, key, hint
+    ):
+        """Inside ANY/ALL or a condition, an AND block around the key is no
+        fix: the message names the one that is."""
+        with pytest.raises(ValueError, match=f"'{key}' appears twice in one block") as raised:
+            self._run(monkeypatch, tmp_path, filter_json)
+        assert hint in str(raised.value)
+        assert "Nest the second in an AND block" not in str(raised.value)
 
     def test_the_same_key_in_sibling_blocks_is_fine(self, monkeypatch, tmp_path):
         filter_json = (

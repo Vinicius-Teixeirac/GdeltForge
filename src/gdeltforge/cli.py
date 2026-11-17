@@ -208,15 +208,39 @@ _STREAM_HELP = (
 )
 
 
+# Keys that belong to an ANY/ALL block, and to one column's {"op": ...}
+# condition: repeated there, the fix is not an AND block around them.
+_GROUP_BLOCK_KEYS = frozenset({"columns", "match"})
+_CONDITION_KEYS = frozenset({"op", "value", "values", "min", "max"})
+
+
 def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """One JSON object of --filter, refusing a key it names twice: JSON
-    keeps only the last, which would drop a condition without a word."""
+    keeps only the last, which would drop a condition without a word. The
+    fix depends on where the key sits, so the message does too."""
     block: dict[str, Any] = {}
     for key, value in pairs:
         if key in block:
+            repeated = (
+                f"--filter: {key!r} appears twice in one block, and JSON keeps only the last."
+            )
+            if key in _GROUP_BLOCK_KEYS:
+                raise ValueError(
+                    f"{repeated} An ANY/ALL block takes one \"columns\" and one \"match\". "
+                    f'To match several values, give "match" a list ("match": ["USA", "BRA"]); '
+                    f"for another column group or condition, add a second ANY/ALL block one "
+                    f'level up, e.g. {{"ANY": {{...}}, "AND": {{"ANY": {{...}}}}}}'
+                )
+            if key in _CONDITION_KEYS:
+                raise ValueError(
+                    f'{repeated} A column\'s condition takes one "op". To match several '
+                    f'values, use a list ({{"Actor1CountryCode": ["USA", "BRA"]}}); for a '
+                    f"second condition on the column, write it one level up in an AND or "
+                    f'OR block, e.g. {{"Day": {{"op": "gt", "value": 20200101}}, '
+                    f'"AND": {{"Day": {{"op": "lt", "value": 20210101}}}}}}'
+                )
             raise ValueError(
-                f"--filter: {key!r} appears twice in one block, and JSON keeps only "
-                f"the last. Nest the second in an AND block, e.g. "
+                f"{repeated} Nest the second in an AND block, e.g. "
                 f'{{"NOT": {{...}}, "AND": {{"NOT": {{...}}}}}}'
             )
         block[key] = value
@@ -765,12 +789,18 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
         source_key = dataset_path_key(dataset, source_key)
         historical_key = dataset_path_key(dataset, historical_key)
         source_folder = ensure_exists(config["paths"][source_key], source_label)
+        hist_folder = _historical_folder(config, historical_key, dataset)
+
+    def check_converted_source() -> None:
+        """Warn when --source converted holds cleaned files. It opens a few
+        of them, so each mode calls it once its own arguments (--filter
+        above all) have been checked: a mistake there fails before any
+        file is read."""
         if args.source == "converted":
             warn_if_folder_holds_cleaned_files(
                 source_folder, "sample --source converted", logger, dataset=dataset,
                 stream=stream,
             )
-        hist_folder = _historical_folder(config, historical_key, dataset)
 
     quota_file = getattr(args, "quota_file", None)
     if quota_file and not (args.mode in ("calendar", "daily") or args.stratify):
@@ -795,6 +825,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Indexed Sampling
     # -----------------------------
     if args.mode == "indexed":
+        check_converted_source()
         sampler = IndexedSampler(
             folder_path=str(source_folder),
             historical_folder=hist_folder,
@@ -859,6 +890,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             file_index=file_index,
             **sampler_extra,
         )
+        check_converted_source()
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period, **quota_kwargs)
         _write_sample_output(df, out, args.export_format)
         # is not None, not truthiness: a real run that legitimately matched
@@ -928,11 +960,11 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             **sampler_extra,
         )
 
+        if args.stratify and args.n_per_group is None and quotas is None:
+            raise ValueError("--n-per-group (or --quota-file) is required when --stratify is set")
+        check_converted_source()
+
         if args.stratify:
-            if args.n_per_group is None and quotas is None:
-                raise ValueError(
-                    "--n-per-group (or --quota-file) is required when --stratify is set"
-                )
             # A group the quota file doesn't list draws nothing, unless
             # --n-per-group gives it a count.
             n_per_group = args.n_per_group if args.n_per_group is not None else 0
