@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Added
+- `io.memory_map` (`auto`, `true`, `false`; default `auto`) and `io.read_retries` (default `3`), for data on network storage. polars memory-maps the Parquet files it reads, and a mapped read that fails on an NFS share (a server that stops answering for a moment) kills the process with `SIGBUS`, with no message and nothing to retry. Under `auto`, a command whose configured `paths` include a directory on a network filesystem (Linux `/proc/mounts`; Windows UNC paths and network drives) reads without mapping, the same speed and about 10% more peak memory, and a failed read is then an error that is tried again after 2, 4 and 8 seconds. A batch scan in `sample` or `crossref` resumes after the rows it already handed out, so a draw after a retry is identical to one without. polars reads the choice only when it loads, so the `gdeltforge` command makes it before loading polars (`POLARS_FORCE_ASYNC`). See `docs/configuration.md#memory-mapping-and-read-retries`.
+
 ## [0.17.1] - 2026-11-17
 
 ### Fixed

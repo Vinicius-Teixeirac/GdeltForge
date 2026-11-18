@@ -61,9 +61,11 @@ from gdeltforge.utils.io import (
     AGGREGATE_MARKER_KEY,
     aggregate_sources_record,
     config_fingerprint,
+    configure_read_retries,
     delete_done_marker,
     is_marked_done,
     mark_done,
+    read_retries,
     scan_dataset_reconciled,
     sink_parquet_atomic,
     warn_if_folder_holds_cleaned_files,
@@ -294,6 +296,9 @@ class GDELTAggregator:
         with polars_worker_env(worker_plan), ProcessPoolExecutor(
             max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
+            # io.read_retries, which a spawned worker doesn't inherit.
+            initializer=configure_read_retries,
+            initargs=(read_retries(),),
         ) as executor:
             futures = {
                 executor.submit(self.aggregate_one_period, group_files, output_path): key

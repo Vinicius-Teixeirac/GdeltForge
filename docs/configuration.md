@@ -290,6 +290,8 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 | Key | Default | Description |
 |-----|---------|--------------|
 | `max_concurrent_reads` | `null` | How many files one `clean`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
+| `memory_map` | `auto` | Whether polars memory-maps the Parquet files it reads: `auto` maps them unless a `paths` directory is on a network filesystem, `true` always, `false` never. See [Memory mapping and read retries](#memory-mapping-and-read-retries) |
+| `read_retries` | `3` | How many times a failed Parquet read is tried again, waiting 2, 4, 8 ... seconds in between, before the command stops. `0` reads once |
 
 `max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:
 
@@ -300,6 +302,16 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 These bounds hold on polars 1.x, which gdeltforge requires (`polars>=1.34,<2`). polars 2.0 fetches more file footers at once for the same thread count (up to 4 files in flight at a cap of 1, 10 at a cap of 4), so it isn't supported until the bound is re-established for it.
 
 A `POLARS_MAX_CONCURRENT_SCANS` or `POLARS_MAX_THREADS` you export yourself takes precedence over this setting; `sample` and `crossref` warn when either is above it. An exported `POLARS_MAX_CONCURRENT_SCANS` that isn't a whole number from 1 to 4,294,967,296 stops `clean`, `aggregate`, `sample` and `crossref` before they read anything: polars would stop on it at the first Parquet file.
+
+### Memory mapping and read retries
+
+polars memory-maps the local Parquet files it reads: their pages are read from disk as the scan touches them. On network storage that has a cost no setting can take back. When the server stops answering for a moment (an NFS hiccup, a timeout, a stale file handle), a read from a mapped page doesn't raise an error the program can handle: the operating system kills the process with `SIGBUS` ("Bus error"), so a long `sample` or `crossref` dies at once, without a message from gdeltforge, and nothing can retry it. Read without mapping, the same failure is an ordinary `OSError`, which gdeltforge tries again.
+
+- **`memory_map: auto`** (the default) maps unless one of the directories under `paths` is on a network filesystem. Linux reads `/proc/mounts` (NFS, SMB/CIFS, CephFS, GlusterFS, Lustre, GPFS, BeeGFS, sshfs and similar FUSE mounts count as network; WSL's view of the Windows disk does not); Windows counts UNC paths and mapped network drives. One network directory is enough to turn mapping off for every command: on a local disk the difference is small, so a shared configuration doesn't have to name which of its directories each command reads. Other platforms always map under `auto`.
+- **`true` / `false`** force it. Reading without mapping measured the same speed on a warm 610 MiB file and about 10% more peak memory (the pages read are held by the process, not by the reclaimable page cache).
+- **`read_retries: 3`**: a read that fails with an `OSError` is tried again after 2, 4 and 8 seconds, then the error stops the command. An error another try can't change (a missing file, a permission error, a corrupt file) stops it at once. A file's footer or schema, a file `clean` or `aggregate` writes, and the rows `sample` and `crossref` read in batches are each retried; a batch scan resumes after the rows it has already handed out, so a draw after a retry is identical to one without it. Each retry is logged as a warning naming what failed.
+
+polars reads this choice only when it starts, so the `gdeltforge` command (and `python -m gdeltforge`) makes it before loading polars, by starting it with `POLARS_FORCE_ASYNC=1` when the files are not to be mapped. A `POLARS_FORCE_ASYNC` you export yourself decides instead. `gdeltforge.cli.main` called from Python, after polars has loaded, can't change it for its own process: it then warns, and the worker processes `clean` and `aggregate` start still read without mapping. The run logs which way it reads, and why, when mapping is off.
 
 ### Network storage (NFS, SMB, shared HDD arrays)
 

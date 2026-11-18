@@ -1,4 +1,5 @@
 import os
+from collections.abc import Mapping
 from importlib.resources import files
 from pathlib import Path
 
@@ -214,6 +215,36 @@ def resolve_max_concurrent_reads(config: dict) -> int | None:
     return validate_max_workers(
         get_dict(config, "io").get("max_concurrent_reads"), "io.max_concurrent_reads"
     )
+
+
+_MEMORY_MAP_CHOICES = ("auto", True, False)
+
+
+def resolve_memory_map(config: dict) -> str | bool:
+    """
+    io.memory_map: "auto" (the default), true or false. YAML reads true/
+    false as booleans and auto as a string; "true"/"false" as strings are
+    taken too, since quoting them is an easy slip. Anything else is
+    refused, naming the key.
+    """
+    value = get_dict(config, "io").get("memory_map", "auto")
+    if isinstance(value, str) and value.lower() in ("auto", "true", "false"):
+        value = {"auto": "auto", "true": True, "false": False}[value.lower()]
+    if value not in _MEMORY_MAP_CHOICES or (not isinstance(value, bool) and value != "auto"):
+        raise ValueError(f"io.memory_map must be auto, true or false; got {value!r}")
+    return value
+
+
+def resolve_read_retries(config: dict) -> int:
+    """
+    io.read_retries: how many times a failed Parquet read is retried, a
+    whole number of 0 or more (default 3). A bool, a float or a string is
+    refused, as for the worker counts.
+    """
+    value = get_dict(config, "io").get("read_retries", 3)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"io.read_retries must be a whole number of 0 or more; got {value!r}")
+    return value
 
 
 def get_dict(section: dict, key: str) -> dict:
@@ -461,6 +492,32 @@ def _load_bundled_default(path: Path) -> dict:
         )
 
     return config
+
+
+def peek_config(config_path: str | None, environ: Mapping[str, str]) -> dict | None:
+    """
+    The config load_config would return, read without its side effects: no
+    log line, no settings file written, nothing raised. For the launcher,
+    which needs a few io keys before polars loads, while load_config's own
+    checks and warnings run once, later, in the command itself. Anything
+    unexpected (a missing or unreadable file, invalid YAML) returns None.
+    """
+    explicit = config_path is not None or CONFIG_ENV_VAR in environ
+    path = Path(config_path or environ.get(CONFIG_ENV_VAR) or DEFAULT_CONFIG_PATH)
+    try:
+        if path.is_file():
+            with open(path, encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            if not isinstance(config, dict):
+                return None
+            config = _normalize_top_level_sections(config)
+        elif explicit:
+            return None
+        else:
+            config = {}
+        return _deep_merge_defaults(config, _bundled_default_dict())
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError, TypeError, AttributeError):
+        return None
 
 
 def load_config(config_path: str | None = None) -> dict:

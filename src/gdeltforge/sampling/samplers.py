@@ -35,6 +35,7 @@ from gdeltforge.utils.io import (
     _map_files,
     aggregate_sources_record,
     aggregated_marker,
+    batches_with_retries,
     cleaned_keeps_positions,
     cleaned_marker,
     clearer_dataset_errors,
@@ -43,6 +44,7 @@ from gdeltforge.utils.io import (
     narrow_to_available_columns,
     parquet_footer_facts,
     reconcile_file_schemas,
+    retry_read,
     scan_dataset_reconciled,
     scan_file_against_schema,
 )
@@ -878,9 +880,14 @@ def _collect_reads(
         # would read that scan once, whole, and slice it afterwards: four
         # row groups of a cleaned monthly Events file (42 groups) peaked
         # at 1.4 GiB that way, 0.13 GiB without it.
-        chunks = pl.collect_all(
-            [reads[k][0].select(names).slice(reads[k][1], reads[k][2]) for k, names in batch],
-            optimizations=pl.QueryOptFlags(comm_subplan_elim=False),
+        queries = [
+            reads[k][0].select(names).slice(reads[k][1], reads[k][2]) for k, names in batch
+        ]
+        chunks = retry_read(
+            f"{len(batch)} row group(s) of the sampled files",
+            lambda queries=queries: pl.collect_all(
+                queries, optimizations=pl.QueryOptFlags(comm_subplan_elim=False),
+            ),
         )
         for chunk, (k, _) in zip(chunks, batch, strict=True):
             positions, count = reads[k][3], reads[k][2]
@@ -1123,7 +1130,9 @@ class CalendarSampler:
                 file_schemas=file_schemas,
                 include_file_paths=self._FILE_PATH,
             )
-            for batch in lf.collect_batches(chunk_size=64_000):
+            for batch in batches_with_retries(
+                lambda: lf, f"calendar sample dataset in {self.folder}", 64_000
+            ):
                 paths = batch[self._FILE_PATH]
                 to_index = {p: index[Path(p)] for p in paths.unique().to_list()}
                 file_index = paths.replace_strict(to_index, return_dtype=pl.Int64)
@@ -2011,7 +2020,10 @@ class FilteredSampler:
                 lf = lf.filter(expr)
             starts = self._scan_starts()
             paths = [str(f) for f in files]
-            for batch in lf.select(self._SCAN_ROW, *read).collect_batches(chunk_size=64_000):
+            scan = lf.select(self._SCAN_ROW, *read)
+            for batch in batches_with_retries(
+                lambda: scan, f"filtered sample dataset in {self.folder}", 64_000
+            ):
                 batch = self._identify(batch, starts)
                 if self.provenance:
                     batch = batch.with_columns(

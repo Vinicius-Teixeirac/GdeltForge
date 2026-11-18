@@ -832,3 +832,14 @@ io:
   # docs/configuration.md#io. convert is not capped by this: tune its
   # own max_workers and unzipped_data_directory instead (same page).
   max_concurrent_reads: null
+  # Whether polars memory-maps the Parquet files it reads. auto (the
+  # default) maps them unless one of the paths above is on a network
+  # filesystem: a mapped read that fails there (an NFS hiccup) kills the
+  # process with SIGBUS, which nothing can retry, while an unmapped one
+  # raises an error read_retries retries. true always maps, false never
+  # does (about 10% more peak memory, same speed); see
+  # docs/configuration.md#memory-mapping-and-read-retries.
+  memory_map: auto
+  # How many times a failed Parquet read is tried again, waiting 2, 4,
+  # 8 ... seconds in between. 0 = read once.
+  read_retries: 3

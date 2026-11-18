@@ -12,7 +12,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gdeltforge.utils.io import _imap_files, _map_files, clearer_dataset_errors
+from gdeltforge.utils.io import _imap_files, _map_files, clearer_dataset_errors, retry_read
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -335,8 +335,8 @@ class FileIndex:
 
 
 def _read_footer(file: Path) -> pq.FileMetaData:
-    """A file's footer."""
-    return pq.ParquetFile(file).metadata
+    """A file's footer, retried after a read error (io.read_retries)."""
+    return retry_read(str(file), lambda: pq.ParquetFile(file).metadata)
 
 
 class _FooterFacts:

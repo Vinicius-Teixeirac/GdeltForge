@@ -112,9 +112,12 @@ from gdeltforge.utils.config import (
 from gdeltforge.utils.io import (
     CLEAN_MARKER_KEY,
     config_fingerprint,
+    configure_read_retries,
     delete_done_marker,
     is_marked_done,
     mark_done,
+    read_retries,
+    retry_read,
     warn_if_cleaned_files,
     warn_if_delete_source_drops_recoverable_data,
     write_parquet_atomic,
@@ -583,6 +586,9 @@ class GDELTCleaner:
         with polars_worker_env(worker_plan), ProcessPoolExecutor(
             max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
+            # io.read_retries, which a spawned worker doesn't inherit.
+            initializer=configure_read_retries,
+            initargs=(read_retries(),),
         ) as executor:
             futures = {
                 executor.submit(
@@ -726,7 +732,7 @@ class GDELTCleaner:
         # a single column's data, matching pq.ParquetFile(...).metadata.
         # num_rows' own cheapness under the previous pyarrow-based
         # implementation.
-        rows_before = lf.select(pl.len()).collect().item()
+        rows_before = retry_read(str(file_path), lf.select(pl.len()).collect).item()
 
         if rows_before == 0:
             logger.warning(f"Empty parquet file skipped: {file_path.name}")
@@ -758,7 +764,9 @@ class GDELTCleaner:
         final_counts = lf.select(pl.len().alias("__rows_out"), *unrecognized_exprs)
         # One collect_all call, so polars can share the file scan across
         # the count queries; each reads only the columns it needs.
-        *step_results, counts_df = pl.collect_all([*count_frames, final_counts])
+        *step_results, counts_df = retry_read(
+            str(file_path), lambda: pl.collect_all([*count_frames, final_counts])
+        )
         step_counts: dict[str, int] = {}
         for result in step_results:
             step_counts.update({k: int(v) for k, v in result.row(0, named=True).items()})
@@ -791,13 +799,16 @@ class GDELTCleaner:
         tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.tmp")
 
         try:
-            lf.sink_parquet(
+            # A read error retried writes the whole file again, into the
+            # same temporary file (io.read_retries).
+            marker = json.dumps(
+                self._file_marker(file_path.name, skipped, rows_before, rows_after)
+            )
+            retry_read(str(file_path), lambda: lf.sink_parquet(
                 tmp_path,
                 compression=cast(ParquetCompression, self.compression),
-                metadata={CLEAN_MARKER_KEY: json.dumps(
-                    self._file_marker(file_path.name, skipped, rows_before, rows_after)
-                )},
-            )
+                metadata={CLEAN_MARKER_KEY: marker},
+            ))
             os.replace(tmp_path, output_path)
         except Exception:
             if tmp_path.exists():
@@ -883,6 +894,9 @@ class GDELTCleaner:
         with polars_worker_env(worker_plan), ProcessPoolExecutor(
             max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
+            # io.read_retries, which a spawned worker doesn't inherit.
+            initializer=configure_read_retries,
+            initargs=(read_retries(),),
         ) as executor:
             futures = {
                 executor.submit(

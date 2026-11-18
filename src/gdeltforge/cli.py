@@ -45,8 +45,10 @@ from gdeltforge.utils.config import (
     get_dict,
     load_config,
     resolve_max_concurrent_reads,
+    resolve_read_retries,
 )
 from gdeltforge.utils.io import (
+    configure_read_retries,
     ensure_exists,
     read_parquet_path,
     warn_if_folder_holds_cleaned_files,
@@ -54,6 +56,7 @@ from gdeltforge.utils.io import (
     write_parquet_atomic,
 )
 from gdeltforge.utils.logging import get_logger
+from gdeltforge.utils.storage import POLARS_FORCE_ASYNC, memory_map_decision
 
 # ======================================================================
 # Utilities
@@ -1867,6 +1870,33 @@ def build_parser() -> argparse.ArgumentParser:
 _PARQUET_READING_COMMANDS = frozenset({"clean", "filter", "aggregate", "sample", "crossref"})
 
 
+def _apply_memory_map(config: dict, command: str) -> None:
+    """
+    io.memory_map for a command that reads Parquet. The gdeltforge command
+    decided it before polars loaded (gdeltforge.launcher); here it is
+    checked (an invalid value stops the command), logged, and carried to
+    the workers a stage spawns. Called from Python after polars has loaded, this process
+    keeps mapping whatever the config says: then warn, and still set
+    POLARS_FORCE_ASYNC so the spawned workers read without mapping.
+    """
+    if command not in _PARQUET_READING_COMMANDS:
+        return
+    mapped, why = memory_map_decision(config)
+    if mapped:
+        logger.debug(f"Reading Parquet memory-mapped ({why})")
+        return
+    if os.environ.get(POLARS_FORCE_ASYNC) == "1":
+        logger.info(f"Reading Parquet without memory mapping ({why})")
+        return
+    os.environ[POLARS_FORCE_ASYNC] = "1"
+    logger.warning(
+        f"{why}, so Parquet should be read without memory mapping, but polars was "
+        f"loaded before gdeltforge could say so and maps the files this process reads "
+        f"(worker processes don't). Run the gdeltforge command (or python -m gdeltforge), "
+        f"or export {POLARS_FORCE_ASYNC}=1 before Python starts."
+    )
+
+
 def _warn_if_unsupported_polars(version: str) -> None:
     """
     gdeltforge requires polars below 2.0 (pyproject.toml), but an
@@ -1971,6 +2001,9 @@ def main() -> None:
         if args.command in _PARQUET_READING_COMMANDS:
             exported_scan_limit()
             _warn_if_unsupported_polars(pl.__version__)
+        if args.command in _PARQUET_READING_COMMANDS:
+            _apply_memory_map(config, args.command)
+            configure_read_retries(resolve_read_retries(config))
 
         logger.info(f"Running command: {args.command}")
 

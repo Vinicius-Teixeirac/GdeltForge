@@ -7,7 +7,7 @@ import textwrap
 import pytest
 
 import gdeltforge.cli as cli
-from gdeltforge.launcher import scan_thread_cap
+from gdeltforge.launcher import force_async_reads, scan_thread_cap
 
 
 def _config(tmp_path, text="io:\n  max_concurrent_reads: 3\n"):
@@ -132,3 +132,88 @@ class TestReportScanThreads:
         with caplog.at_level(logging.INFO):
             cli._report_scan_threads(None)
         assert caplog.records == []
+
+
+class TestForceAsyncReads:
+    """polars reads POLARS_FORCE_ASYNC only when it loads, so the launcher
+    decides io.memory_map before gdeltforge.cli imports polars."""
+
+    @pytest.mark.parametrize("command", ["clean", "filter", "aggregate", "sample", "crossref"])
+    def test_parquet_reading_commands_follow_the_setting(self, tmp_path, command):
+        off = _config(tmp_path, "io:\n  memory_map: false\n")
+        assert force_async_reads(["--config", off, command], {}) is True
+
+    @pytest.mark.parametrize("command", ["scrape", "convert", "codes"])
+    def test_other_commands_are_left_alone(self, tmp_path, command):
+        off = _config(tmp_path, "io:\n  memory_map: false\n")
+        assert force_async_reads(["--config", off, command], {}) is False
+
+    def test_mapping_kept_when_the_config_says_so(self, tmp_path):
+        on = _config(tmp_path, "io:\n  memory_map: true\n")
+        assert force_async_reads(["--config", on, "sample"], {}) is False
+
+    def test_an_exported_value_is_left_as_it_is(self, tmp_path):
+        off = _config(tmp_path, "io:\n  memory_map: false\n")
+        assert force_async_reads(["--config", off, "sample"], {"POLARS_FORCE_ASYNC": "0"}) is False
+
+    @pytest.mark.parametrize("text", ["io:\n  memory_map: sometimes\n", "io: [\n"])
+    def test_an_invalid_config_is_left_to_the_commands_own_validation(self, tmp_path, text):
+        assert force_async_reads(["--config", _config(tmp_path, text), "sample"], {}) is False
+
+    def test_a_missing_config_file_is_left_alone(self, tmp_path):
+        assert force_async_reads(["--config", str(tmp_path / "nope.yaml"), "clean"], {}) is False
+
+    def test_the_command_starts_polars_without_mapping(self, tmp_path):
+        # In a fresh interpreter, gdeltforge.cli replaced by a stub that
+        # reports what polars was started with.
+        off = _config(tmp_path, "io:\n  memory_map: false\n")
+        script = textwrap.dedent(f"""
+            import os, sys, types
+            stub = types.ModuleType("gdeltforge.cli")
+            def main():
+                print(os.environ.get("POLARS_FORCE_ASYNC"))
+            stub.main = main
+            sys.modules["gdeltforge.cli"] = stub
+            sys.argv = ["gdeltforge", "--config", {off!r}, "clean"]
+            from gdeltforge.launcher import main as launch
+            launch()
+        """)
+        env = {k: v for k, v in os.environ.items() if k != "POLARS_FORCE_ASYNC"}
+        out = subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+        )
+        assert out.stdout.strip() == "1"
+
+
+class TestApplyMemoryMap:
+    def _off(self):
+        return {"io": {"memory_map": False}, "paths": {}}
+
+    def test_polars_loaded_before_the_decision_is_warned_about(self, monkeypatch, caplog):
+        # setenv first: monkeypatch then removes the variable the call sets
+        # (a delenv of an absent variable restores nothing).
+        monkeypatch.setenv("POLARS_FORCE_ASYNC", "unset")
+        monkeypatch.delenv("POLARS_FORCE_ASYNC")
+        with caplog.at_level(logging.WARNING, logger=cli.logger.name):
+            cli._apply_memory_map(self._off(), "clean")
+        assert "maps the files this process reads" in caplog.text
+        # The workers this command spawns still read without mapping.
+        assert os.environ["POLARS_FORCE_ASYNC"] == "1"
+
+    def test_started_without_mapping_it_says_so(self, monkeypatch, caplog):
+        monkeypatch.setenv("POLARS_FORCE_ASYNC", "1")
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            cli._apply_memory_map({"io": {"memory_map": "auto"}, "paths": {}}, "sample")
+        assert "Reading Parquet without memory mapping (POLARS_FORCE_ASYNC=1 is exported)" in (
+            caplog.text
+        )
+
+    def test_an_invalid_setting_stops_the_command(self, monkeypatch):
+        monkeypatch.delenv("POLARS_FORCE_ASYNC", raising=False)
+        with pytest.raises(ValueError, match="io.memory_map must be auto, true or false"):
+            cli._apply_memory_map({"io": {"memory_map": "yes"}, "paths": {}}, "sample")
+
+    def test_commands_that_read_no_parquet_are_left_alone(self, monkeypatch):
+        monkeypatch.delenv("POLARS_FORCE_ASYNC", raising=False)
+        cli._apply_memory_map(self._off(), "scrape")
+        assert "POLARS_FORCE_ASYNC" not in os.environ
