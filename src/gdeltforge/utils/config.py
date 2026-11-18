@@ -1,3 +1,4 @@
+import math
 import os
 from collections.abc import Mapping
 from importlib.resources import files
@@ -245,6 +246,25 @@ def resolve_read_retries(config: dict) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"io.read_retries must be a whole number of 0 or more; got {value!r}")
     return value
+
+
+def resolve_max_read_mb_per_s(config: dict) -> float | None:
+    """
+    io.max_read_mb_per_s: the average Parquet read rate one command may
+    reach, in megabytes (10^6 bytes) per second, or None (the default) for
+    no cap. A positive number, whole or not; a bool or a string is refused.
+    """
+    value = get_dict(config, "io").get("max_read_mb_per_s")
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        or not 0 < value < math.inf
+    ):
+        raise ValueError(
+            f"io.max_read_mb_per_s must be a number greater than 0, or null; got {value!r}"
+        )
+    return float(value)
 
 
 def get_dict(section: dict, key: str) -> dict:

@@ -69,7 +69,7 @@ class TestMemoryMapDecision:
         config = _config(True)
         mapped, why = memory_map_decision(config, {POLARS_FORCE_ASYNC: exported}, MOUNTS)
         assert mapped is expected
-        assert why == f"{POLARS_FORCE_ASYNC}={exported} is exported"
+        assert why == f"{POLARS_FORCE_ASYNC}={exported} is set"
 
     @pytest.mark.parametrize("value", ["sometimes", 1, None, ["auto"]])
     def test_an_invalid_setting_is_refused(self, value):

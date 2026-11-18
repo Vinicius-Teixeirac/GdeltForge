@@ -204,7 +204,7 @@ class TestApplyMemoryMap:
         monkeypatch.setenv("POLARS_FORCE_ASYNC", "1")
         with caplog.at_level(logging.INFO, logger=cli.logger.name):
             cli._apply_memory_map({"io": {"memory_map": "auto"}, "paths": {}}, "sample")
-        assert "Reading Parquet without memory mapping (POLARS_FORCE_ASYNC=1 is exported)" in (
+        assert "Reading Parquet without memory mapping (POLARS_FORCE_ASYNC=1 is set)" in (
             caplog.text
         )
 

@@ -61,14 +61,16 @@ from gdeltforge.utils.io import (
     AGGREGATE_MARKER_KEY,
     aggregate_sources_record,
     config_fingerprint,
-    configure_read_retries,
+    configure_worker_reads,
     delete_done_marker,
     is_marked_done,
     mark_done,
+    pace_reads,
     read_retries,
     scan_dataset_reconciled,
     sink_parquet_atomic,
     warn_if_folder_holds_cleaned_files,
+    worker_read_rate,
 )
 from gdeltforge.utils.logging import get_logger
 
@@ -296,9 +298,10 @@ class GDELTAggregator:
         with polars_worker_env(worker_plan), ProcessPoolExecutor(
             max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
-            # io.read_retries, which a spawned worker doesn't inherit.
-            initializer=configure_read_retries,
-            initargs=(read_retries(),),
+            # io.read_retries and each worker's share of io.max_read_mb_per_s,
+            # which a spawned worker doesn't inherit.
+            initializer=configure_worker_reads,
+            initargs=(read_retries(), worker_read_rate(worker_plan.workers)),
         ) as executor:
             futures = {
                 executor.submit(self.aggregate_one_period, group_files, output_path): key
@@ -389,6 +392,8 @@ class GDELTAggregator:
             lf, output_path, compression=cast(ParquetCompression, self.compression),
             metadata={AGGREGATE_MARKER_KEY: json.dumps(record)},
         )
+        # Paced once the period's sources are read (io.max_read_mb_per_s).
+        pace_reads()
 
     def _delete_source(self, source_path: Path) -> None:
         """

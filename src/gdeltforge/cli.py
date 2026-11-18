@@ -45,9 +45,11 @@ from gdeltforge.utils.config import (
     get_dict,
     load_config,
     resolve_max_concurrent_reads,
+    resolve_max_read_mb_per_s,
     resolve_read_retries,
 )
 from gdeltforge.utils.io import (
+    configure_read_rate,
     configure_read_retries,
     ensure_exists,
     read_parquet_path,
@@ -56,7 +58,11 @@ from gdeltforge.utils.io import (
     write_parquet_atomic,
 )
 from gdeltforge.utils.logging import get_logger
-from gdeltforge.utils.storage import POLARS_FORCE_ASYNC, memory_map_decision
+from gdeltforge.utils.storage import (
+    POLARS_FORCE_ASYNC,
+    memory_map_decision,
+    process_read_bytes,
+)
 
 # ======================================================================
 # Utilities
@@ -1870,7 +1876,7 @@ def build_parser() -> argparse.ArgumentParser:
 _PARQUET_READING_COMMANDS = frozenset({"clean", "filter", "aggregate", "sample", "crossref"})
 
 
-def _apply_memory_map(config: dict, command: str) -> None:
+def _apply_memory_map(config: dict, command: str) -> bool:
     """
     io.memory_map for a command that reads Parquet. The gdeltforge command
     decided it before polars loaded (gdeltforge.launcher); here it is
@@ -1878,16 +1884,17 @@ def _apply_memory_map(config: dict, command: str) -> None:
     the workers a stage spawns. Called from Python after polars has loaded, this process
     keeps mapping whatever the config says: then warn, and still set
     POLARS_FORCE_ASYNC so the spawned workers read without mapping.
+    Returns whether this process maps the files it reads.
     """
     if command not in _PARQUET_READING_COMMANDS:
-        return
+        return False
     mapped, why = memory_map_decision(config)
     if mapped:
         logger.debug(f"Reading Parquet memory-mapped ({why})")
-        return
+        return True
     if os.environ.get(POLARS_FORCE_ASYNC) == "1":
         logger.info(f"Reading Parquet without memory mapping ({why})")
-        return
+        return False
     os.environ[POLARS_FORCE_ASYNC] = "1"
     logger.warning(
         f"{why}, so Parquet should be read without memory mapping, but polars was "
@@ -1895,6 +1902,35 @@ def _apply_memory_map(config: dict, command: str) -> None:
         f"(worker processes don't). Run the gdeltforge command (or python -m gdeltforge), "
         f"or export {POLARS_FORCE_ASYNC}=1 before Python starts."
     )
+    return True
+
+
+def _apply_read_rate(config: dict, this_process_maps: bool) -> None:
+    """
+    io.max_read_mb_per_s for this process. Reads are paced on the bytes the
+    operating system counts as read (gdeltforge.utils.storage.
+    process_read_bytes), so a cap is refused where there is no such count,
+    and when this process memory-maps its files (an exported
+    POLARS_FORCE_ASYNC other than 1, or polars loaded before gdeltforge
+    could say not to map): a mapped read isn't counted, and the cap would
+    hold nothing.
+    """
+    rate = resolve_max_read_mb_per_s(config)
+    if rate is not None and process_read_bytes() is None:
+        raise ValueError(
+            f"io.max_read_mb_per_s is set, but this system ({sys.platform}) gives no count of "
+            f"the bytes a process has read, which the cap paces on. Set it to null."
+        )
+    if rate is not None and this_process_maps:
+        raise ValueError(
+            "io.max_read_mb_per_s is set, but this process memory-maps the Parquet files it "
+            "reads, and a mapped read isn't counted, so the cap would hold nothing. Run the "
+            f"gdeltforge command (or python -m gdeltforge) without {POLARS_FORCE_ASYNC} "
+            f"exported, or export {POLARS_FORCE_ASYNC}=1 before Python starts."
+        )
+    configure_read_rate(rate)
+    if rate is not None:
+        logger.info(f"Reading at most {rate:g} MB/s on average (io.max_read_mb_per_s)")
 
 
 def _warn_if_unsupported_polars(version: str) -> None:
@@ -2002,8 +2038,9 @@ def main() -> None:
             exported_scan_limit()
             _warn_if_unsupported_polars(pl.__version__)
         if args.command in _PARQUET_READING_COMMANDS:
-            _apply_memory_map(config, args.command)
+            maps = _apply_memory_map(config, args.command)
             configure_read_retries(resolve_read_retries(config))
+            _apply_read_rate(config, maps)
 
         logger.info(f"Running command: {args.command}")
 

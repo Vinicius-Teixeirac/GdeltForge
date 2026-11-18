@@ -12,7 +12,13 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from gdeltforge.utils.io import _imap_files, _map_files, clearer_dataset_errors, retry_read
+from gdeltforge.utils.io import (
+    _imap_files,
+    _map_files,
+    clearer_dataset_errors,
+    pace_reads,
+    retry_read,
+)
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -150,6 +156,9 @@ class FileIndex:
                 for i, metadata in zip(missing, footers, strict=True):
                     row_groups, schema = facts(metadata)
                     entries[i] = _Entry(stats[i].st_size, stats[i].st_mtime_ns, row_groups, schema)
+                    # io.max_read_mb_per_s: a few footers are read ahead
+                    # on the worker threads, so pacing here holds them too.
+                    pace_reads()
         logger.info(
             f"FileIndex: {len(missing):,} footer(s) read, "
             f"{len(self.files) - len(missing):,} from the saved index."
