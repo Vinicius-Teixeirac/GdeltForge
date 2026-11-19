@@ -112,7 +112,10 @@ def configure_read_rate(mb_per_s: float | None) -> None:
     None) for the reads this process makes, and start its average anew."""
     global _read_rate, _pace_start, _pace_charged, _pace_counter
     _read_rate = mb_per_s * 1e6 if mb_per_s is not None else None
-    _pace_start = None
+    # The clock starts now, with the count: started at the first pause, a
+    # worker's first file (read before it) was free, and a short capped
+    # clean ran above the cap.
+    _pace_start = time.monotonic() if _read_rate is not None else None
     _pace_charged = 0
     _pace_counter = (process_read_bytes() or 0) if _read_rate is not None else 0
 
@@ -1176,7 +1179,7 @@ def polars_schema(arrow_schema: pa.Schema) -> dict[str, pl.DataType]:
 def read_parquet_schema(file: str | Path) -> dict[str, pl.DataType]:
     """
     One file's schema from its footer, retried after a read error
-    (io.read_retries). Read through
+    (io.read_retries) and paced (io.max_read_mb_per_s). Read through
     pyarrow: pl.read_parquet_schema memory-maps the whole file to read its
     footer even with POLARS_FORCE_ASYNC=1, and so does any polars scan that
     has to work out a file's schema itself (pl.read_parquet, scan_parquet
@@ -1185,6 +1188,7 @@ def read_parquet_schema(file: str | Path) -> dict[str, pl.DataType]:
     avoid, so every polars scan here is given the schema read here.
     """
     metadata = retry_read(str(file), lambda: pq.read_metadata(file))
+    pace_reads()
     return polars_schema(metadata.schema.to_arrow_schema())
 
 
