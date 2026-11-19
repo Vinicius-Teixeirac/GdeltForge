@@ -628,6 +628,15 @@ def _sample_file_index(
     return index_path_for(directory, roots) if directory else None
 
 
+def _data_directories(config: dict) -> list[Path]:
+    """Every paths.*data_directory: a checkpoint directory may sit in none
+    of them, whichever one a command reads."""
+    return [
+        Path(v) for k, v in get_dict(config, "paths").items()
+        if k.endswith("data_directory") and isinstance(v, str) and v
+    ]
+
+
 def _checkpoint_settings(
     config: dict, args: argparse.Namespace, roots: list[Path]
 ) -> CheckpointSettings:
@@ -893,7 +902,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     columns = set(args.columns) if args.columns else None
     sources = [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
     file_index = _sample_file_index(config, args, sources)
-    checkpoints = _checkpoint_settings(config, args, sources)
+    checkpoints = _checkpoint_settings(config, args, sources + _data_directories(config))
 
     # -----------------------------
     # Indexed Sampling
@@ -1125,10 +1134,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         source_key = f"aggregated_{period or 'day'}_data_directory"
         date_parser = parse_file_date
     # Checked against every data directory: crossref reads several.
-    checkpoints = _checkpoint_settings(config, args, [
-        Path(v) for k, v in get_dict(config, "paths").items()
-        if k.endswith("data_directory") and isinstance(v, str) and v
-    ])
+    checkpoints = _checkpoint_settings(config, args, _data_directories(config))
     if args.source == "converted":
         v2_streams = list(STREAMS) if stream == "both" else [stream]
         checks = [("gdelt_gkg_v1", "english"), ("gdelt_gkg_v1_counts", "english")] + [

@@ -291,3 +291,24 @@ def test_another_events_table_is_another_crossref_run(tmp_path, monkeypatch):
         other, folder, GKG_V1_COLUMNS, checkpoints=_settings(tmp_path)
     )
     assert set(result["Actor1Name"].to_list()) == {"Zed"}
+
+
+def test_a_checkpoint_directory_in_any_data_directory_is_refused(tmp_path):
+    import argparse
+
+    import gdeltforge.cli as cli
+
+    config = {
+        "io": {"checkpoint_every_s": 60},
+        "paths": {
+            "parquet_data_directory": str(tmp_path / "converted"),
+            "cleaned_data_directory": str(tmp_path / "cleaned"),
+            "checkpoint_directory": str(tmp_path / "cleaned" / "ck"),
+        },
+    }
+    # A sample reading the converted directory refuses one in the cleaned too.
+    with pytest.raises(ValueError, match="checkpoint directory"):
+        cli._checkpoint_settings(
+            config, argparse.Namespace(no_checkpoint=False),
+            [tmp_path / "converted"] + cli._data_directories(config),
+        )
