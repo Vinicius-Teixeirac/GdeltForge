@@ -546,7 +546,7 @@ io:
   # filesystem (NFS, SMB, ...): a mapped read that fails on network storage
   # kills the process with SIGBUS, which nothing can catch or retry, while
   # an unmapped one raises an error that read_retries below retries. true
-  # always maps, false never does (about 10% more peak memory, same speed).
+  # always maps, false never does (slower on warm data, same peak memory).
   memory_map: auto
   # How many times a failed Parquet read is retried, waiting 2, 4, 8 ...
   # seconds between tries, before the command stops. 0 = no retry.

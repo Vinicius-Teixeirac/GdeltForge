@@ -116,6 +116,7 @@ from gdeltforge.utils.io import (
     delete_done_marker,
     is_marked_done,
     mark_done,
+    read_parquet_schema,
     read_retries,
     retry_read,
     warn_if_cleaned_files,
@@ -726,7 +727,9 @@ class GDELTCleaner:
         file_path = Path(parquet_path)
         logger.debug(f"Cleaning file: {file_path.name}")
 
-        lf = pl.scan_parquet(file_path)
+        # With its schema, read through pyarrow: a polars scan that works out
+        # a file's schema itself memory-maps the file (read_parquet_schema).
+        lf = pl.scan_parquet(file_path, schema=read_parquet_schema(file_path))
         # Metadata-only: confirmed directly (the query plan shows
         # "PROJECT 0/N COLUMNS") that counting rows this way never reads
         # a single column's data, matching pq.ParquetFile(...).metadata.
@@ -994,7 +997,7 @@ class GDELTCleaner:
             if not legacy:
                 continue
             try:
-                old = set(pl.read_parquet_schema(legacy[0]))
+                old = set(read_parquet_schema(legacy[0]))
             except Exception as e:
                 logger.debug(f"Could not read the schema of {legacy[0]}: {e}")
                 continue
@@ -1109,7 +1112,7 @@ class GDELTCleaner:
             # dict subclass with a .names() convenience method the stubs
             # don't expose), so this reads it through the documented dict
             # API instead of relying on the unstubbed runtime extra.
-            schema_cols = list(pl.read_parquet_schema(sample_path).keys())
+            schema_cols = list(read_parquet_schema(sample_path))
             existing = [c for c in self.columns_to_check if c in schema_cols]
             missing  = [c for c in self.columns_to_check if c not in schema_cols]
 

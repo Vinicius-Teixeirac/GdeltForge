@@ -217,3 +217,44 @@ class TestApplyMemoryMap:
         monkeypatch.delenv("POLARS_FORCE_ASYNC", raising=False)
         cli._apply_memory_map(self._off(), "scrape")
         assert "POLARS_FORCE_ASYNC" not in os.environ
+
+
+class TestTheLoggedReason:
+    def test_set_by_the_launcher_the_config_gives_the_reason(self, monkeypatch, caplog):
+        import gdeltforge.utils.storage as storage
+
+        monkeypatch.setenv("POLARS_FORCE_ASYNC", "1")
+        monkeypatch.setattr(storage, "_set_by_launcher", True)
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            cli._apply_memory_map({"io": {"memory_map": False}, "paths": {}}, "clean")
+        assert "Reading Parquet without memory mapping (io.memory_map is false)" in caplog.text
+
+    def test_exported_by_the_user_it_says_so(self, monkeypatch, caplog):
+        import gdeltforge.utils.storage as storage
+
+        monkeypatch.setenv("POLARS_FORCE_ASYNC", "1")
+        monkeypatch.setattr(storage, "_set_by_launcher", False)
+        with caplog.at_level(logging.INFO, logger=cli.logger.name):
+            cli._apply_memory_map({"io": {"memory_map": False}, "paths": {}}, "clean")
+        assert "(POLARS_FORCE_ASYNC=1 is exported)" in caplog.text
+
+    def test_the_launcher_marks_what_it_set(self, tmp_path):
+        off = _config(tmp_path, "io:\n  memory_map: false\n")
+        script = textwrap.dedent(f"""
+            import sys, types
+            stub = types.ModuleType("gdeltforge.cli")
+            def main():
+                import gdeltforge.utils.storage as s
+                env = s.environ_without_launcher_setting()
+                print(s._set_by_launcher, "POLARS_FORCE_ASYNC" in env)
+            stub.main = main
+            sys.modules["gdeltforge.cli"] = stub
+            sys.argv = ["gdeltforge", "--config", {off!r}, "clean"]
+            from gdeltforge.launcher import main as launch
+            launch()
+        """)
+        env = {k: v for k, v in os.environ.items() if k != "POLARS_FORCE_ASYNC"}
+        out = subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, text=True, check=True
+        )
+        assert out.stdout.strip() == "True False"

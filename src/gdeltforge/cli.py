@@ -56,7 +56,11 @@ from gdeltforge.utils.io import (
     write_parquet_atomic,
 )
 from gdeltforge.utils.logging import get_logger
-from gdeltforge.utils.storage import POLARS_FORCE_ASYNC, memory_map_decision
+from gdeltforge.utils.storage import (
+    POLARS_FORCE_ASYNC,
+    environ_without_launcher_setting,
+    memory_map_decision,
+)
 
 # ======================================================================
 # Utilities
@@ -1881,7 +1885,9 @@ def _apply_memory_map(config: dict, command: str) -> None:
     """
     if command not in _PARQUET_READING_COMMANDS:
         return
-    mapped, why = memory_map_decision(config)
+    # The config's reason when the launcher set POLARS_FORCE_ASYNC itself;
+    # "it is set" only for one the user exported.
+    mapped, why = memory_map_decision(config, environ_without_launcher_setting())
     if mapped:
         logger.debug(f"Reading Parquet memory-mapped ({why})")
         return
