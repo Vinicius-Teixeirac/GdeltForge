@@ -111,11 +111,11 @@ from gdeltforge.utils.config import (
 )
 from gdeltforge.utils.io import (
     CLEAN_MARKER_KEY,
+    cleaned_marker,
     config_fingerprint,
     configure_worker_reads,
     delete_done_marker,
     is_marked_done,
-    mark_done,
     pace_reads,
     read_retries,
     retry_read,
@@ -518,7 +518,7 @@ class GDELTCleaner:
 
         to_process = []
         for parquet_path, is_historical in all_files:
-            if not self.force and is_marked_done(parquet_path, self._config_fingerprint):
+            if not self.force and self._is_cleaned(parquet_path, is_historical):
                 logger.debug(f"Skipping already cleaned: {parquet_path.name}")
                 continue
             to_process.append((parquet_path, is_historical))
@@ -616,7 +616,6 @@ class GDELTCleaner:
                         try:
                             report = future.result()
                             rows_before, rows_after = report.rows_in, report.rows_out
-                            mark_done(parquet_path, self._config_fingerprint)
                             reports.append(report)
 
                             if self.delete_source:
@@ -856,7 +855,9 @@ class GDELTCleaner:
             for i, entry in enumerate(self._marker["steps"])
         ]
         return {**self._marker, "steps": steps, "source": source,
-                "rows_in": rows_in, "rows_out": rows_out}
+                "rows_in": rows_in, "rows_out": rows_out,
+                # What a rerun checks to skip the file (_is_cleaned).
+                "fingerprint": self._config_fingerprint}
 
     @staticmethod
     def _unrecognized_code_exprs(lf: pl.LazyFrame) -> list[pl.Expr]:
@@ -1134,6 +1135,25 @@ class GDELTCleaner:
     # ======================================================================
     # INTERNAL HELPERS
     # ======================================================================
+
+    def _is_cleaned(self, parquet_path: Path, is_historical: bool) -> bool:
+        """
+        Whether parquet_path was cleaned under this configuration: its
+        output's clean marker (Parquet metadata) names it as the source and
+        carries this run's fingerprint. No marker file is written: one
+        beside the source wrote into a directory that may be read-only or
+        shared, and one in the output directory, hidden subdirectory
+        included, makes pl.read_parquet(directory) refuse it. A .done marker
+        beside the source, where clean wrote them before 0.18.0, still
+        counts, so upgrading cleans nothing again.
+        """
+        output = self._output_path_for(parquet_path, is_historical)
+        marker = cleaned_marker(output) if output.is_file() else None
+        if marker and marker.get("source") == parquet_path.name and (
+            marker.get("fingerprint") == self._config_fingerprint
+        ):
+            return True
+        return is_marked_done(parquet_path, self._config_fingerprint)
 
     def _output_path_for(self, parquet_path: Path, is_historical: bool) -> Path:
         """
