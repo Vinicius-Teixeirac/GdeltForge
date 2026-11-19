@@ -40,7 +40,7 @@ class TestResolveMaxConcurrentReads:
     def test_bundled_default_ships_no_cap(self):
         # SSD-first default: a config that never mentions io still gets the
         # section from the bundled default, with no cap in it.
-        assert config_module._bundled_default_dict()["io"] == {"max_concurrent_reads": None}
+        assert config_module._bundled_default_dict()["io"]["max_concurrent_reads"] is None
 
 
 class TestDatasetPathKey:

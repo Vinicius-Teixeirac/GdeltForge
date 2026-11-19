@@ -108,9 +108,11 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
+    batches_with_retries,
     clearer_dataset_errors,
     detach,
     narrow_to_available_columns,
+    retry_read,
     scan_dataset_reconciled,
 )
 from gdeltforge.utils.logging import get_logger
@@ -618,7 +620,7 @@ def _files_with_matches(
     """
     matched: set[Path] = set()
     for i in range(0, len(files), _FIRST_PASS_FILES):
-        hits = (
+        query = (
             pl.scan_parquet(
                 files[i:i + _FIRST_PASS_FILES], schema={column: dtype or pl.String()},
                 extra_columns="ignore", include_file_paths="__gdeltforge_file",
@@ -626,8 +628,9 @@ def _files_with_matches(
             .filter(pl.col(column).is_in(values))
             .select("__gdeltforge_file")
             .unique()
-            .collect()
         )
+        hits = retry_read(f"{column} of {len(files[i:i + _FIRST_PASS_FILES])} file(s)",
+                          query.collect)
         matched.update(Path(f) for f in hits["__gdeltforge_file"].to_list())
     return [f for f in files if Path(f) in matched]
 
@@ -741,7 +744,9 @@ def crossref_events_gkg_v1(
         # interrupt. total=None: collect_batches is a generator with no
         # cheap upfront count.
         with tqdm(total=None, desc="Cross-referencing GKG 1.0") as pbar:
-            for df_batch in lf.collect_batches(chunk_size=64_000):
+            for df_batch in batches_with_retries(
+                lambda: lf, f"GKG 1.0 dataset in {gkg_folder}", 64_000
+            ):
                 if df_batch.is_empty():
                     pbar.update(1)
                     continue
@@ -1013,13 +1018,14 @@ def crossref_events_gkg_v2(
         batch = _files_per_batch()
         bridge_df = pl.concat(
             [
-                detach(
+                detach(retry_read(
+                    f"Mentions dataset in {mentions_folder}",
                     scan_dataset_reconciled(
                         matched_mentions[i:i + batch], target_schema=mentions_target
                     )
                     .filter(pl.col("GLOBALEVENTID").is_in(event_id_set))
-                    .collect()
-                )
+                    .collect,
+                ))
                 for i in range(0, len(matched_mentions), batch)
             ],
             how="vertical_relaxed",
@@ -1086,14 +1092,15 @@ def crossref_events_gkg_v2(
         # every file, so memory followed every matched file's row groups.
         batch = _files_per_batch()
         parts = [
-            detach(
+            detach(retry_read(
+                "GKG 2.1 files holding a match",
                 scan_dataset_reconciled(
                     matched_files[i:i + batch], target_schema=dict(gkg_schema)
                 )
                 .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
                 .select(read_gkg_columns)
-                .collect()
-            )
+                .collect,
+            ))
             for i in range(0, len(matched_files), batch)
         ]
         gkg_df = pl.concat(parts, how="vertical_relaxed")

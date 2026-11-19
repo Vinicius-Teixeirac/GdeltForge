@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import time
 import zipfile
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
@@ -26,6 +27,92 @@ from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+T = TypeVar("T")
+
+# io.read_retries: how many times a failed Parquet read is retried, waiting
+# _FIRST_RETRY_WAIT_S, then twice that, and so on. Set once per process by
+# configure_read_retries (cli.main, and each stage's worker processes
+# through their pool's initializer), so the read functions below don't
+# need a config.
+_read_retries = 3
+_FIRST_RETRY_WAIT_S = 2.0
+
+# OSErrors that a second try can't change: a file or directory that isn't
+# there or can't be opened locally. On network storage read without
+# memory mapping, a failed read surfaces as a plain OSError ("object-store
+# error", or the errno of a stale handle or a timeout), which is retried.
+_FINAL_OS_ERRORS = (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError)
+
+
+def configure_read_retries(retries: int) -> None:
+    """Set io.read_retries for the reads this process makes."""
+    global _read_retries
+    _read_retries = retries
+
+
+def read_retries() -> int:
+    """The io.read_retries this process reads with (for a worker pool's
+    initializer)."""
+    return _read_retries
+
+
+def _retry_or_raise(error: BaseException, what: str, attempt: int) -> None:
+    """Wait before try attempt + 2 of a read that failed with error, or
+    re-raise it: when it isn't a read error worth another try, or the
+    retries are spent."""
+    retryable = isinstance(error, OSError) and not isinstance(error, _FINAL_OS_ERRORS)
+    if not retryable or attempt >= _read_retries:
+        raise error
+    wait = _FIRST_RETRY_WAIT_S * 2**attempt
+    logger.warning(
+        f"Reading {what} failed ({error}); trying again in {wait:g} s "
+        f"(retry {attempt + 1} of {_read_retries})"
+    )
+    time.sleep(wait)
+
+
+def retry_read(what: str, read: Callable[[], T]) -> T:
+    """read(), tried again after a read error up to io.read_retries times.
+    For reads that start over cleanly: a footer, a schema, a whole file."""
+    attempt = 0
+    while True:
+        try:
+            return read()
+        except OSError as error:
+            _retry_or_raise(error, what, attempt)
+            attempt += 1
+
+
+def batches_with_retries(
+    make_scan: Callable[[], pl.LazyFrame], what: str, chunk_size: int
+) -> Iterator[pl.DataFrame]:
+    """
+    make_scan().collect_batches(chunk_size), resumed after a read error:
+    the same scan is built again and sliced past the rows already handed
+    out, so the batches together hold exactly the rows of one uninterrupted
+    scan, in its order (the scan reads its files in order, and a row index
+    or file path column is computed before the slice). Only the batches
+    after the failure are cut differently. Each failure gets io.read_retries
+    tries; rows read since the last one start the count again, so a long
+    scan survives several separate hiccups.
+    """
+    done = 0
+    attempt = 0
+    while True:
+        scan = make_scan()
+        try:
+            for batch in (scan.slice(done) if done else scan).collect_batches(
+                chunk_size=chunk_size
+            ):
+                if batch.height:
+                    done += batch.height
+                    attempt = 0
+                yield batch
+            return
+        except OSError as error:
+            _retry_or_raise(error, what, attempt)
+            attempt += 1
 
 # Columns genuinely typed String whose real values look like plain
 # integers, leading zeros meaningful ("020", "07"), found via a live
@@ -280,7 +367,11 @@ def sink_parquet_atomic(lf: pl.LazyFrame, out: str | Path, **sink_parquet_kwargs
     _clean_orphaned_tmp_files(out)
 
     try:
-        lf.sink_parquet(tmp_path, **sink_parquet_kwargs)
+        # A read error retried writes the whole output again, into the
+        # same temporary file (io.read_retries).
+        retry_read(f"the files streamed to {out}", lambda: lf.sink_parquet(
+            tmp_path, **sink_parquet_kwargs
+        ))
         os.replace(tmp_path, out)
     except Exception:
         tmp_path.unlink(missing_ok=True)
@@ -300,7 +391,7 @@ def parquet_kv_metadata(path: str | Path) -> dict[str, str]:
     run). Read once and passed to cleaned_marker/aggregated_marker when
     both are needed."""
     try:
-        return pl.read_parquet_metadata(path)
+        return retry_read(str(path), lambda: pl.read_parquet_metadata(path))
     except Exception:
         return {}
 
@@ -309,7 +400,7 @@ def parquet_footer_facts(path: str | Path) -> tuple[int, dict[str, str]]:
     """A Parquet file's row count and key/value metadata, from one footer
     read. Unlike parquet_kv_metadata, an unreadable file raises: callers
     need its rows."""
-    footer = pq.read_metadata(path)
+    footer = retry_read(str(path), lambda: pq.read_metadata(path))
     metadata = {
         k.decode("utf-8", "replace"): v.decode("utf-8", "replace")
         for k, v in (footer.metadata or {}).items()
@@ -661,7 +752,7 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     # crafted "... does not exist: <path>".
     p = ensure_exists(path, "parquet path")
     if not p.is_dir():
-        return pl.read_parquet(p)
+        return retry_read(str(p), lambda: pl.read_parquet(p))
 
     # A path component starting with "_" or "." marks metadata, not data,
     # the same Hadoop/Spark/Parquet convention (_SUCCESS, _metadata) this
@@ -674,7 +765,10 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     if not files:
         raise FileNotFoundError(f"No parquet files found in {path}")
     with clearer_dataset_errors(f"{len(files)} parquet file(s) in {path}"):
-        return scan_dataset_reconciled(files).collect()
+        return retry_read(
+            f"{len(files)} parquet file(s) in {path}",
+            lambda: scan_dataset_reconciled(files).collect(),
+        )
 
 
 def _fingerprint_value(value: object) -> str:
@@ -918,12 +1012,18 @@ def _imap_files(fn: Callable[[_T], _R], files: list[_T]) -> Iterator[_R]:
             yield result
 
 
+def read_parquet_schema(file: str | Path) -> dict[str, pl.DataType]:
+    """One file's schema from its footer, retried after a read error
+    (io.read_retries)."""
+    return dict(retry_read(str(file), lambda: pl.read_parquet_schema(file)).items())
+
+
 def read_file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
     """Every file's own schema, one footer read per file, a few files at a
     time (_map_files). A caller that scans the same files more than once
     reads them here once and passes the result on (scan_dataset_reconciled's
     file_schemas)."""
-    schemas = _map_files(lambda f: dict(pl.read_parquet_schema(f).items()), files)
+    schemas = _map_files(lambda f: read_parquet_schema(f), files)
     return dict(zip(files, schemas, strict=True))
 
 
@@ -1011,7 +1111,7 @@ def _int_bounds_from_statistics(file: Path, column: str) -> tuple[int, int] | No
     """The column's min and max over the file, from its Parquet row-group
     statistics alone (footer only, no data read), or None when any row
     group lacks them."""
-    metadata = pq.ParquetFile(file).metadata
+    metadata = retry_read(str(file), lambda: pq.ParquetFile(file).metadata)
     names = [metadata.schema.column(i).name for i in range(metadata.num_columns)]
     if column not in names:
         return None
@@ -1052,7 +1152,7 @@ def _verify_int_to_float64_widening_is_safe(lf: pl.LazyFrame, file: Path, column
     bounds = _int_bounds_from_statistics(file, column)
     if bounds is None:
         query = lf.select(pl.col(column).min().alias("_min"), pl.col(column).max().alias("_max"))
-        row = query.collect().row(0, named=True)
+        row = retry_read(str(file), query.collect).row(0, named=True)
         bounds = (row["_min"], row["_max"])
     values = [v for v in bounds if v is not None]
     max_abs = max((abs(v) for v in values), default=0)
@@ -1100,7 +1200,7 @@ def scan_file_against_schema(
     for every file, a few at a time).
     """
     if real_schema is None:
-        real_schema = dict(pl.read_parquet_schema(file).items())
+        real_schema = read_parquet_schema(file)
 
     per_file_schema = dict(target_schema)
     casts = []

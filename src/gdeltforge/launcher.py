@@ -15,6 +15,12 @@ with at most that many threads, which bounds their footer reads the
 way POLARS_MAX_CONCURRENT_SCANS bounds their data reads. A
 POLARS_MAX_THREADS the user exported is left as it is; cli.main warns
 when it exceeds the cap.
+
+polars also reads POLARS_FORCE_ASYNC only when it loads, and with it
+set reads Parquet without memory-mapping the files (io.memory_map, see
+gdeltforge.utils.storage). Every command that reads Parquet is started
+with it when the config says not to map; the worker processes clean
+and aggregate spawn inherit it.
 """
 
 import os
@@ -24,10 +30,52 @@ from pathlib import Path
 
 import yaml
 
-from gdeltforge.utils.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH
+from gdeltforge.utils.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH, peek_config
+from gdeltforge.utils.storage import POLARS_FORCE_ASYNC, memory_map_decision
 
 # The commands that read many files in the CLI's own process.
 _SCANNING_COMMANDS = frozenset({"sample", "crossref"})
+# The commands that read Parquet, in this process or in their workers.
+_PARQUET_READING_COMMANDS = frozenset({"clean", "filter", "aggregate", "sample", "crossref"})
+
+
+def _command_and_config(argv: list[str]) -> tuple[str | None, str | None]:
+    """The subcommand and the --config value of a command line, read
+    without argparse (whose parser lives in gdeltforge.cli, which imports
+    polars). Options before the subcommand are skipped."""
+    config_path = None
+    args = iter(argv)
+    for arg in args:
+        if arg == "--config":
+            config_path = next(args, None)
+        elif arg.startswith("--config="):
+            config_path = arg.split("=", 1)[1]
+        elif not arg.startswith("-"):
+            return arg, config_path
+    return None, config_path
+
+
+def force_async_reads(argv: list[str], environ: Mapping[str, str]) -> bool:
+    """
+    Whether to start this command line with POLARS_FORCE_ASYNC=1, so that
+    polars reads Parquet without memory-mapping it. Only for the commands
+    that read Parquet, and never over a value the user exported. The
+    config is read as load_config would read it (bundled defaults filled
+    in), without its side effects; anything unexpected (no file, invalid
+    YAML, an invalid io.memory_map) returns False and is left for the
+    command's own config validation to report.
+    """
+    command, config_path = _command_and_config(argv)
+    if command not in _PARQUET_READING_COMMANDS or POLARS_FORCE_ASYNC in environ:
+        return False
+    config = peek_config(config_path, environ)
+    if config is None:
+        return False
+    try:
+        mapped, _ = memory_map_decision(config, environ)
+    except ValueError:
+        return False
+    return not mapped
 
 
 def scan_thread_cap(argv: list[str], environ: Mapping[str, str]) -> int | None:
@@ -41,17 +89,7 @@ def scan_thread_cap(argv: list[str], environ: Mapping[str, str]) -> int | None:
     """
     if "POLARS_MAX_THREADS" in environ:
         return None
-    config_path = None
-    command = None
-    args = iter(argv)
-    for arg in args:
-        if arg == "--config":
-            config_path = next(args, None)
-        elif arg.startswith("--config="):
-            config_path = arg.split("=", 1)[1]
-        elif not arg.startswith("-"):
-            command = arg
-            break
+    command, config_path = _command_and_config(argv)
     if command not in _SCANNING_COMMANDS:
         return None
     path = Path(config_path or environ.get(CONFIG_ENV_VAR) or DEFAULT_CONFIG_PATH)
@@ -71,6 +109,8 @@ def main() -> None:
     cap = scan_thread_cap(sys.argv[1:], os.environ)
     if cap is not None:
         os.environ["POLARS_MAX_THREADS"] = str(cap)
+    if force_async_reads(sys.argv[1:], os.environ):
+        os.environ[POLARS_FORCE_ASYNC] = "1"
     # Imported only now: gdeltforge.cli imports polars.
     from gdeltforge.cli import main as cli_main
 

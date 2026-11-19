@@ -541,3 +541,13 @@ aggregation:
 # HDD array; see docs/configuration.md#io.
 io:
   max_concurrent_reads: null
+  # Whether polars memory-maps the Parquet files it reads. auto (the
+  # default) maps them unless one of the paths above is on a network
+  # filesystem (NFS, SMB, ...): a mapped read that fails on network storage
+  # kills the process with SIGBUS, which nothing can catch or retry, while
+  # an unmapped one raises an error that read_retries below retries. true
+  # always maps, false never does (about 10% more peak memory, same speed).
+  memory_map: auto
+  # How many times a failed Parquet read is retried, waiting 2, 4, 8 ...
+  # seconds between tries, before the command stops. 0 = no retry.
+  read_retries: 3
