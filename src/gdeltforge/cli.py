@@ -67,6 +67,7 @@ from gdeltforge.utils.io import (
 from gdeltforge.utils.logging import get_logger
 from gdeltforge.utils.storage import (
     POLARS_FORCE_ASYNC,
+    environ_without_launcher_setting,
     memory_map_decision,
     process_read_bytes,
 )
@@ -627,6 +628,15 @@ def _sample_file_index(
     return index_path_for(directory, roots) if directory else None
 
 
+def _data_directories(config: dict) -> list[Path]:
+    """Every paths.*data_directory: a checkpoint directory may sit in none
+    of them, whichever one a command reads."""
+    return [
+        Path(v) for k, v in get_dict(config, "paths").items()
+        if k.endswith("data_directory") and isinstance(v, str) and v
+    ]
+
+
 def _checkpoint_settings(
     config: dict, args: argparse.Namespace, roots: list[Path]
 ) -> CheckpointSettings:
@@ -892,7 +902,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     columns = set(args.columns) if args.columns else None
     sources = [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
     file_index = _sample_file_index(config, args, sources)
-    checkpoints = _checkpoint_settings(config, args, sources)
+    checkpoints = _checkpoint_settings(config, args, sources + _data_directories(config))
 
     # -----------------------------
     # Indexed Sampling
@@ -1124,10 +1134,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         source_key = f"aggregated_{period or 'day'}_data_directory"
         date_parser = parse_file_date
     # Checked against every data directory: crossref reads several.
-    checkpoints = _checkpoint_settings(config, args, [
-        Path(v) for k, v in get_dict(config, "paths").items()
-        if k.endswith("data_directory") and isinstance(v, str) and v
-    ])
+    checkpoints = _checkpoint_settings(config, args, _data_directories(config))
     if args.source == "converted":
         v2_streams = list(STREAMS) if stream == "both" else [stream]
         checks = [("gdelt_gkg_v1", "english"), ("gdelt_gkg_v1_counts", "english")] + [
@@ -1936,7 +1943,9 @@ def _apply_memory_map(config: dict, command: str) -> bool:
     """
     if command not in _PARQUET_READING_COMMANDS:
         return False
-    mapped, why = memory_map_decision(config)
+    # The config's reason when the launcher set POLARS_FORCE_ASYNC itself;
+    # "it is exported" only for one the user exported.
+    mapped, why = memory_map_decision(config, environ_without_launcher_setting())
     if mapped:
         logger.debug(f"Reading Parquet memory-mapped ({why})")
         return True
