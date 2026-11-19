@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from bisect import bisect_right
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -64,13 +65,16 @@ def index_path_for(index_directory: str | Path, roots: list[Path]) -> Path:
     return directory / f"{first.parent.name}_{first.name}-{digest}{INDEX_SUFFIX}"
 
 
-def _refuse_inside_roots(path: Path, roots: list[Path], what: str = "The file index") -> None:
+def _refuse_inside_roots(
+    path: Path, roots: list[Path], what: str = "The file index",
+    setting: str = "paths.index_directory (or --file-index)",
+) -> None:
     target = Path(os.path.abspath(path))
     for root in roots:
         if target.is_relative_to(os.path.abspath(root)):
             raise ValueError(
                 f"{what} {path} would sit inside {root}, which the sample reads. "
-                f"Point paths.index_directory (or --file-index) outside every data directory."
+                f"Point {setting} outside every data directory."
             )
 
 
@@ -91,6 +95,7 @@ class FileIndex:
         saved: Path | None = None,
         roots: list[Path] | None = None,
         label: str | None = None,
+        save_every_s: float | None = None,
     ):
         # Accept folder or list of paths
         self.folder, self.files = self._resolve_paths(folder_or_files)
@@ -98,6 +103,10 @@ class FileIndex:
         # What a footer-read error names (clearer_dataset_errors).
         self._label = label or f"{len(self.files)} parquet file(s)"
         self._roots = roots or ([self.folder] if self.folder else [])
+        # With `saved`, the index is also saved every save_every_s while
+        # footers are read (io.checkpoint_every_s), so a first run stopped
+        # partway keeps the footers it read.
+        self._save_every_s = save_every_s
         if saved is not None:
             _refuse_inside_roots(saved, self._roots)
 
@@ -153,12 +162,21 @@ class FileIndex:
             # non-parquet file raises here, named clearly.
             with clearer_dataset_errors(self._label):
                 footers = _imap_files(_read_footer, [self.files[i] for i in missing])
+                partial = dict(known)
+                last_save = time.monotonic()
                 for i, metadata in zip(missing, footers, strict=True):
                     row_groups, schema = facts(metadata)
-                    entries[i] = _Entry(stats[i].st_size, stats[i].st_mtime_ns, row_groups, schema)
+                    entry = _Entry(stats[i].st_size, stats[i].st_mtime_ns, row_groups, schema)
+                    entries[i] = partial[keys[i]] = entry
                     # io.max_read_mb_per_s: a few footers are read ahead
                     # on the worker threads, so pacing here holds them too.
                     pace_reads()
+                    if (
+                        self.saved is not None and self._save_every_s is not None
+                        and time.monotonic() - last_save >= self._save_every_s
+                    ):
+                        self._save(self._without_removed_files(partial))
+                        last_save = time.monotonic()
         logger.info(
             f"FileIndex: {len(missing):,} footer(s) read, "
             f"{len(self.files) - len(missing):,} from the saved index."

@@ -259,6 +259,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--seed N` | all | RNG seed (default 42) |
 | `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there, the 15-minute file for `--source aggregated` (see [Row provenance](#row-provenance)). Off by default |
 | `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
+| `--no-checkpoint` | all | Save no checkpoint of a long scan for this run, and ignore one a stopped run left (see [Checkpoints](#checkpoints)) |
 | `--per-period N` | calendar | Rows per calendar period (default 10); with `--quota-file`, the rows of each period the file doesn't list (default 0) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
@@ -362,6 +363,16 @@ sets. For an aggregated file written before 0.16.0, the index also keeps
 the record of its sources a `--provenance` sample derived (see
 [Row provenance](#row-provenance)); an index saved by 0.15.0 is read and
 extended, not rebuilt.
+
+### Checkpoints
+
+A long `sample` or `crossref` scan saves a checkpoint every `io.checkpoint_every_s` seconds (default 60), under `paths.checkpoint_directory` (default `./data/checkpoints`). Run the same command again after a stop (Ctrl+C, a killed job, a lost session) and it resumes where the last checkpoint left it, with exactly the output an uninterrupted run gives: the same rows, in the same order, byte for byte.
+
+- **What is saved**: a draw's reservoirs (row identities, not the rows), counts and random generator states, and where the scan stands; the full-set filter's kept rows and crossref's matches, written in parts as they are found. A sample's [saved file index](#saved-file-index) is saved as its footers are read too, so a stopped first run keeps them.
+- **The same run**: a checkpoint is named after everything that decides the output: the command and its parameters (the filter, `--columns`, `-n`, `--stratify`, ...), the seed, every file read with its size and modification time, the events table for `crossref`, and the gdeltforge version. Change any of them and the command starts afresh. Without `--seed` every sample is a different draw, so there is nothing to resume.
+- **Where a resumed scan starts**: after the last batch the checkpoint saw. It reads only what was left; the second pass of a draw (reading the chosen rows) runs again in full.
+- **Cleaning up**: a finished run removes its checkpoint. One a stopped run left behind, never resumed, stays until removed (delete the directory under `paths.checkpoint_directory`). An unreadable one is removed and the run starts over.
+- **Off**: `--no-checkpoint` for one run (it also ignores a checkpoint left behind), `io.checkpoint_every_s: null` or `paths.checkpoint_directory: null` for every run.
 
 ### Sample manifest
 
@@ -544,6 +555,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--end-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period ends on or before this date. Narrows the configured directories being read, not `--events` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
 | `--export-format {parquet,csv}` | Output file format. `csv` rewrites `--out`'s extension to `.csv`. Off (`parquet`) by default; see `sample`'s own `--export-format` above for the CSV round-trip caveat |
+| `--no-checkpoint` | Save no checkpoint of the long passes for this run, and ignore one a stopped run left (see [Checkpoints](#checkpoints)) |
 
 GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Related Work](comparison.md#where-gdeltforge-differs) for why a direct Events<->GKG 2.1 join isn't possible):
 

@@ -79,6 +79,8 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 
 `index_directory` (default `./data/index`) is one key for every dataset, unprefixed: where `sample` keeps its [saved file index](cli-reference.md#saved-file-index), one file per source directory. `null` keeps none. It must sit outside every data directory.
 
+`checkpoint_directory` (default `./data/checkpoints`), also one key for every dataset: where `sample` and `crossref` keep the [checkpoints](cli-reference.md#checkpoints) of a long scan, so a run stopped partway resumes where it left off. `null` keeps none. It must sit outside every data directory: a checkpoint's Parquet parts would be read as data.
+
 Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `cleaned_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
 
 ### Translated stream
@@ -292,6 +294,7 @@ Unlike `convert`, whose `.done` marker is keyed one-per-source-file (and `clean`
 | `max_concurrent_reads` | `null` | How many files one `clean`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
 | `memory_map` | `auto` | Whether polars memory-maps the Parquet files it reads: `auto` maps them unless a `paths` directory is on a network filesystem, `true` always, `false` never. See [Memory mapping and read retries](#memory-mapping-and-read-retries) |
 | `read_retries` | `3` | How many times a failed Parquet read is tried again, waiting 2, 4, 8 ... seconds in between, before the command stops. `0` reads once |
+| `checkpoint_every_s` | `60` | How often, in seconds, a long `sample` or `crossref` scan saves a [checkpoint](cli-reference.md#checkpoints) under `paths.checkpoint_directory`. `null` means none |
 | `max_read_mb_per_s` | `null` | The average rate, in megabytes (10^6 bytes) per second, at which one command reads. `clean` and `aggregate` split it among their workers. `null` means no cap. See [Read-rate cap](#read-rate-cap) |
 
 `max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:

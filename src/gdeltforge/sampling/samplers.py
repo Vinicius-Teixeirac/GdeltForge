@@ -30,6 +30,14 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     sort_paths_by_date,
 )
+from gdeltforge.utils.checkpoint import (
+    NO_CHECKPOINTS,
+    Checkpoint,
+    CheckpointSettings,
+    file_facts,
+    restore_rng,
+    rng_state,
+)
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
     _map_files,
@@ -600,9 +608,13 @@ class IndexedSampler:
         provenance: bool = False,
         file_index: Path | None = None,
         aggregate_sources: Mapping[str, Path] | None = None,
+        checkpoints: CheckpointSettings = NO_CHECKPOINTS,
     ):
         self.folder = Path(folder_path)
         self.provenance = provenance
+        # The index, built here, saves itself every io.checkpoint_every_s
+        # while it reads footers (FileIndex.save_every_s).
+        self.checkpoints = checkpoints
         # Where an aggregated file's sources are, by the stage they were
         # read from ({"cleaned": ..., "converted": ...}), for provenance of
         # a file aggregated before 0.16.0 (_aggregated_parts).
@@ -629,7 +641,10 @@ class IndexedSampler:
             )
 
         self.rng   = ReproducibleRNG(random_state)
-        self.index = FileIndex(parquet_files, saved=file_index, roots=self._roots)
+        self.index = FileIndex(
+            parquet_files, saved=file_index, roots=self._roots,
+            save_every_s=checkpoints.every_s if checkpoints.enabled else None,
+        )
 
         # A genuinely nonexistent --columns name used to reach
         # pl.read_parquet(file_path, columns=read_columns) unchecked in
@@ -759,12 +774,126 @@ class IndexedSampler:
         )
 
 
-def _scan_ranges(files: list[Path], index: FileIndex) -> list[tuple[int, int]]:
-    """The ranges of `files` a scan over them is read in (io.paced_ranges),
-    from the index's file sizes: one range of every file unless
-    io.max_read_mb_per_s paces reads."""
+def _encode_key(key: Any) -> list:
+    """A group key (calendar period, stratum) as JSON, with its type, so it
+    comes back from a checkpoint equal to the key a later batch gives."""
+    if key is None or isinstance(key, (bool, int, float, str)):
+        return ["v", key]
+    if isinstance(key, datetime):
+        return ["datetime", key.isoformat()]
+    if isinstance(key, date):
+        return ["date", key.isoformat()]
+    raise TypeError(f"a group key of type {type(key).__name__} can't be checkpointed")
+
+
+def _decode_key(encoded: list) -> Any:
+    kind, value = encoded
+    if kind == "datetime":
+        return datetime.fromisoformat(value)
+    if kind == "date":
+        return date.fromisoformat(value)
+    return value
+
+
+def _identity_arrays(prefix: str, frames: list[pl.DataFrame]) -> dict[str, np.ndarray]:
+    """Identity rows (_IDENTITY) as arrays named prefix + column."""
+    if not frames:
+        return {}
+    df = pl.concat(frames)
+    return {f"{prefix}{c}": df[c].to_numpy() for c in _IDENTITY}
+
+
+def _identity_frame(arrays: Mapping[str, np.ndarray], prefix: str) -> pl.DataFrame | None:
+    if f"{prefix}{_ROW_FILE}" not in arrays:
+        return None
+    return pl.DataFrame({c: pl.Series(c, arrays[f"{prefix}{c}"], dtype=pl.Int64)
+                         for c in _IDENTITY})
+
+
+def _groups_to_checkpoint(
+    total_seen: dict, filled: dict, capacity: dict, fill_chunks: dict,
+    reservoir_cols: dict, group_rngs: dict,
+) -> tuple[dict, dict[str, np.ndarray]]:
+    """
+    Many groups' reservoirs (get_stratified_sample, get_calendar_samples)
+    as checkpoint state and arrays. The groups keep their order, which is
+    the sample's: total_seen's (first seen) and reservoir_cols' (filled).
+    """
+    groups = list(total_seen)
+    position = {g: i for i, g in enumerate(groups)}
+    arrays: dict[str, np.ndarray] = {}
+    for g in groups:
+        i = position[g]
+        arrays.update(_identity_arrays(f"fill{i}:", fill_chunks.get(g, [])))
+        if g in reservoir_cols:
+            arrays.update({f"res{i}:{c}": a for c, a in reservoir_cols[g].items()})
+    state = {
+        "groups": [_encode_key(g) for g in groups],
+        "total_seen": [total_seen[g] for g in groups],
+        "filled": [filled[g] for g in groups],
+        "capacity": [capacity[g] for g in groups],
+        "filled_order": [position[g] for g in reservoir_cols],
+        "rngs": [[position[g], rng_state(r)] for g, r in group_rngs.items() if g in position],
+    }
+    return state, arrays
+
+
+def _groups_from_checkpoint(state: dict, arrays: Mapping[str, np.ndarray], seed: int):
+    """_groups_to_checkpoint's dicts back, in their order: total_seen,
+    filled, capacity, fill_chunks, reservoir_cols, reservoir_schema and
+    group_rngs (each rng at the state it was saved in)."""
+    groups = [_decode_key(k) for k in state["groups"]]
+    total_seen = dict(zip(groups, state["total_seen"], strict=True))
+    filled = dict(zip(groups, state["filled"], strict=True))
+    capacity = dict(zip(groups, state["capacity"], strict=True))
+    fill_chunks: dict = {}
+    for i, g in enumerate(groups):
+        frame = _identity_frame(arrays, f"fill{i}:")
+        fill_chunks[g] = [frame] if frame is not None else []
+    reservoir_cols: dict = {}
+    reservoir_schema: dict = {}
+    for i in state["filled_order"]:
+        g = groups[i]
+        reservoir_cols[g] = {c: arrays[f"res{i}:{c}"].copy() for c in _IDENTITY}
+        reservoir_schema[g] = {c: pl.Int64() for c in _IDENTITY}
+    group_rngs: dict = {}
+    for i, saved in state["rngs"]:
+        generator = _group_rng(seed, groups[i], group_rngs)
+        restore_rng(generator, saved)
+    return total_seen, filled, capacity, fill_chunks, reservoir_cols, reservoir_schema, group_rngs
+
+
+def _saving(
+    batches, checkpoint: Checkpoint, state: Callable[[], tuple[dict, dict, list]]
+):
+    """
+    batches, each handed on, and once the draw has used it, a checkpoint
+    saved when one is due (io.checkpoint_every_s): state() gives the
+    draw's state then, and the batch's last row (_ROW_FILE, _ROW_POSITION)
+    the row a resumed scan starts after. Batches are cut on one grid
+    (scan_batches), so the resumed scan's batches are the uninterrupted
+    one's from there on.
+    """
+    for batch in batches:
+        yield batch
+        if batch.height and checkpoint.due():
+            draw, arrays, parts = state()
+            last = (int(batch[_ROW_FILE][-1]), int(batch[_ROW_POSITION][-1]) + 1)
+            checkpoint.save({**draw, "resume": list(last)}, arrays, parts)
+
+
+# The rows of a scan batch (scan_batches cuts every scan on this grid).
+_BATCH_ROWS = 64_000
+
+
+def _scan_ranges(
+    files: list[Path], index: FileIndex, start: int = 0
+) -> list[tuple[int, int]]:
+    """The ranges of files[start:], by position in `files`, a scan over them
+    is read in (io.paced_ranges), from the index's file sizes: one range
+    unless io.max_read_mb_per_s paces reads."""
     size = dict(zip(index.files, index.sizes, strict=True))
-    return paced_ranges([size[f] for f in files])
+    return [(start + a, start + b) for a, b in paced_ranges([size[f] for f in files[start:]])]
 
 
 def _read_rows(
@@ -933,6 +1062,8 @@ def _collect_reads(
 # the sample.
 _ROW_FILE = "__row_file__"
 _ROW_POSITION = "__row_position__"
+# The identity columns a reservoir holds (the second pass reads the rows).
+_IDENTITY = (_ROW_FILE, _ROW_POSITION)
 _ROW_ORDER = "__row_order__"
 
 # The provenance columns' types in a sample (_label_provenance).
@@ -1122,11 +1253,16 @@ class CalendarSampler:
         # from "ran and every period happened to be empty."
         self.period_row_counts_: dict[str, int] | None = None
 
+    # Where a long draw checkpoints, and how often (the CLI sets it from
+    # paths.checkpoint_directory and io.checkpoint_every_s); none by default.
+    checkpoints: CheckpointSettings = NO_CHECKPOINTS
+
     def _key_batches(
         self,
         files: list[Path],
         file_schemas: dict[Path, dict[str, pl.DataType]],
         target_schema: dict[str, pl.DataType],
+        resume: tuple[int, int] | None = None,
     ):
         """
         The first pass: batches of the date column and each row's identity
@@ -1135,20 +1271,24 @@ class CalendarSampler:
         """
         index = {Path(f): i for i, f in enumerate(files)}
         rows_read = [0] * len(files)
+        # resume, (file, row): start at that row (FilteredSampler._batches).
+        start_file, skip = resume if resume is not None else (0, 0)
+        if skip:
+            rows_read[start_file] = skip
         with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
             assert self.index is not None
             # One range of every file unless reads are paced; each range is
             # scanned toward the same column type, and their rows handed out
             # in the batches one scan would make (scan_batches).
-            scans = [
-                scan_dataset_reconciled(
+            scans = []
+            for first, end in _scan_ranges(files, self.index, start_file):
+                lf = scan_dataset_reconciled(
                     files[first:end],
                     target_schema={self.date_column: target_schema[self.date_column]},
                     file_schemas=file_schemas,
                     include_file_paths=self._FILE_PATH,
                 )
-                for first, end in _scan_ranges(files, self.index)
-            ]
+                scans.append(lf.slice(skip) if first == start_file and skip else lf)
             yield from self._keyed(scans, index, rows_read)
 
     def _keyed(
@@ -1156,7 +1296,9 @@ class CalendarSampler:
     ):
         """_key_batches' batches, each row's file and position counted on
         from the rows before it (rows_read)."""
-        for batch in scan_batches(scans, f"calendar sample dataset in {self.folder}", 64_000):
+        for batch in scan_batches(
+            scans, f"calendar sample dataset in {self.folder}", _BATCH_ROWS
+        ):
             paths = batch[self._FILE_PATH]
             to_index = {p: index[Path(p)] for p in paths.unique().to_list()}
             file_index = paths.replace_strict(to_index, return_dtype=pl.Int64)
@@ -1241,6 +1383,7 @@ class CalendarSampler:
             # both passes.
             index = FileIndex(
                 files, saved=self.file_index, roots=self._roots,
+                save_every_s=self.checkpoints.every_s if self.checkpoints.enabled else None,
                 label=f"calendar sample dataset in {self.folder}",
             )
             self.index = index
@@ -1282,6 +1425,41 @@ class CalendarSampler:
         n_unparseable = 0
         n_before_1979 = 0
 
+        # A checkpoint holds every period's reservoir, counts and
+        # generator, in their order (_groups_to_checkpoint), the counts of
+        # dropped and pre-1979 rows, and where the scan resumes (_saving);
+        # "scanned" marks a finished scan.
+        checkpoint = Checkpoint(self.checkpoints, "sample-calendar", {
+            "sampler": "calendar", "period": self.period, "date_column": self.date_column,
+            "per_period": samples_per_period, "quotas": quotas,
+            "columns": sorted(self.columns) if self.columns else None,
+            "provenance": self.provenance, "seed": self.rng.seed,
+            "files": file_facts(files) if self.checkpoints.enabled else [],
+        })
+        resume: tuple[int, int] | None = None
+        scanned = False
+        saved = checkpoint.load()
+        if saved is not None:
+            saved_state, arrays, _ = saved
+            (total_seen, filled, capacity, fill_chunks, reservoir_cols, reservoir_schema,
+             group_rngs) = _groups_from_checkpoint(saved_state, arrays, self.rng.seed)
+            n_unparseable = saved_state["unparseable"]
+            n_before_1979 = saved_state["before_1979"]
+            scanned = saved_state.get("scanned", False)
+            if saved_state.get("resume"):
+                resume = (saved_state["resume"][0], saved_state["resume"][1])
+
+        def state() -> tuple[dict, dict, list]:
+            groups, arrays = _groups_to_checkpoint(
+                total_seen, filled, capacity, fill_chunks, reservoir_cols, group_rngs
+            )
+            counts = {"unparseable": n_unparseable, "before_1979": n_before_1979}
+            return {**groups, **counts}, arrays, []
+
+        batches = iter(()) if scanned else _saving(
+            self._key_batches(files, file_schemas, target_schema, resume), checkpoint, state
+        )
+
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why a
         # bare "for x in tqdm(...):" can leak a stray KeyboardInterrupt
@@ -1291,7 +1469,7 @@ class CalendarSampler:
         # upfront count): the bar still shows a live count/rate, just no
         # percent.
         with tqdm(total=None, desc="Sampling (calendar)") as pbar:
-            for df_batch in self._key_batches(files, file_schemas, target_schema):
+            for df_batch in batches:
                 if df_batch.is_empty() or self.date_column not in df_batch.columns:
                     pbar.update(1)
                     continue
@@ -1409,9 +1587,13 @@ class CalendarSampler:
         # same count per period regardless of the period's real size, see
         # docs/limitations-and-roadmap.md#representativeness).
         self.period_row_counts_ = dict(total_seen)
+        if checkpoint.enabled and not scanned:
+            groups, arrays, _ = state()
+            checkpoint.save({**groups, "scanned": True}, arrays)
 
         columns = needed if needed is not None else list(target_schema)
         if not reservoirs:
+            checkpoint.discard()
             # The columns a sample with rows would have, not none at all.
             provenance = _PROVENANCE_SCHEMA if self.provenance else {}
             return pl.DataFrame(schema={c: target_schema[c] for c in columns} | provenance)
@@ -1427,7 +1609,9 @@ class CalendarSampler:
             files, index, target_schema, chosen, columns, self.provenance,
             f"calendar sample dataset in {self.folder}",
         )
-        return _label_provenance(sample, self._roots, self.aggregate_sources, self.index)
+        sample = _label_provenance(sample, self._roots, self.aggregate_sources, self.index)
+        checkpoint.discard()
+        return sample
 
 
 # ----------------------------------------------------------
@@ -1984,6 +2168,23 @@ class FilteredSampler:
         """The FileIndex of the files a draw reads, once one has run."""
         return self._indexed[1] if self._indexed is not None else None
 
+    # Where a long draw checkpoints, and how often (the CLI sets it from
+    # paths.checkpoint_directory and io.checkpoint_every_s); none by default.
+    checkpoints: CheckpointSettings = NO_CHECKPOINTS
+
+    def _checkpoint(self, kind: str, params: Mapping[str, Any]) -> Checkpoint:
+        """The checkpoint of one draw: `kind` and `params` name the draw, and
+        the filter, columns, seed and every scanned file (size, mtime) make
+        another set of any of them another run's."""
+        if not self.checkpoints.enabled:
+            return Checkpoint(self.checkpoints, f"sample-{kind}", {})
+        files, _ = self._indexed_files()
+        return Checkpoint(self.checkpoints, f"sample-{kind}", {
+            "sampler": "filtered", **params, "filter": self.filter_dict,
+            "columns": sorted(self.columns) if self.columns else None,
+            "provenance": self.provenance, "seed": self.rng.seed, "files": file_facts(files),
+        })
+
     def _indexed_files(self) -> tuple[list[Path], FileIndex]:
         """The files to scan, in scan order, and their FileIndex: every
         footer read once per sampler (or none, from the saved index), not
@@ -1995,6 +2196,7 @@ class FilteredSampler:
             )
             index = FileIndex(
                 files, saved=self.file_index, roots=self._roots,
+                save_every_s=self.checkpoints.every_s if self.checkpoints.enabled else None,
                 label=f"filtered sample dataset in {self.folder}",
             )
             self._indexed = (files, index)
@@ -2017,7 +2219,9 @@ class FilteredSampler:
     # numbered before the filter.
     _SCAN_ROW = "__scan_row__"
 
-    def _batches(self, needed_columns: list[str]):
+    def _batches(
+        self, needed_columns: list[str], resume: tuple[int, int] | None = None
+    ):
         """
         Yield polars DataFrame batches matching the configured filter, via
         a lazy scan with predicate pushdown, of needed_columns and each
@@ -2026,6 +2230,10 @@ class FilteredSampler:
         a draw streams the filter's and the strata's columns alone and
         reads its chosen rows afterwards (_gather); rows come in the order
         a scan of every column reads them, so the draw picks the same rows.
+
+        resume, (file, row) by position in the scan's files, starts the scan
+        at that row, as a checkpoint saved after a full batch whose last row
+        was the one before it: the batches go on as an uninterrupted scan's.
         """
         # Wrapped from dataset construction onward: the files' footers are
         # read there, not only in the later batch collection. Confirmed
@@ -2043,16 +2251,26 @@ class FilteredSampler:
             # at its first row, so rows are numbered as in one scan over all
             # the files, and handed out in the batches that scan would make
             # (scan_batches).
+            start_file, skip = resume if resume is not None else (0, 0)
             scans = []
-            for first, end in _scan_ranges(files, index):
+            for first, end in _scan_ranges(files, index, start_file):
                 lf = scan_dataset_reconciled(
                     files[first:end], target_schema={c: target[c] for c in read},
                     file_schemas=index.schemas,
-                ).with_row_index(self._SCAN_ROW, offset=int(starts[first]))
+                )
+                # A resumed scan's first range starts past the rows read
+                # before the checkpoint. Sliced before the row index: a slice
+                # after it reads every file.
+                offset = int(starts[first])
+                if first == start_file and skip:
+                    lf, offset = lf.slice(skip), offset + skip
+                lf = lf.with_row_index(self._SCAN_ROW, offset=offset)
                 if expr is not None:
                     lf = lf.filter(expr)
                 scans.append(lf.select(self._SCAN_ROW, *read))
-            for batch in scan_batches(scans, f"filtered sample dataset in {self.folder}", 64_000):
+            for batch in scan_batches(
+                scans, f"filtered sample dataset in {self.folder}", _BATCH_ROWS
+            ):
                 batch = self._identify(batch, starts)
                 if self.provenance:
                     batch = batch.with_columns(
@@ -2145,10 +2363,27 @@ class FilteredSampler:
         needed = self._needed_columns()
 
         frames: list[pl.DataFrame] = []
+        # A checkpoint holds the rows kept so far, as Parquet parts (each
+        # save writes the rows kept since the last), and where the scan
+        # resumes (_saving).
+        checkpoint = self._checkpoint("filter", {"needed": needed})
+        resume: tuple[int, int] | None = None
+        saved = checkpoint.load()
+        if saved is not None:
+            saved_state, _, frames = saved
+            if saved_state.get("resume"):
+                resume = (saved_state["resume"][0], saved_state["resume"][1])
+        written = len(frames)
+
+        def state() -> tuple[dict, dict, list]:
+            nonlocal written
+            new, written = frames[written:], len(frames)
+            return {}, {}, new
+
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why.
         with tqdm(total=None, desc="Filtering parquet files") as pbar:
-            for batch in self._batches(needed):
+            for batch in _saving(self._batches(needed, resume), checkpoint, state):
                 try:
                     if not batch.is_empty():
                         frames.append(batch.select(needed))
@@ -2157,9 +2392,12 @@ class FilteredSampler:
                 pbar.update(1)
 
         if not frames:
+            checkpoint.discard()
             # In `needed` order, as the rows of a filter that matches come.
             return self._empty(needed).select(needed)
-        return self._finish(pl.concat(frames))
+        sample = self._finish(pl.concat(frames))
+        checkpoint.discard()
+        return sample
 
     # ---------- reservoir sampling for random sample ----------
     def get_random_sample(self, n: int, replace: bool = False) -> pl.DataFrame:
@@ -2197,10 +2435,41 @@ class FilteredSampler:
         # filter's columns alone; _gather reads the chosen rows.
         keys = sorted(self._filter_columns(self.filter_dict))
 
+        # A checkpoint holds the reservoir, the counts and the generator's
+        # state after a whole batch; resumed, the scan starts after that
+        # batch's last row (_saving). "scanned" marks a scan that finished,
+        # so a stop in the second pass doesn't scan again.
+        checkpoint = self._checkpoint("random", {"n": n, "keys": keys})
+        resume: tuple[int, int] | None = None
+        scanned = False
+        saved = checkpoint.load()
+        if saved is not None:
+            saved_state, arrays, _ = saved
+            filled, total_seen = saved_state["filled"], saved_state["total_seen"]
+            scanned = saved_state.get("scanned", False)
+            restore_rng(self.rng.rng, saved_state["rng"])
+            kept = _identity_frame(arrays, "res:")
+            if kept is not None:
+                reservoir_schema = dict(kept.schema)
+                reservoir_cols = {c: kept[c].to_numpy(writable=True) for c in kept.columns}
+            fill = _identity_frame(arrays, "fill:")
+            fill_chunks = [fill] if fill is not None else []
+            if saved_state.get("resume"):
+                resume = (saved_state["resume"][0], saved_state["resume"][1])
+
+        def state() -> tuple[dict, dict, list]:
+            arrays = _identity_arrays("fill:", fill_chunks)
+            if reservoir_cols is not None:
+                arrays.update({f"res:{c}": a for c, a in reservoir_cols.items()})
+            draw = {"filled": filled, "total_seen": total_seen, "rng": rng_state(self.rng.rng)}
+            return draw, arrays, []
+
+        batches = iter(()) if scanned else _saving(self._batches(keys, resume), checkpoint, state)
+
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why.
         with tqdm(total=None, desc="Sampling (random)") as pbar:
-            for df_batch in self._batches(keys):
+            for df_batch in batches:
                 batch_size = len(df_batch)
                 if batch_size == 0:
                     pbar.update(1)
@@ -2250,6 +2519,10 @@ class FilteredSampler:
                 total_seen += batch_size
                 pbar.update(1)
 
+        if checkpoint.enabled and not scanned:
+            draw, arrays, _ = state()
+            checkpoint.save({**draw, "scanned": True}, arrays)
+
         reservoir = (
             _reservoir_to_dataframe(reservoir_cols, reservoir_schema)
             if reservoir_cols is not None and reservoir_schema is not None
@@ -2257,10 +2530,12 @@ class FilteredSampler:
             else None
         )
 
-        if reservoir is None or reservoir.is_empty():
-            return self._empty(needed)
-
-        return self._gather(reservoir, needed)
+        sample = (
+            self._empty(needed) if reservoir is None or reservoir.is_empty()
+            else self._gather(reservoir, needed)
+        )
+        checkpoint.discard()
+        return sample
 
     # ---------- with-replacement sampling (two-pass) ----------
     def _get_random_sample_with_replacement(
@@ -2306,19 +2581,48 @@ class FilteredSampler:
         run against an archive far larger than RAM.
         """
         keys = sorted(self._filter_columns(self.filter_dict))
-        count = sum(len(batch) for batch in self._batches(keys))
 
-        if count == 0:
-            return self._empty(needed)
+        # A checkpoint holds the pass, the count so far (pass 1) or the
+        # drawn positions and the identities picked so far (pass 2), and
+        # where the scan resumes (_saving).
+        checkpoint = self._checkpoint("replace", {"n": n, "keys": keys})
+        phase, count, pos = 1, 0, 0
+        resume: tuple[int, int] | None = None
+        targets = np.empty(0, dtype=np.int64)
+        frames: list[pl.DataFrame] = []
+        saved = checkpoint.load()
+        if saved is not None:
+            saved_state, arrays, _ = saved
+            phase, count, pos = saved_state["pass"], saved_state["count"], saved_state["pos"]
+            if saved_state.get("resume"):
+                resume = (saved_state["resume"][0], saved_state["resume"][1])
+            if phase == 2:
+                targets = arrays["targets"]
+                picked = _identity_frame(arrays, "pick:")
+                frames = [picked] if picked is not None else []
 
-        targets = np.sort(self.rng.choice(count, n, replace=True))
+        if phase == 1:
+            def count_state() -> tuple[dict, dict, list]:
+                return {"pass": 1, "count": count, "pos": 0}, {}, []
+
+            for batch in _saving(self._batches(keys, resume), checkpoint, count_state):
+                count += len(batch)
+            resume = None
+            if count == 0:
+                checkpoint.discard()
+                return self._empty(needed)
+            targets = np.sort(self.rng.choice(count, n, replace=True))
+            if checkpoint.enabled:
+                checkpoint.save({"pass": 2, "count": count, "pos": 0}, {"targets": targets})
+
+        def pick_state() -> tuple[dict, dict, list]:
+            arrays = {"targets": targets, **_identity_arrays("pick:", frames)}
+            return {"pass": 2, "count": count, "pos": pos}, arrays, []
 
         # The second scan picks the drawn rows' identities from the
         # filter's columns alone; _gather then reads the rows.
-        frames: list[pl.DataFrame] = []
-        pos = 0
         with tqdm(total=None, desc="Sampling (random, with replacement)") as pbar:
-            for df_batch in self._batches(keys):
+            for df_batch in _saving(self._batches(keys, resume), checkpoint, pick_state):
                 batch_size = len(df_batch)
                 if batch_size == 0:
                     pbar.update(1)
@@ -2327,22 +2631,22 @@ class FilteredSampler:
                 lo = np.searchsorted(targets, pos, side="left")
                 hi = np.searchsorted(targets, pos + batch_size, side="left")
                 if hi > lo:
-                    frames.append(df_batch[targets[lo:hi] - pos])
+                    frames.append(df_batch[targets[lo:hi] - pos].select(_IDENTITY))
 
                 pos += batch_size
                 pbar.update(1)
 
         if pos != count:
+            checkpoint.discard()
             raise RuntimeError(
                 f"Filtered row count changed between the counting pass "
                 f"({count}) and the sampling pass ({pos}); the underlying "
                 f"data changed mid-sample. Rerun."
             )
 
-        if not frames:
-            return self._empty(needed)
-
-        return self._gather(pl.concat(frames), needed)
+        sample = self._gather(pl.concat(frames), needed) if frames else self._empty(needed)
+        checkpoint.discard()
+        return sample
 
     # ---------- stratified reservoir sampling ----------
     # A dedicated grouping-key column, added and dropped inside the loop
@@ -2394,10 +2698,36 @@ class FilteredSampler:
         # chosen rows.
         keys = sorted(self._filter_columns(self.filter_dict) | {stratify_col})
 
+        # A checkpoint holds every stratum's reservoir, counts and
+        # generator, in their order (_groups_to_checkpoint), and where the
+        # scan resumes (_saving); "scanned" marks a finished scan.
+        checkpoint = self._checkpoint("stratified", {
+            "stratify": stratify_col, "n_per_group": n_per_group, "quotas": quotas,
+            "keys": keys,
+        })
+        resume: tuple[int, int] | None = None
+        scanned = False
+        saved = checkpoint.load()
+        if saved is not None:
+            saved_state, arrays, _ = saved
+            (total_seen, filled, capacity, fill_chunks, reservoir_cols, reservoir_schema,
+             group_rngs) = _groups_from_checkpoint(saved_state, arrays, self.rng.seed)
+            scanned = saved_state.get("scanned", False)
+            if saved_state.get("resume"):
+                resume = (saved_state["resume"][0], saved_state["resume"][1])
+
+        def state() -> tuple[dict, dict, list]:
+            groups, arrays = _groups_to_checkpoint(
+                total_seen, filled, capacity, fill_chunks, reservoir_cols, group_rngs
+            )
+            return groups, arrays, []
+
+        batches = iter(()) if scanned else _saving(self._batches(keys, resume), checkpoint, state)
+
         # Driven manually rather than iterated directly: see
         # IndexedSampler.get_random_sample's own detailed note on why.
         with tqdm(total=None, desc="Sampling (stratified)") as pbar:
-            for df_batch in self._batches(keys):
+            for df_batch in batches:
                 if df_batch.is_empty() or stratify_col not in df_batch.columns:
                     pbar.update(1)
                     continue
@@ -2483,11 +2813,16 @@ class FilteredSampler:
         # real size, see docs/limitations-and-roadmap.md#representativeness).
         self.stratum_row_counts_ = dict(total_seen)
         _warn_absent_quota_groups(quotas, total_seen, f"{stratify_col!r} group")
-
-        if not reservoirs:
-            return self._empty(needed)
+        if checkpoint.enabled and not scanned:
+            groups, arrays, _ = state()
+            checkpoint.save({**groups, "scanned": True}, arrays)
 
         # The reservoirs hold row identities, in group order and, within a
         # group, in reservoir slot order; _gather reads those rows, in that
         # order, with the dataset's own column types.
-        return self._gather(pl.concat(list(reservoirs.values())), needed)
+        sample = (
+            self._gather(pl.concat(list(reservoirs.values())), needed) if reservoirs
+            else self._empty(needed)
+        )
+        checkpoint.discard()
+        return sample
