@@ -112,7 +112,10 @@ def configure_read_rate(mb_per_s: float | None) -> None:
     None) for the reads this process makes, and start its average anew."""
     global _read_rate, _pace_start, _pace_charged, _pace_counter
     _read_rate = mb_per_s * 1e6 if mb_per_s is not None else None
-    _pace_start = None
+    # The clock starts now, with the count: started at the first pause, a
+    # worker's first file (read before it) was free, and a short capped
+    # clean ran above the cap.
+    _pace_start = time.monotonic() if _read_rate is not None else None
     _pace_charged = 0
     _pace_counter = (process_read_bytes() or 0) if _read_rate is not None else 0
 
@@ -903,7 +906,9 @@ def read_parquet_path(path: str | Path) -> pl.DataFrame:
     # crafted "... does not exist: <path>".
     p = ensure_exists(path, "parquet path")
     if not p.is_dir():
-        return retry_read(str(p), lambda: pl.read_parquet(p))
+        # With its schema, so polars doesn't map the file (read_parquet_schema).
+        schema = read_parquet_schema(p)
+        return retry_read(str(p), lambda: pl.scan_parquet(p, schema=schema).collect())
 
     # A path component starting with "_" or "." marks metadata, not data,
     # the same Hadoop/Spark/Parquet convention (_SUCCESS, _metadata) this
@@ -1163,10 +1168,29 @@ def _imap_files(fn: Callable[[_T], _R], files: list[_T]) -> Iterator[_R]:
             yield result
 
 
+def polars_schema(arrow_schema: pa.Schema) -> dict[str, pl.DataType]:
+    """The polars schema of an Arrow schema read from a Parquet footer: the
+    one pl.read_parquet_schema reads from the same footer (432 files of
+    every dataset, converted and cleaned, compared equal)."""
+    frame = pl.from_arrow(arrow_schema.remove_metadata().empty_table())
+    assert isinstance(frame, pl.DataFrame)
+    return dict(frame.schema.items())
+
+
 def read_parquet_schema(file: str | Path) -> dict[str, pl.DataType]:
-    """One file's schema from its footer, retried after a read error
-    (io.read_retries)."""
-    return dict(retry_read(str(file), lambda: pl.read_parquet_schema(file)).items())
+    """
+    One file's schema from its footer, retried after a read error
+    (io.read_retries) and paced (io.max_read_mb_per_s). Read through
+    pyarrow: pl.read_parquet_schema memory-maps the whole file to read its
+    footer even with POLARS_FORCE_ASYNC=1, and so does any polars scan that
+    has to work out a file's schema itself (pl.read_parquet, scan_parquet
+    without schema=); a scan given its schema maps nothing. A mapped read
+    that fails on network storage is the SIGBUS io.memory_map is there to
+    avoid, so every polars scan here is given the schema read here.
+    """
+    metadata = retry_read(str(file), lambda: pq.read_metadata(file))
+    pace_reads()
+    return polars_schema(metadata.schema.to_arrow_schema())
 
 
 def read_file_schemas(files: list[Path]) -> dict[Path, dict[str, pl.DataType]]:
@@ -1468,7 +1492,9 @@ def scan_dataset_reconciled(
         for name, dtype in target_schema.items():
             real = file_schemas[f].get(name)
             if real is not None and real.is_integer() and dtype == pl.Float64():
-                _verify_int_to_float64_widening_is_safe(pl.scan_parquet(f), f, name)
+                _verify_int_to_float64_widening_is_safe(
+                    pl.scan_parquet(f, schema=file_schemas[f]), f, name
+                )
 
     _map_files(check, files)
     lazy_frames = []

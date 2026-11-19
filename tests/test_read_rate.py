@@ -279,11 +279,11 @@ class TestReadersPace:
         assert out.height == query.collect().height
         assert paces["n"] == 1
 
-    def test_clean_paces_once_per_file(self, tmp_path, paces):
+    def test_clean_paces_after_the_footer_and_after_the_file(self, tmp_path, paces):
         f = _write(tmp_path / "in", "20200101.export.parquet", 2000)
         cleaner = GDELTCleaner(str(tmp_path / "in"), str(tmp_path / "out"), ["QuadClass"])
         cleaner._clean_file(f, tmp_path / "out" / "20200101.parquet")
-        assert paces["n"] == 1
+        assert paces["n"] == 2
 
     def test_the_index_paces_each_footer(self, tmp_path, paces):
         _dataset(tmp_path)
@@ -318,3 +318,12 @@ class TestScanBatches:
         split = list(io_module.scan_batches(ranges, "the scan", 1000))
         assert [b.height for b in split] == [b.height for b in one]
         assert all(a.equals(b) for a, b in zip(one, split, strict=True))
+
+
+class TestPacerClock:
+    def test_the_first_read_after_the_cap_is_set_counts(self, clock):
+        # A worker's first file, read before its first pause, is paced too.
+        configure_read_rate(1)
+        clock.counter += 2_000_000
+        pace_reads()
+        assert clock.slept == [2.0]

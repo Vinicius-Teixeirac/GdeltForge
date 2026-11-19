@@ -841,7 +841,7 @@ io:
   # filesystem: a mapped read that fails there (an NFS hiccup) kills the
   # process with SIGBUS, which nothing can retry, while an unmapped one
   # raises an error read_retries retries. true always maps, false never
-  # does (about 10% more peak memory, same speed); see
+  # does (slower on warm data, same peak memory); see
   # docs/configuration.md#memory-mapping-and-read-retries.
   memory_map: auto
   # How many times a failed Parquet read is tried again, waiting 2, 4,

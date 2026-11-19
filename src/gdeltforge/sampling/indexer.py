@@ -18,6 +18,7 @@ from gdeltforge.utils.io import (
     _map_files,
     clearer_dataset_errors,
     pace_reads,
+    polars_schema,
     retry_read,
 )
 from gdeltforge.utils.logging import get_logger
@@ -395,9 +396,5 @@ class _FooterFacts:
 
 
 def _polars_schema(serialized: bytes) -> dict[str, pl.DataType]:
-    """The polars schema of a serialized Arrow schema: the one
-    pl.read_parquet_schema reads from the same footer."""
-    schema = pa.ipc.read_schema(pa.py_buffer(serialized))
-    frame = pl.from_arrow(schema.empty_table())
-    assert isinstance(frame, pl.DataFrame)
-    return dict(frame.schema.items())
+    """The polars schema of a serialized Arrow schema (io.polars_schema)."""
+    return polars_schema(pa.ipc.read_schema(pa.py_buffer(serialized)))
