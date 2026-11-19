@@ -31,7 +31,11 @@ from pathlib import Path
 import yaml
 
 from gdeltforge.utils.config import CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH, peek_config
-from gdeltforge.utils.storage import POLARS_FORCE_ASYNC, memory_map_decision
+from gdeltforge.utils.storage import (
+    POLARS_FORCE_ASYNC,
+    mark_set_by_launcher,
+    memory_map_decision,
+)
 
 # The commands that read many files in the CLI's own process.
 _SCANNING_COMMANDS = frozenset({"sample", "crossref"})
@@ -111,6 +115,7 @@ def main() -> None:
         os.environ["POLARS_MAX_THREADS"] = str(cap)
     if force_async_reads(sys.argv[1:], os.environ):
         os.environ[POLARS_FORCE_ASYNC] = "1"
+        mark_set_by_launcher()
     # Imported only now: gdeltforge.cli imports polars.
     from gdeltforge.cli import main as cli_main
 

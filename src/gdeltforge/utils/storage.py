@@ -36,6 +36,25 @@ from gdeltforge.utils.config import get_dict, resolve_max_read_mb_per_s, resolve
 
 POLARS_FORCE_ASYNC = "POLARS_FORCE_ASYNC"
 
+# Whether the gdeltforge launcher set POLARS_FORCE_ASYNC itself (from the
+# config), so the command reports the config's reason, not "it is exported".
+_set_by_launcher = False
+
+
+def mark_set_by_launcher() -> None:
+    """Record that the launcher set POLARS_FORCE_ASYNC for this process."""
+    global _set_by_launcher
+    _set_by_launcher = True
+
+
+def environ_without_launcher_setting() -> dict[str, str]:
+    """os.environ as the user left it: without the POLARS_FORCE_ASYNC the
+    launcher set, so memory_map_decision gives the config's reason."""
+    environ = dict(os.environ)
+    if _set_by_launcher:
+        environ.pop(POLARS_FORCE_ASYNC, None)
+    return environ
+
 # Linux filesystem types that live on another machine. 9p and virtiofs are
 # left out: they carry a VM's host disk (WSL's /mnt/c, for one), which is
 # local storage as far as a failing read goes.
@@ -143,7 +162,7 @@ def memory_map_decision(
     exported = environ.get(POLARS_FORCE_ASYNC)
     if exported is not None:
         mapped = exported != "1"
-        return mapped, f"{POLARS_FORCE_ASYNC}={exported} is set"
+        return mapped, f"{POLARS_FORCE_ASYNC}={exported} is exported"
     setting = resolve_memory_map(config)
     if resolve_max_read_mb_per_s(config) is not None:
         if setting is True:
