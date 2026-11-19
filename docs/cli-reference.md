@@ -180,7 +180,7 @@ Already-cleaned files are skipped on a rerun too, tracked the same way as `conve
 
 By default `clean` shows the same setup line, progress bar, and end-of-run summary shape as `convert`/`scrape`. Its per-file line is quieter than `convert`'s (one line per file instead of two), but at `gkg-v2`/`mentions` scale it's still hundreds of thousands of lines; `--verbose` restores it, same reasoning as `convert`'s own flag. `--quiet` goes the other way, raising the logger to WARNING and suppressing even the setup/summary lines; mutually exclusive with `--verbose`.
 
-`--force` bypasses the `.done` marker check, reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything; add `--report` to also measure what each step would change, which reads every file in scope. `--report` without `--dry-run` is an error.
+`--force` bypasses the check that a source is already cleaned (its cleaned file's metadata, or an older `.done` marker beside it), reprocessing and overwriting output for files already cleaned under the current configuration. `--dry-run` reports how many files would be cleaned, honoring `--force`'s effect on that count, without processing anything; add `--report` to also measure what each step would change, which reads every file in scope. `--report` without `--dry-run` is an error.
 
 With the default settings, `clean` also repairs known GDELT errors (the events dated 1920 instead of 2020, and the blank `DATEADDED` of the 2013-09-01 and 2013-09-02 daily files) while keeping GDELT's own values, and counts the rows that aren't CAMEO events; see [Data Cleaning](data-cleaning.md#errata-known-gdelt-errors). `--delete-source` refuses to run while a lossy step added in 0.12.0 is configured (`event_markers: drop`, `date_1920` without `keep_original`, either `normalize` switch, or `places.resolve`) unless `clean.allow_lossy_delete_source` is `true`.
 
@@ -208,7 +208,7 @@ GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDEL
 | `--force` | Reprocess periods already marked done instead of skipping them, overwriting their aggregated output. Off by default |
 | `--dry-run` | Report how many periods would be aggregated without aggregating anything. Off by default |
 
-Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. The output file itself records its sources, in the order their rows were written, with the converted 15-minute file each holds and its row count (Parquet metadata, key `gdeltforge:aggregate`), so a sample's `--provenance` can name a row's 15-minute file (see [Row provenance](#row-provenance)). A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
+Unlike `convert`, whose `.done` marker is keyed one-per-source-file (and `clean`, which checks each cleaned file's own metadata), aggregation is many-sources-in-one-output: the marker sits next to each aggregated output file, fingerprinted on this run's own settings (`--source`, compression, `--delete-source`) plus the sorted set of contributing source filenames. The output file itself records its sources, in the order their rows were written, with the converted 15-minute file each holds and its row count (Parquet metadata, key `gdeltforge:aggregate`), so a sample's `--provenance` can name a row's 15-minute file (see [Row provenance](#row-provenance)). A period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists.
 
 `--order`, `--verbose`/`--quiet`, `--force`, and `--dry-run` all match `convert`'s/`clean`'s own identically-named flags exactly, including the worker-pool interrupt handling (Ctrl+C/SIGTERM cancel not-yet-started periods immediately rather than draining the whole batch).
 
@@ -259,6 +259,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--seed N` | all | RNG seed (default 42) |
 | `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there, the 15-minute file for `--source aggregated` (see [Row provenance](#row-provenance)). Off by default |
 | `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
+| `--no-checkpoint` | all | Save no checkpoint of a long scan for this run, and ignore one a stopped run left (see [Checkpoints](#checkpoints)) |
 | `--per-period N` | calendar | Rows per calendar period (default 10); with `--quota-file`, the rows of each period the file doesn't list (default 0) |
 | `--per-day N` | calendar | Deprecated alias for `--per-period` |
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
@@ -362,6 +363,16 @@ sets. For an aggregated file written before 0.16.0, the index also keeps
 the record of its sources a `--provenance` sample derived (see
 [Row provenance](#row-provenance)); an index saved by 0.15.0 is read and
 extended, not rebuilt.
+
+### Checkpoints
+
+A long `sample` or `crossref` scan saves a checkpoint every `io.checkpoint_every_s` seconds (default 60), under `paths.checkpoint_directory` (default `./data/checkpoints`). Run the same command again after a stop (Ctrl+C, a killed job, a lost session) and it resumes where the last checkpoint left it, with exactly the output an uninterrupted run gives: the same rows, in the same order, byte for byte.
+
+- **What is saved**: a draw's reservoirs (row identities, not the rows), counts and random generator states, and where the scan stands; the full-set filter's kept rows and crossref's matches, written in parts as they are found. A sample's [saved file index](#saved-file-index) is saved as its footers are read too, so a stopped first run keeps them.
+- **The same run**: a checkpoint is named after everything that decides the output: the command and its parameters (the filter, `--columns`, `-n`, `--stratify`, ...), the seed, every file read with its size and modification time, the events table for `crossref`, and the gdeltforge version. Change any of them and the command starts afresh. Without `--seed` every sample is a different draw, so there is nothing to resume.
+- **Where a resumed scan starts**: after the last batch the checkpoint saw. It reads only what was left; the second pass of a draw (reading the chosen rows) runs again in full.
+- **Cleaning up**: a finished run removes its checkpoint. One a stopped run left behind, never resumed, stays until removed (delete the directory under `paths.checkpoint_directory`). An unreadable one is removed and the run starts over.
+- **Off**: `--no-checkpoint` for one run (it also ignores a checkpoint left behind), `io.checkpoint_every_s: null` or `paths.checkpoint_directory: null` for every run.
 
 ### Sample manifest
 
@@ -544,6 +555,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--end-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period ends on or before this date. Narrows the configured directories being read, not `--events` |
 | `--out PATH` | Output parquet file (default `crossref.parquet`) |
 | `--export-format {parquet,csv}` | Output file format. `csv` rewrites `--out`'s extension to `.csv`. Off (`parquet`) by default; see `sample`'s own `--export-format` above for the CSV round-trip caveat |
+| `--no-checkpoint` | Save no checkpoint of the long passes for this run, and ignore one a stopped run left (see [Checkpoints](#checkpoints)) |
 
 GKG's two format generations relate to Events differently, so `--gkg-version` picks a genuinely different join strategy, not just a different data source (see [Related Work](comparison.md#where-gdeltforge-differs) for why a direct Events<->GKG 2.1 join isn't possible):
 

@@ -79,6 +79,8 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 
 `index_directory` (default `./data/index`) is one key for every dataset, unprefixed: where `sample` keeps its [saved file index](cli-reference.md#saved-file-index), one file per source directory. `null` keeps none. It must sit outside every data directory.
 
+`checkpoint_directory` (default `./data/checkpoints`), also one key for every dataset: where `sample` and `crossref` keep the [checkpoints](cli-reference.md#checkpoints) of a long scan, so a run stopped partway resumes where it left off. `null` keeps none. It must sit outside every data directory: a checkpoint's Parquet parts would be read as data.
+
 Two further keys exist for Events and `events-reduced`: `parquet_historical_directory` and `cleaned_historical_directory` (Hive-partitioned Parquet, one directory per `Year`). For Events these are only used when `converter.partitioning.enabled` is true, gating its opt-in yearly/monthly split; `events-15min`, GKG 2.1, Mentions, and GKG 1.0/Counts have no pre-2013 yearly/monthly archive to partition at all, so they have no historical variant. `events-reduced` is the one exception to that toggle rather than a third case of "no historical variant": it has no flat output mode whatsoever, so its two historical keys are required and always used regardless of `converter.partitioning.enabled`, since every row it ever writes is Hive-partitioned by `Year`.
 
 ### Translated stream
@@ -221,7 +223,7 @@ The section is checked before any file is read. An unknown key under `clean:` is
 
 This is the one section you should always customize: the example values are illustrative, not a recommendation. Pick the columns that matter for your analysis, e.g. if you don't need geocoding, don't require `Actor1Geo_Lat`/`Actor1Geo_Long` to be non-null, since that drops any event GDELT couldn't geolocate. See [Column Redundancy](column-redundancy.md) for which columns are safe to prune from `output_columns` because they duplicate another column, measured against real GDELT data, and which look redundant but aren't.
 
-Cleaned output is resumable the same way `convert`'s is (see "Resumability" above): a `.done` marker per file records `columns_to_check`, `output_columns`, `float32_columns`, and `compression`, so an interrupted `clean` run resumes instead of restarting from the first file, and changing any of those settings invalidates old markers rather than silently skipping files that need to be reprocessed under the new configuration.
+Cleaned output is resumable like `convert`'s (see "Resumability" above), but without marker files: each cleaned file's own clean marker (its Parquet metadata) names its source and records a fingerprint of `columns_to_check`, `output_columns`, `float32_columns`, `compression` and the steps' settings. A rerun skips a source whose cleaned file carries this run's fingerprint, so nothing is written beside the source files (a converted directory may be read-only or shared) and nothing but the cleaned files sits in the output directory, which `pl.read_parquet(directory)` would otherwise refuse. A `.done` marker beside a source file, where clean wrote them before 0.18.0, still counts. Deleting a cleaned file cleans its source again. An interrupted `clean` run resumes instead of restarting from the first file, and changing any of those settings invalidates old markers rather than silently skipping files that need to be reprocessed under the new configuration.
 
 ### `output_columns` and `crossref`: four columns you can't prune away
 
@@ -281,7 +283,7 @@ Aggregated output files are named plainly by the period they cover (`20200101.pa
 
 ### Resumability
 
-Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, aggregation is many-sources-in-one-output, so the marker sits next to each aggregated OUTPUT file instead, fingerprinted on `compression`, `source`, `delete_source`, and the sorted set of contributing source filenames. That last part matters specifically here: a period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists. `--force` bypasses the check entirely, same as `convert`/`clean`.
+Unlike `convert`, whose `.done` marker is keyed one-per-source-file (and `clean`, which checks each cleaned file's own metadata), aggregation is many-sources-in-one-output, so the marker sits next to each aggregated OUTPUT file instead, fingerprinted on `compression`, `source`, `delete_source`, and the sorted set of contributing source filenames. That last part matters specifically here: a period whose source-file-set later changes (a backfilled/delayed 15-minute file, or a still-in-progress day that later gets a file added) is reprocessed rather than treated as permanently done just because a marker with a matching config exists. `--force` bypasses the check entirely, same as `convert`/`clean`.
 
 `--delete-source` (off by default) deletes each contributing source file once its period's aggregated output is confirmed written, matching `convert`'s/`clean`'s own flag of the same name; the safe default keeps the aggregated output in its own separate directory alongside the untouched source files, mirroring how `events-reduced` got its own directory rather than overwriting `events`.
 
@@ -292,6 +294,7 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 | `max_concurrent_reads` | `null` | How many files one `clean`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
 | `memory_map` | `auto` | Whether polars memory-maps the Parquet files it reads: `auto` maps them unless a `paths` directory is on a network filesystem, `true` always, `false` never. See [Memory mapping and read retries](#memory-mapping-and-read-retries) |
 | `read_retries` | `3` | How many times a failed Parquet read is tried again, waiting 2, 4, 8 ... seconds in between, before the command stops. `0` reads once |
+| `checkpoint_every_s` | `60` | How often, in seconds, a long `sample` or `crossref` scan saves a [checkpoint](cli-reference.md#checkpoints) under `paths.checkpoint_directory`. `null` means none |
 | `max_read_mb_per_s` | `null` | The average rate, in megabytes (10^6 bytes) per second, at which one command reads. `clean` and `aggregate` split it among their workers. `null` means no cap. See [Read-rate cap](#read-rate-cap) |
 
 `max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:

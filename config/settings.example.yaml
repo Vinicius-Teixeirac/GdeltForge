@@ -423,6 +423,10 @@ paths:
   # row groups and schema, reused while the file is unchanged). One for
   # every dataset; null keeps none. Must sit outside every data directory.
   index_directory: "./path_example/index"
+  # Where sample and crossref keep the checkpoints of a long scan (one
+  # directory per run, removed when it finishes). null keeps none. Must
+  # sit outside every data directory.
+  checkpoint_directory: "./path_example/checkpoints"
 
   # GKG 2.1 and Mentions: same four stages as Events (download / unzip /
   # convert / clean), but their own directories; these publish at
@@ -843,6 +847,11 @@ io:
   # How many times a failed Parquet read is tried again, waiting 2, 4,
   # 8 ... seconds in between. 0 = read once.
   read_retries: 3
+  # How often, in seconds, a long sample or crossref scan saves a
+  # checkpoint under paths.checkpoint_directory, so a run stopped partway
+  # resumes with exactly an uninterrupted run's output. null = none. See
+  # docs/cli-reference.md#checkpoints.
+  checkpoint_every_s: 60
   # The average rate, in megabytes (10^6 bytes) per second, at which one
   # command reads, counted from the bytes the operating system says the
   # process read (Linux, Windows; refused on macOS). For storage shared

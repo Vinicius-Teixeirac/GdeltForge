@@ -2219,7 +2219,7 @@ class TestFilteredSamplerWithReplacement:
         call_count = 0
         original_batches = sampler._batches
 
-        def counting_batches(needed_columns):
+        def counting_batches(needed_columns, resume=None):
             nonlocal call_count
             call_count += 1
             yield from original_batches(needed_columns)
@@ -3526,7 +3526,7 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         sampler = CalendarSampler(str(folder), random_state=1)
         _patch_tqdm_close_to_raise_once(monkeypatch)
 
-        def fake_key_batches(files, file_schemas, target_schema):
+        def fake_key_batches(files, file_schemas, target_schema, resume=None):
             yield pl.DataFrame({"Day": [20200101]})
 
         monkeypatch.setattr(sampler, "_key_batches", fake_key_batches)
@@ -3549,7 +3549,7 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         _patch_tqdm_close_to_raise_once(monkeypatch)
 
-        def fake_batches(needed_columns):
+        def fake_batches(needed_columns, resume=None):
             yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
 
         monkeypatch.setattr(sampler, "_batches", fake_batches)
@@ -3572,7 +3572,7 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         _patch_tqdm_close_to_raise_once(monkeypatch)
 
-        def fake_batches(needed_columns):
+        def fake_batches(needed_columns, resume=None):
             yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
 
         monkeypatch.setattr(sampler, "_batches", fake_batches)
@@ -3601,7 +3601,7 @@ class TestTqdmInterruptDoesNotLeakATraceback:
         sampler = FilteredSampler(str(folder), ["GlobalEventID", "QuadClass"], random_state=1)
         _patch_tqdm_close_to_raise_once(monkeypatch)
 
-        def fake_batches(needed_columns):
+        def fake_batches(needed_columns, resume=None):
             yield pl.DataFrame({"GlobalEventID": [1], "QuadClass": [1]})
 
         monkeypatch.setattr(sampler, "_batches", fake_batches)

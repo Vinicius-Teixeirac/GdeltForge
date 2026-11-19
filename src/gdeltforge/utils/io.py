@@ -198,28 +198,29 @@ def scan_batches(
 ) -> Iterator[pl.DataFrame]:
     """
     The batches of one scan, or of several scans over consecutive ranges of
-    files (paced_ranges) as if they were that one scan: polars hands a
-    scan's rows out in batches of exactly chunk_size rows (the last one
-    shorter), and what a sampler does with a batch can depend on where it
-    starts (which of two calendar periods filling in the same batch comes
-    first), so the ranges' rows are handed out in the same chunk_size
-    batches. Each scan's batches are retried (batches_with_retries).
+    files (paced_ranges, or a scan resumed from a checkpoint) as if they
+    were that one scan, in batches of exactly chunk_size rows (the last one
+    shorter). polars cuts a scan that way itself; what a sampler does with
+    a batch can depend on where it starts (which of two calendar periods
+    filling in the same batch comes first), so the batches are always cut
+    on that grid, whatever the scans: a resumed or paced scan then hands
+    out the batches an uninterrupted one would. Each scan's batches are
+    retried (batches_with_retries).
 
     Reads are paced (pace_reads) after each scan, never while one is open:
     polars keeps reading and decoding a scan's files while its consumer
     waits, so a pause inside a scan held every column of the rest of the
     range in memory (about 500 MB more for a few daily Events files).
     """
-    if len(scans) == 1:
-        yield from batches_with_retries(lambda: scans[0], what, chunk_size)
-        pace_reads()
-        return
     pending: list[pl.DataFrame] = []
     held = 0
     for i, scan in enumerate(scans):
         if i:
             pace_reads()
         for batch in batches_with_retries(lambda scan=scan: scan, what, chunk_size):
+            if not held and batch.height == chunk_size:
+                yield batch
+                continue
             while batch.height:
                 take = min(chunk_size - held, batch.height)
                 pending.append(batch.slice(0, take))

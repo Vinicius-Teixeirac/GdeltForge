@@ -385,6 +385,13 @@ paths:
   # every run); --file-index names one explicitly. Must sit outside every
   # data directory.
   index_directory: "./data/index"
+  # Where `sample` and `crossref` keep the checkpoints of a long scan, so a
+  # run stopped partway resumes where it left off, with exactly the output
+  # an uninterrupted run gives. One directory per run, named after
+  # everything that decides its output, removed once the run finishes.
+  # null keeps none; --no-checkpoint skips them for one run. Must sit
+  # outside every data directory.
+  checkpoint_directory: "./data/checkpoints"
 
   gkg_v2_downloaded_data_directory: "./data/gkg_v2/raw"
   gkg_v2_unzipped_data_directory: "./data/gkg_v2/csv"
@@ -557,3 +564,7 @@ io:
   # workers; it turns memory_map off; refused on macOS (no such count).
   # null = no cap. For storage shared with others.
   max_read_mb_per_s: null
+  # How often, in seconds, a long `sample` or `crossref` scan saves a
+  # checkpoint under paths.checkpoint_directory (at the next batch done
+  # after this long). null = no checkpoints.
+  checkpoint_every_s: 60

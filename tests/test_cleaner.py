@@ -492,6 +492,42 @@ class TestFilterResumability:
         assert (processed, failed) == (0, 0)
         assert any("Skipping already cleaned" in r.message for r in caplog.records)
 
+    def test_clean_writes_nothing_beside_its_input_or_its_output(self, tmp_path):
+        # A converted directory may be read-only or shared, and a file of
+        # another extension in the output directory makes
+        # pl.read_parquet(directory) refuse it.
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+        GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"]).clean_all_files()
+        assert sorted(p.name for p in input_dir.iterdir()) == ["a.parquet"]
+        assert sorted(p.name for p in (tmp_path / "out").rglob("*")) == ["a_cleaned.parquet"]
+        assert pl.read_parquet(tmp_path / "out").height == 2
+
+    def test_the_rerun_check_is_the_outputs_own_marker(self, tmp_path):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        filt.clean_all_files()
+        marker = cleaner_module.cleaned_marker(tmp_path / "out" / "a_cleaned.parquet")
+        assert marker is not None
+        assert marker["source"] == "a.parquet"
+        assert marker["fingerprint"] == filt._config_fingerprint
+        # The output deleted, the file is cleaned again.
+        (tmp_path / "out" / "a_cleaned.parquet").unlink()
+        assert filt.clean_all_files() == (1, 0)
+
+    def test_a_marker_beside_the_source_from_before_still_counts(self, tmp_path, caplog):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir()
+        _write_parquet(input_dir / "a.parquet", {"GlobalEventID": [1, 2], "QuadClass": [1, 2]})
+        filt = GDELTCleaner(str(input_dir), str(tmp_path / "out"), ["QuadClass"])
+        (input_dir / ".a.parquet.done").write_text(filt._config_fingerprint)
+        with caplog.at_level("DEBUG", logger="gdeltforge.cleaning.cleaner"):
+            assert filt.clean_all_files() == (0, 0)
+        assert any("Skipping already cleaned" in r.message for r in caplog.records)
+
     def test_a_file_that_still_errors_is_not_marked_done(self, tmp_path):
         input_dir = tmp_path / "in"
         input_dir.mkdir()

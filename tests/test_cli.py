@@ -1069,7 +1069,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
@@ -1110,7 +1110,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["folder_path"] = folder_path
                 captured["historical_folder"] = historical_folder
@@ -1152,7 +1152,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["folder_path"] = folder_path
 
@@ -1205,7 +1205,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["historical_folder"] = historical_folder
 
@@ -1244,7 +1244,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["historical_folder"] = historical_folder
 
@@ -1287,7 +1287,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["columns"] = columns
 
@@ -1394,7 +1394,7 @@ class TestRunSamplingCmdSource:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 pass
 
@@ -1711,7 +1711,7 @@ class TestRunSamplingCmdReplace:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 pass
 
@@ -2230,7 +2230,7 @@ class TestRunSamplingCmdDateFiltering:
             def __init__(
                 self, folder_path, historical_folder, random_state, columns=None,
                 start_date=None, end_date=None, date_parser=None, provenance=False,
-                file_index=None,
+                file_index=None, checkpoints=None,
             ):
                 captured["start_date"] = start_date
                 captured["end_date"] = end_date
@@ -2621,7 +2621,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: captured.update(
+            end_date=None, **_: captured.update(
                 folder=folder, gkg_columns=cols, columns=columns
             ) or pl.DataFrame(),
         )
@@ -2678,7 +2678,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: captured.update(folder=folder)
+            end_date=None, **_: captured.update(folder=folder)
             or pl.DataFrame(),
         )
 
@@ -2695,7 +2695,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: pl.DataFrame(),
+            end_date=None, **_: pl.DataFrame(),
         )
 
         with caplog.at_level("WARNING", logger="gdeltforge.cli"):
@@ -2715,7 +2715,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: pl.DataFrame(),
+            end_date=None, **_: pl.DataFrame(),
         )
 
         with caplog.at_level("WARNING", logger="gdeltforge.cli"):
@@ -2734,7 +2734,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: pl.DataFrame(),
+            end_date=None, **_: pl.DataFrame(),
         )
 
         with caplog.at_level("WARNING", logger="gdeltforge.cli"):
@@ -2760,7 +2760,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: pl.DataFrame(),
+            end_date=None, **_: pl.DataFrame(),
         )
 
         parser = cli.build_parser()
@@ -2786,7 +2786,7 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_v2",
             lambda events_df, mentions_folder, gkg_folder, cols, columns=None,
             on_duplicate_document="all", dedupe_mentions=False, start_date=None,
-            end_date=None: captured.update(
+            end_date=None, **_: captured.update(
                 mentions_folder=mentions_folder, gkg_folder=gkg_folder
             ) or pl.DataFrame(),
         )
@@ -2804,7 +2804,7 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_v2",
             lambda events_df, mentions_folder, gkg_folder, cols, columns=None,
             on_duplicate_document="all", dedupe_mentions=False, start_date=None,
-            end_date=None: captured.update(
+            end_date=None, **_: captured.update(
                 on_duplicate_document=on_duplicate_document, dedupe_mentions=dedupe_mentions
             ) or pl.DataFrame(),
         )
@@ -2828,7 +2828,7 @@ class TestRunCrossrefCmd:
             cli, "crossref_events_gkg_auto",
             lambda events_df, gkg_v1_folder, gkg_v1_cols, mentions_folder, gkg_v2_folder,
             gkg_v2_cols, on_duplicate_document="all", dedupe_mentions=False,
-            start_date=None, end_date=None: captured.update(
+            start_date=None, end_date=None, **_: captured.update(
                 gkg_v1_folder=gkg_v1_folder, mentions_folder=mentions_folder,
                 gkg_v2_folder=gkg_v2_folder,
             ) or pl.DataFrame(),
@@ -2855,7 +2855,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: captured.update(folder=folder)
+            end_date=None, **_: captured.update(folder=folder)
             or pl.DataFrame(),
         )
 
@@ -2872,7 +2872,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: captured.update(columns=columns)
+            end_date=None, **_: captured.update(columns=columns)
             or pl.DataFrame(),
         )
 
@@ -2893,7 +2893,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: expected,
+            end_date=None, **_: expected,
         )
 
         out_path = str(tmp_path / "o.parquet")
@@ -2912,7 +2912,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: expected,
+            end_date=None, **_: expected,
         )
 
         cli.run_crossref_cmd(
@@ -2934,7 +2934,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: captured.update(
+            end_date=None, **_: captured.update(
                 start_date=start_date, end_date=end_date
             ) or pl.DataFrame(),
         )
@@ -2982,7 +2982,7 @@ class TestRunCrossrefCmd:
         monkeypatch.setattr(
             cli, "crossref_events_gkg_v1",
             lambda events_df, folder, cols, columns=None, start_date=None,
-            end_date=None: captured.update(
+            end_date=None, **_: captured.update(
                 n_events=len(events_df), ids=events_df["GlobalEventID"].to_list()
             ) or pl.DataFrame(),
         )
@@ -3677,7 +3677,7 @@ class TestIoMaxConcurrentReads:
     POLARS_MAX_CONCURRENT_SCANS for the duration of the command only."""
 
     @pytest.mark.parametrize("command, handler", [
-        (["sample", "--dataset", "events", "--mode", "indexed", "--n", "1",
+        (["sample", "--dataset", "events", "--mode", "indexed", "-n", "1",
           "--out", "o.parquet"], "run_sampling_cmd"),
         (["crossref", "--events", "e.parquet", "--gkg-version", "v2", "--out", "o.parquet"],
          "run_crossref_cmd"),
@@ -3703,7 +3703,7 @@ class TestIoMaxConcurrentReads:
     def test_no_cap_leaves_polars_default(self, monkeypatch):
         monkeypatch.delenv("POLARS_MAX_CONCURRENT_SCANS", raising=False)
         monkeypatch.setattr(sys, "argv", [
-            "gdeltforge", "sample", "--dataset", "events", "--mode", "indexed", "--n", "1",
+            "gdeltforge", "sample", "--dataset", "events", "--mode", "indexed", "-n", "1",
             "--out", "o.parquet",
         ])
         monkeypatch.setattr(cli, "load_config", lambda path: {})

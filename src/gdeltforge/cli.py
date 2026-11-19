@@ -24,7 +24,7 @@ from gdeltforge.crossref.crossref import (
 
 # Samplers
 from gdeltforge.sampling import cameo_codes
-from gdeltforge.sampling.indexer import index_path_for
+from gdeltforge.sampling.indexer import _refuse_inside_roots, index_path_for
 from gdeltforge.sampling.samplers import (
     CalendarSampler,
     FilteredSampler,
@@ -32,8 +32,14 @@ from gdeltforge.sampling.samplers import (
 )
 
 # Pipeline stages
-from gdeltforge.scraping.scraper import date_parser_for, parse_file_date, run_scraping_pipeline
+from gdeltforge.scraping.scraper import (
+    date_parser_for,
+    parse_file_date,
+    parse_gdeltv2_file_date,
+    run_scraping_pipeline,
+)
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
+from gdeltforge.utils.checkpoint import NO_CHECKPOINTS, CheckpointSettings
 from gdeltforge.utils.concurrency import exported_scan_limit, polars_scan_limit
 from gdeltforge.utils.config import (
     STREAMS,
@@ -44,6 +50,7 @@ from gdeltforge.utils.config import (
     dataset_path_key,
     get_dict,
     load_config,
+    resolve_checkpoint_every_s,
     resolve_max_concurrent_reads,
     resolve_max_read_mb_per_s,
     resolve_read_retries,
@@ -620,6 +627,26 @@ def _sample_file_index(
     return index_path_for(directory, roots) if directory else None
 
 
+def _checkpoint_settings(
+    config: dict, args: argparse.Namespace, roots: list[Path]
+) -> CheckpointSettings:
+    """
+    Where a long sample or crossref scan checkpoints, and how often:
+    paths.checkpoint_directory and io.checkpoint_every_s, or none with
+    --no-checkpoint or either set to null. A directory inside one the
+    command reads is refused: a checkpoint's Parquet parts would be read
+    as data.
+    """
+    every_s = resolve_checkpoint_every_s(config)
+    directory = config["paths"].get("checkpoint_directory")
+    if getattr(args, "no_checkpoint", False) or every_s is None or not directory:
+        return NO_CHECKPOINTS
+    _refuse_inside_roots(
+        Path(directory), roots, "The checkpoint directory", "paths.checkpoint_directory"
+    )
+    return CheckpointSettings(Path(directory), every_s)
+
+
 def run_scrape_cmd(config: dict, args: argparse.Namespace) -> None:
     _apply_verbosity(args)
     start_date, end_date = _parse_date_range(args)
@@ -865,6 +892,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     columns = set(args.columns) if args.columns else None
     sources = [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
     file_index = _sample_file_index(config, args, sources)
+    checkpoints = _checkpoint_settings(config, args, sources)
 
     # -----------------------------
     # Indexed Sampling
@@ -881,6 +909,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             date_parser=date_parser,
             provenance=args.provenance,
             file_index=file_index,
+            checkpoints=checkpoints,
             **sampler_extra,
         )
         df = sampler.get_random_sample(n, replace=args.replace)
@@ -935,6 +964,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             file_index=file_index,
             **sampler_extra,
         )
+        sampler.checkpoints = checkpoints
         check_converted_source()
         df = sampler.get_calendar_samples(samples_per_period=samples_per_period, **quota_kwargs)
         _write_sample_output(df, out, args.export_format)
@@ -1004,6 +1034,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             file_index=file_index,
             **sampler_extra,
         )
+        sampler.checkpoints = checkpoints
 
         if args.stratify and args.n_per_group is None and quotas is None:
             raise ValueError("--n-per-group (or --quota-file) is required when --stratify is set")
@@ -1086,12 +1117,17 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     source_key = (
         "cleaned_data_directory" if args.source == "cleaned" else "parquet_data_directory"
     )
-    date_parser_kwargs = {}
+    date_parser = parse_gdeltv2_file_date
     if args.source == "aggregated":
         # Both hops read `gdeltforge aggregate`'s output for --period
         # (default day), whose files are named plainly (20200101.parquet).
         source_key = f"aggregated_{period or 'day'}_data_directory"
-        date_parser_kwargs = {"date_parser": parse_file_date}
+        date_parser = parse_file_date
+    # Checked against every data directory: crossref reads several.
+    checkpoints = _checkpoint_settings(config, args, [
+        Path(v) for k, v in get_dict(config, "paths").items()
+        if k.endswith("data_directory") and isinstance(v, str) and v
+    ])
     if args.source == "converted":
         v2_streams = list(STREAMS) if stream == "both" else [stream]
         checks = [("gdelt_gkg_v1", "english"), ("gdelt_gkg_v1_counts", "english")] + [
@@ -1138,6 +1174,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             dedupe_mentions=args.collapse_duplicate_mentions,
             start_date=start_date,
             end_date=end_date,
+            checkpoints=checkpoints,
         )
     elif args.gkg_version == "v2":
         mentions_folder = _crossref_folders(
@@ -1156,7 +1193,8 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             dedupe_mentions=args.collapse_duplicate_mentions,
             start_date=start_date,
             end_date=end_date,
-            **date_parser_kwargs,
+            date_parser=date_parser,
+            checkpoints=checkpoints,
         )
     else:
         # --on-duplicate-document/--collapse-duplicate-mentions are both
@@ -1185,7 +1223,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         )
         result = crossref_events_gkg_v1(
             events_df, str(gkg_folder), config["columns"][dataset], columns=columns,
-            start_date=start_date, end_date=end_date,
+            start_date=start_date, end_date=end_date, checkpoints=checkpoints,
         )
 
     _write_sample_output(result, out, args.export_format)
@@ -1648,6 +1686,11 @@ def build_parser() -> argparse.ArgumentParser:
              "the 15-minute file the aggregated file holds it from). Off by default"
     )
     sample.add_argument(
+        "--no-checkpoint", action="store_true",
+        help="Save no checkpoint of a long scan for this run, and ignore one a "
+             "stopped run left (paths.checkpoint_directory, io.checkpoint_every_s)"
+    )
+    sample.add_argument(
         "--file-index", metavar="PATH", default=None,
         help="The saved file index to read and update (each file's rows, row "
              "groups and schema, reused while its size and mtime are unchanged). "
@@ -1848,6 +1891,11 @@ def build_parser() -> argparse.ArgumentParser:
              "sidecar alongside it; read the file back with gdeltforge's own "
              "read_csv_export(path), not a bare pl.read_csv/pd.read_csv, or "
              "zero-padded string codes like EventCode lose their leading zero"
+    )
+    crossref.add_argument(
+        "--no-checkpoint", action="store_true",
+        help="Save no checkpoint of the long passes for this run, and ignore one a "
+             "stopped run left (paths.checkpoint_directory, io.checkpoint_every_s)"
     )
 
     # ----------------------------------------------------

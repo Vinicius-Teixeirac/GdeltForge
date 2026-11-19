@@ -267,6 +267,23 @@ def resolve_max_read_mb_per_s(config: dict) -> float | None:
     return float(value)
 
 
+def resolve_checkpoint_every_s(config: dict) -> float | None:
+    """io.checkpoint_every_s: how often a long scan saves a checkpoint, in
+    seconds (default 60), or None for no checkpoints. A number greater than
+    0; a bool or a string is refused."""
+    value = get_dict(config, "io").get("checkpoint_every_s", 60)
+    if value is None:
+        return None
+    if (
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        or not 0 < value < math.inf
+    ):
+        raise ValueError(
+            f"io.checkpoint_every_s must be a number greater than 0, or null; got {value!r}"
+        )
+    return float(value)
+
+
 def get_dict(section: dict, key: str) -> dict:
     """
     section.get(key, {}), except an explicit `key: null` in the YAML is

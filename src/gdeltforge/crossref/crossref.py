@@ -86,6 +86,8 @@ Provides:
     - crossref_events_gkg_auto
 """
 
+import hashlib
+import io
 import warnings
 from collections.abc import Callable, Mapping
 from datetime import date
@@ -93,6 +95,7 @@ from pathlib import Path
 from typing import Literal
 
 import polars as pl
+import pyarrow.parquet as pq
 
 # polars genuinely exports this type alias at runtime, under a
 # private-looking module name; matches converter.py's own identical
@@ -106,8 +109,15 @@ from gdeltforge.scraping.scraper import (
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
 )
+from gdeltforge.utils.checkpoint import (
+    NO_CHECKPOINTS,
+    Checkpoint,
+    CheckpointSettings,
+    file_facts,
+)
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
+    _map_files,
     clearer_dataset_errors,
     detach,
     narrow_to_available_columns,
@@ -601,9 +611,13 @@ def _files_per_batch() -> int:
 _FIRST_PASS_FILES = 500
 
 
+# The rows of a GKG 1.0 scan batch (scan_batches cuts the scan on this grid).
+_BATCH_ROWS = 64_000
+
+
 def _files_with_matches(
     files: list[Path], column: str, values: set[str] | set[int],
-    dtype: pl.DataType | None = None,
+    dtype: pl.DataType | None = None, stages: "_Stages | None" = None, stage: str = "",
 ) -> list[Path]:
     """
     The first pass of a two-pass lookup: the files in `files` holding a
@@ -618,10 +632,13 @@ def _files_with_matches(
     The files are scanned _FIRST_PASS_FILES at a time: one scan over every
     file held about 1.65 MB per file read until it finished (14 GiB over a
     quarter's 8,725 15-minute GKG 2.1 files), so memory grew with the
-    period. Each batch keeps only the names of its matching files.
+    period. Each batch keeps only the names of its matching files. With
+    `stages`, each batch is a chunk of that run's checkpoint stage.
     """
-    matched: set[Path] = set()
-    for i in range(0, len(files), _FIRST_PASS_FILES):
+    chunks = list(range(0, len(files), _FIRST_PASS_FILES))
+
+    def chunk(k: int) -> list[str]:
+        i = chunks[k]
         query = (
             pl.scan_parquet(
                 files[i:i + _FIRST_PASS_FILES], schema={column: dtype or pl.String()},
@@ -634,8 +651,115 @@ def _files_with_matches(
         hits = retry_read(f"{column} of {len(files[i:i + _FIRST_PASS_FILES])} file(s)",
                           query.collect)
         pace_reads()
-        matched.update(Path(f) for f in hits["__gdeltforge_file"].to_list())
+        return [str(f) for f in hits["__gdeltforge_file"].to_list()]
+
+    found = (
+        stages.values(stage, len(chunks), chunk) if stages is not None
+        else [f for k in range(len(chunks)) for f in chunk(k)]
+    )
+    matched = {Path(f) for f in found}
     return [f for f in files if Path(f) in matched]
+
+
+class _Stages:
+    """
+    One crossref run's checkpoint: its passes are loops over chunks (of
+    files, or rows for GKG 1.0), each stage keeping the next chunk to do
+    and what it found so far, file names (values) or rows (frames, kept as
+    the checkpoint's Parquet parts). A stopped run resumes at the next
+    chunk of the stage it was in, with every earlier stage's result.
+    """
+
+    def __init__(self, checkpoint: Checkpoint):
+        self.checkpoint = checkpoint
+        self.state: dict = {"stages": {}}
+        self.parts: list[pl.DataFrame] = []
+        self._pending: list[tuple[str, pl.DataFrame]] = []
+        saved = checkpoint.load()
+        if saved is not None:
+            self.state, _, self.parts = saved
+
+    def stage(self, name: str) -> dict:
+        return self.state["stages"].setdefault(name, {"next": 0, "values": [], "parts": []})
+
+    def kept(self, name: str) -> list[pl.DataFrame]:
+        """The rows a stage kept before the checkpoint."""
+        return [self.parts[k] for k in self.stage(name)["parts"]]
+
+    def keep(self, name: str, frame: pl.DataFrame) -> None:
+        """Rows a stage found, saved with the next checkpoint."""
+        self._pending.append((name, frame))
+
+    def frames(self, name: str, count: int, compute: Callable[[int], pl.DataFrame]):
+        """compute(i) for every chunk i < count not done before the checkpoint,
+        after the ones that were, in chunk order."""
+        stage = self.stage(name)
+        out = self.kept(name)
+        for i in range(stage["next"], count):
+            frame = compute(i)
+            out.append(frame)
+            self.keep(name, frame)
+            stage["next"] = i + 1
+            self.save_if_due()
+        return out
+
+    def values(self, name: str, count: int, compute: Callable[[int], list]) -> list:
+        """compute(i)'s values for every chunk i < count, those done before
+        the checkpoint read back."""
+        stage = self.stage(name)
+        for i in range(stage["next"], count):
+            stage["values"].extend(compute(i))
+            stage["next"] = i + 1
+            self.save_if_due()
+        return list(stage["values"])
+
+    def save_if_due(self) -> None:
+        if not self.checkpoint.due():
+            return
+        new = []
+        for name, frame in self._pending:
+            self.stage(name)["parts"].append(len(self.parts) + len(new))
+            new.append(frame)
+        self.parts.extend(new)
+        self._pending = []
+        self.checkpoint.save(self.state, {}, new)
+
+    def finish(self) -> None:
+        self.checkpoint.discard()
+
+
+def _events_digest(events_df: pl.DataFrame) -> str:
+    """A hash of every row of events_df: the output carries its columns, so
+    another table is another run's checkpoint."""
+    buffer = io.BytesIO()
+    events_df.write_ipc(buffer)
+    return hashlib.sha256(buffer.getvalue()).hexdigest()
+
+
+def _crossref_checkpoint(
+    settings: CheckpointSettings, kind: str, events_df: pl.DataFrame,
+    files: Mapping[str, list[Path]], params: Mapping[str, object],
+) -> Checkpoint:
+    """A crossref run's checkpoint, keyed on the events, the files read
+    (size, mtime) and the parameters that decide the output."""
+    if not settings.enabled:
+        return Checkpoint(settings, kind, {})
+    return Checkpoint(settings, kind, {
+        "events": _events_digest(events_df), "polars": pl.__version__,
+        "files": {k: file_facts(list(v)) for k, v in files.items()}, **params,
+    })
+
+
+def _file_rows(files: list[Path]) -> list[int]:
+    """Each file's row count from its footer, a few at a time, paced: to
+    find where a resumed GKG 1.0 scan starts."""
+
+    def rows(f: Path) -> int:
+        n = retry_read(str(f), lambda: pq.read_metadata(f)).num_rows
+        pace_reads()
+        return int(n)
+
+    return _map_files(rows, files)
 
 
 def _paced_collect(what: str, query: pl.LazyFrame) -> pl.DataFrame:
@@ -679,6 +803,7 @@ def crossref_events_gkg_v1(
     columns: set[str] | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
+    checkpoints: CheckpointSettings = NO_CHECKPOINTS,
 ) -> pl.DataFrame:
     """
     Direct join: events_df x a GKG 1.0-family dataset (the main file or
@@ -758,16 +883,40 @@ def crossref_events_gkg_v1(
         # each toward the dataset's column types (paced_ranges): polars
         # reads a scan's files ahead of its consumer. Not paced, the one
         # range is the scan above.
-        ranges = paced_ranges([Path(f).stat().st_size for f in gkg_files])
-        scans = [lf] if len(ranges) == 1 else [
+        # A checkpoint holds the rows of GKG 1.0 read so far and the
+        # matches found in them (_Stages); resumed, the scan starts after
+        # those rows, at the file and row the footers put them at.
+        stages = _Stages(_crossref_checkpoint(
+            checkpoints, "crossref-gkg1", events_df, {"gkg": list(gkg_files)},
+            {"columns": read_columns},
+        ))
+        progress = stages.stage("gkg1")
+        matches = stages.kept("gkg1")
+        start_file, skip = 0, 0
+        if progress["next"]:
+            rows_before, start_file = 0, len(gkg_files)
+            for i, rows in enumerate(_file_rows(list(gkg_files))):
+                if rows_before + rows > progress["next"]:
+                    start_file = i
+                    break
+                rows_before += rows
+            skip = progress["next"] - rows_before
+        ranges = [
+            (start_file + a, start_file + b)
+            for a, b in paced_ranges([Path(f).stat().st_size for f in gkg_files[start_file:]])
+        ]
+        scans = [lf] if ranges == [(0, len(gkg_files))] else [
             scan_dataset_reconciled(
                 list(gkg_files[first:end]), target_schema=dict(gkg_schema)
             ).select(read_columns)
-            for first, end in ranges
+            for first, end in ranges if first < end
         ]
-        batches = scan_batches(scans, f"GKG 1.0 dataset in {gkg_folder}", 64_000)
+        if skip:
+            scans[0] = scans[0].slice(skip)
+        batches = scan_batches(scans, f"GKG 1.0 dataset in {gkg_folder}", _BATCH_ROWS)
         with tqdm(total=None, desc="Cross-referencing GKG 1.0") as pbar:
             for df_batch in batches:
+                progress["next"] += df_batch.height
                 if df_batch.is_empty():
                     pbar.update(1)
                     continue
@@ -823,12 +972,13 @@ def crossref_events_gkg_v1(
                         continue
 
                     gkg_side = exploded.rename({c: f"GKG_{c}" for c in original_columns})
-                    matches.append(
-                        events_side.join(
-                            gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
-                            how="inner", coalesce=False,
-                        )
+                    match = events_side.join(
+                        gkg_side, left_on="_GlobalEventID_str", right_on="_matched_event_id",
+                        how="inner", coalesce=False,
                     )
+                    matches.append(match)
+                    stages.keep("gkg1", match)
+                stages.save_if_due()
                 # One update per outer batch, not per bounded sub-batch: the
                 # bar tracks lf.collect_batches' own granularity, and a
                 # single outer batch can split into several sub-batches (see
@@ -837,6 +987,7 @@ def crossref_events_gkg_v1(
                 # actually being consumed.
                 pbar.update(1)
 
+    stages.finish()
     if not matches:
         return _empty_crossref_result(events_df, (gkg_schema, read_columns, "GKG_"))
 
@@ -855,6 +1006,7 @@ def crossref_events_gkg_v2(
     start_date: date | None = None,
     end_date: date | None = None,
     date_parser: Callable[[str], tuple[date | None, date | None]] = parse_gdeltv2_file_date,
+    checkpoints: CheckpointSettings = NO_CHECKPOINTS,
 ) -> pl.DataFrame:
     """
     Two-hop join for GKG 2.1, which carries no event id:
@@ -928,7 +1080,7 @@ def crossref_events_gkg_v2(
                 events_df, mentions, gkg, gkg_v2_columns, columns=columns,
                 on_duplicate_document=on_duplicate_document,
                 dedupe_mentions=dedupe_mentions, start_date=start_date,
-                end_date=end_date, date_parser=date_parser,
+                end_date=end_date, date_parser=date_parser, checkpoints=checkpoints,
             ).with_columns(pl.lit(stream, dtype=pl.String).alias(MENTION_STREAM_COLUMN))
             for stream, (mentions, gkg) in streams.items()
         ]
@@ -1013,6 +1165,20 @@ def crossref_events_gkg_v2(
 
     empty_extra = {"Mention_Count": pl.UInt32} if dedupe_mentions else None
 
+    # A checkpoint holds each of the four passes' progress (_Stages): the
+    # Mentions files holding an event, their matching rows, the GKG 2.1
+    # files holding a URL, their rows. Removed on every return below.
+    stages = _Stages(_crossref_checkpoint(
+        checkpoints, "crossref-gkg2", events_df,
+        {"mentions": list(mentions_files), "gkg": list(gkg_v2_files)},
+        {"columns": read_gkg_columns, "mentions_columns": mentions_read_columns,
+         "on_duplicate_document": on_duplicate_document, "dedupe": dedupe_mentions},
+    ))
+
+    def done(result: pl.DataFrame) -> pl.DataFrame:
+        stages.finish()
+        return result
+
     def empty_result() -> pl.DataFrame:
         return _empty_crossref_result(
             events_df,
@@ -1031,28 +1197,27 @@ def crossref_events_gkg_v2(
     with clearer_dataset_errors(f"Mentions dataset in {mentions_folder}"):
         logger.info(f"Cross-referencing {len(event_id_set)} event(s) against Mentions...")
         matched_mentions = _files_with_matches(
-            mentions_files, "GLOBALEVENTID", event_id_set, mentions_schema["GLOBALEVENTID"]
+            mentions_files, "GLOBALEVENTID", event_id_set, mentions_schema["GLOBALEVENTID"],
+            stages=stages, stage="mentions-files",
         )
         if not matched_mentions:
-            return empty_result()
+            return done(empty_result())
         mentions_target = {c: mentions_schema[c] for c in mentions_read_columns}
         batch = _files_per_batch()
+        starts = list(range(0, len(matched_mentions), batch))
         bridge_df = pl.concat(
-            [
-                _paced_collect(
-                    f"Mentions dataset in {mentions_folder}",
-                    scan_dataset_reconciled(
-                        matched_mentions[i:i + batch], target_schema=mentions_target
-                    )
-                    .filter(pl.col("GLOBALEVENTID").is_in(event_id_set)),
+            stages.frames("mentions-rows", len(starts), lambda k: _paced_collect(
+                f"Mentions dataset in {mentions_folder}",
+                scan_dataset_reconciled(
+                    matched_mentions[starts[k]:starts[k] + batch], target_schema=mentions_target
                 )
-                for i in range(0, len(matched_mentions), batch)
-            ],
+                .filter(pl.col("GLOBALEVENTID").is_in(event_id_set)),
+            )),
             how="vertical_relaxed",
         )
 
     if bridge_df.is_empty():
-        return empty_result()
+        return done(empty_result())
 
     if dedupe_mentions:
         # Mentions records one row per sentence that references an
@@ -1087,7 +1252,7 @@ def crossref_events_gkg_v2(
 
     urls = set(bridge_df["MentionIdentifier"].drop_nulls().unique().to_list())
     if not urls:
-        return empty_result()
+        return done(empty_result())
 
     # Hop 2: GKG 2.1, by document URL, in two passes (see
     # _files_with_matches). The URLs are effectively random strings, so
@@ -1099,9 +1264,11 @@ def crossref_events_gkg_v2(
     # matched files to the whole dataset's dtypes.
     logger.info(f"Cross-referencing {len(urls)} article URL(s) against GKG 2.1...")
     with clearer_dataset_errors(f"GKG 2.1 dataset in {gkg_v2_folder}"):
-        matched_files = _files_with_matches(gkg_v2_files, "V2DOCUMENTIDENTIFIER", urls)
+        matched_files = _files_with_matches(
+            gkg_v2_files, "V2DOCUMENTIDENTIFIER", urls, stages=stages, stage="gkg-files"
+        )
         if not matched_files:
-            return empty_result()
+            return done(empty_result())
         logger.info(
             f"{len(matched_files)} of {len(gkg_v2_files)} GKG 2.1 file(s) hold a match; "
             f"reading their rows."
@@ -1111,21 +1278,19 @@ def crossref_events_gkg_v2(
         # row group they came from, and a realistic sample matches nearly
         # every file, so memory followed every matched file's row groups.
         batch = _files_per_batch()
-        parts = [
-            _paced_collect(
-                "GKG 2.1 files holding a match",
-                scan_dataset_reconciled(
-                    matched_files[i:i + batch], target_schema=dict(gkg_schema)
-                )
-                .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
-                .select(read_gkg_columns),
+        starts = list(range(0, len(matched_files), batch))
+        parts = stages.frames("gkg-rows", len(starts), lambda k: _paced_collect(
+            "GKG 2.1 files holding a match",
+            scan_dataset_reconciled(
+                matched_files[starts[k]:starts[k] + batch], target_schema=dict(gkg_schema)
             )
-            for i in range(0, len(matched_files), batch)
-        ]
+            .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
+            .select(read_gkg_columns),
+        ))
         gkg_df = pl.concat(parts, how="vertical_relaxed")
 
     if gkg_df.is_empty():
-        return empty_result()
+        return done(empty_result())
 
     if on_duplicate_document == "latest":
         gkg_df = gkg_df.unique(subset=["V2DOCUMENTIDENTIFIER"], keep="last", maintain_order=True)
@@ -1141,14 +1306,14 @@ def crossref_events_gkg_v2(
         how="inner", coalesce=False,
     )
     if joined.is_empty():
-        return empty_result()
+        return done(empty_result())
 
     events_side = events_df.with_columns(event_id_col.alias("_GlobalEventID_int64"))
     result = events_side.join(
         joined, left_on="_GlobalEventID_int64", right_on="GLOBALEVENTID",
         how="inner", coalesce=False,
     )
-    return result.drop(["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier"])
+    return done(result.drop(["_GlobalEventID_int64", "GLOBALEVENTID", "MentionIdentifier"]))
 
 
 def crossref_events_gkg_auto(
@@ -1164,6 +1329,7 @@ def crossref_events_gkg_auto(
     dedupe_mentions: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
+    checkpoints: CheckpointSettings = NO_CHECKPOINTS,
 ) -> pl.DataFrame:
     """
     Attempts every sampled event against both GKG generations rather than
@@ -1272,7 +1438,7 @@ def crossref_events_gkg_auto(
     # for v1/v2 directly.
     v1_result = crossref_events_gkg_v1(
         eligible_events, gkg_v1_folder, gkg_v1_columns, columns=v1_columns,
-        start_date=start_date, end_date=end_date,
+        start_date=start_date, end_date=end_date, checkpoints=checkpoints,
     ).with_columns(pl.lit("v1").alias("CrossrefSource"))
 
     v2_result = crossref_events_gkg_v2(
@@ -1280,7 +1446,7 @@ def crossref_events_gkg_auto(
         columns=v2_columns,
         on_duplicate_document=on_duplicate_document,
         dedupe_mentions=dedupe_mentions,
-        start_date=start_date, end_date=end_date,
+        start_date=start_date, end_date=end_date, checkpoints=checkpoints,
     ).with_columns(pl.lit("v2").alias("CrossrefSource"))
 
     return pl.concat([v1_result, v2_result], how="diagonal")
