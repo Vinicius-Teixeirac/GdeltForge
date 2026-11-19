@@ -108,11 +108,13 @@ from gdeltforge.scraping.scraper import (
 )
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
-    batches_with_retries,
     clearer_dataset_errors,
     detach,
     narrow_to_available_columns,
+    pace_reads,
+    paced_ranges,
     retry_read,
+    scan_batches,
     scan_dataset_reconciled,
 )
 from gdeltforge.utils.logging import get_logger
@@ -631,8 +633,17 @@ def _files_with_matches(
         )
         hits = retry_read(f"{column} of {len(files[i:i + _FIRST_PASS_FILES])} file(s)",
                           query.collect)
+        pace_reads()
         matched.update(Path(f) for f in hits["__gdeltforge_file"].to_list())
     return [f for f in files if Path(f) in matched]
+
+
+def _paced_collect(what: str, query: pl.LazyFrame) -> pl.DataFrame:
+    """query collected (retried after a read error), its rows copied out
+    (detach), then paced (io.max_read_mb_per_s)."""
+    frame = detach(retry_read(what, query.collect))
+    pace_reads()
+    return frame
 
 
 def _iter_row_slices_bounded_by_explosion(
@@ -743,10 +754,20 @@ def crossref_events_gkg_v1(
         # KeyboardInterrupt traceback fragment to stderr on a real
         # interrupt. total=None: collect_batches is a generator with no
         # cheap upfront count.
+        # Paced (io.max_read_mb_per_s), read a range of files at a time,
+        # each toward the dataset's column types (paced_ranges): polars
+        # reads a scan's files ahead of its consumer. Not paced, the one
+        # range is the scan above.
+        ranges = paced_ranges([Path(f).stat().st_size for f in gkg_files])
+        scans = [lf] if len(ranges) == 1 else [
+            scan_dataset_reconciled(
+                list(gkg_files[first:end]), target_schema=dict(gkg_schema)
+            ).select(read_columns)
+            for first, end in ranges
+        ]
+        batches = scan_batches(scans, f"GKG 1.0 dataset in {gkg_folder}", 64_000)
         with tqdm(total=None, desc="Cross-referencing GKG 1.0") as pbar:
-            for df_batch in batches_with_retries(
-                lambda: lf, f"GKG 1.0 dataset in {gkg_folder}", 64_000
-            ):
+            for df_batch in batches:
                 if df_batch.is_empty():
                     pbar.update(1)
                     continue
@@ -1018,14 +1039,13 @@ def crossref_events_gkg_v2(
         batch = _files_per_batch()
         bridge_df = pl.concat(
             [
-                detach(retry_read(
+                _paced_collect(
                     f"Mentions dataset in {mentions_folder}",
                     scan_dataset_reconciled(
                         matched_mentions[i:i + batch], target_schema=mentions_target
                     )
-                    .filter(pl.col("GLOBALEVENTID").is_in(event_id_set))
-                    .collect,
-                ))
+                    .filter(pl.col("GLOBALEVENTID").is_in(event_id_set)),
+                )
                 for i in range(0, len(matched_mentions), batch)
             ],
             how="vertical_relaxed",
@@ -1092,15 +1112,14 @@ def crossref_events_gkg_v2(
         # every file, so memory followed every matched file's row groups.
         batch = _files_per_batch()
         parts = [
-            detach(retry_read(
+            _paced_collect(
                 "GKG 2.1 files holding a match",
                 scan_dataset_reconciled(
                     matched_files[i:i + batch], target_schema=dict(gkg_schema)
                 )
                 .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
-                .select(read_gkg_columns)
-                .collect,
-            ))
+                .select(read_gkg_columns),
+            )
             for i in range(0, len(matched_files), batch)
         ]
         gkg_df = pl.concat(parts, how="vertical_relaxed")

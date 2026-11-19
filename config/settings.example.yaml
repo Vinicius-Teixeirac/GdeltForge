@@ -843,3 +843,10 @@ io:
   # How many times a failed Parquet read is tried again, waiting 2, 4,
   # 8 ... seconds in between. 0 = read once.
   read_retries: 3
+  # The average rate, in megabytes (10^6 bytes) per second, at which one
+  # command reads, counted from the bytes the operating system says the
+  # process read (Linux, Windows; refused on macOS). For storage shared
+  # with others. clean/aggregate split it among their workers; it turns
+  # memory_map off. null = no cap. See
+  # docs/configuration.md#read-rate-cap.
+  max_read_mb_per_s: null

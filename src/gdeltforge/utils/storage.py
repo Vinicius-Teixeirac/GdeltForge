@@ -15,9 +15,14 @@ disks mapping costs nothing and saves about a tenth of peak memory, so
 "auto" maps unless one of the configured data directories is on a
 network filesystem.
 
+io.max_read_mb_per_s paces reads on the bytes the operating system says
+the process has read (process_read_bytes). A memory-mapped read doesn't
+pass through that count, so a cap also turns mapping off.
+
 Provides:
     - network_filesystem: the network filesystem type a path is on, or None
     - memory_map_decision: whether to map, and why, for a loaded config
+    - process_read_bytes: the bytes this process has read, or None
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 
-from gdeltforge.utils.config import get_dict, resolve_memory_map
+from gdeltforge.utils.config import get_dict, resolve_max_read_mb_per_s, resolve_memory_map
 
 POLARS_FORCE_ASYNC = "POLARS_FORCE_ASYNC"
 
@@ -138,8 +143,17 @@ def memory_map_decision(
     exported = environ.get(POLARS_FORCE_ASYNC)
     if exported is not None:
         mapped = exported != "1"
-        return mapped, f"{POLARS_FORCE_ASYNC}={exported} is exported"
+        return mapped, f"{POLARS_FORCE_ASYNC}={exported} is set"
     setting = resolve_memory_map(config)
+    if resolve_max_read_mb_per_s(config) is not None:
+        if setting is True:
+            raise ValueError(
+                "io.max_read_mb_per_s paces reads on the bytes the operating system "
+                "counts as read, and a memory-mapped read isn't counted there, so it "
+                "can't be used with io.memory_map: true. Set io.memory_map to auto or "
+                "false, or io.max_read_mb_per_s to null."
+            )
+        return False, "io.max_read_mb_per_s is set"
     if setting is not True and setting is not False:
         for key, value in _configured_directories(config):
             fstype = network_filesystem(value, mounts_text)
@@ -147,3 +161,61 @@ def memory_map_decision(
                 return False, f"io.memory_map is auto and {key} is on {fstype}"
         return True, "io.memory_map is auto and no configured path is on network storage"
     return setting, f"io.memory_map is {str(setting).lower()}"
+
+
+def process_read_bytes() -> int | None:
+    """
+    The bytes this process has read so far, as the operating system counts
+    them: Linux's /proc/self/io rchar (every read call, network
+    filesystems and the page cache included), Windows' GetProcessIoCounters
+    ReadTransferCount. None where there is no such count (macOS), so
+    io.max_read_mb_per_s can't be used there.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/self/io", encoding="ascii") as f:
+                for line in f:
+                    if line.startswith("rchar:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError):
+            return None
+        return None
+    if sys.platform == "win32":
+        read_counter = _windows_read_counter()
+        return read_counter() if read_counter is not None else None
+    return None
+
+
+_windows_counter = None
+
+
+def _windows_read_counter():
+    """A function returning GetProcessIoCounters' ReadTransferCount for this
+    process, built once, on its own kernel32 handle with typed signatures
+    (the shared ctypes.windll one is left as other code expects it)."""
+    global _windows_counter
+    if _windows_counter is None:
+        import ctypes
+        from ctypes import wintypes
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+            )]
+
+        kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetProcessIoCounters.restype = wintypes.BOOL
+        kernel32.GetProcessIoCounters.argtypes = [wintypes.HANDLE, ctypes.POINTER(IoCounters)]
+        handle = kernel32.GetCurrentProcess()
+
+        def read() -> int | None:
+            counters = IoCounters()
+            if kernel32.GetProcessIoCounters(handle, ctypes.byref(counters)):
+                return int(counters.ReadTransferCount)
+            return None
+
+        _windows_counter = read
+    return _windows_counter

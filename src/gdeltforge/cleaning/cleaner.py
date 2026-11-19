@@ -112,14 +112,16 @@ from gdeltforge.utils.config import (
 from gdeltforge.utils.io import (
     CLEAN_MARKER_KEY,
     config_fingerprint,
-    configure_read_retries,
+    configure_worker_reads,
     delete_done_marker,
     is_marked_done,
     mark_done,
+    pace_reads,
     read_retries,
     retry_read,
     warn_if_cleaned_files,
     warn_if_delete_source_drops_recoverable_data,
+    worker_read_rate,
     write_parquet_atomic,
 )
 from gdeltforge.utils.logging import get_logger
@@ -586,9 +588,10 @@ class GDELTCleaner:
         with polars_worker_env(worker_plan), ProcessPoolExecutor(
             max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
-            # io.read_retries, which a spawned worker doesn't inherit.
-            initializer=configure_read_retries,
-            initargs=(read_retries(),),
+            # io.read_retries and each worker's share of io.max_read_mb_per_s,
+            # which a spawned worker doesn't inherit.
+            initializer=configure_worker_reads,
+            initargs=(read_retries(), worker_read_rate(worker_plan.workers)),
         ) as executor:
             futures = {
                 executor.submit(
@@ -809,6 +812,9 @@ class GDELTCleaner:
                 compression=cast(ParquetCompression, self.compression),
                 metadata={CLEAN_MARKER_KEY: marker},
             ))
+            # Paced once the file is read, for its counts and its output
+            # (io.max_read_mb_per_s).
+            pace_reads()
             os.replace(tmp_path, output_path)
         except Exception:
             if tmp_path.exists():
@@ -894,9 +900,10 @@ class GDELTCleaner:
         with polars_worker_env(worker_plan), ProcessPoolExecutor(
             max_workers=worker_plan.workers,
             mp_context=multiprocessing.get_context("spawn"),
-            # io.read_retries, which a spawned worker doesn't inherit.
-            initializer=configure_read_retries,
-            initargs=(read_retries(),),
+            # io.read_retries and each worker's share of io.max_read_mb_per_s,
+            # which a spawned worker doesn't inherit.
+            initializer=configure_worker_reads,
+            initargs=(read_retries(), worker_read_rate(worker_plan.workers)),
         ) as executor:
             futures = {
                 executor.submit(

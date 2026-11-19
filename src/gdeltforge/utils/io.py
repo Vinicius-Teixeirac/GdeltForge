@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import zipfile
 from collections import deque
@@ -25,6 +26,7 @@ from polars._typing import PolarsDataType
 from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.config import dataset_path_key
 from gdeltforge.utils.logging import get_logger
+from gdeltforge.utils.storage import process_read_bytes
 
 logger = get_logger(__name__)
 
@@ -82,6 +84,153 @@ def retry_read(what: str, read: Callable[[], T]) -> T:
         except OSError as error:
             _retry_or_raise(error, what, attempt)
             attempt += 1
+
+
+# io.max_read_mb_per_s: the average rate this process reads at, in bytes
+# per second, or None for no cap. Set once per process by
+# configure_read_rate (cli.main for sample/crossref, each clean/aggregate
+# worker through its pool's initializer, with its share of the cap).
+#
+# polars reads files itself, coalescing byte ranges and reading ahead, so
+# the bytes a read touches can't be worked out from the footers (a draw
+# whose columns are 14 MB compressed read 30 MB). pace_reads therefore
+# charges what the operating system says this process has read since its
+# last call (gdeltforge.utils.storage.process_read_bytes), and sleeps while
+# the process is ahead of the rate. A stretch of slower reads banks at most
+# _MAX_BANKED_S of the rate, so a later run of fast reads can't burst far
+# above it.
+_read_rate: float | None = None
+_MAX_BANKED_S = 1.0
+_pace_lock = threading.Lock()
+_pace_start: float | None = None
+_pace_charged = 0
+_pace_counter = 0
+
+
+def configure_read_rate(mb_per_s: float | None) -> None:
+    """Set io.max_read_mb_per_s (megabytes of 10^6 bytes per second, or
+    None) for the reads this process makes, and start its average anew."""
+    global _read_rate, _pace_start, _pace_charged, _pace_counter
+    _read_rate = mb_per_s * 1e6 if mb_per_s is not None else None
+    _pace_start = None
+    _pace_charged = 0
+    _pace_counter = (process_read_bytes() or 0) if _read_rate is not None else 0
+
+
+def read_rate() -> float | None:
+    """This process's io.max_read_mb_per_s, in MB/s (None: no cap)."""
+    return _read_rate / 1e6 if _read_rate is not None else None
+
+
+def pacing_reads() -> bool:
+    """Whether reads are paced, so a reader only cuts its scan into ranges
+    (paced_slices), and reads what that needs, when they are."""
+    return _read_rate is not None
+
+
+def pace_reads() -> None:
+    """
+    Count what this process has read since the last call against
+    io.max_read_mb_per_s, and sleep until its average since its first read
+    is back at the rate. Called between reads (after a batch, a collect, a
+    file or a footer); a no-op without a cap. Thread-safe: footers are
+    read on several threads.
+    """
+    global _pace_start, _pace_charged, _pace_counter
+    if _read_rate is None:
+        return
+    with _pace_lock:
+        counter = process_read_bytes() or 0
+        delta, _pace_counter = counter - _pace_counter, counter
+        now = time.monotonic()
+        if _pace_start is None:
+            _pace_start = now
+        _pace_charged += max(delta, 0)
+        due = _pace_start + _pace_charged / _read_rate
+        if due > now:
+            time.sleep(due - now)
+        elif now - due > _MAX_BANKED_S:
+            # Reads ran slower than the rate: keep at most _MAX_BANKED_S of it.
+            _pace_start += now - due - _MAX_BANKED_S
+
+
+def configure_worker_reads(retries: int, mb_per_s: float | None) -> None:
+    """A clean/aggregate worker's pool initializer: io.read_retries, and its
+    share of io.max_read_mb_per_s, neither of which a spawned process
+    inherits."""
+    configure_read_retries(retries)
+    configure_read_rate(mb_per_s)
+
+
+def worker_read_rate(workers: int) -> float | None:
+    """Each of `workers` processes' share of this process's
+    io.max_read_mb_per_s, so together they read at the cap on average."""
+    rate = read_rate()
+    return rate / workers if rate is not None else None
+
+
+def paced_ranges(sizes: list[int]) -> list[tuple[int, int]]:
+    """
+    The (first, end) ranges of files, by position, to read a combined scan
+    over files of these sizes (bytes on disk) in. polars reads a scan's
+    files ahead of its consumer (a whole month of daily files was read
+    during the first batch), so pausing between batches alone doesn't slow
+    its reads: paced (io.max_read_mb_per_s), each range is a scan of its
+    own, at most _MAX_BANKED_S of the rate on disk (one file at least).
+    Not paced, one range of every file: the scan as it always was.
+    """
+    if _read_rate is None or not sizes:
+        return [(0, len(sizes))]
+    budget = _read_rate * _MAX_BANKED_S
+    ranges: list[tuple[int, int]] = []
+    start, group_bytes = 0, 0
+    for i, nbytes in enumerate(sizes):
+        if group_bytes and group_bytes + nbytes > budget:
+            ranges.append((start, i))
+            start, group_bytes = i, 0
+        group_bytes += nbytes
+    ranges.append((start, len(sizes)))
+    return ranges
+
+
+def scan_batches(
+    scans: list[pl.LazyFrame], what: str, chunk_size: int
+) -> Iterator[pl.DataFrame]:
+    """
+    The batches of one scan, or of several scans over consecutive ranges of
+    files (paced_ranges) as if they were that one scan: polars hands a
+    scan's rows out in batches of exactly chunk_size rows (the last one
+    shorter), and what a sampler does with a batch can depend on where it
+    starts (which of two calendar periods filling in the same batch comes
+    first), so the ranges' rows are handed out in the same chunk_size
+    batches. Each scan's batches are retried (batches_with_retries).
+
+    Reads are paced (pace_reads) after each scan, never while one is open:
+    polars keeps reading and decoding a scan's files while its consumer
+    waits, so a pause inside a scan held every column of the rest of the
+    range in memory (about 500 MB more for a few daily Events files).
+    """
+    if len(scans) == 1:
+        yield from batches_with_retries(lambda: scans[0], what, chunk_size)
+        pace_reads()
+        return
+    pending: list[pl.DataFrame] = []
+    held = 0
+    for i, scan in enumerate(scans):
+        if i:
+            pace_reads()
+        for batch in batches_with_retries(lambda scan=scan: scan, what, chunk_size):
+            while batch.height:
+                take = min(chunk_size - held, batch.height)
+                pending.append(batch.slice(0, take))
+                held += take
+                batch = batch.slice(take)
+                if held == chunk_size:
+                    yield pl.concat(pending, rechunk=True)
+                    pending, held = [], 0
+    if held:
+        yield pl.concat(pending, rechunk=True)
+    pace_reads()
 
 
 def batches_with_retries(
@@ -401,6 +550,7 @@ def parquet_footer_facts(path: str | Path) -> tuple[int, dict[str, str]]:
     read. Unlike parquet_kv_metadata, an unreadable file raises: callers
     need its rows."""
     footer = retry_read(str(path), lambda: pq.read_metadata(path))
+    pace_reads()
     metadata = {
         k.decode("utf-8", "replace"): v.decode("utf-8", "replace")
         for k, v in (footer.metadata or {}).items()
@@ -1112,6 +1262,7 @@ def _int_bounds_from_statistics(file: Path, column: str) -> tuple[int, int] | No
     statistics alone (footer only, no data read), or None when any row
     group lacks them."""
     metadata = retry_read(str(file), lambda: pq.ParquetFile(file).metadata)
+    pace_reads()
     names = [metadata.schema.column(i).name for i in range(metadata.num_columns)]
     if column not in names:
         return None

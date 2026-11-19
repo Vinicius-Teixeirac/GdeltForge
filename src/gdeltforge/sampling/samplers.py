@@ -35,16 +35,18 @@ from gdeltforge.utils.io import (
     _map_files,
     aggregate_sources_record,
     aggregated_marker,
-    batches_with_retries,
     cleaned_keeps_positions,
     cleaned_marker,
     clearer_dataset_errors,
     detach,
     done_marker_fields,
     narrow_to_available_columns,
+    pace_reads,
+    paced_ranges,
     parquet_footer_facts,
     reconcile_file_schemas,
     retry_read,
+    scan_batches,
     scan_dataset_reconciled,
     scan_file_against_schema,
 )
@@ -757,6 +759,14 @@ class IndexedSampler:
         )
 
 
+def _scan_ranges(files: list[Path], index: FileIndex) -> list[tuple[int, int]]:
+    """The ranges of `files` a scan over them is read in (io.paced_ranges),
+    from the index's file sizes: one range of every file unless
+    io.max_read_mb_per_s paces reads."""
+    size = dict(zip(index.files, index.sizes, strict=True))
+    return paced_ranges([size[f] for f in files])
+
+
 def _read_rows(
     file: Path,
     rows: np.ndarray,
@@ -854,7 +864,8 @@ def _collect_reads(
     reads, _read_units), each copied out (detach) unless every row of the
     row group is kept. The rows come back in a few frames: the small
     reads' rows copied together (_READS_PER_COPY), a row group kept whole
-    or a read of _ROWS_PER_COPY rows or more in a frame of its own.
+    or a read of _ROWS_PER_COPY rows or more in a frame of its own. Paced
+    (io.max_read_mb_per_s) after each few reads.
     """
     at_once = exported_scan_limit() or 4
     units = _read_units(reads, columns)
@@ -889,6 +900,7 @@ def _collect_reads(
                 queries, optimizations=pl.QueryOptFlags(comm_subplan_elim=False),
             ),
         )
+        pace_reads()
         for chunk, (k, _) in zip(chunks, batch, strict=True):
             positions, count = reads[k][3], reads[k][2]
             if len(positions) == count and np.array_equal(positions, np.arange(count)):
@@ -1124,30 +1136,42 @@ class CalendarSampler:
         index = {Path(f): i for i, f in enumerate(files)}
         rows_read = [0] * len(files)
         with clearer_dataset_errors(f"calendar sample dataset in {self.folder}"):
-            lf = scan_dataset_reconciled(
-                files,
-                target_schema={self.date_column: target_schema[self.date_column]},
-                file_schemas=file_schemas,
-                include_file_paths=self._FILE_PATH,
-            )
-            for batch in batches_with_retries(
-                lambda: lf, f"calendar sample dataset in {self.folder}", 64_000
-            ):
-                paths = batch[self._FILE_PATH]
-                to_index = {p: index[Path(p)] for p in paths.unique().to_list()}
-                file_index = paths.replace_strict(to_index, return_dtype=pl.Int64)
-                offsets = {i: rows_read[i] for i in to_index.values()}
-                keyed = batch.select(self.date_column).with_columns(
-                    file_index.alias(_ROW_FILE)
-                ).with_columns(
-                    (
-                        pl.int_range(pl.len()).over(_ROW_FILE)
-                        + pl.col(_ROW_FILE).replace_strict(offsets, return_dtype=pl.Int64)
-                    ).alias(_ROW_POSITION)
+            assert self.index is not None
+            # One range of every file unless reads are paced; each range is
+            # scanned toward the same column type, and their rows handed out
+            # in the batches one scan would make (scan_batches).
+            scans = [
+                scan_dataset_reconciled(
+                    files[first:end],
+                    target_schema={self.date_column: target_schema[self.date_column]},
+                    file_schemas=file_schemas,
+                    include_file_paths=self._FILE_PATH,
                 )
-                for i, n in keyed.group_by(_ROW_FILE).len().iter_rows():
-                    rows_read[i] += n
-                yield keyed
+                for first, end in _scan_ranges(files, self.index)
+            ]
+            yield from self._keyed(scans, index, rows_read)
+
+    def _keyed(
+        self, scans: list[pl.LazyFrame], index: dict[Path, int], rows_read: list[int]
+    ):
+        """_key_batches' batches, each row's file and position counted on
+        from the rows before it (rows_read)."""
+        for batch in scan_batches(scans, f"calendar sample dataset in {self.folder}", 64_000):
+            paths = batch[self._FILE_PATH]
+            to_index = {p: index[Path(p)] for p in paths.unique().to_list()}
+            file_index = paths.replace_strict(to_index, return_dtype=pl.Int64)
+            offsets = {i: rows_read[i] for i in to_index.values()}
+            keyed = batch.select(self.date_column).with_columns(
+                file_index.alias(_ROW_FILE)
+            ).with_columns(
+                (
+                    pl.int_range(pl.len()).over(_ROW_FILE)
+                    + pl.col(_ROW_FILE).replace_strict(offsets, return_dtype=pl.Int64)
+                ).alias(_ROW_POSITION)
+            )
+            for i, n in keyed.group_by(_ROW_FILE).len().iter_rows():
+                rows_read[i] += n
+            yield keyed
 
     @property
     def _roots(self) -> list[Path]:
@@ -2011,19 +2035,24 @@ class FilteredSampler:
             files, index = self._indexed_files()
             target = reconcile_file_schemas(index.schemas)
             read = [c for c in needed_columns if c in target] or [next(iter(target))]
-            lf = scan_dataset_reconciled(
-                files, target_schema={c: target[c] for c in read},
-                file_schemas=index.schemas,
-            ).with_row_index(self._SCAN_ROW)
             expr = self._build_expression(self.filter_dict, dtypes=target)
-            if expr is not None:
-                lf = lf.filter(expr)
             starts = self._scan_starts()
             paths = [str(f) for f in files]
-            scan = lf.select(self._SCAN_ROW, *read)
-            for batch in batches_with_retries(
-                lambda: scan, f"filtered sample dataset in {self.folder}", 64_000
-            ):
+            # One range of every file unless reads are paced. Each range is
+            # scanned toward the same column types, its row index starting
+            # at its first row, so rows are numbered as in one scan over all
+            # the files, and handed out in the batches that scan would make
+            # (scan_batches).
+            scans = []
+            for first, end in _scan_ranges(files, index):
+                lf = scan_dataset_reconciled(
+                    files[first:end], target_schema={c: target[c] for c in read},
+                    file_schemas=index.schemas,
+                ).with_row_index(self._SCAN_ROW, offset=int(starts[first]))
+                if expr is not None:
+                    lf = lf.filter(expr)
+                scans.append(lf.select(self._SCAN_ROW, *read))
+            for batch in scan_batches(scans, f"filtered sample dataset in {self.folder}", 64_000):
                 batch = self._identify(batch, starts)
                 if self.provenance:
                     batch = batch.with_columns(

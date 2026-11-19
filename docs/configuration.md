@@ -292,6 +292,7 @@ Unlike `convert`/`clean`, whose `.done` marker is keyed one-per-source-file, agg
 | `max_concurrent_reads` | `null` | How many files one `clean`/`aggregate`/`sample`/`crossref` command may read at once. `null` means no cap beyond each stage's own worker count |
 | `memory_map` | `auto` | Whether polars memory-maps the Parquet files it reads: `auto` maps them unless a `paths` directory is on a network filesystem, `true` always, `false` never. See [Memory mapping and read retries](#memory-mapping-and-read-retries) |
 | `read_retries` | `3` | How many times a failed Parquet read is tried again, waiting 2, 4, 8 ... seconds in between, before the command stops. `0` reads once |
+| `max_read_mb_per_s` | `null` | The average rate, in megabytes (10^6 bytes) per second, at which one command reads. `clean` and `aggregate` split it among their workers. `null` means no cap. See [Read-rate cap](#read-rate-cap) |
 
 `max_workers` sizes a stage for the CPU; `max_concurrent_reads` sizes it for the storage. The two only need to differ when the storage is the bottleneck. How it applies:
 
@@ -312,6 +313,16 @@ polars memory-maps the local Parquet files it reads: their pages are read from d
 - **`read_retries: 3`**: a read that fails with an `OSError` is tried again after 2, 4 and 8 seconds, then the error stops the command. An error another try can't change (a missing file, a permission error, a corrupt file) stops it at once. A file's footer or schema, a file `clean` or `aggregate` writes, and the rows `sample` and `crossref` read in batches are each retried; a batch scan resumes after the rows it has already handed out, so a draw after a retry is identical to one without it. Each retry is logged as a warning naming what failed.
 
 polars reads this choice only when it starts, so the `gdeltforge` command (and `python -m gdeltforge`) makes it before loading polars, by starting it with `POLARS_FORCE_ASYNC=1` when the files are not to be mapped. A `POLARS_FORCE_ASYNC` you export yourself decides instead. `gdeltforge.cli.main` called from Python, after polars has loaded, can't change it for its own process: it then warns, and the worker processes `clean` and `aggregate` start still read without mapping. The run logs which way it reads, and why, when mapping is off.
+
+### Read-rate cap
+
+`max_concurrent_reads` bounds how many files are read at once; `max_read_mb_per_s` bounds how fast. Set it when a command shares storage with other people's work and should leave it bandwidth, a long `sample` or `crossref` over a shared NFS server being the usual case.
+
+- **What it counts**: the bytes the operating system says the process has read (Linux: `rchar` in `/proc/self/io`; Windows: the process's I/O counters). polars reads byte ranges of its own choosing, coalescing and reading ahead, so the bytes a read touches can't be worked out from the files: a draw whose columns are 14 MB compressed read 30 MB. Counting what was read holds the cap whatever polars does. macOS has no such count, so the setting is refused there.
+- **Memory mapping is turned off** when the cap is set: a mapped read never shows in that count. `memory_map: true` together with a cap is refused, and so is a command whose own process maps anyway (an exported `POLARS_FORCE_ASYNC` other than `1`, or `gdeltforge.cli.main` called from Python after polars loaded).
+- **An average, not a ceiling**: gdeltforge pauses between reads until the command's average since its first read is back at the cap. A stretch of slower reads banks at most one second of the rate. polars reads a scan's files ahead of the code consuming them, so a capped `sample` or `crossref` scan reads its files in consecutive ranges of about one second's worth each (by size on disk) and pauses between them; the draw is identical either way. Measured on a month of daily Events files: 1.99 MB/s at a cap of 2, 4.91 MB/s at 5, at most 7.8 MB in any 2 s at a cap of 2.
+- **Workers**: `clean` and `aggregate` give each worker `max_read_mb_per_s` divided by the worker count, paced after each file (clean) or period (aggregate); a single large period is read at full speed before the pause that follows it.
+- **Footers count too**: building a file index reads every file's footer, and they are paced like any other read, so a first `sample` over many files takes longer under a low cap. A saved index (`paths.index_directory`) reads no footers on later runs.
 
 ### Network storage (NFS, SMB, shared HDD arrays)
 
