@@ -2252,22 +2252,30 @@ class FilteredSampler:
             # the files, and handed out in the batches that scan would make
             # (scan_batches).
             start_file, skip = resume if resume is not None else (0, 0)
-            scans = []
-            for first, end in _scan_ranges(files, index, start_file):
+
+            def scan(first: int, end: int, from_row: int = 0) -> pl.LazyFrame:
                 lf = scan_dataset_reconciled(
                     files[first:end], target_schema={c: target[c] for c in read},
                     file_schemas=index.schemas,
-                )
-                # A resumed scan's first range starts past the rows read
-                # before the checkpoint. Sliced before the row index: a slice
-                # after it reads every file.
-                offset = int(starts[first])
-                if first == start_file and skip:
-                    lf, offset = lf.slice(skip), offset + skip
-                lf = lf.with_row_index(self._SCAN_ROW, offset=offset)
+                ).with_row_index(self._SCAN_ROW, offset=int(starts[first]))
+                # A resumed scan's partly read file starts past the rows read
+                # before the checkpoint, as a filter on the row index: a slice
+                # in the plan kept the draw's filter out of the Parquet read,
+                # and a draw resumed mid-file peaked at up to 2.6x.
+                if from_row:
+                    lf = lf.filter(pl.col(self._SCAN_ROW) >= int(starts[first]) + from_row)
                 if expr is not None:
                     lf = lf.filter(expr)
-                scans.append(lf.select(self._SCAN_ROW, *read))
+                return lf.select(self._SCAN_ROW, *read)
+
+            scans = []
+            if skip:
+                scans.append(scan(start_file, start_file + 1, skip))
+                start_file += 1
+            scans += [
+                scan(first, end) for first, end in _scan_ranges(files, index, start_file)
+                if first < end
+            ]
             for batch in scan_batches(
                 scans, f"filtered sample dataset in {self.folder}", _BATCH_ROWS
             ):

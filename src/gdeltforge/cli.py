@@ -628,12 +628,17 @@ def _sample_file_index(
     return index_path_for(directory, roots) if directory else None
 
 
+# The paths.* keys that hold no data a command reads as Parquet.
+_NOT_DATA_PATH_KEYS = frozenset({"checkpoint_directory", "index_directory"})
+
+
 def _data_directories(config: dict) -> list[Path]:
-    """Every paths.*data_directory: a checkpoint directory may sit in none
-    of them, whichever one a command reads."""
+    """Every paths.* directory but the index and checkpoint ones: a
+    checkpoint directory may sit in none of them, whichever one a command
+    reads (a cleaned_historical_directory, a dataset's raw downloads)."""
     return [
         Path(v) for k, v in get_dict(config, "paths").items()
-        if k.endswith("data_directory") and isinstance(v, str) and v
+        if k not in _NOT_DATA_PATH_KEYS and isinstance(v, str) and v
     ]
 
 
@@ -652,7 +657,8 @@ def _checkpoint_settings(
     if getattr(args, "no_checkpoint", False) or every_s is None or not directory:
         return NO_CHECKPOINTS
     _refuse_inside_roots(
-        Path(directory), roots, "The checkpoint directory", "paths.checkpoint_directory"
+        Path(directory), roots, "The checkpoint directory", "paths.checkpoint_directory",
+        reads="a data directory, where its Parquet parts would be read as data",
     )
     return CheckpointSettings(Path(directory), every_s)
 
