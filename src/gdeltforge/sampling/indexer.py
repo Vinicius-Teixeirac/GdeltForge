@@ -69,12 +69,15 @@ def index_path_for(index_directory: str | Path, roots: list[Path]) -> Path:
 def _refuse_inside_roots(
     path: Path, roots: list[Path], what: str = "The file index",
     setting: str = "paths.index_directory (or --file-index)",
+    reads: str = "which the sample reads",
 ) -> None:
-    target = Path(os.path.abspath(path))
+    """Refuse `path` inside any of `roots`, symlinks followed on both sides
+    (a link into a data directory leads there)."""
+    target = Path(path).resolve()
     for root in roots:
-        if target.is_relative_to(os.path.abspath(root)):
+        if target.is_relative_to(Path(root).resolve()):
             raise ValueError(
-                f"{what} {path} would sit inside {root}, which the sample reads. "
+                f"{what} {path} would sit inside {root}, {reads}. "
                 f"Point {setting} outside every data directory."
             )
 

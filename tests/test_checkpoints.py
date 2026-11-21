@@ -312,3 +312,78 @@ def test_a_checkpoint_directory_in_any_data_directory_is_refused(tmp_path):
             config, argparse.Namespace(no_checkpoint=False),
             [tmp_path / "converted"] + cli._data_directories(config),
         )
+
+
+def test_a_resumed_scan_keeps_the_filter_in_the_parquet_read(tmp_path, dataset, monkeypatch):
+    """A slice in a resumed scan's plan kept the draw's filter out of the
+    Parquet read (a draw resumed mid-file peaked at up to 2.6x): the partly
+    read file starts at its row through a filter on the row index."""
+    captured: list = []
+    real = samplers_module.scan_batches
+
+    def capturing(scans, what, chunk_size):
+        captured.extend(scans)
+        return real(scans, what, chunk_size)
+
+    monkeypatch.setattr(samplers_module, "scan_batches", capturing)
+    sampler = FilteredSampler(
+        str(dataset), COLUMNS, filter_dict={"Actor1CountryCode": ["USA", "BRA"]},
+        random_state=1,
+    )
+    whole = list(sampler._batches(["Actor1CountryCode"]))
+    before = len(captured)
+    resumed = list(sampler._batches(["Actor1CountryCode"], (1, 2500)))
+    plan = captured[before].explain()  # the first scan: the partly read file
+    assert "SLICE" not in plan
+    assert "SELECTION" in plan and "Actor1CountryCode" in plan.split("SELECTION")[1]
+    rows = lambda batches: pl.concat(batches).select(  # noqa: E731
+        samplers_module._ROW_FILE, samplers_module._ROW_POSITION
+    )
+    file, position = pl.col(samplers_module._ROW_FILE), pl.col(samplers_module._ROW_POSITION)
+    starts_at = rows(whole).with_row_index().filter(
+        (file > 1) | ((file == 1) & (position >= 2500))
+    )
+    assert rows(resumed).equals(starts_at.drop("index"))
+
+
+def test_the_checkpoint_guard_covers_every_paths_directory_and_symlinks(tmp_path):
+    import argparse
+    import os
+
+    import gdeltforge.cli as cli
+
+    historical = tmp_path / "cleaned_historical"
+    historical.mkdir()
+    config = {
+        "io": {"checkpoint_every_s": 60},
+        "paths": {
+            "cleaned_historical_directory": str(historical),
+            "checkpoint_directory": str(historical / "ck"),
+        },
+    }
+    args = argparse.Namespace(no_checkpoint=False)
+    with pytest.raises(ValueError, match="a data directory, where its Parquet parts"):
+        cli._checkpoint_settings(config, args, cli._data_directories(config))
+    link = tmp_path / "link"
+    try:
+        os.symlink(historical, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges on this system")
+    config["paths"]["checkpoint_directory"] = str(link / "ck")
+    with pytest.raises(ValueError, match="checkpoint directory"):
+        cli._checkpoint_settings(config, args, cli._data_directories(config))
+
+
+def test_checkpoint_parts_are_read_with_their_schema(tmp_path, monkeypatch):
+    import gdeltforge.utils.checkpoint as checkpoint_module
+
+    ckpt = Checkpoint(CheckpointSettings(tmp_path, 0), "crossref-x", {"n": 1})
+    ckpt.save({}, {}, [pl.DataFrame({"y": [1, 2]})])
+    read: list = []
+    real = checkpoint_module.read_parquet_path
+    monkeypatch.setattr(
+        checkpoint_module, "read_parquet_path", lambda p: read.append(p) or real(p)
+    )
+    loaded = Checkpoint(CheckpointSettings(tmp_path, 0), "crossref-x", {"n": 1}).load()
+    assert loaded is not None
+    assert len(read) == 1 and loaded[2][0]["y"].to_list() == [1, 2]

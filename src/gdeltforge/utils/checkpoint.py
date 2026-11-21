@@ -39,6 +39,7 @@ import numpy as np
 import polars as pl
 
 from gdeltforge import __version__
+from gdeltforge.utils.io import read_parquet_path
 from gdeltforge.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -133,8 +134,11 @@ class Checkpoint:
                 arrays = {k: saved[k] for k in saved.files if k != _HEADER}
             if header.get("format") != _FORMAT or header.get("kind") != self.kind:
                 raise ValueError(f"format {header.get('format')!r}, kind {header.get('kind')!r}")
+            # read_parquet_path hands polars the schema: a polars read that
+            # works it out itself maps the file, even unmapped
+            # (utils.io.read_parquet_schema).
             parts = [
-                pl.read_parquet(self.path / f"part-{i:06d}.parquet")
+                read_parquet_path(self.path / f"part-{i:06d}.parquet")
                 for i in range(header["parts"])
             ]
         except (OSError, ValueError, KeyError, pl.exceptions.PolarsError) as e:
