@@ -1898,6 +1898,37 @@ class TestCrossrefEventsGkgAuto:
         assert result["CrossrefSource"][0] == "v2"
         assert result["GKG_V1THEMES"][0] == "THEME_X"
 
+    @pytest.mark.parametrize("name", ["20200101.parquet", "202001.parquet"])
+    def test_aggregated_v2_files_are_narrowed_by_the_dates(self, tmp_path, name):
+        # Aggregated GKG 2.1/Mentions files (`aggregate`'s plain names),
+        # read through the cleaned keys: --start-date/--end-date kept every
+        # one of them, since the 15-minute parser can't read their names.
+        paths = self._paths(tmp_path)
+        for folder in (paths["mentions_folder"], paths["gkg_v2_folder"]):
+            (only,) = Path(folder).iterdir()
+            only.rename(Path(folder) / name)
+        # March: a file in each folder, none holding event 2001.
+        march = name.replace("202001", "202003")
+        pl.DataFrame({"GLOBALEVENTID": [9999], "MentionIdentifier": ["http://b.com/x"]}
+                     ).write_parquet(Path(paths["mentions_folder"]) / march)
+        pl.DataFrame({"V2DOCUMENTIDENTIFIER": ["http://b.com/x"], "V1THEMES": ["T"]}
+                     ).write_parquet(Path(paths["gkg_v2_folder"]) / march)
+        for day in ("20200101", "20200301"):
+            pl.DataFrame({"Date": [int(day)], "EventIds": ["1"], "Themes": ["T"]}
+                         ).write_parquet(Path(paths["gkg_v1_folder"]) / f"{day}.gkg.parquet")
+        events_df = pl.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20200101]})
+
+        def run(start, end):
+            return crossref_events_gkg_auto(
+                events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+                paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+                start_date=start, end_date=end,
+            )
+
+        inside = run(date(2020, 1, 1), date(2020, 1, 31))
+        assert inside["CrossrefSource"].to_list() == ["v2"]
+        assert run(date(2020, 3, 1), date(2020, 4, 30)).is_empty()
+
     def test_an_old_event_with_a_real_v2_only_match_now_finds_it(self, tmp_path):
         # The actual gap this module used to have, confirmed against real
         # data before this fix: an event with DATEADDED in the GKG 1.0

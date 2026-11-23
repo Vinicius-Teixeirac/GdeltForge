@@ -21,6 +21,7 @@ from gdeltforge.scraping.scraper import (
     parse_file_date,
     parse_gdelt_gkg_v1_file_date,
     parse_gdeltv2_file_date,
+    parse_gdeltv2_or_plain_file_date,
     sort_paths_by_date,
     sort_urls_by_date,
 )
@@ -108,6 +109,28 @@ class TestParseGdeltv2FileDate:
     def test_invalid_time_of_day_is_rejected(self):
         # Valid calendar date, garbage time; must not silently accept it.
         assert parse_gdeltv2_file_date("20200315256199.gkg.csv.zip") == (None, None)
+
+
+class TestParseGdeltv2OrPlainFileDate:
+    """crossref's GKG 2.1/Mentions parser: 15-minute names and the plain
+    day, month and year names `aggregate` writes."""
+
+    def test_a_15_minute_name_is_its_day(self):
+        assert parse_gdeltv2_or_plain_file_date("20150218233000.gkg.parquet") == (
+            date(2015, 2, 18), date(2015, 2, 18),
+        )
+
+    @pytest.mark.parametrize("name, expected", [
+        ("20150218.parquet", (date(2015, 2, 18), date(2015, 2, 18))),
+        ("201502.parquet", (date(2015, 2, 1), date(2015, 2, 28))),
+        ("2015.parquet", (date(2015, 1, 1), date(2015, 12, 31))),
+    ])
+    def test_an_aggregated_name_is_its_period(self, name, expected):
+        assert parse_gdeltv2_or_plain_file_date(name) == expected
+
+    def test_an_unreadable_name_is_none(self):
+        assert parse_gdeltv2_or_plain_file_date("masterfilelist.txt") == (None, None)
+        assert parse_gdeltv2_or_plain_file_date("20201332120000.gkg.csv.zip") == (None, None)
 
 
 # ------------------------------------------------------------
