@@ -201,6 +201,8 @@ The block holds exactly `columns` (one or more column names) and `match`. `ANY` 
 
     The pair is a block of its own because a key beside a condition is joined the way its block joins: in an `AND` block (or at the top), `{"Day": {...}, "OR": {"Day": {...}}}` keeps only the rows meeting both, and in an `OR` block an `AND` key beside a condition is ORed with it.
 
+    Each fix has one key, so it replaces the two keys as they stand, inside `NOT` or an `OR` block too. In a block that already holds that key, the fix's key would be repeated there and is refused in turn: nest it one level down, inside the key already there. With `QuadClass` and an `AND` holding a first condition on `Day` already in the block, the second goes inside that `AND`: `{"AND": {"QuadClass": 1, "AND": {"Day": {"op": "gt", "value": 20200101}, "AND": {"Day": {"op": "lt", "value": 20210101}}}}}`.
+
 ## Selecting specific columns
 
 You may restrict the output to specific columns, which is a memory-friendly practice:
