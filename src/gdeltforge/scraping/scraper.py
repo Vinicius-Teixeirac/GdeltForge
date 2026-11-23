@@ -21,6 +21,8 @@ Provides:
     - collect_gdelt_links: retrieves all downloadable file links for a dataset
     - parse_file_date / parse_gdeltv2_file_date / parse_gdelt_gkg_v1_file_date:
       extract the date period a filename covers
+    - parse_gdeltv2_or_plain_file_date: a GKG 2.1/Mentions name, 15-minute
+      or aggregated (crossref's reads)
     - date_parser_for: picks the right parser above for a given dataset
     - filter_urls_by_date: narrows a GdeltFile list to a [start_date, end_date]
       window (scrape, working from a remote listing)
@@ -636,6 +638,32 @@ def parse_gdeltv2_file_date(filename: str) -> tuple[date | None, date | None]:
         return d, d
     except ValueError:
         return None, None
+
+
+def parse_gdeltv2_or_plain_file_date(filename: str) -> tuple[date | None, date | None]:
+    """
+    Return (period_start, period_end) for a GKG 2.1 / Mentions file in
+    either form crossref reads: a 15-minute batch
+    (parse_gdeltv2_file_date) or a plain day, month or year name
+    (parse_file_date), the form `aggregate` writes (20150218.parquet,
+    201502.parquet, 2015.parquet).
+
+    A directory of aggregated files read as a cleaned or converted one
+    (a settings file pointing those keys at it) had names the 15-minute
+    parser can't read, and a file whose date can't be read is always
+    kept: --start-date/--end-date then narrowed nothing. A two-month
+    window listed all 3,953 GKG 2.1 day files of 2015 to 2025, and the
+    998 holding a match came to about 360 GB read.
+
+    parse_gdeltv2_file_date itself still refuses a plain name: `aggregate`
+    groups its 15-minute sources with it.
+
+    Returns (None, None) when the date cannot be determined.
+    """
+    parsed = parse_gdeltv2_file_date(filename)
+    if parsed != (None, None):
+        return parsed
+    return parse_file_date(filename)
 
 
 def parse_gdelt_gkg_v1_file_date(filename: str) -> tuple[date | None, date | None]:

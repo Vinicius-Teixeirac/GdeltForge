@@ -35,7 +35,7 @@ from gdeltforge.sampling.samplers import (
 from gdeltforge.scraping.scraper import (
     date_parser_for,
     parse_file_date,
-    parse_gdeltv2_file_date,
+    parse_gdeltv2_or_plain_file_date,
     run_scraping_pipeline,
 )
 from gdeltforge.utils.branding import compact_emblem, full_banner, safe_print
@@ -1136,7 +1136,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
     source_key = (
         "cleaned_data_directory" if args.source == "cleaned" else "parquet_data_directory"
     )
-    date_parser = parse_gdeltv2_file_date
+    date_parser = parse_gdeltv2_or_plain_file_date
     if args.source == "aggregated":
         # Both hops read `gdeltforge aggregate`'s output for --period
         # (default day), whose files are named plainly (20200101.parquet).
