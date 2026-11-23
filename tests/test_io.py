@@ -660,8 +660,16 @@ class TestOrphanedTempFileCleanup:
             "write_parquet_atomic(pl.DataFrame({'GlobalEventID': [1]}), 'out.parquet')\n"
         )
         proc = subprocess.Popen([sys.executable, str(script)], cwd=tmp_path)
+        pid = proc.pid
         try:
-            time.sleep(1.5)
+            # Killed once its partial file exists: the writer's own start-up
+            # (importing polars and gdeltforge) took 1.4 to 1.7 s on Windows,
+            # so a fixed wait killed it before it wrote anything.
+            deadline = time.monotonic() + 60
+            while not list(tmp_path.glob("out.parquet.*.tmp")):
+                assert proc.poll() is None, "the writer exited before writing"
+                assert time.monotonic() < deadline, "the writer never wrote its tmp file"
+                time.sleep(0.05)
             proc.kill()  # SIGKILL on POSIX, TerminateProcess on Windows
             proc.wait(timeout=10)
         finally:
@@ -674,6 +682,12 @@ class TestOrphanedTempFileCleanup:
         # gdeltforge invocation never holds such a handle to begin with.
         del proc
         gc.collect()
+        # Even then a killed process can stay queryable on Windows for a
+        # moment, and the later run keeps the tmp file of a live writer.
+        deadline = time.monotonic() + 30
+        while _pid_exists(pid):
+            assert time.monotonic() < deadline, "the killed writer still looks alive"
+            time.sleep(0.05)
 
         orphans_after_kill = list(tmp_path.glob("out.parquet.*.tmp"))
         assert len(orphans_after_kill) == 1, (
