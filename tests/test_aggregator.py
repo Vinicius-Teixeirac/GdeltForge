@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import polars as pl
@@ -5,6 +6,7 @@ import pytest
 
 import gdeltforge.aggregation.aggregator as aggregator_module
 from gdeltforge.aggregation.aggregator import GDELTAggregator, run_aggregator
+from gdeltforge.utils.io import AGGREGATE_MARKER_KEY, aggregated_marker
 
 
 def _write_parquet(path, data):
@@ -217,6 +219,65 @@ class TestResumability:
         processed, failed = agg_force.aggregate_all_periods()
 
         assert (processed, failed) == (1, 0)
+
+
+class TestNoMarkerFiles:
+    """aggregate keeps its run's fingerprint in each output's Parquet
+    metadata and writes no other file there: any other file in the
+    output directory, a hidden one included, makes pl.read_parquet and
+    pl.scan_parquet refuse the directory. A .done marker an earlier
+    version wrote still counts."""
+
+    @staticmethod
+    def _aggregate(tmp_path, **kwargs):
+        input_dir = tmp_path / "in"
+        input_dir.mkdir(exist_ok=True)
+        _write_parquet(input_dir / "20200101000000.gkg.parquet", {"GKGRECORDID": [1]})
+        _write_parquet(input_dir / "20200102000000.gkg.parquet", {"GKGRECORDID": [2]})
+        agg = GDELTAggregator(
+            str(input_dir), str(tmp_path / "out"), period="day",
+            date_parser=_gdeltv2_date_parser, **kwargs,
+        )
+        return agg, agg.aggregate_all_periods()
+
+    def test_polars_reads_the_output_directory(self, tmp_path):
+        self._aggregate(tmp_path)
+        out = tmp_path / "out"
+
+        assert sorted(p.name for p in out.iterdir()) == ["20200101.parquet", "20200102.parquet"]
+        assert sorted(pl.read_parquet(out)["GKGRECORDID"].to_list()) == [1, 2]
+        assert pl.scan_parquet(out).select(pl.len()).collect().item() == 2
+
+    def test_a_rerun_reads_the_fingerprint_from_the_output(self, tmp_path):
+        agg, _ = self._aggregate(tmp_path)
+        assert agg.aggregate_all_periods() == (0, 0)
+
+    def test_a_marker_from_an_earlier_version_still_counts(self, tmp_path):
+        # As 0.18.0 left a period: its output without a fingerprint, and
+        # the fingerprint in a hidden .done marker beside it.
+        agg, _ = self._aggregate(tmp_path)
+        out = tmp_path / "out" / "20200101.parquet"
+        record = aggregated_marker(out)
+        assert record is not None
+        marker = out.parent / ".20200101.parquet.done"
+        marker.write_text(record.pop("fingerprint"))
+        pl.read_parquet(out).write_parquet(
+            out, metadata={AGGREGATE_MARKER_KEY: json.dumps(record)}
+        )
+
+        assert agg.aggregate_all_periods() == (0, 0)
+        assert marker.exists()
+
+    def test_rebuilding_a_period_removes_its_old_marker(self, tmp_path):
+        self._aggregate(tmp_path)
+        marker = tmp_path / "out" / ".20200101.parquet.done"
+        marker.write_text("compression=zstd\nsource=an earlier run")
+
+        _, result = self._aggregate(tmp_path, force=True)
+
+        assert result == (2, 0)
+        assert not marker.exists()
+        assert len(pl.read_parquet(tmp_path / "out")) == 2
 
 
 class TestDryRun:
