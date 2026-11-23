@@ -527,6 +527,18 @@ class TestCrossrefEventsGkgV1:
         # EventIds is always read (it's the join key) even when not requested.
         assert "GKG_EventIds" in result.columns
 
+    def test_columns_keep_the_order_given(self, tmp_path):
+        # A list keeps its order, the join key after it; a raw and a
+        # prefixed name for one column count once.
+        folder = self._write_gkg_v1(tmp_path)
+        result = crossref_events_gkg_v1(
+            self._events_df(), folder, GKG_V1_COLUMNS,
+            columns=["Themes", "Date", "GKG_Themes", "NumArticles"],
+        )
+
+        gkg = [c for c in result.columns if c.startswith("GKG_")]
+        assert gkg == ["GKG_Themes", "GKG_Date", "GKG_NumArticles", "GKG_EventIds"]
+
     def test_columns_accepts_the_prefixed_output_name_too(self, tmp_path):
         # A live comprehensive QA pass built its --columns repro from a
         # completed run's own real output column names, which are
@@ -1060,6 +1072,17 @@ class TestCrossrefEventsGkgV2:
         assert "GKG_V1THEMES" not in result.columns
         # V2DOCUMENTIDENTIFIER is always read (it's the join key).
         assert "GKG_V2DOCUMENTIDENTIFIER" in result.columns
+
+    def test_columns_keep_the_order_given(self, tmp_path):
+        mentions_folder = self._write_mentions(tmp_path)
+        gkg_folder = self._write_gkg_v2(tmp_path)
+
+        result = crossref_events_gkg_v2(
+            self._events_df(), mentions_folder, gkg_folder, GKG_V2_COLUMNS,
+            columns=["V1THEMES", "GKGRECORDID"],
+        )
+        gkg = [c for c in result.columns if c.startswith("GKG_")]
+        assert gkg == ["GKG_V1THEMES", "GKG_GKGRECORDID", "GKG_V2DOCUMENTIDENTIFIER"]
 
     def test_columns_accepts_the_prefixed_output_name_too(self, tmp_path):
         # Same real-output-name repro as crossref_events_gkg_v1's own

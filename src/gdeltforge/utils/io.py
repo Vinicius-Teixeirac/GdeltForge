@@ -6,7 +6,7 @@ import threading
 import time
 import zipfile
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from itertools import islice
@@ -1072,8 +1072,19 @@ def warn_if_delete_source_drops_recoverable_data(
     )
 
 
+def ordered_columns(columns: Collection[str]) -> list[str]:
+    """
+    Column names in the order they are given, each once (a --columns list
+    keeps the order it was typed in). A set has no order to keep, so its
+    names come back sorted: the same order in every process.
+    """
+    if isinstance(columns, (set, frozenset)):
+        return sorted(columns)
+    return list(dict.fromkeys(columns))
+
+
 def narrow_to_available_columns(
-    logger, label: str, requested: set[str], required: set[str], available: set[str]
+    logger, label: str, requested: Collection[str], required: set[str], available: set[str]
 ) -> list[str]:
     """
     Shared by samplers.py's FilteredSampler and crossref.py's v1/v2 join
@@ -1107,6 +1118,9 @@ def narrow_to_available_columns(
     warn_if_delete_source_drops_recoverable_data's own reasoning just
     above, so the warning is attributed to whichever stage actually
     emitted it.
+
+    The result keeps requested's order (ordered_columns: a set comes back
+    sorted), followed by any required column it doesn't name, sorted.
     """
     missing_required = required - available
     if missing_required:
@@ -1116,7 +1130,8 @@ def narrow_to_available_columns(
             f"them away at an earlier stage (convert/clean)."
         )
 
-    missing_output = requested - available - required
+    ordered = ordered_columns(requested)
+    missing_output = set(ordered) - available - required
     if missing_output:
         logger.warning(
             f"{label}: {sorted(missing_output)} not found in the scanned data, likely "
@@ -1124,7 +1139,10 @@ def narrow_to_available_columns(
             f"the output rather than failing the run."
         )
 
-    return sorted((requested & available) | required)
+    if isinstance(requested, (set, frozenset)):
+        return sorted((requested & available) | required)
+    kept = [c for c in ordered if c in available]
+    return kept + sorted(required - set(kept))
 
 
 def _footer_reads_at_once() -> int:

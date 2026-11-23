@@ -3650,3 +3650,64 @@ class TestCalendarWarnsAboutPre1979Dates:
         with caplog.at_level(logging.WARNING):
             CalendarSampler(str(folder), random_state=1).get_calendar_samples()
         assert not any("before 1979" in r.message for r in caplog.records)
+
+
+class TestColumnsKeepTheOrderGiven:
+    """--columns comes out in the order it was typed in, in every mode; a
+    column a draw needs but --columns doesn't name (the calendar date
+    column, a filter or stratify column) follows. A set from the Python
+    API has no order to keep and comes out sorted, the same in every
+    process. Indexed sampling used to follow the set's hash order, which
+    changes from one process to the next."""
+
+    GIVEN = ["QuadClass", "GoldsteinScale", "EventCode", "Day"]
+    SCHEMA = ["GlobalEventID", "Day", "Actor1Code", "EventCode", "QuadClass", "GoldsteinScale"]
+
+    @pytest.fixture
+    def folder(self, tmp_path):
+        folder = tmp_path / "data"
+        folder.mkdir()
+        pl.DataFrame({
+            "GlobalEventID": range(40), "Day": [20200101 + (i % 3) for i in range(40)],
+            "Actor1Code": ["USA", "BRA"] * 20, "EventCode": ["010"] * 40,
+            "QuadClass": [1, 2, 3, 4] * 10, "GoldsteinScale": [0.5] * 40,
+        }).write_parquet(folder / "20200101.parquet")
+        return folder
+
+    def test_indexed(self, folder):
+        sampler = IndexedSampler(str(folder), random_state=1, columns=self.GIVEN)
+        assert sampler.get_random_sample(5).columns == self.GIVEN
+
+    def test_indexed_set_is_sorted(self, folder):
+        sample = IndexedSampler(
+            str(folder), random_state=1, columns=set(self.GIVEN)
+        ).get_random_sample(5)
+        assert sample.columns == sorted(self.GIVEN)
+
+    def test_calendar_date_column_follows(self, folder):
+        sample = CalendarSampler(
+            str(folder), random_state=1, columns=["QuadClass", "EventCode"]
+        ).get_calendar_samples(2)
+        assert sample.columns == ["QuadClass", "EventCode", "Day"]
+
+    def _filtered(self, folder, columns=GIVEN, **kwargs):
+        return FilteredSampler(
+            str(folder), gdelt_columns=self.SCHEMA, columns=columns,
+            filter_dict={"Actor1Code": "USA"}, random_state=1, **kwargs,
+        )
+
+    def test_filtered_random_filter_column_follows(self, folder):
+        assert self._filtered(folder).get_random_sample(5).columns == [*self.GIVEN, "Actor1Code"]
+
+    def test_filtered_with_replacement(self, folder):
+        sample = self._filtered(folder).get_random_sample(5, replace=True)
+        assert sample.columns == [*self.GIVEN, "Actor1Code"]
+
+    def test_filtered_stratified(self, folder):
+        sample = self._filtered(folder, columns=["GoldsteinScale", "Day"]).get_stratified_sample(
+            "QuadClass", 2
+        )
+        assert sample.columns == ["GoldsteinScale", "Day", "Actor1Code", "QuadClass"]
+
+    def test_filtered_whole_filter(self, folder):
+        assert self._filtered(folder).filter_dataset().columns == [*self.GIVEN, "Actor1Code"]

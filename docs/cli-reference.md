@@ -265,7 +265,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
 | `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for events-reduced/gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
 | `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'`: column conditions, the operators `equals`, `in_list`, `gt`, `lt`, `between`, `is_null`, `is_blank`, and the blocks `AND`, `OR`, `NOT`, `ANY`, `ALL` ([syntax](filtered-sampling.md)) |
-| `--columns COL [COL ...]` | all | Restrict output to these columns; cuts I/O and memory on the full archive |
+| `--columns COL [COL ...]` | all | Restrict output to these columns, in the order given; cuts I/O and memory on the full archive |
 | `--stratify COLUMN` | filtered | Stratify by this column; requires `--n-per-group` or `--quota-file` |
 | `--n-per-group N` | filtered | Rows per stratum when `--stratify` is set; with `--quota-file`, the rows of each stratum the file doesn't list (default 0) |
 | `--quota-file PATH` | calendar, `--stratify` | CSV with the header `group,count`: the rows to draw from each period or stratum (see [Quotas per group](#quotas-per-group)) |
@@ -287,6 +287,8 @@ All sampling modes read from the cleaned directory by default; pass `--source co
     - `filtered`/`stratified`: every column your `--filter` condition or `--stratify` reads is always kept, even if `--columns` doesn't name it. `crossref`'s own `--columns` behaves the same way for its join key.
 
     This is deliberate, not a bug: a mode can't group or filter by a column it silently dropped from the scan. A column `--columns` drops for real is anything not covered by one of those cases above.
+
+    The output keeps the order `--columns` gives, in every mode; a column kept for one of the reasons above comes after the ones named.
 
 !!! note "`--seed` across a re-chunked archive"
 
@@ -548,7 +550,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--stream {english,translated,both}` | Which GDELT 2.0 stream's Mentions and GKG 2.1 to join against (default `english`). `both` reads the two streams at once and adds a `Mention_Stream` column; see [Both streams](#both-streams) below. `v2`/`auto` only: `v1`/`v1-counts` reject any stream but `english`, and `auto`'s GKG 1.0 path stays English |
 | `--source {cleaned,converted,aggregated,filtered}` | Which stage's GKG/Mentions output to read from (default: `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output, `--gkg-version v2` only (GKG 1.0 has no 15-minute files to aggregate) |
 | `--period {day,month,year}` | With `--source aggregated`: which of the day/month/year aggregated directories to read (default `day`); rejected with any other `--source` |
-| `--columns COL [COL ...]` | Restrict GKG-side output to these columns, named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
+| `--columns COL [COL ...]` | Restrict GKG-side output to these columns, in the order given (the join key after them), named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
 | `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--collapse-duplicate-mentions` | Collapse per-sentence duplicate mentions of the same event in the same article into one row with an explicit `Mention_Count` column, instead of keeping every raw Mentions row (the default). Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |
 | `--start-date YYYY-MM-DD` | Only join against GKG/Mentions files whose period starts on or after this date. Narrows the configured directories being read, not `--events` |
