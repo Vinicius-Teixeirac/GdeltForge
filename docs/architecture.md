@@ -53,7 +53,11 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ │ └── default_settings.yaml # Bundled fallback config, used when no settings.yaml/--config is found at all
     │ │
     │ ├── data/
-    │ │ └── cameo_codes.json # Bundled CAMEO/FIPS code -> name reference data, backs the `codes` command
+    │ │ ├── cameo_codes.json # Bundled CAMEO/FIPS code -> name reference data, backs the `codes` command
+    │ │ └── places.parquet # Bundled place table: one place per (FeatureID, Lat, Long) GDELT wrote, backs clean.places
+    │ │
+    │ ├── aggregation/
+    │ │ └── aggregator.py # Concatenates a period's 15-minute files (GKG 2.1, Mentions, events-15min) into one per day/month/year
     │ │
     │ ├── conversion/
     │ │ └── converter.py # CSV -> Parquet conversion logic
@@ -63,6 +67,7 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ │
     │ ├── cleaning/
     │ │ ├── cleaner.py # The clean stage: runs its steps on every file
+    │ │ ├── places.py # Loads the bundled place table for the places step
     │ │ └── steps.py # The stage's steps, applied in one fixed order
     │ │
     │ ├── filtering/
@@ -72,21 +77,25 @@ GdeltForge is a standard installable `src/` package. Each package under `src/gde
     │ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command
     │ │ ├── indexer.py # File indexing for reproducible sampling
     │ │ ├── rng.py # Random number generation helpers
-    │ │ └── samplers.py # Indexed, daily, and filtered sampling
+    │ │ └── samplers.py # Indexed, calendar, and filtered sampling
     │ │
     │ ├── scraping/
     │ │ └── scraper.py # Downloader for Events, GKG 2.1, GKG 1.0, and Mentions
     │ │
     │ └── utils/
     │   ├── branding.py # Terminal ANSI colors and the --version banner (brand system's terminal voice)
+    │   ├── checkpoint.py # Checkpoints for long scans (sample, crossref, the file index): a stopped run resumes with the same output
     │   ├── concurrency.py # Sizes each worker's polars thread pools to its share of the machine, and caps concurrent reads (io.max_concurrent_reads)
     │   ├── config.py # Config resolution (--config / env var / CWD / bundled default) and YAML loading
     │   ├── io.py # File and chunked-IO helpers
-    │   └── logging.py # Central logging system
+    │   ├── logging.py # Central logging system
+    │   └── storage.py # Whether polars memory-maps what it reads (io.memory_map), decided before polars loads
     │
     ├── docs/assets/brand/ # Emblem, favicon, wordmark lockups, icon set, GitHub social preview
     ├── tests/ # pytest suite (unit tests, no network/browser required)
+    ├── tools/ # Maintainer tools that build the place table, with the gazetteer references and repairs it cites
     │
+    ├── getting-started.ipynb # The getting-started walkthrough as a notebook (opens in Colab)
     ├── main.py # Backward-compatible shim: `python main.py <command>` still works
     ├── pyproject.toml # Package metadata, build backend, gdeltforge console-script entry point
     └── README.md

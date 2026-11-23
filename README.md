@@ -245,15 +245,18 @@ project_root/
 │ │
 │ └── utils/
 │   ├── branding.py # Terminal ANSI colors and the --version banner (brand system's terminal voice)
+│   ├── checkpoint.py # Checkpoints for long scans (sample, crossref, the file index): a stopped run resumes with the same output
 │   ├── concurrency.py # Sizes each worker's polars thread pools to its share of the machine, and caps concurrent reads (io.max_concurrent_reads)
 │   ├── config.py # Config resolution (--config / env var / CWD / bundled default) and YAML loading
 │   ├── io.py # File and chunked-IO helpers
-│   └── logging.py # Central logging system
+│   ├── logging.py # Central logging system
+│   └── storage.py # Whether polars memory-maps what it reads (io.memory_map), decided before polars loads
 │
 ├── docs/assets/brand/ # Emblem, favicon, wordmark lockups, icon set, GitHub social preview
 ├── tests/ # pytest suite (unit tests, no network/browser required)
 ├── tools/ # Maintainer tools that build the place table, with the gazetteer references and repairs it cites
 │
+├── getting-started.ipynb # The getting-started walkthrough as a notebook (opens in Colab)
 ├── main.py # Backward-compatible shim: `python main.py <command>` still works
 ├── pyproject.toml # Package metadata, build backend, gdeltforge console-script entry point
 └── README.md
