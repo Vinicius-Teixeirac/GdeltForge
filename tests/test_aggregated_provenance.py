@@ -72,14 +72,20 @@ class TestAggregateRecordsItsSources:
 
         record = aggregated_marker(out / "20200101.parquet")
 
-        assert record == {"sources": [
-            {"file": "20200101000000.export.parquet",
-             "converted": "20200101000000.export.parquet", "rows": 3},
-            {"file": "20200101001500.export.parquet",
-             "converted": "20200101001500.export.parquet", "rows": 0},
-            {"file": "20200101003000.export.parquet",
-             "converted": "20200101003000.export.parquet", "rows": 2},
-        ]}
+        assert record == {
+            "sources": [
+                {"file": "20200101000000.export.parquet",
+                 "converted": "20200101000000.export.parquet", "rows": 3},
+                {"file": "20200101001500.export.parquet",
+                 "converted": "20200101001500.export.parquet", "rows": 0},
+                {"file": "20200101003000.export.parquet",
+                 "converted": "20200101003000.export.parquet", "rows": 2},
+            ],
+            # The run's settings and sources, checked by the next run.
+            "fingerprint": "compression=zstd\ndelete_source=False\nsource=converted\n"
+                           "sources=20200101000000.export.parquet,"
+                           "20200101001500.export.parquet,20200101003000.export.parquet",
+        }
 
     def test_a_cleaned_source_records_the_converted_file_it_holds(self, tmp_path):
         converted = _converted(tmp_path)
@@ -158,8 +164,12 @@ class TestProvenanceOfAggregatedRows:
 
 
 def _strip_record(path):
-    """Rewrite an aggregated file without its record, as aggregate wrote
-    it before 0.16.0; its .done marker stays."""
+    """Rewrite an aggregated file as aggregate wrote it before 0.16.0:
+    no record in it, and its run's fingerprint in a .done marker beside
+    it."""
+    record = aggregated_marker(path)
+    assert record is not None
+    (path.parent / f".{path.name}.done").write_text(record["fingerprint"])
     table = pq.read_table(path)
     table = table.replace_schema_metadata({
         k: v for k, v in (table.schema.metadata or {}).items()

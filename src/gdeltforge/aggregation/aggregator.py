@@ -60,11 +60,11 @@ from gdeltforge.utils.config import (
 from gdeltforge.utils.io import (
     AGGREGATE_MARKER_KEY,
     aggregate_sources_record,
+    aggregated_marker,
     config_fingerprint,
     configure_worker_reads,
     delete_done_marker,
     is_marked_done,
-    mark_done,
     pace_reads,
     read_retries,
     scan_dataset_reconciled,
@@ -251,7 +251,7 @@ class GDELTAggregator:
                 delete_source=self.delete_source,
                 sources=[p.name for p in group_files],
             )
-            if not self.force and is_marked_done(output_path, fingerprint):
+            if not self.force and self._is_aggregated(output_path, fingerprint):
                 logger.debug(f"Skipping already aggregated period: {key}")
                 continue
             plan[key] = (group_files, output_path, fingerprint)
@@ -304,8 +304,10 @@ class GDELTAggregator:
             initargs=(read_retries(), worker_read_rate(worker_plan.workers)),
         ) as executor:
             futures = {
-                executor.submit(self.aggregate_one_period, group_files, output_path): key
-                for key, (group_files, output_path, _) in plan.items()
+                executor.submit(
+                    self.aggregate_one_period, group_files, output_path, fingerprint
+                ): key
+                for key, (group_files, output_path, fingerprint) in plan.items()
             }
 
             try:
@@ -320,7 +322,9 @@ class GDELTAggregator:
                         group_files, output_path, fingerprint = plan[key]
                         try:
                             future.result()
-                            mark_done(output_path, fingerprint)
+                            # The output's metadata now records this run; a
+                            # marker an earlier version wrote beside it goes.
+                            delete_done_marker(output_path)
 
                             if self.delete_source:
                                 for source_file in group_files:
@@ -357,7 +361,27 @@ class GDELTAggregator:
     # PER-PERIOD PROCESSING
     # ------------------------------------------------------------
 
-    def aggregate_one_period(self, group_files: list[Path], output_path: Path) -> None:
+    def _is_aggregated(self, output_path: Path, fingerprint: str) -> bool:
+        """
+        Whether output_path holds its period as this run would write it:
+        the aggregate record in its Parquet metadata carries this run's
+        fingerprint. No marker file is written: any other file in the
+        output directory, a hidden one or a hidden subdirectory included,
+        makes pl.read_parquet(directory) and pl.scan_parquet(directory)
+        refuse it. A .done marker beside the output, where aggregate wrote
+        them before 0.18.1, still counts, so upgrading aggregates nothing
+        again; rebuilding a period (--force, or a changed configuration)
+        removes it.
+        """
+        if output_path.is_file():
+            record = aggregated_marker(output_path)
+            if record is not None and record.get("fingerprint") == fingerprint:
+                return True
+        return is_marked_done(output_path, fingerprint)
+
+    def aggregate_one_period(
+        self, group_files: list[Path], output_path: Path, fingerprint: str = ""
+    ) -> None:
         """
         Concatenate group_files into output_path via a lazy, schema-
         reconciled scan streamed straight to disk (sink_parquet_atomic),
@@ -385,8 +409,9 @@ class GDELTAggregator:
         # The output records its sources, in the order their rows are
         # written, with the converted file each holds and its rows, so a
         # sample's --provenance can name a row's 15-minute file and
-        # position there (samplers._label_provenance).
-        record = {"sources": aggregate_sources_record(group_files)}
+        # position there (samplers._label_provenance), and the run's
+        # fingerprint, which a later run checks (_is_aggregated).
+        record = {"sources": aggregate_sources_record(group_files), "fingerprint": fingerprint}
         lf = scan_dataset_reconciled(group_files)
         sink_parquet_atomic(
             lf, output_path, compression=cast(ParquetCompression, self.compression),
