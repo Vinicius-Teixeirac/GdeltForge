@@ -2063,6 +2063,19 @@ def _log_to_file(args: argparse.Namespace) -> None:
         get_logger(__name__, log_to_file=True)
 
 
+def _log_error_to_file(message: str) -> None:
+    """
+    Record a run's closing error in logs/pipeline.log, when this run logs
+    to it. The terminal already gets main()'s one-line "Error: ..." on
+    stderr, so the record goes to the file handlers only, never printed
+    twice.
+    """
+    record = logger.makeRecord(logger.name, logging.ERROR, __file__, 0, message, (), None)
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.handle(record)
+
+
 # ======================================================================
 # Entrypoint
 # ======================================================================
@@ -2148,6 +2161,7 @@ def main() -> None:
         sys.exit(130)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
+        _log_error_to_file(f"Error: {e}")
         sys.exit(1)
 
 
