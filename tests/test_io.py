@@ -23,6 +23,7 @@ from gdeltforge.utils.io import (
     is_marked_done,
     mark_done,
     narrow_to_available_columns,
+    ordered_columns,
     read_csv_export,
     read_file_schemas,
     read_parquet_path,
@@ -1124,6 +1125,18 @@ class TestWarnIfDeleteSourceDropsRecoverableData:
         assert "float32_columns" in message
 
 
+class TestOrderedColumns:
+    """--columns keeps the order it was typed in; a set, with no order to
+    keep, comes back sorted so every process gets the same order."""
+
+    def test_a_list_keeps_its_order_each_name_once(self):
+        assert ordered_columns(["Tone", "Date", "Tone", "Themes"]) == ["Tone", "Date", "Themes"]
+
+    def test_a_set_comes_back_sorted(self):
+        assert ordered_columns({"Tone", "Date", "Themes"}) == ["Date", "Themes", "Tone"]
+        assert ordered_columns(frozenset({"b", "a"})) == ["a", "b"]
+
+
 class TestNarrowToAvailableColumns:
     """
     Shared by samplers.py's FilteredSampler and crossref.py's v1/v2 join
@@ -1141,6 +1154,22 @@ class TestNarrowToAvailableColumns:
                 requested={"EventIds", "Date"}, required={"EventIds"},
                 available={"Date"},
             )
+
+    def test_a_list_keeps_its_order_required_columns_after(self):
+        result = narrow_to_available_columns(
+            logging.getLogger("test"), "GKG 1.0 dataset in /data",
+            requested=["Tone", "Date", "Gone"], required={"EventIds", "Date"},
+            available={"EventIds", "Date", "Tone"},
+        )
+        assert result == ["Tone", "Date", "EventIds"]
+
+    def test_a_set_comes_back_sorted_as_before(self):
+        result = narrow_to_available_columns(
+            logging.getLogger("test"), "GKG 1.0 dataset in /data",
+            requested={"Tone", "Date"}, required={"EventIds"},
+            available={"EventIds", "Date", "Tone"},
+        )
+        assert result == ["Date", "EventIds", "Tone"]
 
     def test_missing_optional_columns_warn_and_are_dropped(self, caplog):
         with caplog.at_level(logging.WARNING):

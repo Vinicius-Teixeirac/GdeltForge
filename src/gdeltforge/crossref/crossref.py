@@ -89,7 +89,7 @@ Provides:
 import hashlib
 import io
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -121,6 +121,7 @@ from gdeltforge.utils.io import (
     clearer_dataset_errors,
     detach,
     narrow_to_available_columns,
+    ordered_columns,
     pace_reads,
     paced_ranges,
     retry_read,
@@ -310,8 +311,8 @@ def _dataset(files: list[Path], folder: str, start_date: date | None = None,
 
 
 def _validate_columns(
-    columns: set[str] | None, available: list[str], prefix: str
-) -> set[str] | None:
+    columns: Collection[str] | None, available: list[str], prefix: str
+) -> list[str] | None:
     """
     --columns only ever restricts GKG-side output (see crossref_events_
     gkg_v1/_v2's own docstrings). A caller can name a column either way:
@@ -340,19 +341,20 @@ def _validate_columns(
     from the GKG-side raw or prefixed name space this check covers, and
     stays in the result regardless of what --columns requests.
 
-    Returns the resolved set in raw (unprefixed) form, the form the
-    actual scan needs, not necessarily the form the caller passed in.
+    Returns the resolved names in raw (unprefixed) form, the form the
+    actual scan needs, not necessarily the form the caller passed in, in
+    the order given (ordered_columns: a set comes back sorted), each once.
     """
     if columns is None:
         return None
     available_set = set(available)
-    resolved: set[str] = set()
+    resolved: list[str] = []
     invalid: set[str] = set()
-    for name in columns:
+    for name in ordered_columns(columns):
         if name in available_set:
-            resolved.add(name)
+            resolved.append(name)
         elif name.startswith(prefix) and name[len(prefix):] in available_set:
-            resolved.add(name[len(prefix):])
+            resolved.append(name[len(prefix):])
         else:
             invalid.add(name)
     if invalid:
@@ -364,7 +366,7 @@ def _validate_columns(
                 f"a valid name to pass to --columns, on any run."
             )
         raise ValueError(f"Invalid columns: {invalid}")
-    return resolved
+    return list(dict.fromkeys(resolved))
 
 
 def _require_column(df_columns, name: str, df_desc: str) -> None:
@@ -800,7 +802,7 @@ def crossref_events_gkg_v1(
     events_df: pl.DataFrame,
     gkg_folder: str,
     gkg_columns: list[str],
-    columns: set[str] | None = None,
+    columns: Collection[str] | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
     checkpoints: CheckpointSettings = NO_CHECKPOINTS,
@@ -1000,7 +1002,7 @@ def crossref_events_gkg_v2(
     mentions_folder: str | Mapping[str, str],
     gkg_v2_folder: str | Mapping[str, str],
     gkg_v2_columns: list[str],
-    columns: set[str] | None = None,
+    columns: Collection[str] | None = None,
     on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
     dedupe_mentions: bool = False,
     start_date: date | None = None,
@@ -1323,8 +1325,8 @@ def crossref_events_gkg_auto(
     mentions_folder: str | Mapping[str, str],
     gkg_v2_folder: str | Mapping[str, str],
     gkg_v2_columns: list[str],
-    v1_columns: set[str] | None = None,
-    v2_columns: set[str] | None = None,
+    v1_columns: Collection[str] | None = None,
+    v2_columns: Collection[str] | None = None,
     on_duplicate_document: Literal["latest", "earliest", "all"] = "all",
     dedupe_mentions: bool = False,
     start_date: date | None = None,

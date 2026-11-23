@@ -14,7 +14,7 @@ import json
 import re
 import zlib
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -49,6 +49,7 @@ from gdeltforge.utils.io import (
     detach,
     done_marker_fields,
     narrow_to_available_columns,
+    ordered_columns,
     pace_reads,
     paced_ranges,
     parquet_footer_facts,
@@ -601,7 +602,7 @@ class IndexedSampler:
         folder_path: str,
         historical_folder: str | None = None,
         random_state: int | None = 42,
-        columns: set[str] | None = None,
+        columns: Collection[str] | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         date_parser: Callable[[str], tuple[date | None, date | None]] = parse_file_date,
@@ -656,11 +657,9 @@ class IndexedSampler:
         # against CalendarSampler's own identical treatment of the same
         # mistake for its own --columns.
         self.columns = (
-            set(
-                narrow_to_available_columns(
-                    logger, f"indexed sample dataset in {self.folder}",
-                    columns, set(), set(self.index.schema_names),
-                )
+            narrow_to_available_columns(
+                logger, f"indexed sample dataset in {self.folder}",
+                columns, set(), set(self.index.schema_names),
             )
             if columns else None
         )
@@ -1215,7 +1214,7 @@ class CalendarSampler:
         folder_path: str,
         historical_folder: str | None = None,
         random_state: int | None = 42,
-        columns: set[str] | None = None,
+        columns: Collection[str] | None = None,
         date_column: str = "Day",
         period: str = "day",
         start_date: date | None = None,
@@ -1432,7 +1431,7 @@ class CalendarSampler:
         checkpoint = Checkpoint(self.checkpoints, "sample-calendar", {
             "sampler": "calendar", "period": self.period, "date_column": self.date_column,
             "per_period": samples_per_period, "quotas": quotas,
-            "columns": sorted(self.columns) if self.columns else None,
+            "columns": needed,
             "provenance": self.provenance, "seed": self.rng.seed,
             "files": file_facts(files) if self.checkpoints.enabled else [],
         })
@@ -1632,7 +1631,7 @@ class FilteredSampler:
         self,
         folder_path: str,
         gdelt_columns: list[str],
-        columns: set[str] | None = None,
+        columns: Collection[str] | None = None,
         filter_dict: dict[str, Any] | None = None,
         random_state: int | None = 42,
         historical_folder: str | None = None,
@@ -1664,12 +1663,17 @@ class FilteredSampler:
             list(PROVENANCE_COLUMNS) if provenance else []
         )
         self._columns_given = bool(columns)
+        if columns:
+            # --columns' own order first, then whatever else a draw keeps
+            # (a filter or stratify column, provenance) in the order above.
+            given = ordered_columns(columns)
+            self._output_order = given + [c for c in self._output_order if c not in given]
 
         self.folder = Path(folder_path)
         self.historical_folder: Path | None = (
             Path(historical_folder) if historical_folder else None
         )
-        self.columns     = columns or self.gdelt_columns
+        self.columns     = ordered_columns(columns) if columns else self.gdelt_columns
         self.filter_dict = filter_dict or {}
         self.rng         = ReproducibleRNG(random_state)
         self.start_date  = start_date
@@ -1687,7 +1691,7 @@ class FilteredSampler:
 
     # ---------- validation ----------
     def _validate_columns(self):
-        invalid = self.columns - self._valid_columns
+        invalid = set(self.columns) - self._valid_columns
         if invalid:
             raise ValueError(f"Invalid columns: {invalid}")
 
@@ -2181,7 +2185,7 @@ class FilteredSampler:
         files, _ = self._indexed_files()
         return Checkpoint(self.checkpoints, f"sample-{kind}", {
             "sampler": "filtered", **params, "filter": self.filter_dict,
-            "columns": sorted(self.columns) if self.columns else None,
+            "columns": ordered_columns(self.columns) if self.columns else None,
             "provenance": self.provenance, "seed": self.rng.seed, "files": file_facts(files),
         })
 
@@ -2359,9 +2363,11 @@ class FilteredSampler:
         required = (extra_required or set()) | self._filter_columns(self.filter_dict)
         if self.provenance:
             required |= set(PROVENANCE_COLUMNS)
-        requested = set(self.columns)
-        if not self._columns_given:
-            requested |= self._clean_added_columns & available
+        requested: Collection[str]
+        if self._columns_given:
+            requested = self.columns  # a list: the output keeps its order
+        else:
+            requested = set(self.columns) | (self._clean_added_columns & available)
         return narrow_to_available_columns(
             logger, f"filtered sample dataset in {self.folder}", requested, required, available
         )

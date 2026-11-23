@@ -59,6 +59,7 @@ from gdeltforge.utils.io import (
     configure_read_rate,
     configure_read_retries,
     ensure_exists,
+    ordered_columns,
     read_parquet_path,
     warn_if_folder_holds_cleaned_files,
     write_dataframe_atomic,
@@ -897,7 +898,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # Create parent folder if it does not exist
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    columns = set(args.columns) if args.columns else None
+    columns = ordered_columns(args.columns) if args.columns else None
     sources = [Path(source_folder)] + ([Path(hist_folder)] if hist_folder else [])
     file_index = _sample_file_index(config, args, sources)
     checkpoints = _checkpoint_settings(config, args, sources + _data_directories(config))
@@ -1131,7 +1132,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
     events_df = read_parquet_path(args.events)
-    columns = set(args.columns) if args.columns else None
+    columns = ordered_columns(args.columns) if args.columns else None
     source_key = (
         "cleaned_data_directory" if args.source == "cleaned" else "parquet_data_directory"
     )
@@ -1750,8 +1751,8 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--columns",
         nargs="*",
-        help="Restrict output to these columns (all modes); cuts both I/O "
-             "and memory use on the full archive"
+        help="Restrict output to these columns (all modes), in the order given; cuts "
+             "both I/O and memory use on the full archive"
     )
     sample.add_argument(
         "--stratify",
@@ -1856,7 +1857,8 @@ def build_parser() -> argparse.ArgumentParser:
     crossref.add_argument(
         "--columns",
         nargs="*",
-        help="Restrict GKG-side output to these columns; cuts I/O and memory. Takes either "
+        help="Restrict GKG-side output to these columns, in the order given; cuts I/O and "
+             "memory. Takes either "
              "the raw GKG column name (Date, Tone) or the prefixed name it has in this "
              "command's own output (GKG_Date, GKG_Tone), never GlobalEventID, the join key "
              "column, always included regardless. Not supported with --gkg-version auto"

@@ -1304,7 +1304,7 @@ class TestRunSamplingCmdSource:
         )
         cli.run_sampling_cmd(self._config(), args)
 
-        assert captured["columns"] == {"GlobalEventID", "QuadClass"}
+        assert captured["columns"] == ["GlobalEventID", "QuadClass"]
 
     def test_events_reduced_has_a_calendar_date_column_default(self, tmp_path, monkeypatch):
         # _CALENDAR_DATE_SPECS is keyed by every real --dataset choice;
@@ -1381,7 +1381,7 @@ class TestRunSamplingCmdSource:
         )
         cli.run_sampling_cmd(self._config(), args)
 
-        assert captured["columns"] == {"GlobalEventID"}
+        assert captured["columns"] == ["GlobalEventID"]
 
     def test_export_format_csv_writes_a_real_csv_file(self, tmp_path, monkeypatch):
         # Not mocking write_parquet_atomic/write_dataframe_atomic here,
@@ -2893,7 +2893,7 @@ class TestRunCrossrefCmd:
 
         assert captured["folder"] == "/gkg_v1_converted"
 
-    def test_columns_arg_becomes_a_set(self, tmp_path, monkeypatch):
+    def test_columns_arg_keeps_its_order_once_each(self, tmp_path, monkeypatch):
         captured = {}
         monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
         monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
@@ -2905,10 +2905,10 @@ class TestRunCrossrefCmd:
         )
 
         cli.run_crossref_cmd(
-            self._config(), self._args(tmp_path, gkg_version="v1", columns=["Date"])
+            self._config(), self._args(tmp_path, gkg_version="v1", columns=["Tone", "Date", "Tone"])
         )
 
-        assert captured["columns"] == {"Date"}
+        assert captured["columns"] == ["Tone", "Date"]
 
     def test_output_written_via_write_parquet_atomic(self, tmp_path, monkeypatch):
         written = {}
