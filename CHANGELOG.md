@@ -8,6 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 - An error that stopped a command (an invalid settings file, a missing directory, failed files) was printed to the terminal only, never recorded in `logs/pipeline.log`, so the log of a failed run ended without saying why. It is now written there too; the terminal still shows it once.
+- `sample --mode filtered` warned that `--start-date/--end-date` and `--filter` were both set when the filter was `'{}'`, which narrows no rows. The warning now needs a filter with conditions.
 
 ## [0.18.0] - 2026-11-21
 
