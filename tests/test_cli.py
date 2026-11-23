@@ -2338,6 +2338,34 @@ class TestRunSamplingCmdDateFiltering:
 
         assert not any("both set" in r.message for r in caplog.records)
 
+    @pytest.mark.parametrize("filter_arg", ["{}", " { } "])
+    def test_no_warning_for_an_empty_filter_with_dates(
+        self, tmp_path, monkeypatch, caplog, filter_arg
+    ):
+        # An empty filter narrows no rows, so the dates are the only narrowing.
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        class FakeFilteredSampler:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def get_random_sample(self, n, replace=False):
+                return pl.DataFrame({"GlobalEventID": [1]})
+
+        monkeypatch.setattr(cli, "FilteredSampler", FakeFilteredSampler)
+
+        with caplog.at_level("WARNING", logger="gdeltforge.cli"):
+            cli.run_sampling_cmd(
+                self._config(),
+                self._args(
+                    mode="filtered", filter=filter_arg,
+                    out=str(tmp_path / "o.parquet"), start_date="2020-01-01",
+                ),
+            )
+
+        assert not any("both set" in r.message for r in caplog.records)
+
 
 class TestRunSamplingCmdStratifyWithoutFilter:
     """--stratify targets rows by group membership on its own; it doesn't

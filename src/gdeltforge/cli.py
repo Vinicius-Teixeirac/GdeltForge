@@ -787,14 +787,6 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     dataset = _DATASET_CLI_TO_CONFIG[args.dataset]
     date_parser = date_parser_for(dataset)
 
-    if args.mode == "filtered" and (start_date or end_date) and args.filter:
-        logger.warning(
-            "--start-date/--end-date and --filter are both set: --start-date/--end-date "
-            "narrow which files get scanned (by filename period), while --filter narrows "
-            "rows within whatever files remain. Both apply independently, so a result "
-            "narrower than expected from either alone usually means the other is also active."
-        )
-
     # --replace only makes sense against a known, or newly-counted, total
     # row count: --mode indexed already has one (FileIndex.total_rows),
     # and plain --mode filtered gets one via a first counting pass (see
@@ -1035,6 +1027,16 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             filter_dict = json.loads(filter_arg, object_pairs_hook=_filter_block)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON passed to --filter: {e}") from e
+        # An empty filter ('{}', or none with --stratify) narrows no rows,
+        # so only a filter with conditions can combine with the dates.
+        if filter_dict and (start_date or end_date):
+            logger.warning(
+                "--start-date/--end-date and --filter are both set: --start-date/--end-date "
+                "narrow which files get scanned (by filename period), while --filter narrows "
+                "rows within whatever files remain. Both apply independently, so a result "
+                "narrower than expected from either alone usually means the other is also "
+                "active."
+            )
 
         sampler = FilteredSampler(
             folder_path=str(source_folder),

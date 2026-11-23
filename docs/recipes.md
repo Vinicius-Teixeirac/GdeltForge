@@ -129,10 +129,8 @@ while [[ ! "$start" > "$last" ]]; do
 done
 ```
 
-`date -d` is GNU date; on macOS, install coreutils and use `gdate`. Each
-run logs a warning that `--start-date`/`--end-date` and `--filter` are
-both set, which an empty filter makes harmless. The pieces need no join:
-read them together, as one dataset.
+`date -d` is GNU date; on macOS, install coreutils and use `gdate`. The
+pieces need no join: read them together, as one dataset.
 
 ```python
 import polars as pl
