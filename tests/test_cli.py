@@ -3261,6 +3261,26 @@ class TestLogFile:
         cli.main()
         assert (no_file_handler / "logs" / "pipeline.log").exists()
 
+    def test_an_error_reaches_the_file_and_is_printed_once(
+        self, monkeypatch, no_file_handler, capsys
+    ):
+        # A config error, say: raised past the point the log file opens.
+        def bad_config(path):
+            raise ValueError("Invalid config: io.max_concurrent_reads must be positive")
+
+        monkeypatch.setattr(cli, "load_config", bad_config)
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", "clean", "--dataset", "events"])
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+        assert exc_info.value.code == 1
+        for h in cli.logger.handlers:
+            h.flush()
+        log = (no_file_handler / "logs" / "pipeline.log").read_text(encoding="utf-8")
+        assert "ERROR" in log
+        assert "Error: Invalid config: io.max_concurrent_reads must be positive" in log
+        err = capsys.readouterr().err
+        assert err.count("Invalid config") == 1
+
 
 class TestMainErrorHandling:
     """main() used to let any exception propagate as a raw traceback.
