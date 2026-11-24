@@ -1118,11 +1118,12 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             f"Use --gkg-version v2 or auto."
         )
 
-    if args.source == "aggregated" and args.gkg_version != "v2":
+    if args.source == "aggregated" and args.gkg_version not in ("v2", "auto"):
         raise ValueError(
-            f"--source aggregated applies to --gkg-version v2 only: GKG 1.0 isn't published "
-            f"at 15-minute cadence, so `gdeltforge aggregate` has nothing of it to combine. "
-            f"Use --gkg-version v2, or --source cleaned/converted for {args.gkg_version}."
+            f"--source aggregated applies to --gkg-version v2 and auto only: GKG 1.0 isn't "
+            f"published at 15-minute cadence, so `gdeltforge aggregate` has nothing of it to "
+            f"combine. Use --gkg-version v2 or auto, or --source cleaned/converted for "
+            f"{args.gkg_version}."
         )
     period = getattr(args, "period", None)
     if period is not None and args.source != "aggregated":
@@ -1169,8 +1170,17 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
                 "restrict columns, or call crossref_events_gkg_auto with its own "
                 "v1_columns/v2_columns to restrict each path independently."
             )
+        # GKG 1.0 has no aggregated form: with --source aggregated, its
+        # cleaned daily files are read beside the aggregated Mentions and
+        # GKG 2.1.
+        gkg_v1_key = "cleaned_data_directory" if args.source == "aggregated" else source_key
+        if args.source == "aggregated":
+            logger.info(
+                "--source aggregated: GKG 1.0 has no aggregated files, so its cleaned "
+                "directory is read."
+            )
         gkg_v1_folder = ensure_exists(
-            config["paths"][dataset_path_key("gdelt_gkg_v1", source_key)],
+            config["paths"][dataset_path_key("gdelt_gkg_v1", gkg_v1_key)],
             "GKG 1.0 directory",
         )
         mentions_folder = _crossref_folders(
@@ -1190,6 +1200,7 @@ def run_crossref_cmd(config: dict, args: argparse.Namespace) -> None:
             dedupe_mentions=args.collapse_duplicate_mentions,
             start_date=start_date,
             end_date=end_date,
+            date_parser=date_parser,
             checkpoints=checkpoints,
         )
     elif args.gkg_version == "v2":
@@ -1844,7 +1855,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["cleaned", "converted", "aggregated", "filtered"],
         default="cleaned",
         help="Which stage's GKG/Mentions output to read from (default: cleaned; "
-             "'aggregated' reads `gdeltforge aggregate`'s output, --gkg-version v2 only; "
+             "'aggregated' reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output, "
+             "--gkg-version v2 and auto only, auto reading GKG 1.0 from its cleaned "
+             "directory; "
              "'filtered' is a deprecated alias of 'cleaned')"
     )
     crossref.add_argument(

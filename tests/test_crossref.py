@@ -1980,6 +1980,28 @@ class TestCrossrefEventsGkgAuto:
         assert inside["CrossrefSource"].to_list() == ["v2"]
         assert run(date(2020, 3, 1), date(2020, 4, 30)).is_empty()
 
+    def test_the_date_parser_reaches_the_gkg_21_path(self, tmp_path, monkeypatch):
+        # --source aggregated passes parse_file_date for the aggregated
+        # Mentions and GKG 2.1 names; GKG 1.0 keeps its own.
+        from gdeltforge.scraping.scraper import parse_file_date
+
+        paths = self._paths(tmp_path)
+        seen = {}
+        real = crossref_module.crossref_events_gkg_v2
+
+        def spy(*args, **kwargs):
+            seen["date_parser"] = kwargs.get("date_parser")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(crossref_module, "crossref_events_gkg_v2", spy)
+        events_df = pl.DataFrame({"GlobalEventID": [2001], "DATEADDED": [20200101]})
+        crossref_events_gkg_auto(
+            events_df, paths["gkg_v1_folder"], paths["gkg_v1_columns"],
+            paths["mentions_folder"], paths["gkg_v2_folder"], paths["gkg_v2_columns"],
+            date_parser=parse_file_date,
+        )
+        assert seen["date_parser"] is parse_file_date
+
     def test_an_old_event_with_a_real_v2_only_match_now_finds_it(self, tmp_path):
         # The actual gap this module used to have, confirmed against real
         # data before this fix: an event with DATEADDED in the GKG 1.0

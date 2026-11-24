@@ -1365,6 +1365,9 @@ def crossref_events_gkg_auto(
     dedupe_mentions: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
+    date_parser: Callable[[str], tuple[date | None, date | None]] = (
+        parse_gdeltv2_or_plain_file_date
+    ),
     checkpoints: CheckpointSettings = NO_CHECKPOINTS,
 ) -> pl.DataFrame:
     """
@@ -1427,7 +1430,10 @@ def crossref_events_gkg_auto(
     start_date/end_date (CLI: --start-date/--end-date) are forwarded to
     both paths, narrowing which files in gkg_v1_folder, mentions_folder,
     and gkg_v2_folder get listed and opened at all; see the module
-    docstring for what this does and doesn't affect.
+    docstring for what this does and doesn't affect. date_parser reads
+    the Mentions and GKG 2.1 file names (crossref_events_gkg_v2's), so
+    the GKG 2.1 path can read `gdeltforge aggregate`'s output; GKG 1.0
+    has no aggregated form.
     """
     _require_column(events_df.columns, REQUIRED_JOIN_COLUMNS["gdelt_event"][0], "events_df")
     if "DATEADDED" not in events_df.columns:
@@ -1482,7 +1488,8 @@ def crossref_events_gkg_auto(
         columns=v2_columns,
         on_duplicate_document=on_duplicate_document,
         dedupe_mentions=dedupe_mentions,
-        start_date=start_date, end_date=end_date, checkpoints=checkpoints,
+        start_date=start_date, end_date=end_date, date_parser=date_parser,
+        checkpoints=checkpoints,
     ).with_columns(pl.lit("v2").alias("CrossrefSource"))
 
     return pl.concat([v1_result, v2_result], how="diagonal")
