@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polars as pl
 import polars.testing as pl_testing
+import pyarrow.parquet as pq
 import pytest
 from tqdm import tqdm
 
@@ -1358,10 +1359,12 @@ class TestCrossrefEventsGkgV2TwoPass:
         seen = []
         real = crossref_module.scan_dataset_reconciled
 
-        def spy(files, target_schema=None):
+        def spy(files, target_schema=None, **kwargs):
             if target_schema is not None:
                 seen.append([Path(f).name for f in files])
-            return real(files, target_schema=target_schema)
+                # The schemas read with the batches' sizes: no footer twice.
+                assert set(kwargs["file_schemas"]) >= set(files)
+            return real(files, target_schema=target_schema, **kwargs)
 
         monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
         result = crossref_events_gkg_v2(
@@ -1375,30 +1378,49 @@ class TestCrossrefEventsGkgV2TwoPass:
             ["20200101000000.gkg.parquet", "20200101003000.gkg.parquet"],
         ]
 
-    def test_the_second_pass_reads_in_batches_of_the_scan_limit(self, tmp_path, monkeypatch):
+    def test_a_file_over_the_batch_budget_is_a_batch_of_its_own(self, tmp_path, monkeypatch):
         # Each batch's matches are copied out before the next is read; the
         # batches follow the archive's order, so "latest" still means the
-        # last file.
+        # last file, and the output is the same as in one batch.
         events, mentions, gkg = self._setup(tmp_path)
-        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "1")
+        columns = ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
+        whole = crossref_events_gkg_v2(events, mentions, gkg, columns)
+        monkeypatch.setattr(crossref_module, "_ROWS_BATCH_BYTES", 1)
         seen = []
         real = crossref_module.scan_dataset_reconciled
 
-        def spy(files, target_schema=None):
+        def spy(files, target_schema=None, **kwargs):
             if target_schema is not None:
                 seen.append([Path(f).name for f in files])
-            return real(files, target_schema=target_schema)
+            return real(files, target_schema=target_schema, **kwargs)
 
         monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
-        result = crossref_events_gkg_v2(
-            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
-        )
+        result = crossref_events_gkg_v2(events, mentions, gkg, columns)
         assert seen == [
             ["20200101120000.mentions.parquet"],
             ["20200101000000.gkg.parquet"],
             ["20200101003000.gkg.parquet"],
         ]
-        assert sorted(result["GKG_GKGRECORDID"]) == ["REC-20200101000000", "REC-20200101003000"]
+        assert result.equals(whole)
+
+    def test_the_scan_limit_no_longer_sets_the_batch(self, tmp_path, monkeypatch):
+        # io.max_concurrent_reads bounds how many files polars reads at
+        # once; how many go in a batch follows their decoded size.
+        events, mentions, gkg = self._setup(tmp_path)
+        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "1")
+        seen = []
+        real = crossref_module.scan_dataset_reconciled
+
+        def spy(files, target_schema=None, **kwargs):
+            if target_schema is not None:
+                seen.append(len(files))
+            return real(files, target_schema=target_schema, **kwargs)
+
+        monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
+        crossref_events_gkg_v2(
+            events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID", "V2.1DATE"]
+        )
+        assert seen == [1, 2]
 
     def test_the_first_pass_scans_in_batches(self, tmp_path, monkeypatch):
         # One scan over every file held memory per file read until it
@@ -1423,6 +1445,35 @@ class TestCrossrefEventsGkgV2TwoPass:
         )
         assert found == [files[0], files[3], files[4]]
         assert scanned == [2, 2, 1]
+
+    @staticmethod
+    def _sized_files(tmp_path, rows):
+        files = []
+        for i, n in enumerate(rows):
+            f = tmp_path / f"2020010100{i:02d}00.gkg.parquet"
+            pl.DataFrame({"V2DOCUMENTIDENTIFIER": [f"u{i}-{j}" for j in range(n)]}).write_parquet(f)
+            files.append(f)
+        sizes = [
+            sum(m.row_group(k).total_byte_size for k in range(m.num_row_groups))
+            for m in (pq.read_metadata(f) for f in files)
+        ]
+        return files, sizes
+
+    def test_batches_fill_up_to_the_decoded_budget_in_order(self, tmp_path, monkeypatch):
+        files, sizes = self._sized_files(tmp_path, [10, 10, 10, 10, 10])
+        monkeypatch.setattr(crossref_module, "_ROWS_BATCH_BYTES", sizes[0] + sizes[1])
+        assert crossref_module._decoded_batches(files)[0] == [files[0:2], files[2:4], files[4:]]
+
+    def test_a_large_file_goes_alone_and_small_ones_share(self, tmp_path, monkeypatch):
+        files, sizes = self._sized_files(tmp_path, [5, 2000, 5, 5])
+        monkeypatch.setattr(crossref_module, "_ROWS_BATCH_BYTES", sizes[0] + sizes[2] + sizes[3])
+        assert sizes[1] > crossref_module._ROWS_BATCH_BYTES
+        assert crossref_module._decoded_batches(files)[0] == [
+            [files[0]], [files[1]], [files[2], files[3]]
+        ]
+
+    def test_no_file_no_batch(self):
+        assert crossref_module._decoded_batches([]) == ([], {})
 
     def test_dtypes_follow_the_whole_dataset_not_the_matched_files(self, tmp_path):
         # Only the unmatched file stores V2.1DATE as Float64 (older
@@ -1499,10 +1550,10 @@ class TestCrossrefEventsGkgV2MentionsTwoPass:
         seen = []
         real = crossref_module.scan_dataset_reconciled
 
-        def spy(files, target_schema=None):
+        def spy(files, target_schema=None, **kwargs):
             if target_schema is not None and Path(files[0]).name.endswith(".mentions.parquet"):
                 seen.append([Path(f).name for f in files])
-            return real(files, target_schema=target_schema)
+            return real(files, target_schema=target_schema, **kwargs)
 
         monkeypatch.setattr(crossref_module, "scan_dataset_reconciled", spy)
         return seen
@@ -1519,9 +1570,9 @@ class TestCrossrefEventsGkgV2MentionsTwoPass:
         ]
         assert result["Mention_Confidence"].to_list() == [50, 50, 50]
 
-    def test_the_second_pass_reads_in_batches_of_the_scan_limit(self, tmp_path, monkeypatch):
+    def test_a_file_over_the_batch_budget_is_a_batch_of_its_own(self, tmp_path, monkeypatch):
         events, mentions, gkg = self._setup(tmp_path)
-        monkeypatch.setenv("POLARS_MAX_CONCURRENT_SCANS", "1")
+        monkeypatch.setattr(crossref_module, "_ROWS_BATCH_BYTES", 1)
         seen = self._spy(monkeypatch)
         result = crossref_events_gkg_v2(
             events, mentions, gkg, ["V2DOCUMENTIDENTIFIER", "GKGRECORDID"], dedupe_mentions=True

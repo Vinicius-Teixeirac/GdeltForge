@@ -252,9 +252,10 @@ def test_a_stopped_gkg_v2_crossref_resumes_to_the_uninterrupted_output(
 
     import gdeltforge.crossref.crossref as crossref_module
 
-    # One file per chunk: every pass has a chunk to stop after.
+    # One file per chunk: every pass has a chunk to stop after (a 1-byte
+    # budget puts each file in a batch of its own).
     monkeypatch.setattr(crossref_module, "_FIRST_PASS_FILES", 1)
-    monkeypatch.setattr(crossref_module, "_files_per_batch", lambda: 1)
+    monkeypatch.setattr(crossref_module, "_ROWS_BATCH_BYTES", 1)
     mentions = TestCrossrefEventsGkgV2._write_mentions(tmp_path)
     gkg = TestCrossrefEventsGkgV2._write_gkg_v2(tmp_path)
     events = TestCrossrefEventsGkgV2._events_df()
