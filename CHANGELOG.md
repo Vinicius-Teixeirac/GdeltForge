@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.19.0] - 2026-11-24
 
 ### Added
 - `crossref --gkg-version auto --source aggregated` (with `--period`): Mentions and GKG 2.1 are read from `gdeltforge aggregate`'s output, and GKG 1.0, which has no aggregated form, from its cleaned directory. `auto` refused `--source aggregated`; `v1` and `v1-counts` still do. `crossref_events_gkg_auto` takes `date_parser`, passed to its GKG 2.1 path as `crossref_events_gkg_v2` takes it.
