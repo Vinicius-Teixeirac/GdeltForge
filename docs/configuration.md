@@ -467,39 +467,50 @@ dominates: the gain is largest wherever a command opens every file. A full
 scan still reads every row; aggregation removes the per-file cost, plus the
 bytes the better compression saves, and nothing more.
 
-**Memory, and the row-group size.** A day file holds a few row groups of
-about 80,000 GKG 2.1 rows each, about 600 MB decoded per group, where a
-15-minute file holds one of about 15 MB. polars decodes a whole row group to
-read any row of it. Up to 0.12.0, rows kept from a scan stayed tied to the
-row group they came from, so sampling and crossref over day files used far
-more memory than over the same rows in 15-minute files (calendar sampling
-about 2.4x, crossref past 60 GiB for a quarter). Since 0.13.0 crossref and
-calendar sampling copy the rows they keep out of their row groups and read
-a few files or row groups at a time, so memory follows those few, not the
-period. Measured on a quarter (2016-01-01 to 03-31) of GKG 2.1 day files on
-the share, 5,000 events for crossref and `--per-period 5` for calendar:
+**Memory, and the row-group size.** A GKG 2.1 day file holds 2 to 4 row
+groups of about 73,000 rows each, about 0.6 GiB decoded per group and 1 to
+2.7 GiB per file, where a 15-minute file holds one row group of about 15 MB.
+polars decodes a whole row group to read any row of it. (Up to 0.12.0, rows
+kept from a scan stayed tied to their row group, and crossref over a quarter
+of day files passed 60 GiB; 0.13.0 copies kept rows out and reads a batch of
+files at a time.)
 
-| Command | 0.12.0 | 0.13.0 |
-|---------|--------|--------|
-| `crossref --gkg-version v2`, one month (1,700 events) | 55.6 GiB | 9.8 GiB |
-| `crossref --gkg-version v2`, the quarter | killed at 60 GiB | 11.8 GiB |
-| `sample --mode calendar` | 6.9 GiB | 4.5 GiB |
+crossref's peak is in its second GKG 2.1 pass, which reads the requested
+columns of the files holding a match. Up to 0.18.1 it read them 4 files per
+batch (`io.max_concurrent_reads`), and 4 day files hold up to 10.3 GiB
+decoded. Since 0.19.0 a batch holds at most 2 GiB decoded, by the files'
+footers, so a day file is read alone and 15-minute files still go many to a
+batch. Measured on a lab server (24 cores, 125 GiB RAM, the data on an NFS
+share, `io.max_concurrent_reads: 4`), 15,000 events against GKG 2.1 day
+files (`--gkg-version v2 --source aggregated`, full width), output
+identical byte for byte:
+
+| Window | 4 files per batch (0.18.1) | One day file per batch |
+|--------|----------------------------|------------------------|
+| a month (2016-01) | 10.4 GiB, 23 s | 3.7 to 3.9 GiB, 58 s |
+| a quarter (2016-01 to 03) | 11.6 to 12.5 GiB, 77 s | 4.7 GiB, 193 s |
+
+Times are second runs in a row, with the files in the page cache; first runs
+took up to 12 times as long on the shared server (279 s for the month). The
+first GKG 2.1 pass, which reads only the URL column of every file, peaked at
+2.9 GiB over the quarter. GKG 1.0 has no aggregated form: `--gkg-version v1` over its daily files peaked at
+2.7 GiB for a week, 3.6 GiB for a month and 3.7 GiB for a quarter at full
+width (15,000 events), and at 1.2 GiB for the week with three `--columns`.
 
 Calendar sampling reads the row groups holding its chosen rows
-`io.max_concurrent_reads` at a time (4 here), each about 600 MB decoded, so
-its memory follows that setting, not `--per-period`: 4.7 GiB at
-`--per-period 200`. Reading them one at a time peaked at 1.7 GiB but took
-789 s on the share, against 469 s.
+`io.max_concurrent_reads` at a time, so its memory follows that setting, not
+`--per-period`. On the same quarter of day files (`--mode calendar --period
+day`): 6.7 to 7.2 GiB at `--per-period 5` (61 s) and 6.4 to 6.5 GiB at
+`--per-period 200` (77 s). With `io.max_concurrent_reads: 1` (which also
+starts polars on 1 thread) the latter peaked at 3.1 to 3.4 GiB and took
+218 s.
 
-`aggregate` keeps writing polars' default row groups. Smaller ones lower
-crossref's peak further, at a storage cost. Measured on 7 day files of GKG
-2.1 rewritten with each `row_group_size`:
-
-| Rows per row group | Storage | crossref peak (300 events) |
-|--------------------|---------|----------------------------|
-| default (about 80,000) | 3.46 GB | 9.3 GiB |
-| 50,000 | +8.3% | 7.2 GiB |
-| 20,000 | +21.5% | 4.1 GiB |
+`aggregate` keeps writing polars' default row groups. Rewriting 7 day files
+with pyarrow halved crossref's peak with 0.18.1's 4-file batches (300
+events, 6.2 to 6.4 GiB down to 3.0 to 3.4 GiB, at 50,000 and at 20,000 rows
+per group alike), but stored them in 31 to 49% more space, depending on the
+zstd level. The row-group size itself changed storage by under 0.1%, so the
+gain came from pyarrow's layout, which costs the space.
 
 **Writing.** `aggregate` itself streams each period to disk
 (`utils.io.sink_parquet_atomic`) and never holds a period's rows in memory:
