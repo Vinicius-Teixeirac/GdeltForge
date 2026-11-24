@@ -115,7 +115,6 @@ from gdeltforge.utils.checkpoint import (
     CheckpointSettings,
     file_facts,
 )
-from gdeltforge.utils.concurrency import exported_scan_limit
 from gdeltforge.utils.io import (
     _map_files,
     clearer_dataset_errors,
@@ -124,6 +123,7 @@ from gdeltforge.utils.io import (
     ordered_columns,
     pace_reads,
     paced_ranges,
+    polars_schema,
     retry_read,
     scan_batches,
     scan_dataset_reconciled,
@@ -595,15 +595,46 @@ def warn_if_directory_is_large(
 _MAX_EXPLODED_ROWS_PER_STEP = 200_000
 
 
-def _files_per_batch() -> int:
+# Decoded bytes a lookup's second pass reads per batch (_decoded_batches).
+_ROWS_BATCH_BYTES = 2 * 2**30
+
+
+def _decoded_batches(
+    files: list[Path],
+) -> tuple[list[list[Path]], dict[Path, dict[str, pl.DataType]]]:
     """
-    How many files a lookup's second pass reads at once: the scan limit
-    sample/crossref run under (POLARS_MAX_CONCURRENT_SCANS: the one the
-    user exported, else io.max_concurrent_reads), else 4. Each batch's
-    row groups are held until its matches are copied out, so this bounds
-    the pass's memory.
+    A lookup's second pass's batches, and each file's schema: runs of
+    consecutive files whose decoded size (the uncompressed size of their
+    row groups, from the footers) adds up to at most _ROWS_BATCH_BYTES, a
+    larger file in a batch of its own. A batch's decoded columns are held
+    until its matches are copied out, so its decoded size bounds the
+    pass's memory. A fixed count of 4 files per batch held up to 10.3 GiB
+    of decoded GKG 2.1 day files at once: 15,000 events peaked at 10.4 GiB
+    over a month and 12.5 GiB over a quarter, against 3.9 and 4.7 GiB one
+    day file at a time, with the same output. Small files, such as
+    15-minute ones, still go many to a batch.
+
+    One footer read per file gives both its size and its schema; the
+    batches' scans take the schemas (scan_dataset_reconciled's
+    file_schemas), so no footer is read twice.
     """
-    return exported_scan_limit() or 4
+
+    def footer(f: Path) -> tuple[dict[str, pl.DataType], int]:
+        meta = retry_read(str(f), lambda: pq.read_metadata(f))
+        pace_reads()
+        size = sum(meta.row_group(i).total_byte_size for i in range(meta.num_row_groups))
+        return polars_schema(meta.schema.to_arrow_schema()), size
+
+    footers = _map_files(footer, files)
+    batches: list[list[Path]] = []
+    total = 0
+    for f, (_, size) in zip(files, footers, strict=True):
+        if not batches or total + size > _ROWS_BATCH_BYTES:
+            batches.append([])
+            total = 0
+        batches[-1].append(f)
+        total += size
+    return batches, {f: schema for f, (schema, _) in zip(files, footers, strict=True)}
 
 
 # Files per scan in a lookup's first pass (_files_with_matches). It reads
@@ -1176,7 +1207,8 @@ def crossref_events_gkg_v2(
         checkpoints, "crossref-gkg2", events_df,
         {"mentions": list(mentions_files), "gkg": list(gkg_v2_files)},
         {"columns": read_gkg_columns, "mentions_columns": mentions_read_columns,
-         "on_duplicate_document": on_duplicate_document, "dedupe": dedupe_mentions},
+         "on_duplicate_document": on_duplicate_document, "dedupe": dedupe_mentions,
+         "rows_batch_bytes": _ROWS_BATCH_BYTES},
     ))
 
     def done(result: pl.DataFrame) -> pl.DataFrame:
@@ -1207,13 +1239,13 @@ def crossref_events_gkg_v2(
         if not matched_mentions:
             return done(empty_result())
         mentions_target = {c: mentions_schema[c] for c in mentions_read_columns}
-        batch = _files_per_batch()
-        starts = list(range(0, len(matched_mentions), batch))
+        mentions_batches, mentions_file_schemas = _decoded_batches(matched_mentions)
         bridge_df = pl.concat(
-            stages.frames("mentions-rows", len(starts), lambda k: _paced_collect(
+            stages.frames("mentions-rows", len(mentions_batches), lambda k: _paced_collect(
                 f"Mentions dataset in {mentions_folder}",
                 scan_dataset_reconciled(
-                    matched_mentions[starts[k]:starts[k] + batch], target_schema=mentions_target
+                    mentions_batches[k], target_schema=mentions_target,
+                    file_schemas=mentions_file_schemas,
                 )
                 .filter(pl.col("GLOBALEVENTID").is_in(event_id_set)),
             )),
@@ -1277,16 +1309,16 @@ def crossref_events_gkg_v2(
             f"{len(matched_files)} of {len(gkg_v2_files)} GKG 2.1 file(s) hold a match; "
             f"reading their rows."
         )
-        # A few files at a time, each batch's matches copied out (detach)
-        # before the next batch is read: kept rows otherwise hold the whole
-        # row group they came from, and a realistic sample matches nearly
-        # every file, so memory followed every matched file's row groups.
-        batch = _files_per_batch()
-        starts = list(range(0, len(matched_files), batch))
-        parts = stages.frames("gkg-rows", len(starts), lambda k: _paced_collect(
+        # A batch of files at a time (_decoded_batches), each batch's
+        # matches copied out (detach) before the next batch is read: kept
+        # rows otherwise hold the whole row group they came from, and a
+        # realistic sample matches nearly every file, so memory followed
+        # every matched file's row groups.
+        gkg_batches, gkg_file_schemas = _decoded_batches(matched_files)
+        parts = stages.frames("gkg-rows", len(gkg_batches), lambda k: _paced_collect(
             "GKG 2.1 files holding a match",
             scan_dataset_reconciled(
-                matched_files[starts[k]:starts[k] + batch], target_schema=dict(gkg_schema)
+                gkg_batches[k], target_schema=dict(gkg_schema), file_schemas=gkg_file_schemas,
             )
             .filter(pl.col("V2DOCUMENTIDENTIFIER").is_in(urls))
             .select(read_gkg_columns),
