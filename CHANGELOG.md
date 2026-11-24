@@ -13,6 +13,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - `docs/configuration.md` ("Memory, and the row-group size"): crossref, calendar sampling and row-group figures measured on 0.18.1 and with the new batches, replacing the 0.12.0 and 0.13.0 ones, with GKG 1.0 figures added.
 - `crossref --gkg-version v2` and `auto` read the GKG 2.1 and Mentions files holding a match in batches of at most 2 GiB decoded (from the files' footers; a larger file is read alone). 0.18.1 read 4 files per batch (`io.max_concurrent_reads`, else 4), and 4 GKG 2.1 day files hold up to 10.3 GiB decoded: 15,000 events peaked at 10.4 GiB over a month and 12.5 GiB over a quarter of day files. One day file at a time, the same runs peak at 3.9 and 4.7 GiB, with the same output byte for byte. On day files the GKG 2.1 rows pass takes about 2.5 times as long (193 s against 77 s for the quarter); 15-minute files still go many to a batch. `io.max_concurrent_reads` no longer sets the batch size, only how many files of a batch polars reads at once.
 
+### Fixed
+- `sample --mode filtered --filter` with a dict condition whose `op` isn't one gdeltforge has (`{"QuadClass": {"op": "bogus"}}`), with no `op`, or without the key its `op` compares with (`{"op": "gt"}` with no `value`) passed validation and failed after the file index was built (every footer read: 37 s on a first run over 4,748 files), with `Invalid condition for ...` or a bare `KeyError`. It now stops the command before any file is read, naming the column, the valid `op`s and the missing key. An `in_list` whose `values` isn't a list is refused the same way.
+- `AND` (or `OR`) written twice in a block, where the first already holds one, got the general fix, `{"AND": {..., "AND": {...}}}`, which filled in repeats that `AND` and is refused in turn. The error now also writes the fix out from the filter itself, the second block in the first's innermost `AND`, so it runs as printed.
+
 ## [0.18.1] - 2026-11-23
 
 ### Fixed

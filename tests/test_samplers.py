@@ -1945,6 +1945,19 @@ class TestMissingValueAndGroupOperators:
          'NumArticles: "gt"\'s "value" takes one value'),
         ({"NumArticles": {"op": "between", "min": {"op": "gt"}, "max": 5}},
          'NumArticles: "between"\'s "min" takes one value'),
+        ({"QuadClass": {"op": "bogus", "value": 1}},
+         'QuadClass: a condition written as a dict needs an "op", one of "equals"'),
+        ({"QuadClass": {"value": 1}}, 'QuadClass: .* got no "op"'),
+        ({"NOT": {"QuadClass": {"op": "GT", "value": 1}}}, 'got "op": "GT"'),
+        ({"ANY": {"columns": ACTORS, "match": {"op": "contains", "value": "US"}}},
+         'Actor1CountryCode: .* got "op": "contains"'),
+        ({"NumArticles": {"op": "gt"}}, 'NumArticles: "gt" needs "value"'),
+        ({"NumArticles": {"op": "between", "min": 1}}, 'NumArticles: "between" needs "max"'),
+        ({"NumArticles": {"op": "range"}}, '"range" needs "min" and "max"'),
+        ({"Actor1CountryCode": {"op": "in_list", "value": ["USA"]}},
+         'Actor1CountryCode: "in_list" needs "values"'),
+        ({"Actor1CountryCode": {"op": "in_list", "values": "USA"}},
+         'Actor1CountryCode: "in_list"\'s "values" takes a list'),
     ])
     def test_malformed_blocks_are_rejected_at_construction(
         self, tmp_path, filter_dict, message

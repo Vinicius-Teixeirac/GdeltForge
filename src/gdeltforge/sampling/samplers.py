@@ -576,6 +576,22 @@ class FilterType(Enum):
     IS_BLANK = "is_blank"
 
 
+# The keys each {"op": ...} condition compares with, in FilterType's order.
+# A condition with another op, or without one of these keys, is refused
+# when the sampler is built: polars would otherwise meet it only after the
+# file index was built, every footer read.
+_CONDITION_OPERANDS: dict[str, tuple[str, ...]] = {
+    FilterType.EQUALS.value: ("value",),
+    FilterType.IN_LIST.value: ("values",),
+    FilterType.RANGE.value: ("min", "max"),
+    FilterType.GREATER_THAN.value: ("value",),
+    FilterType.LESS_THAN.value: ("value",),
+    FilterType.BETWEEN.value: ("min", "max"),
+    FilterType.IS_NULL.value: (),
+    FilterType.IS_BLANK.value: (),
+}
+
+
 # Block keys of a filter dict, beside column names. AND/OR hold a block;
 # NOT holds a block and keeps the rows it doesn't match; ANY/ALL hold
 # {"columns": [...], "match": <one column's condition>} and keep the rows
@@ -1760,6 +1776,27 @@ class FilteredSampler:
         if not isinstance(cond, dict):
             return
         op = cond.get("op")
+        if op not in _CONDITION_OPERANDS:
+            ops = ", ".join(f'"{name}"' for name in _CONDITION_OPERANDS)
+            got = "no \"op\"" if "op" not in cond else f'"op": {json.dumps(op, default=str)}'
+            raise ValueError(
+                f"{column}: a condition written as a dict needs an \"op\", one of {ops}; "
+                f"got {got} in {json.dumps(cond, default=str)}. A plain value or a list of values, "
+                f"written as the column's condition, needs no \"op\"."
+            )
+        missing = [key for key in _CONDITION_OPERANDS[op] if key not in cond]
+        if missing:
+            example = {"op": op, **{key: "..." for key in _CONDITION_OPERANDS[op]}}
+            raise ValueError(
+                f'{column}: "{op}" needs {" and ".join(json.dumps(k) for k in missing)}, '
+                f"e.g. {json.dumps(example)}"
+            )
+        if op == FilterType.IN_LIST.value and not isinstance(cond["values"], list):
+            raise ValueError(
+                f'{column}: "in_list"\'s "values" takes a list, got '
+                f"{json.dumps(cond['values'], default=str)}, e.g. "
+                f'{{"op": "in_list", "values": [{json.dumps(cond["values"], default=str)}]}}'
+            )
         if op in (FilterType.IS_NULL.value, FilterType.IS_BLANK.value) and set(cond) != {"op"}:
             extra = sorted(set(cond) - {"op"})
             raise ValueError(

@@ -253,6 +253,23 @@ def _pair_forms(
     return form("AND", *both), form("OR", *either)
 
 
+def _nested_under(key: str, first: dict[str, Any], second: Any) -> dict[str, Any] | None:
+    """first's contents with second under `key` in its innermost `key`
+    block: the one place where adding it repeats no key. None when a
+    `key` on the way holds something other than a block."""
+    merged = dict(first)
+    if key not in merged:
+        merged[key] = second
+        return merged
+    if not isinstance(merged[key], dict):
+        return None
+    inner = _nested_under(key, merged[key], second)
+    if inner is None:
+        return None
+    merged[key] = inner
+    return merged
+
+
 def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """One JSON object of --filter, refusing a key it names twice: JSON
     keeps only the last, which would drop a condition without a word. The
@@ -287,6 +304,11 @@ def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
                 )
             held = "{...}" if key in _BLOCK_HOLDING_KEYS else "..."
             both, either = _pair_forms(key, (held, held), (held, held))
+            first = block[key]
+            written = (
+                _nested_under(key, first, value)
+                if key in ("AND", "OR") and isinstance(first, dict) and key in first else None
+            )
             raise ValueError(
                 f"{repeated} Nest the second in an AND block when both must hold, e.g. "
                 f"{both}; when either may, put both in an OR block: {either}. Either form "
@@ -295,6 +317,11 @@ def _filter_block(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
                     f"; for {key} twice, ... is the first block's contents and {{...}} "
                     f"the second's"
                     if key in ("AND", "OR") else ""
+                )
+                + (
+                    f". Your first {key} block already holds an {key}, so the second goes "
+                    f"in its innermost one: {json.dumps({key: written}, default=str)}"
+                    if written is not None else ""
                 )
             )
         block[key] = value

@@ -71,6 +71,8 @@ All operator forms:
 
 All of the above apply to any numeric or categorical GDELT column.
 
+A dict condition needs one of these `op`s and the keys its row shows (`value`, `values` as a list, or `min` and `max`). Another `op`, no `op` or a missing key stops `--filter` before any file is read, naming the column and the valid `op`s.
+
 **Missing values.** A row whose column is null never matches a comparison on that column: `{"Actor1CountryCode": "USA"}` and `{"Actor1CountryCode": {"op": "gt", ...}}` both leave it out, as do `AND` and `OR` blocks built on them unless another branch of an `OR` matches. `is_null` selects those rows. `convert` reads an empty field as null; a string of spaces stays a string unless `clean`'s `blank_to_null` turns it into null (see [Data Cleaning](data-cleaning.md#normalize-whitespace)), so `is_blank` matches null, empty and whitespace-only strings. On a column that isn't a string, `is_blank` is `is_null`. Neither takes a value: `{"op": "is_null", "value": ...}` is an error.
 
 **Dates.** GDELT's own date columns are numbers: `Day` and `DATEADDED` compare as `YYYYMMDD` (`{"Day": {"op": "between", "min": 20200101, "max": 20200131}}`). `EventDate`, the real date [`clean.derive`](data-cleaning.md#derive-added-columns) adds, takes a date in either form, the string `"2020-01-02"` (exactly `YYYY-MM-DD`) or the number `20200102`, in every operator above; anything else, the string `"20200102"` included, fails with a message naming both forms.
@@ -201,7 +203,7 @@ The block holds exactly `columns` (one or more column names) and `match`. `ANY` 
 
     The pair is a block of its own because a key beside a condition is joined the way its block joins: in an `AND` block (or at the top), `{"Day": {...}, "OR": {"Day": {...}}}` keeps only the rows meeting both, and in an `OR` block an `AND` key beside a condition is ORed with it.
 
-    Each fix has one key, so it replaces the two keys as they stand, inside `NOT` or an `OR` block too. In a block that already holds that key, the fix's key would be repeated there and is refused in turn: nest it one level down, inside the key already there. With `QuadClass` and an `AND` holding a first condition on `Day` already in the block, the second goes inside that `AND`: `{"AND": {"QuadClass": 1, "AND": {"Day": {"op": "gt", "value": 20200101}, "AND": {"Day": {"op": "lt", "value": 20210101}}}}}`.
+    Each fix has one key, so it replaces the two keys as they stand, inside `NOT` or an `OR` block too. In a block that already holds that key, the fix's key would be repeated there and is refused in turn: nest it one level down, inside the key already there. With `QuadClass` and an `AND` holding a first condition on `Day` already in the block, the second goes inside that `AND`: `{"AND": {"QuadClass": 1, "AND": {"Day": {"op": "gt", "value": 20200101}, "AND": {"Day": {"op": "lt", "value": 20210101}}}}}`. `AND` (or `OR`) written twice where the first block already holds one is written out in the error the same way: the second block in the first's innermost `AND` (or `OR`), ready to run.
 
 ## Selecting specific columns
 
