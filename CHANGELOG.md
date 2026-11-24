@@ -4,6 +4,11 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Fixed
+- `sample --mode filtered --filter` with a dict condition whose `op` isn't one gdeltforge has (`{"QuadClass": {"op": "bogus"}}`), with no `op`, or without the key its `op` compares with (`{"op": "gt"}` with no `value`) passed validation and failed after the file index was built (every footer read: 37 s on a first run over 4,748 files), with `Invalid condition for ...` or a bare `KeyError`. It now stops the command before any file is read, naming the column, the valid `op`s and the missing key. An `in_list` whose `values` isn't a list is refused the same way.
+
 ## [0.18.1] - 2026-11-23
 
 ### Fixed
