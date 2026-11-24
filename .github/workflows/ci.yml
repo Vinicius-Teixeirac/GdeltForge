@@ -48,6 +48,11 @@ jobs:
         # input schema, not assumed).
         run: uv sync --group dev --python ${{ matrix.python-version }}
 
+      - name: Install strace
+        # tests/test_no_mapping.py counts mmap calls with it; without it
+        # the test polls /proc/self/maps, which can miss a short mapping.
+        run: sudo apt-get update -q && sudo apt-get install -y -q strace
+
       - name: Run tests
         run: uv run pytest -v
 
@@ -95,6 +100,11 @@ jobs:
 
       - name: Install dependencies at their declared floor
         run: uv sync --group dev --resolution lowest-direct --python 3.10
+
+      - name: Install strace
+        # tests/test_no_mapping.py counts mmap calls with it; without it
+        # the test polls /proc/self/maps, which can miss a short mapping.
+        run: sudo apt-get update -q && sudo apt-get install -y -q strace
 
       - name: Run tests
         run: uv run --no-sync pytest -v
