@@ -2686,9 +2686,35 @@ class TestRunCrossrefCmd:
         # Aggregated files are named 20200101.parquet, not the 15-minute form.
         assert captured["date_parser"] is cli.parse_file_date
 
-    @pytest.mark.parametrize("version", ["v1", "v1-counts", "auto"])
-    def test_aggregated_source_is_v2_only(self, tmp_path, version):
-        with pytest.raises(ValueError, match="--source aggregated applies to --gkg-version v2"):
+    @pytest.mark.parametrize("period, folder", [(None, "day"), ("month", "month")])
+    def test_auto_reads_aggregated_v2_and_cleaned_v1(self, tmp_path, monkeypatch, period, folder):
+        # GKG 1.0 has no aggregated form, so auto reads its cleaned files.
+        captured = {}
+        config = self._config()
+        for p in ("day", "month", "year"):
+            config["paths"][f"mentions_aggregated_{p}_data_directory"] = f"/mentions_{p}"
+            config["paths"][f"gkg_v2_aggregated_{p}_data_directory"] = f"/gkg_v2_{p}"
+        monkeypatch.setattr(cli, "ensure_exists", lambda path, desc: path)
+        monkeypatch.setattr(cli, "write_parquet_atomic", lambda df, out: None)
+
+        def fake_auto(events_df, gkg_v1, v1_cols, mentions, gkg_v2, v2_cols, **kwargs):
+            captured.update(gkg_v1=gkg_v1, mentions=mentions, gkg_v2=gkg_v2, **kwargs)
+            return pl.DataFrame()
+
+        monkeypatch.setattr(cli, "crossref_events_gkg_auto", fake_auto)
+        cli.run_crossref_cmd(config, self._args(
+            tmp_path, gkg_version="auto", source="aggregated", period=period
+        ))
+        assert captured["gkg_v1"] == "/gkg_v1_filtered"
+        assert captured["mentions"] == f"/mentions_{folder}"
+        assert captured["gkg_v2"] == f"/gkg_v2_{folder}"
+        assert captured["date_parser"] is cli.parse_file_date
+
+    @pytest.mark.parametrize("version", ["v1", "v1-counts"])
+    def test_aggregated_source_is_v2_and_auto_only(self, tmp_path, version):
+        with pytest.raises(
+            ValueError, match="--source aggregated applies to --gkg-version v2 and auto"
+        ):
             cli.run_crossref_cmd(self._config(), self._args(
                 tmp_path, gkg_version=version, source="aggregated"
             ))

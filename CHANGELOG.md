@@ -6,6 +6,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- `crossref --gkg-version auto --source aggregated` (with `--period`): Mentions and GKG 2.1 are read from `gdeltforge aggregate`'s output, and GKG 1.0, which has no aggregated form, from its cleaned directory. `auto` refused `--source aggregated`; `v1` and `v1-counts` still do. `crossref_events_gkg_auto` takes `date_parser`, passed to its GKG 2.1 path as `crossref_events_gkg_v2` takes it.
+
 ### Changed
 - `crossref --gkg-version v2` and `auto` read the GKG 2.1 and Mentions files holding a match in batches of at most 2 GiB decoded (from the files' footers; a larger file is read alone). 0.18.1 read 4 files per batch (`io.max_concurrent_reads`, else 4), and 4 GKG 2.1 day files hold up to 10.3 GiB decoded: 15,000 events peaked at 10.4 GiB over a month and 12.5 GiB over a quarter of day files. One day file at a time, the same runs peak at 3.9 and 4.7 GiB, with the same output byte for byte. On day files the GKG 2.1 rows pass takes about 2.5 times as long (193 s against 77 s for the quarter); 15-minute files still go many to a batch. `io.max_concurrent_reads` no longer sets the batch size, only how many files of a batch polars reads at once.
 
