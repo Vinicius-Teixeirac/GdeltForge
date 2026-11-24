@@ -3905,6 +3905,32 @@ class TestFilterRepeatedKeys:
             parsed = json.loads(filled, object_pairs_hook=cli._filter_block)
             assert list(parsed) == [join]
 
+    @pytest.mark.parametrize("filter_json, written", [
+        ('{"AND": {"QuadClass": 1, "AND": {"IsRootEvent": 1}}, "AND": {"EventCode": "010"}}',
+         {"AND": {"QuadClass": 1, "AND": {"IsRootEvent": 1, "AND": {"EventCode": "010"}}}}),
+        ('{"OR": {"QuadClass": 1, "OR": {"QuadClass": 2, "OR": {"QuadClass": 3}}}, '
+         '"OR": {"QuadClass": 4}}',
+         {"OR": {"QuadClass": 1, "OR": {"QuadClass": 2, "OR": {"QuadClass": 3,
+                                                               "OR": {"QuadClass": 4}}}}}),
+    ], ids=["AND", "OR-two-deep"])
+    def test_and_or_twice_when_the_first_already_holds_one_is_written_out(
+        self, monkeypatch, tmp_path, filter_json, written
+    ):
+        """Filled in, {"AND": {..., "AND": {...}}} repeats AND when the
+        first block holds one already; the message then writes the fix out,
+        the second block in the first's innermost AND, and it parses."""
+        with pytest.raises(ValueError) as raised:
+            self._run(monkeypatch, tmp_path, filter_json)
+        message = str(raised.value)
+        start = message.index("innermost one: ") + len("innermost one: ")
+        form = message[start:self._json_end(message, start)]
+        assert json.loads(form, object_pairs_hook=cli._filter_block) == written
+
+    def test_and_twice_without_an_inner_and_keeps_the_short_hint(self, monkeypatch, tmp_path):
+        with pytest.raises(ValueError) as raised:
+            self._run(monkeypatch, tmp_path, '{"AND": {"QuadClass": 1}, "AND": {"IsRootEvent": 1}}')
+        assert "innermost" not in str(raised.value)
+
     @staticmethod
     def _json_end(message: str, start: int) -> int:
         """End of the first balanced {...} after start."""
