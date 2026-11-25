@@ -4,7 +4,7 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
-## [Unreleased]
+## [0.20.0] - 2026-11-26
 
 ### Added
 - `docs/api.md`, "Python API and Stability": the supported public surface. The Python names (the stage runners and classes, the three samplers, the crossref functions, the CAMEO code lookups, `load_config`, `CheckpointSettings`, `date_parser_for`), the CLI, the settings keys, and the files gdeltforge writes, with what a patch and a minor release may change. A deprecated command, flag, value, settings key or Python name keeps working, with a warning, until the next major release (1.0.0). Everything else, `gdeltforge.cli` and most of `gdeltforge.utils` included, is internal. A test imports every name the page lists.
