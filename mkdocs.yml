@@ -83,6 +83,7 @@ nav:
   - Reference:
       - CLI Reference: cli-reference.md
       - Configuration: configuration.md
+      - Python API and Stability: api.md
       - Storage Concurrency Benchmark: storage-concurrency-benchmark.md
       - Filtered Sampling: filtered-sampling.md
       - Crossref Join Semantics: crossref-join-semantics.md

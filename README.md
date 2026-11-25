@@ -285,6 +285,8 @@ The CLI intentionally does not chain stages automatically. You run each stage ex
 
 By default the config is read from `./config/settings.yaml` (relative to wherever you run the command from). To point at a config file anywhere else on disk, use `--config /path/to/settings.yaml` or set the `GDELTFORGE_CONFIG` environment variable, useful once GdeltForge is installed and invoked from outside the repo checkout. If none of those resolve to a real file, GdeltForge falls back to a built-in default instead of failing; see [Configuration](https://vinicius-teixeirac.github.io/GdeltForge/configuration/).
 
+The stages can also be called from Python: [Python API and Stability](https://vinicius-teixeirac.github.io/GdeltForge/api/) lists the supported names, and what each release may change.
+
 ## Usage Examples
 
 Examples of the common workflows, one stage at a time.
