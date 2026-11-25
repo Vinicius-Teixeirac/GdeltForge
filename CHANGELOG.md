@@ -4,6 +4,12 @@ All notable changes to GdeltForge are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow [Semantic Versioning](https://semver.org/). Versions are git tags; the installed package version is derived from them via `hatch-vcs`.
 
+## [Unreleased]
+
+### Removed
+- **Breaking**: the names deprecated in 0.12.0, when the `filter` stage became `clean`, are gone, with `sample --mode daily` and `--per-day`. Use `gdeltforge clean` for `gdeltforge filter`, `--source cleaned` for `--source filtered` (`sample`, `aggregate`, `crossref`), `--mode calendar` for `--mode daily` (period `day` is the default), `--per-period` for `--per-day`, `clean:` for a `filter:` settings section, `paths.*cleaned_data_directory`/`*cleaned_historical_directory` for the `*filtered_*` path keys, and `gdeltforge.cleaning.cleaner` (`GDELTCleaner`, `run_cleaner`) for `gdeltforge.filtering.filter` (`GDELTFilter`, `run_filter`). On the command line argparse refuses an old name, and a line after its error names the replacement (`gdeltforge: --per-day was removed in 0.20.0; use --per-period.`). A settings file using an old name stops loading with an error listing each rename: an unknown key is otherwise ignored, so an old path key would have sent the stage to the default directory without a word. See `docs/cli-reference.md#gdeltforge-clean`.
+- **Breaking**: gdeltforge no longer handles data cleaned before 0.12.0. `clean` doesn't remove a `<stem>_filtered.parquet` when it writes the same source's `<stem>_cleaned.parquet`, and doesn't warn when a directory still holds `_filtered` files with other columns; loading the config doesn't warn about the old `data/<dataset>/filtered` default directory; and `sample --provenance` doesn't read an aggregate `.done` marker naming the `filtered` source as `cleaned`, but stops on it (re-run `aggregate --force` for its period). `sample`, `aggregate` and `crossref` read every Parquet file in a directory, so before upgrading delete each `_filtered` file that has a `_cleaned` one beside it, and move what `data/<dataset>/filtered` holds into `data/<dataset>/cleaned`. See `docs/data-cleaning.md#data-cleaned-before-0120`.
+
 ## [0.19.0] - 2026-11-24
 
 ### Added

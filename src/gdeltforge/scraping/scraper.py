@@ -568,7 +568,7 @@ def parse_file_date(filename: str) -> tuple[date | None, date | None]:
     2005.zip), the converted .parquet form (20150218.export.parquet,
     200601.parquet, 2005.parquet), and the clean stage's own
     <stem>_cleaned.parquet form (20150218.export_cleaned.parquet,
-    200601_cleaned.parquet; <stem>_filtered.parquet before 0.12) alike,
+    200601_cleaned.parquet) alike,
     since none of those change the length of the leading digit run, only
     what comes after it.
 

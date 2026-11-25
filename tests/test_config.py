@@ -476,14 +476,14 @@ class TestLoadConfig:
         # left as None this used to crash with a bare "'NoneType' object
         # has no attribute 'get'" the moment that section was touched.
         # Normalizing it to {} and then merging the bundled default's own
-        # converter/filter sections on top means an empty section behaves
+        # converter/clean sections on top means an empty section behaves
         # exactly like an absent one: the caller gets the same working
         # defaults either way, not just a crash-free empty dict.
         custom = self.tmp_path / "custom.yaml"
         custom.write_text(
             "columns: {gdelt_event: [GlobalEventID]}\n"
             "converter:\n"
-            "filter: null\n"
+            "clean: null\n"
         )
 
         config = load_config(str(custom))
@@ -586,12 +586,13 @@ class TestLoadConfig:
         )
 
 
-class TestDeprecatedCleanNames:
-    """The clean stage was called `filter` before 0.12: an existing
-    settings.yaml using the old section and path-key names keeps loading,
-    translated, with a warning per name."""
+class TestRemovedCleanNames:
+    """The clean stage was called `filter` before 0.12. Its old section and
+    path-key names were read with a warning through 0.19.x and are refused
+    since 0.20.0: an unknown key is otherwise ignored, so a stale path key
+    would quietly point the stage at the default directory."""
 
-    def test_filter_section_and_path_keys_are_translated(self, tmp_path, caplog):
+    def test_filter_section_and_path_keys_are_refused_naming_each_rename(self, tmp_path):
         path = tmp_path / "settings.yaml"
         path.write_text(
             "filter:\n"
@@ -602,100 +603,42 @@ class TestDeprecatedCleanNames:
             "  gkg_v2_filtered_historical_directory: ./old/gkg/hist\n",
             encoding="utf-8",
         )
-        with caplog.at_level(logging.WARNING):
-            config = load_config(str(path))
-        assert "filter" not in config
-        assert config["clean"]["columns_to_check"]["gdelt_event"] == ["Actor1Code"]
-        assert config["paths"]["cleaned_data_directory"] == "./old/events/filtered"
-        assert config["paths"]["gkg_v2_cleaned_historical_directory"] == "./old/gkg/hist"
-        assert "filtered_data_directory" not in config["paths"]
-        messages = " ".join(r.message for r in caplog.records)
-        assert "`filter:` section is deprecated" in messages
-        assert "paths.filtered_data_directory is deprecated" in messages
-
-    def test_old_and_new_section_together_is_an_error(self, tmp_path):
-        path = tmp_path / "settings.yaml"
-        path.write_text("filter: {max_workers: 2}\nclean: {max_workers: 4}\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="sets both `filter:` and `clean:`"):
+        with pytest.raises(ValueError) as excinfo:
             load_config(str(path))
+        message = str(excinfo.value)
+        assert str(path) in message
+        assert "removed in 0.20.0" in message
+        assert "`filter:` -> `clean:`" in message
+        assert "paths.filtered_data_directory -> paths.cleaned_data_directory" in message
+        assert (
+            "paths.gkg_v2_filtered_historical_directory -> "
+            "paths.gkg_v2_cleaned_historical_directory"
+        ) in message
 
-    def test_old_and_new_path_key_together_is_an_error(self, tmp_path):
+    def test_a_single_old_path_key_is_refused(self, tmp_path):
         path = tmp_path / "settings.yaml"
         path.write_text(
-            "paths:\n  filtered_data_directory: a\n  cleaned_data_directory: b\n",
+            "paths:\n  mentions_filtered_data_directory: ./data/mentions/filtered\n",
             encoding="utf-8",
         )
-        with pytest.raises(ValueError, match="paths.filtered_data_directory and"):
+        with pytest.raises(ValueError, match="paths.mentions_cleaned_data_directory"):
             load_config(str(path))
 
-
-class TestMovedDefaultDirectories:
-    """0.12.0 moved the bundled default's clean-stage directories from
-    data/<dataset>/filtered to data/<dataset>/cleaned; a config leaving them
-    to the default, next to output from an earlier version, gets a warning
-    naming both for as long as the old directory holds Parquet files."""
-
-    @staticmethod
-    def _old_output(folder):
-        folder.mkdir(parents=True)
-        (folder / "20200101000000.mentions_filtered.parquet").write_bytes(b"")
-
-    def _load(self, tmp_path, monkeypatch, caplog, text="clean: {max_workers: 2}\n"):
-        monkeypatch.chdir(tmp_path)
+    def test_old_and_new_names_together_are_refused_too(self, tmp_path):
         path = tmp_path / "settings.yaml"
-        path.write_text(text, encoding="utf-8")
+        path.write_text("filter: {max_workers: 2}\nclean: {max_workers: 4}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="`filter:` -> `clean:`"):
+            load_config(str(path))
+
+    def test_the_old_default_directory_is_no_longer_warned_about(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        old = tmp_path / "data" / "mentions" / "filtered"
+        old.mkdir(parents=True)
+        (old / "20200101000000.mentions_filtered.parquet").write_bytes(b"")
+        path = tmp_path / "settings.yaml"
+        path.write_text("clean: {max_workers: 2}\n", encoding="utf-8")
         with caplog.at_level(logging.WARNING):
             load_config(str(path))
-        return [r.message for r in caplog.records if "holds clean-stage output" in r.message]
-
-    def test_warns_when_only_the_old_default_directory_exists(
-        self, tmp_path, monkeypatch, caplog
-    ):
-        self._old_output(tmp_path / "data" / "mentions" / "filtered")
-        hist = tmp_path / "data" / "events" / "filtered_historical" / "Year=2005"
-        hist.mkdir(parents=True)
-        (hist / "2005_filtered.parquet").write_bytes(b"")
-        messages = self._load(tmp_path, monkeypatch, caplog)
-        assert len(messages) == 2
-        mentions = next(m for m in messages if "mentions" in m)
-        assert "paths.mentions_cleaned_data_directory" in mentions
-        assert str(Path("data/mentions/filtered")) in mentions
-        assert str(Path("data/mentions/cleaned")) in mentions
-        assert "move what" in mentions
-        assert any("paths.cleaned_historical_directory" in m for m in messages)
-
-    def test_keeps_warning_after_a_clean_creates_the_new_directory(
-        self, tmp_path, monkeypatch, caplog
-    ):
-        # Any clean run creates the new directory and may put newly
-        # cleaned files there; the old files still aren't read.
-        self._old_output(tmp_path / "data" / "mentions" / "filtered")
-        (tmp_path / "data" / "mentions" / "cleaned").mkdir(parents=True)
-        messages = self._load(tmp_path, monkeypatch, caplog)
-        assert len(messages) == 1
-        # A rename would nest the old directory inside the new one, and
-        # pointing the path back would hide what clean wrote there.
-        assert "move what" in messages[0]
-        assert "rename" not in messages[0]
-        assert "set paths" not in messages[0]
-
-    def test_quiet_once_the_old_directory_holds_no_parquet(
-        self, tmp_path, monkeypatch, caplog
-    ):
-        (tmp_path / "data" / "mentions" / "filtered").mkdir(parents=True)
-        assert self._load(tmp_path, monkeypatch, caplog) == []
-
-    def test_quiet_when_the_config_sets_the_path(self, tmp_path, monkeypatch, caplog):
-        self._old_output(tmp_path / "data" / "mentions" / "filtered")
-        text = "paths:\n  mentions_filtered_data_directory: ./data/mentions/filtered\n"
-        assert self._load(tmp_path, monkeypatch, caplog, text) == []
-
-    def test_the_bundled_default_fallback_warns_too(self, tmp_path, monkeypatch, caplog):
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
-        self._old_output(tmp_path / "data" / "gkg_v2" / "filtered")
-        with caplog.at_level(logging.WARNING):
-            load_config()
-        assert any(
-            "paths.gkg_v2_cleaned_data_directory" in r.message for r in caplog.records
-        )
+        assert not any("filtered" in r.message for r in caplog.records)

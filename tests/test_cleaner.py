@@ -1,5 +1,6 @@
 import concurrent.futures
 import datetime
+import importlib
 import json
 import logging
 import os
@@ -1716,36 +1717,27 @@ class TestFilterSingleFileConcurrentInvocations:
         assert len(pl.read_parquet(out_path)) == 4
 
 
-class TestLegacyOutputRemoval:
-    def test_pre_012_output_of_the_same_source_is_replaced(self, tmp_path):
-        # Before 0.12 the stage wrote <stem>_filtered.parquet; leaving it next
-        # to the new <stem>_cleaned.parquet would double that day's rows for
-        # every reader that globs *.parquet.
+class TestLegacyOutputKept:
+    def test_pre_012_output_is_left_in_place(self, tmp_path):
+        # 0.20.0 dropped the pre-0.12 cleanup: a <stem>_filtered.parquet
+        # beside the new <stem>_cleaned.parquet stays, as documented in
+        # docs/data-cleaning.md (Data cleaned before 0.12.0).
         in_dir, out_dir = tmp_path / "in", tmp_path / "out"
         in_dir.mkdir()
         out_dir.mkdir()
         pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(in_dir / "20200101.parquet")
         pl.DataFrame({"GlobalEventID": [1, 2]}).write_parquet(out_dir / "20200101_filtered.parquet")
-        pl.DataFrame({"GlobalEventID": [9]}).write_parquet(out_dir / "20200102_filtered.parquet")
 
         GDELTCleaner(str(in_dir), str(out_dir), columns_to_check=[]).clean_all_files()
 
         assert (out_dir / "20200101_cleaned.parquet").exists()
-        assert not (out_dir / "20200101_filtered.parquet").exists()
-        # A legacy file whose source wasn't cleaned in this run is left alone.
-        assert (out_dir / "20200102_filtered.parquet").exists()
+        assert (out_dir / "20200101_filtered.parquet").exists()
 
 
-class TestDeprecatedModule:
-    def test_old_import_path_warns_and_still_works(self, tmp_path):
-        import importlib
-        import sys as _sys
-
-        _sys.modules.pop("gdeltforge.filtering.filter", None)
-        with pytest.warns(DeprecationWarning, match="gdeltforge.filtering.filter is deprecated"):
-            old = importlib.import_module("gdeltforge.filtering.filter")
-        assert issubclass(old.GDELTFilter, GDELTCleaner)
-        assert old.run_filter is run_cleaner
+class TestRemovedModule:
+    def test_the_pre_012_import_path_is_gone(self):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("gdeltforge.filtering.filter")
 
 
 class TestRefusesToWriteIntoItsInput:
@@ -2131,51 +2123,6 @@ class TestErrata:
         assert repaired is not None
         step = next(s for s in repaired["steps"] if s.get("rule") == "date_1920")
         assert "skipped" not in step
-
-    @staticmethod
-    def _upgrade_setup(tmp_path):
-        # Two converted days, and the second one's pre-0.12 output (the
-        # filter stage wrote GDELT's columns as they were).
-        _write_new_year_2020(tmp_path / "in")
-        day = pl.read_parquet(tmp_path / "in" / "20200102.export.parquet")
-        day.write_parquet(tmp_path / "in" / "20200103.export.parquet")
-        (tmp_path / "out").mkdir()
-        day.write_parquet(tmp_path / "out" / "20200103.export_filtered.parquet")
-
-    def test_a_partial_run_beside_pre_012_output_warns_about_two_schemas(
-        self, tmp_path, caplog
-    ):
-        self._upgrade_setup(tmp_path)
-        with caplog.at_level(logging.WARNING):
-            GDELTCleaner(
-                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
-                errata=DEFAULT_ERRATA,
-                start_date=datetime.date(2020, 1, 2), end_date=datetime.date(2020, 1, 2),
-            ).clean_all_files()
-        messages = [r.message for r in caplog.records if "pre-0.12 output" in r.message]
-        assert len(messages) == 1
-        assert "1 file(s)" in messages[0]
-        assert "20200103.export_filtered.parquet lacks ['Day_original'" in messages[0]
-
-    def test_no_two_schema_warning_once_every_day_is_cleaned_again(self, tmp_path, caplog):
-        self._upgrade_setup(tmp_path)
-        with caplog.at_level(logging.WARNING):
-            GDELTCleaner(
-                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
-                errata=DEFAULT_ERRATA,
-            ).clean_all_files()
-        assert not list((tmp_path / "out").glob("*_filtered.parquet"))
-        assert not any("pre-0.12 output" in r.message for r in caplog.records)
-
-    def test_no_two_schema_warning_when_the_columns_match(self, tmp_path, caplog):
-        # Without errata (Mentions, GKG) old and new files share columns.
-        self._upgrade_setup(tmp_path)
-        with caplog.at_level(logging.WARNING):
-            GDELTCleaner(
-                str(tmp_path / "in"), str(tmp_path / "out"), columns_to_check=[],
-                start_date=datetime.date(2020, 1, 2), end_date=datetime.date(2020, 1, 2),
-            ).clean_all_files()
-        assert not any("pre-0.12 output" in r.message for r in caplog.records)
 
     def test_no_warning_when_every_file_has_the_columns(self, tmp_path, caplog):
         _write_new_year_2020(tmp_path / "in")

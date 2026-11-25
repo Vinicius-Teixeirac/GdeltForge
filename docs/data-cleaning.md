@@ -51,7 +51,7 @@ question, it belongs to sampling.
 | **Every cleaned file says it's cleaned** | A cleaned file must never pass for GDELT's own data. Each one carries a `gdeltforge:clean` entry in its Parquet metadata; `clean` warns when its input already carries it, and `sample`/`aggregate`/`crossref` warn when a `--source converted` directory does |
 | **Every run leaves an audit** | So you can always tell what a run changed, per file, without re-deriving it |
 | **Output never goes into an input directory** | Cleaned files beside the converted ones would be cleaned again on the next run, and every reader of the converted directory would count those rows twice. `clean` refuses to start in that configuration |
-| **Named `clean`**, `filter` before 0.12.0 | `filter` collided with `sample --filter`, which does the relevance job above. The old names keep working through 0.12.x with a deprecation warning |
+| **Named `clean`**, `filter` before 0.12.0 | `filter` collided with `sample --filter`, which does the relevance job above. The old names were removed in 0.20.0 (see [below](#data-cleaned-before-0120)) |
 
 ## Steps, in order
 
@@ -719,35 +719,31 @@ measures them too. A plain `--dry-run` only counts files.
 
 ## Data cleaned before 0.12.0
 
-Data cleaned by the stage when it was called `filter` doesn't have the
-errata repairs. Nothing needs doing by hand:
+The stage was called `filter` before 0.12.0. Its files are named
+`<stem>_filtered.parquet`, lack the errata repairs, and its bundled default
+wrote them to `data/<dataset>/filtered`. Up to 0.19.x gdeltforge cleaned up
+after them; from 0.20.0 it treats them as any other Parquet file:
 
-- **Datasets with errata rules** (`events`, `events-15min`): the errata
-  settings are part of the resumability fingerprint, so the first `clean`
-  run after upgrading cleans every file again, and the cleaned directory
-  ends up with one schema. To repair the affected days first, run
-  `gdeltforge clean --dataset events --start-date 2019-12-31 --end-date
-  2020-01-05`, then the full run. In between, the directory holds 62-column
-  `_cleaned` files beside 58-column `_filtered` ones: gdeltforge's own
-  `sample`, `aggregate` and `crossref` read it, but polars refuses it as one
-  dataset and pandas and pyarrow drop the `*_original` columns. The
-  date-limited run warns about it, naming the directory.
-- **Other datasets**: their fingerprint is unchanged, so their files aren't
-  cleaned again. Existing `<stem>_filtered.parquet` files stay valid and
-  are read as before.
+- **Both copies of a day are read.** `sample`, `aggregate` and `crossref`
+  read every Parquet file in a directory, and `clean` no longer removes a
+  `<stem>_filtered.parquet` when it writes the same source's
+  `<stem>_cleaned.parquet`. Delete every `_filtered` file that has a
+  `_cleaned` file beside it. A `_filtered` file with none is still read
+  correctly.
+- **Errata datasets** (`events`, `events-15min`): their first `clean` run
+  after 0.12.0 cleans every file again, since the errata settings are part
+  of the fingerprint; afterwards every `_filtered` file has a `_cleaned`
+  one beside it and can go.
+- **Other datasets**: their fingerprint is unchanged, so their `_filtered`
+  files aren't cleaned again and stay valid. `gdeltforge clean --force`
+  rewrites them as `_cleaned` files, after which the `_filtered` ones can go.
 - **The bundled default's directories moved** from `data/<dataset>/filtered`
-  to `data/<dataset>/cleaned`. A config that leaves these paths to the
-  default, next to output from an earlier version, would read an empty
-  directory, since files already cleaned aren't written again. Loading the
-  config warns for as long as the old directory holds Parquet files: move
-  them into the new directory, creating it if needed. Setting
-  `paths.cleaned_data_directory` (or the dataset's own key) to the old
-  directory works too, but only before any `clean` run: a run creates the
-  new directory and writes newly cleaned files there, which that setting
-  would then hide, and renaming the old directory would nest it inside the
-  new one.
-- `gdeltforge clean --force` re-cleans files in scope regardless of their
-  fingerprint.
+  to `data/<dataset>/cleaned` in 0.12.0, and loading the config no longer
+  warns about the old one. Move what it holds into the new directory.
+- **Settings and commands**: the `filter:` section, the
+  `*filtered_data_directory`/`*filtered_historical_directory` path keys,
+  `gdeltforge filter` and `--source filtered` stop the command with an
+  error naming the replacement. See the [CLI Reference](cli-reference.md#gdeltforge-clean).
 
 ## Going back to GDELT's own values
 

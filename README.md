@@ -231,9 +231,6 @@ project_root/
 │ │ ├── places.py # Loads the bundled place table for the places step
 │ │ └── steps.py # The stage's steps, applied in one fixed order
 │ │
-│ ├── filtering/
-│ │ └── filter.py # Deprecation shim: the pre-0.12 filter names, forwarding to cleaning/
-│ │
 │ ├── sampling/
 │ │ ├── cameo_codes.py # Loads data/cameo_codes.json, groups columns by code family, backs the `codes` command
 │ │ ├── indexer.py # File indexing for reproducible sampling

@@ -213,10 +213,12 @@ class TestProvenanceOfFilesAggregatedBefore016:
         _strip_record(out / "20200101.parquet")
 
         sampler = IndexedSampler(str(out), random_state=1, provenance=True)
-        with pytest.raises(ValueError, match="no source directory given"):
+        with pytest.raises(ValueError, match="no converted source directory given"):
             sampler.get_random_sample(9)
 
-    def test_a_pre_012_marker_reads_its_sources_from_the_cleaned_directory(self, tmp_path):
+    def test_a_pre_012_marker_stops_the_sample(self, tmp_path):
+        # 0.20.0 no longer reads a marker's pre-0.12 source name
+        # (`filtered`) as `cleaned`; the error names the missing directory.
         converted = _converted(tmp_path)
         cleaned = tmp_path / "cleaned"
         GDELTCleaner(str(converted), str(cleaned), columns_to_check=[]).clean_all_files()
@@ -226,12 +228,12 @@ class TestProvenanceOfFilesAggregatedBefore016:
             marker = f.parent / f".{f.name}.done"
             marker.write_text(marker.read_text().replace("source=cleaned", "source=filtered"))
 
-        sample = IndexedSampler(
+        sampler = IndexedSampler(
             str(out), random_state=1, provenance=True,
             aggregate_sources={"cleaned": cleaned, "converted": converted},
-        ).get_random_sample(9)
-
-        _assert_rows_match_their_source(sample, converted)
+        )
+        with pytest.raises(ValueError, match="no filtered source directory given"):
+            sampler.get_random_sample(9)
 
 
 class TestAFileThatNoLongerMatchesItsRecord:

@@ -348,101 +348,40 @@ def _warn_about_empty_sections(config: dict, source: Path) -> None:
 
 
 # Pre-0.12 names of the clean stage, when it was called `filter`: the
-# top-level config section and the path keys' base names. Translated on
-# load with a warning, so an existing settings.yaml keeps working through
-# the 0.12.x series.
-_DEPRECATED_SECTION_NAMES = {"filter": "clean"}
-_DEPRECATED_PATH_SUFFIXES = {
+# top-level config section and the path keys' base names. Read with a
+# deprecation warning through 0.19.x and refused since 0.20.0: an unknown
+# key is otherwise ignored, so a stale path key would quietly send the
+# stage to the default directory.
+_REMOVED_SECTION_NAMES = {"filter": "clean"}
+_REMOVED_PATH_SUFFIXES = {
     "filtered_data_directory": "cleaned_data_directory",
     "filtered_historical_directory": "cleaned_historical_directory",
 }
 
 
-def _migrate_deprecated_names(config: dict, source: Path) -> dict:
+def _refuse_removed_names(config: dict, source: Path) -> None:
     """
-    Translate the clean stage's pre-0.12 config names to the current ones:
-    the `filter:` section to `clean:`, and every `*filtered_data_directory`/
+    Raise when a settings file uses one of the clean stage's pre-0.12
+    names: the `filter:` section, or a `*filtered_data_directory`/
     `*filtered_historical_directory` path key (dataset-prefixed ones
-    included) to its `*cleaned_*` equivalent. Each translation logs a
-    deprecation warning naming the file. A config that sets both the old
-    and the new name for the same thing is ambiguous and raises, naming
-    both, since silently preferring either could point the stage at the
-    wrong directory.
+    included). The error names every one found with its replacement.
     """
-    migrated = dict(config)
-    for old, new in _DEPRECATED_SECTION_NAMES.items():
-        if old not in migrated:
-            continue
-        if new in migrated:
-            raise ValueError(
-                f"{source} sets both `{old}:` and `{new}:`. `{old}:` is the pre-0.12 "
-                f"name of `{new}:`; keep only `{new}:`."
-            )
-        migrated[new] = migrated.pop(old)
-        logger.warning(
-            f"{source}: the `{old}:` section is deprecated, read as `{new}:`. "
-            f"Rename it; the old name will stop working in a future release."
-        )
-
-    paths = migrated.get("paths")
+    renames = [
+        (f"`{old}:`", f"`{new}:`")
+        for old, new in _REMOVED_SECTION_NAMES.items() if old in config
+    ]
+    paths = config.get("paths")
     if isinstance(paths, dict):
-        paths = dict(paths)
-        for key in list(paths):
-            for old_suffix, new_suffix in _DEPRECATED_PATH_SUFFIXES.items():
-                if not key.endswith(old_suffix):
-                    continue
-                new_key = key[: -len(old_suffix)] + new_suffix
-                if new_key in paths:
-                    raise ValueError(
-                        f"{source} sets both paths.{key} and paths.{new_key}. "
-                        f"paths.{key} is the pre-0.12 name; keep only paths.{new_key}."
-                    )
-                paths[new_key] = paths.pop(key)
-                logger.warning(
-                    f"{source}: paths.{key} is deprecated, read as paths.{new_key}. "
-                    f"Rename it; the old name will stop working in a future release."
-                )
-        migrated["paths"] = paths
-    return migrated
-
-
-def _warn_about_moved_default_directories(config: dict, user_paths: dict) -> None:
-    """
-    0.12.0 moved the bundled default's clean-stage directories from
-    data/<dataset>/filtered to data/<dataset>/cleaned. A config that leaves
-    those paths to the default, run from a directory holding output from an
-    earlier version, no longer reads that output: clean skips every file
-    already cleaned under unchanged settings (every dataset without an
-    errata rule), so nothing is written to the new location, and sample
-    and aggregate read only what was cleaned after the upgrade. Warn,
-    naming both directories, for as long as the old one holds Parquet
-    files. Whether the new one exists says nothing: any clean run creates
-    it, and it can hold part of the data. The check stops at the first
-    file found, so it costs a directory stat and one entry even on a
-    large network share.
-
-    The advice is the one action that stays right after the run that
-    prints it: moving the old files into the new directory. Renaming the
-    old directory fails, or nests it inside the new one, once a clean run
-    has created that; pointing the path back at the old directory hides
-    whatever a clean run already wrote to the new one.
-    """
-    suffixes = tuple(_DEPRECATED_PATH_SUFFIXES.values())
-    for key, value in get_dict(config, "paths").items():
-        if key in user_paths or not key.endswith(suffixes) or not isinstance(value, str):
-            continue
-        new = Path(value)
-        if not new.name.startswith("cleaned"):
-            continue
-        old = new.with_name("filtered" + new.name[len("cleaned"):])
-        if not old.is_dir() or next(old.rglob("*.parquet"), None) is None:
-            continue
-        logger.warning(
-            f"{old} holds clean-stage output from before 0.12.0, but "
-            f"paths.{key} now defaults to {new}: move what {old} holds into {new}, "
-            f"creating it if needed. Until then sample and aggregate don't read those "
-            f"files, and clean doesn't rewrite files it already cleaned under the same "
-            f"settings."
+        for key in paths:
+            for old_suffix, new_suffix in _REMOVED_PATH_SUFFIXES.items():
+                if key.endswith(old_suffix):
+                    new_key = key[: -len(old_suffix)] + new_suffix
+                    renames.append((f"paths.{key}", f"paths.{new_key}"))
+    if renames:
+        lines = "; ".join(f"{old} -> {new}" for old, new in renames)
+        raise ValueError(
+            f"{source} uses names the clean stage had before 0.12.0, removed in "
+            f"0.20.0. Rename them: {lines}."
         )
 
 
@@ -610,16 +549,12 @@ def load_config(config_path: str | None = None) -> dict:
                 f"starting point, or see docs/configuration.md."
             )
         _warn_about_empty_sections(config, path)
-        config = _migrate_deprecated_names(_normalize_top_level_sections(config), path)
-        user_paths = get_dict(config, "paths")
-        config = _deep_merge_defaults(config, _bundled_default_dict())
-        _warn_about_moved_default_directories(config, user_paths)
-        return config
+        config = _normalize_top_level_sections(config)
+        _refuse_removed_names(config, path)
+        return _deep_merge_defaults(config, _bundled_default_dict())
 
     if not explicit:
-        config = _load_bundled_default(path)
-        _warn_about_moved_default_directories(config, {})
-        return config
+        return _load_bundled_default(path)
 
     example_url = (
         "https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/"

@@ -199,12 +199,13 @@ def _aggregated_parts(
         if not fields or "sources" not in fields or "source" not in fields:
             return None, None
         names = [n for n in fields["sources"].split(",") if n]
-        # "filtered" is the cleaned stage's pre-0.12 name.
-        stage = {"filtered": "cleaned"}.get(fields["source"], fields["source"])
-        folder = (aggregate_sources or {}).get(stage)
+        folder = (aggregate_sources or {}).get(fields["source"])
         missing = [n for n in names if folder is None or not (Path(folder) / n).is_file()]
         if folder is None or missing:
-            where = f"in {folder}" if folder is not None else "(no source directory given)"
+            where = (
+                f"in {folder}" if folder is not None
+                else f"(no {fields['source']} source directory given)"
+            )
             raise ValueError(
                 f"{path.name} was aggregated before 0.16.0, when aggregate began recording "
                 f"each source's rows in the file, and {len(missing)} of its {len(names)} "
@@ -1340,8 +1341,7 @@ class CalendarSampler:
         drawing a full quota. In GDELT's archive they are the events GDELT
         dated 1920 instead of 2020 (added 2019-12-31 to 2020-01-05), whose
         real days then come out nearly empty. The clean stage repairs them
-        by default; data read with --source converted, or cleaned before
-        0.12, still has them.
+        by default; data read with --source converted still has them.
         """
         logger.warning(
             f"{n_rows:,} row(s) have a {self.date_column} before 1979, GDELT's first "
