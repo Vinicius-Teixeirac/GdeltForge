@@ -64,7 +64,13 @@ cp config/settings.example.yaml config/settings.yaml
 
 At minimum, review `paths:` (where downloaded, converted and cleaned data will live) and `clean:` (which repairs and corrections the clean stage applies; see [below](#optional-corrections)). See the full [Configuration](configuration.md) reference for every option, including what the built-in fallback actually sets.
 
-If the data sits on network storage (NFS, SMB) or a disk shared with other users, also set `io.max_concurrent_reads`: the defaults allow one read per core, and a shared server saturates at a handful. [Network storage](configuration.md#network-storage-nfs-smb-shared-hdd-arrays) gives a measured starting point.
+If the data sits on network storage (NFS, SMB) or a disk shared with other users, the defaults, sized for a local SSD, need three changes. [Network storage](configuration.md#network-storage-nfs-smb-shared-hdd-arrays) gives the measured values:
+
+- `io.max_concurrent_reads`: the defaults allow one read per core, and a shared server saturates at a handful (4 in measurements).
+- `paths.unzipped_data_directory` (and each dataset's own key) on a local disk: `convert` extracts every CSV there and reads it back, 2.5 to 3 times slower across the network.
+- `io.max_read_mb_per_s`, if others use the same storage: a cap on the average rate one command reads at.
+
+Reading from a network path, `clean`, `aggregate`, `sample` and `crossref` already turn memory mapping off and retry a failed read (`io.memory_map: auto`, `io.read_retries`), so a moment of NFS trouble is retried. With mapping on, it would kill the process with `SIGBUS`.
 
 ## Your first pipeline run
 
@@ -125,9 +131,33 @@ gdeltforge sample --dataset events --mode calendar --period month --per-period 1
 
 A calendar period is one of the events' dates (`Day`), not of the files'. GDELT dates some events months or years before the file that records them, so a draw over a few days' files also draws up to 100 rows from each of those earlier months.
 
+`--mode filtered` draws from the rows a JSON filter selects. A list matches any of its values; a dict with an `op` compares (`between`, `gt`, `lt`, `in_list`, `is_null`, ...):
+
+```bash
+gdeltforge sample --dataset events --mode filtered -n 500 --out brazil.parquet \
+  --filter '{"ActionGeo_CountryCode": "BR", "QuadClass": [3, 4], "NumArticles": {"op": "gt", "value": 5}}'
+```
+
+A filter gdeltforge can't run as written (an unknown `op`, a missing `value`, a key written twice in one block) stops the command before any file is read, with an error naming what is wrong and how to write it. [Filtered Sampling](filtered-sampling.md) has the full syntax, with `AND`, `OR`, `NOT`, `ANY` and `ALL` blocks.
+
+Every sample is written with `<out>.manifest.json` beside it: the version, the command, the seed and every setting of the draw, a hash over the names, sizes and row counts of the files read, and the output's own hash. It is what to keep, or cite, to draw the same sample again. See [Sample manifest](cli-reference.md#sample-manifest).
+
+### Long runs
+
+Over the full archive a draw reads hundreds of thousands of files, so two things are kept on disk between runs:
+
+- **A saved file index** (`paths.index_directory`, default `./data/index`): each file's rows and columns, read from its footer once and reused while the file's size and modification time are unchanged. The first sample over a directory reads every footer; later ones read only new or changed files. Deleting it costs only those reads again.
+- **Checkpoints** (`paths.checkpoint_directory`, default `./data/checkpoints`): a long `sample` or `crossref` scan saves one every minute (`io.checkpoint_every_s`). Run the same command again after a stop, a Ctrl+C or a killed job, and it resumes, with exactly the output an uninterrupted run gives. A finished run removes its checkpoint; `--no-checkpoint` skips them for one run. See [Checkpoints](cli-reference.md#checkpoints).
+
 ### The 15-minute datasets
 
 GKG 2.1, Mentions and `events-15min` arrive as 96 files a day. `gdeltforge aggregate --dataset gkg-v2 --period day` concatenates a period's files into one, after `clean`, and `sample`/`crossref --source aggregated` read the result: on a network share, indexing a GKG 2.1 archive for sampling went from 9,027 s to 50 s. See [Aggregation](configuration.md#aggregation).
+
+## Upgrading from an earlier version
+
+Read the [CHANGELOG](https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/CHANGELOG.md) entries marked **Breaking** between your version and the new one. [Python API and Stability](api.md) says what a release may change, and how long a deprecated name keeps working.
+
+0.20.0 removed the names the `clean` stage had before 0.12.0, when it was called `filter`, with `sample --mode daily` and `--per-day`. A command or settings file that still uses one stops with an error naming its replacement; the [CLI Reference](cli-reference.md#gdeltforge-clean) lists them all. Data cleaned before 0.12.0 (`<stem>_filtered.parquet` files) needs the steps in [Data cleaned before 0.12.0](data-cleaning.md#data-cleaned-before-0120).
 
 ## Running the test suite
 
