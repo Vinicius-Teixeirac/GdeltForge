@@ -10,8 +10,15 @@ internal and may change in any release, without notice in the
 gdeltforge follows [Semantic Versioning](https://semver.org/). Before 1.0:
 
 - A **patch** release (`0.20.1`) fixes bugs and changes nothing listed on this page.
-- A **minor** release (`0.21.0`) may add to it, and may change or remove what it lists.
-  Every such change is marked **Breaking** in the CHANGELOG, with what to use instead.
+- A **minor** release (`0.21.0`) may add to it and change what it lists. Every change
+  that can break existing use is marked **Breaking** in the CHANGELOG, with what to
+  use instead.
+- A name this page covers (a command, flag, value, settings key or Python name) that is
+  deprecated keeps working, with a warning naming its replacement, until the next major
+  release: 1.0.0 for a name deprecated before it. This holds from 0.20.0, which removed
+  the last names deprecated under the earlier practice.
+- A change that can't carry a warning, such as which rows a seed draws or a default, is
+  made in a minor release and marked **Breaking**.
 
 ## Python names
 
