@@ -95,6 +95,22 @@ Once that works, drop the date flags to work with the full archive (1979-present
 
     Dropping the date flags means thousands of files and hundreds of GB. Try `--dry-run` first to see how many files a scrape would pull, and see [Capacity planning](configuration.md#capacity-planning-real-measured-numbers) for measured sizes per dataset.
 
+### Optional: joining GKG to the sample
+
+The fifth stage, `crossref`, adds to each sampled event the GKG 2.1 records of the articles that reported it: themes, tone, people, organizations. GKG 2.1 carries no event ID, so the join goes through Mentions, from the event's `GlobalEventID` to each mentioning article's URL, and from there to GKG. Both arrive as 96 files a day; one day is enough to see it work:
+
+```bash
+gdeltforge scrape --dataset gkg-v2 --start-date 2024-01-01 --end-date 2024-01-01
+gdeltforge scrape --dataset mentions --start-date 2024-01-01 --end-date 2024-01-01
+gdeltforge convert --dataset gkg-v2
+gdeltforge convert --dataset mentions
+gdeltforge clean --dataset gkg-v2
+gdeltforge clean --dataset mentions
+gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parquet
+```
+
+A day of GKG 2.1 is 0.4 to 0.8 GB to download, a few times what the week of Events was. `enriched.parquet` holds the sampled events mentioned in an article that day, each with a row for every matching mention, so an event can appear many times; events with no match that day are left out. [Crossref Join Semantics](crossref-join-semantics.md) explains what the join returns and why.
+
 ### Optional corrections
 
 Three more `clean` steps are off by default: places and normalize replace GDELT's values without keeping the originals, and derive makes every file wider. Turn them on per dataset by adding their keys to the `clean:` section `config/settings.yaml` already has; a second `clean:` key would replace the first one silently, your other `clean` settings with it:
