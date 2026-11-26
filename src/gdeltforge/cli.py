@@ -1727,7 +1727,8 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "-n", type=int, default=None,
         help=f"Number of rows to sample (indexed, and filtered without --stratify; "
-             f"default {_DEFAULT_SAMPLE_ROWS})"
+             f"default {_DEFAULT_SAMPLE_ROWS}). A filtered draw matching fewer rows "
+             f"returns all of them"
     )
     sample.add_argument(
         "--replace", action="store_true",

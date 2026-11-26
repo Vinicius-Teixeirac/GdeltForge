@@ -56,7 +56,7 @@ gdeltforge --help
 
     GdeltForge falls back to a conservative built-in default (real `./data/...` paths, no row/column filtering) if there's no config file, and writes that default to `config/settings.yaml` on first run. A fresh environment (a Colab session, say) works with nothing configured.
 
-Worth doing anyway for a real project, so you're deciding `paths:` and the `clean:` settings deliberately rather than accepting the defaults:
+Worth doing anyway for a real project, so you're deciding `paths:` and the `clean:` settings deliberately rather than accepting the defaults. After `pip install`, edit the `config/settings.yaml` the first command writes. The annotated example, [`config/settings.example.yaml`](https://github.com/Vinicius-Teixeirac/GdeltForge/blob/main/config/settings.example.yaml), isn't in the installed package; in a [source checkout](#installing-from-source) it is, and you can start from it:
 
 ```bash
 cp config/settings.example.yaml config/settings.yaml
@@ -109,7 +109,7 @@ gdeltforge clean --dataset mentions
 gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parquet
 ```
 
-A day of GKG 2.1 is 0.4 to 0.8 GB to download, a few times what the week of Events was. `enriched.parquet` holds the sampled events mentioned in an article that day, each with a row for every matching mention, so an event can appear many times; events with no match that day are left out. [Crossref Join Semantics](crossref-join-semantics.md) explains what the join returns and why.
+This day of GKG 2.1 is 0.32 GB to download, about 7 times the week of Events. `enriched.parquet` holds the sampled events mentioned in an article that day, each with a row for every matching mention, so an event can appear many times; events with no match that day are left out. [Crossref Join Semantics](crossref-join-semantics.md) explains what the join returns and why.
 
 ### Optional corrections
 
@@ -153,6 +153,8 @@ A calendar period is one of the events' dates (`Day`), not of the files'. GDELT 
 gdeltforge sample --dataset events --mode filtered -n 500 --out brazil.parquet \
   --filter '{"ActionGeo_CountryCode": "BR", "QuadClass": [3, 4], "NumArticles": {"op": "gt", "value": 5}}'
 ```
+
+On the week above, 115 events match, so `brazil.parquet` holds 115 rows: when fewer rows match than `-n` asks for, a filtered draw returns every matching row, and the log gives the count (`Saved filtered sample (115 rows)`).
 
 A filter gdeltforge can't run as written (an unknown `op`, a missing `value`, a key written twice in one block) stops the command before any file is read, with an error naming what is wrong and how to write it. [Filtered Sampling](filtered-sampling.md) has the full syntax, with `AND`, `OR`, `NOT`, `ANY` and `ALL` blocks.
 
