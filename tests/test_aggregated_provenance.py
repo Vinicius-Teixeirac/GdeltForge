@@ -213,12 +213,12 @@ class TestProvenanceOfFilesAggregatedBefore016:
         _strip_record(out / "20200101.parquet")
 
         sampler = IndexedSampler(str(out), random_state=1, provenance=True)
-        with pytest.raises(ValueError, match="no converted source directory given"):
+        with pytest.raises(ValueError, match="no converted source directory was given"):
             sampler.get_random_sample(9)
 
     def test_a_pre_012_marker_stops_the_sample(self, tmp_path):
         # 0.20.0 no longer reads a marker's pre-0.12 source name
-        # (`filtered`) as `cleaned`; the error names the missing directory.
+        # (`filtered`) as `cleaned`; the error says so.
         converted = _converted(tmp_path)
         cleaned = tmp_path / "cleaned"
         GDELTCleaner(str(converted), str(cleaned), columns_to_check=[]).clean_all_files()
@@ -232,8 +232,12 @@ class TestProvenanceOfFilesAggregatedBefore016:
             str(out), random_state=1, provenance=True,
             aggregate_sources={"cleaned": cleaned, "converted": converted},
         )
-        with pytest.raises(ValueError, match="no filtered source directory given"):
+        with pytest.raises(ValueError) as error:
             sampler.get_random_sample(9)
+        message = str(error.value)
+        assert "`filtered`, the clean stage's name before 0.12.0" in message
+        assert "no longer reads from 0.20.0 on" in message
+        assert "aggregate --force" in message
 
 
 class TestAFileThatNoLongerMatchesItsRecord:

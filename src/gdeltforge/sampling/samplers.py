@@ -199,19 +199,30 @@ def _aggregated_parts(
         if not fields or "sources" not in fields or "source" not in fields:
             return None, None
         names = [n for n in fields["sources"].split(",") if n]
-        folder = (aggregate_sources or {}).get(fields["source"])
-        missing = [n for n in names if folder is None or not (Path(folder) / n).is_file()]
+        stage = fields["source"]
+        folder = (aggregate_sources or {}).get(stage)
+        missing = [] if folder is None else [n for n in names if not (Path(folder) / n).is_file()]
         if folder is None or missing:
-            where = (
-                f"in {folder}" if folder is not None
-                else f"(no {fields['source']} source directory given)"
-            )
+            if stage == "filtered":
+                reason = (
+                    f"its .done marker names its {len(names)} source file(s) as read from "
+                    f"`filtered`, the clean stage's name before 0.12.0, which gdeltforge "
+                    f"no longer reads from 0.20.0 on"
+                )
+            elif folder is None:
+                reason = (
+                    f"its .done marker names its {len(names)} {stage} source file(s), but "
+                    f"no {stage} source directory was given to read them from"
+                )
+            else:
+                reason = (
+                    f"{len(missing)} of its {len(names)} {stage} source file(s) are not in "
+                    f"{folder} (first: {missing[0]})"
+                )
             raise ValueError(
                 f"{path.name} was aggregated before 0.16.0, when aggregate began recording "
-                f"each source's rows in the file, and {len(missing)} of its {len(names)} "
-                f"{fields['source']} source file(s) are not {where} (first: {missing[0]}). "
-                f"Re-run `gdeltforge aggregate --force` for its period from those files, or "
-                f"sample it without --provenance."
+                f"each source's rows in the file, and {reason}. Re-run `gdeltforge "
+                f"aggregate --force` for its period, or sample it without --provenance."
             )
         sources = aggregate_sources_record([Path(folder) / n for n in names])
         derived = json.dumps(sources)
