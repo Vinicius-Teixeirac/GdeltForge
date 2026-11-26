@@ -148,8 +148,20 @@ gdeltforge clean --dataset events
 
 The data-quality stage: drops rows with missing values in the columns defined under `clean.columns_to_check.<dataset>` in `settings.yaml`, then shapes each file's output (`output_columns`, `float32_columns`, `compression`) and writes it to `cleaned_data_directory`. Each file is cleaned independently, so cleaning runs across a pool of worker processes too (`clean.max_workers`; `null`, the default, uses all available CPU cores). On network storage, `io.max_concurrent_reads` caps that pool further; see [Configuration](configuration.md#io). It decides whether a row is usable at all; which rows are relevant to a research question is decided at sampling time, with `sample --mode filtered --filter`. [Data Cleaning](data-cleaning.md) explains that split, the order of the stage's steps, and the decision behind each behavior.
 
-!!! note "Renamed from `filter` in 0.12.0"
-    Before 0.12.0 this stage was `gdeltforge filter`, and its name collided with `sample`'s unrelated `--filter` option. The old names keep working through the 0.12.x series, each with a deprecation warning: the `gdeltforge filter` command, the `filter:` config section, the `*filtered_data_directory`/`*filtered_historical_directory` path keys, and `--source filtered` in `sample`/`aggregate`/`crossref`. Output files are now named `<stem>_cleaned.parquet`; cleaning a file removes the same source's pre-0.12 `<stem>_filtered.parquet` from the output directory, so a directory never holds both copies of the same day.
+!!! note "Renamed from `filter` in 0.12.0; the old names removed in 0.20.0"
+    Before 0.12.0 this stage was `gdeltforge filter`, and its name collided with `sample`'s unrelated `--filter` option. The old names worked with a deprecation warning through 0.19.x and were removed in 0.20.0, together with `sample --mode daily` and `--per-day`. Each now stops the command, naming its replacement:
+
+    | Removed | Use |
+    |---|---|
+    | `gdeltforge filter` | `gdeltforge clean` |
+    | `--source filtered` (`sample`, `aggregate`, `crossref`) | `--source cleaned` |
+    | `sample --mode daily` | `sample --mode calendar` (period `day` is the default) |
+    | `sample --per-day N` | `sample --per-period N` |
+    | `filter:` in the settings file | `clean:` |
+    | `paths.*filtered_data_directory`, `paths.*filtered_historical_directory` | `paths.*cleaned_data_directory`, `paths.*cleaned_historical_directory` |
+    | `gdeltforge.filtering.filter` (`GDELTFilter`, `run_filter`) | `gdeltforge.cleaning.cleaner` (`GDELTCleaner`, `run_cleaner`) |
+
+    On the command line, argparse's own error comes first, then a line such as `gdeltforge: --per-day was removed in 0.20.0; use --per-period.` Output files are named `<stem>_cleaned.parquet`; a directory still holding pre-0.12 `<stem>_filtered.parquet` files needs the steps in [Data cleaned before 0.12.0](data-cleaning.md#data-cleaned-before-0120).
 
 | Flag | Description |
 |------|-------------|
@@ -197,7 +209,7 @@ GKG 2.1, Mentions, and `events-15min` are the only datasets discovered from GDEL
 | `--dataset {gkg-v2,mentions,events-15min}` | Which 15-minute-cadence GDELT dataset to aggregate (required). Every other dataset already publishes at day-or-coarser granularity, so there's nothing for this to solve there |
 | `--stream {english,translated}` | GDELT 2.0 stream (default `english`). `translated` works on GDELT's machine-translated coverage of `gkg-v2`, `mentions` and `events-15min`, in its own directories; see [`--stream`](#-stream) below |
 | `--period {day,month,year}` | Granularity to concatenate into (default `day`, matching `sample --mode calendar`'s own default) |
-| `--source {cleaned,converted,filtered}` | Which stage's output to aggregate from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). Recorded as part of this run's resumability fingerprint, so switching source for an already-aggregated period reprocesses and overwrites it rather than mixing the two |
+| `--source {cleaned,converted}` | Which stage's output to aggregate from (default `cleaned`). Recorded as part of this run's resumability fingerprint, so switching source for an already-aggregated period reprocesses and overwrites it rather than mixing the two |
 | `--start-date YYYY-MM-DD` | Only aggregate periods whose source files' period starts on or after this date |
 | `--end-date YYYY-MM-DD` | Only aggregate periods whose source files' period ends on or before this date |
 | `--order {asc,desc}` | Processing order: `asc` (oldest period first, the default) or `desc` (newest first) |
@@ -252,8 +264,8 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 |------|-----------|-------------|
 | `--dataset {events,events-15min,events-reduced,gkg-v1,gkg-v1-counts,gkg-v2,mentions}` | all | Which GDELT dataset to sample from (required; see `--dataset` above) |
 | `--stream {english,translated}` | all | GDELT 2.0 stream to sample (default `english`); see [`--stream`](#-stream) |
-| `--mode {indexed,filtered,calendar,daily}` | all | Sampling strategy (required). `daily` is a deprecated alias for `calendar` (period=day) |
-| `--source {cleaned,converted,aggregated,filtered}` | all | Which stage's output to read from (default `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
+| `--mode {indexed,filtered,calendar}` | all | Sampling strategy (required) |
+| `--source {cleaned,converted,aggregated}` | all | Which stage's output to read from (default `cleaned`). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
 | `-n N` | indexed, filtered | Number of rows to sample (default 1000). Not with `--stratify`, where `--n-per-group` sizes the sample: given there, or in calendar mode, it's ignored with a warning |
 | `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
@@ -261,8 +273,7 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
 | `--no-checkpoint` | all | Save no checkpoint of a long scan for this run, and ignore one a stopped run left (see [Checkpoints](#checkpoints)) |
 | `--per-period N` | calendar | Rows per calendar period (default 10); with `--quota-file`, the rows of each period the file doesn't list (default 0) |
-| `--per-day N` | calendar | Deprecated alias for `--per-period` |
-| `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by (rejected alongside the deprecated `--mode daily`); with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
+| `--period {day,month,year}` | calendar, `--source aggregated` | Two independent uses, default `day` for both: in calendar mode, the period to group by; with `--source aggregated`, which of the day/month/year aggregated directories to read, for any `--mode`. They combine naturally when both apply |
 | `--date-column COLUMN` | calendar | Date column to group by (default depends on `--dataset`: `Day` for events/events-15min, `Date` for events-reduced/gkg-v1/gkg-v1-counts, `V2.1DATE` for gkg-v2, `MentionTimeDate` for mentions) |
 | `--filter JSON` | filtered | JSON filter dict, e.g. `'{"QuadClass": [1,2]}'`: column conditions, the operators `equals`, `in_list`, `gt`, `lt`, `between`, `is_null`, `is_blank`, and the blocks `AND`, `OR`, `NOT`, `ANY`, `ALL` ([syntax](filtered-sampling.md)) |
 | `--columns COL [COL ...]` | all | Restrict output to these columns, in the order given; cuts I/O and memory on the full archive |
@@ -423,7 +434,7 @@ Samples 10,000 rows with replacement: duplicates are possible, and `n` can excee
 gdeltforge sample --dataset events --mode calendar --per-period 20 --out daily.parquet
 ```
 
-Samples 20 rows per day across the entire period covered by your downloaded data. The cap holds per calendar period regardless of how many files that period's rows are spread across (a historical yearly file, or GKG 2.1/Mentions' many-files-per-day cadence), unlike the deprecated `daily` mode's own per-file cap.
+Samples 20 rows per day across the entire period covered by your downloaded data. The cap holds per calendar period regardless of how many files that period's rows are spread across (a historical yearly file, or GKG 2.1/Mentions' many-files-per-day cadence).
 
 Group by month or year instead of day, and by a different dataset's own date column:
 
@@ -548,7 +559,7 @@ gdeltforge crossref --events sample.parquet --gkg-version v2 --out enriched.parq
 | `--events PATH` | Parquet file of Events rows to enrich (required). A directory of parquet files also works (e.g. convert/clean output directly); `.done` resumability markers in it are ignored |
 | `--gkg-version {v1,v1-counts,v2,auto}` | Which GKG generation to join against (required, see below) |
 | `--stream {english,translated,both}` | Which GDELT 2.0 stream's Mentions and GKG 2.1 to join against (default `english`). `both` reads the two streams at once and adds a `Mention_Stream` column; see [Both streams](#both-streams) below. `v2`/`auto` only: `v1`/`v1-counts` reject any stream but `english`, and `auto`'s GKG 1.0 path stays English |
-| `--source {cleaned,converted,aggregated,filtered}` | Which stage's GKG/Mentions output to read from (default: `cleaned`; `filtered` is its deprecated pre-0.12 name). `aggregated` reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output, with `--gkg-version v2` or `auto`; GKG 1.0 has no 15-minute files to aggregate, so `auto` reads it from its cleaned directory, and `v1`/`v1-counts` refuse `aggregated` |
+| `--source {cleaned,converted,aggregated}` | Which stage's GKG/Mentions output to read from (default: `cleaned`). `aggregated` reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output, with `--gkg-version v2` or `auto`; GKG 1.0 has no 15-minute files to aggregate, so `auto` reads it from its cleaned directory, and `v1`/`v1-counts` refuse `aggregated` |
 | `--period {day,month,year}` | With `--source aggregated`: which of the day/month/year aggregated directories to read (default `day`); rejected with any other `--source` |
 | `--columns COL [COL ...]` | Restrict GKG-side output to these columns, in the order given (the join key after them), named either the raw GKG dataset's own way (`Date`, `Tone`) or the way they actually appear in this command's output (`GKG_Date`, `GKG_Tone`); the join key column is always included regardless and is never a valid name here. Not supported with `--gkg-version auto` |
 | `--on-duplicate-document {latest,earliest,all}` | When GKG 2.1 carries more than one record for the same article URL: keep all of them, one row per record (default), or narrow to just the most recent or the earliest record. Only affects `v2`/`auto`; setting it alongside `v1`/`v1-counts` logs a warning and has no effect |

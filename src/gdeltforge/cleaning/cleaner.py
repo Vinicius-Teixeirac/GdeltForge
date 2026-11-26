@@ -148,7 +148,6 @@ class FileReport:
     step_counts: dict[str, int] = field(default_factory=dict)
     columns_in: int = 0
     columns_out: int = 0
-    column_names: list[str] = field(default_factory=list)
 
 
 # The errata settings a dataset may set under clean.errata.<dataset>, and
@@ -675,7 +674,6 @@ class GDELTCleaner:
             logger.info(f"Total rows removed: {dropped:,}")
 
         self._warn_skipped(reports)
-        self._warn_legacy_schema(reports)
         self._write_audit(reports, failed_files, started_at)
         # Listed again once the progress bar is gone: logged while it runs,
         # each failure shares a line with the bar and scrolls away above
@@ -823,8 +821,6 @@ class GDELTCleaner:
                 tmp_path.unlink()
             raise
 
-        self._remove_legacy_output(output_path)
-
         logger.debug(f"Saved cleaned file -> {output_path}")
         return FileReport(
             source=file_path.name,
@@ -837,7 +833,6 @@ class GDELTCleaner:
             step_counts=step_counts,
             columns_in=columns_in,
             columns_out=columns_out,
-            column_names=column_names,
         )
 
     def _file_marker(
@@ -979,51 +974,6 @@ class GDELTCleaner:
                 f"{step} didn't run on {n} file(s): they lack a column it reads "
                 f"({columns}), most likely pruned by converter.output_columns. Those files "
                 f"are {left}."
-            )
-
-    def _warn_legacy_schema(self, reports: list[FileReport]) -> None:
-        """
-        Warn when an output directory still holds pre-0.12 output
-        (`<stem>_filtered.parquet`, from the stage's `filter` days) whose
-        columns differ from the files this run wrote. After upgrading, a
-        run limited by --start-date/--end-date cleans only its own days
-        again, so the errata's *_original columns land in some files only:
-        polars then refuses the directory as one dataset, and pandas and
-        pyarrow drop the columns some files lack. Costs a directory listing
-        and one footer read per output directory.
-        """
-        written = next((r for r in reports if r.output and r.column_names), None)
-        if written is None:
-            return
-        for folder, recursive in (
-            (self.output_folder, False), (self.historical_output_folder, True)
-        ):
-            if folder is None or not folder.is_dir():
-                continue
-            pattern = "*_filtered.parquet"
-            legacy = sorted(folder.rglob(pattern) if recursive else folder.glob(pattern))
-            if not legacy:
-                continue
-            try:
-                old = set(read_parquet_schema(legacy[0]))
-            except Exception as e:
-                logger.debug(f"Could not read the schema of {legacy[0]}: {e}")
-                continue
-            new = set(written.column_names)
-            if old == new:
-                continue
-            differences = []
-            if new - old:
-                differences.append(f"lacks {sorted(new - old)}")
-            if old - new:
-                differences.append(f"has {sorted(old - new)} besides")
-            logger.warning(
-                f"{folder} still holds {len(legacy)} file(s) of pre-0.12 output "
-                f"(*_filtered.parquet), whose columns differ from this run's files: "
-                f"{legacy[0].name} {' and '.join(differences)}. Until they're cleaned "
-                f"again, polars refuses to read the directory as one dataset and pandas "
-                f"and pyarrow drop the columns some files lack. A clean run covering their "
-                f"dates replaces them; remove any whose converted file is gone."
             )
 
     def _reserve_audit_path(self, started_at: datetime) -> Path:
@@ -1339,26 +1289,6 @@ class GDELTCleaner:
                         f"directory {out} is, or sits inside, input directory {inp}. "
                         f"{advice}"
                     )
-
-    @staticmethod
-    def _remove_legacy_output(output_path: Path) -> None:
-        """
-        Remove the same source's pre-0.12 output (`<stem>_filtered.parquet`,
-        written by the stage when it was called `filter`) next to the file
-        just written. Both would otherwise sit in one directory holding the
-        same day's rows, and every reader globs `*.parquet`, so a sample
-        would count that day twice. Only ever called after the new file is
-        in place, so a failed run never loses the old copy.
-        """
-        legacy = output_path.with_name(
-            output_path.name.replace("_cleaned.parquet", "_filtered.parquet")
-        )
-        if legacy != output_path and legacy.exists():
-            try:
-                legacy.unlink()
-                logger.debug(f"Removed pre-0.12 output superseded by {output_path.name}")
-            except OSError as e:
-                logger.warning(f"Could not remove superseded {legacy.name}: {e}")
 
     def _delete_source(self, parquet_path: Path) -> None:
         """

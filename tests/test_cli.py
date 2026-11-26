@@ -49,14 +49,14 @@ class TestDatasetFlag:
         args = parser.parse_args(["scrape", "--dataset", "events-15min"])
         assert args.dataset == "events-15min"
 
-    def test_scrape_convert_filter_sample_require_dataset_flag(self):
+    def test_scrape_convert_clean_sample_require_dataset_flag(self):
         # No default: a silent fallback to "events" is exactly the
         # footgun events-15min's existence made real: someone meaning
         # to opt into the finer, slower dataset who forgets --dataset
         # would otherwise get the daily archive instead, with no error.
         parser = cli.build_parser()
 
-        for command in ("scrape", "convert", "filter", "sample"):
+        for command in ("scrape", "convert", "clean", "sample"):
             extra = ["--mode", "indexed"] if command == "sample" else []
             with pytest.raises(SystemExit):
                 parser.parse_args([command, *extra])
@@ -331,7 +331,7 @@ class TestOrderFlag:
         parser = cli.build_parser()
         assert parser.parse_args(["scrape", "--dataset", "events"]).order == "asc"
         assert parser.parse_args(["convert", "--dataset", "events"]).order == "asc"
-        assert parser.parse_args(["filter", "--dataset", "events"]).order == "asc"
+        assert parser.parse_args(["clean", "--dataset", "events"]).order == "asc"
 
     def test_desc_is_accepted(self):
         parser = cli.build_parser()
@@ -342,7 +342,7 @@ class TestOrderFlag:
             ["convert", "--dataset", "events", "--order", "desc"]
         ).order == "desc"
         assert parser.parse_args(
-            ["filter", "--dataset", "events", "--order", "desc"]
+            ["clean", "--dataset", "events", "--order", "desc"]
         ).order == "desc"
 
     def test_invalid_choice_is_rejected(self):
@@ -1341,7 +1341,7 @@ class TestRunSamplingCmdSource:
         }
         args = argparse.Namespace(
             dataset="events-reduced", mode="calendar", source="converted",
-            per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            per_period=10, period=None, date_column=None, seed=42,
             replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=None,
             export_format="parquet", start_date=None, end_date=None,
@@ -1374,7 +1374,7 @@ class TestRunSamplingCmdSource:
 
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
-            per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            per_period=10, period=None, date_column=None, seed=42,
             replace=False, provenance=False,
             out=str(tmp_path / "o.parquet"), columns=["GlobalEventID"],
             export_format="parquet", start_date=None, end_date=None,
@@ -1760,7 +1760,7 @@ class TestRunSamplingCmdReplace:
     def test_replace_rejected_for_calendar_mode(self, tmp_path):
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
-            per_day=None, per_period=10, period=None, date_column=None, seed=42,
+            per_period=10, period=None, date_column=None, seed=42,
             replace=True, provenance=False, stratify=None,
             out=str(tmp_path / "o.parquet"), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -2014,7 +2014,7 @@ class TestStrataSidecar:
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
-            per_day=None, per_period=2, period=None, date_column=None, seed=42,
+            per_period=2, period=None, date_column=None, seed=42,
             replace=False, provenance=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -2084,7 +2084,7 @@ class TestStrataSidecar:
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
-            per_day=None, per_period=2, period=None, date_column=None, seed=42,
+            per_period=2, period=None, date_column=None, seed=42,
             replace=False, provenance=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -2180,7 +2180,7 @@ class TestStrataSidecar:
         out = tmp_path / "o.parquet"
         args = argparse.Namespace(
             dataset="events", mode="calendar", source="cleaned",
-            per_day=None, per_period=2, period=None, date_column=None, seed=42,
+            per_period=2, period=None, date_column=None, seed=42,
             replace=False, provenance=False, stratify=None,
             out=str(out), columns=None, export_format="parquet",
             start_date=None, end_date=None,
@@ -3537,9 +3537,9 @@ class TestCliReferenceDocsSync:
 
     @classmethod
     def _subcommands(cls):
-        # argparse registers a subcommand's aliases (clean's deprecated
-        # `filter`) as extra keys pointing at the same parser; each parser
-        # is documented once, under its primary name, which comes first.
+        # argparse registers a subcommand's aliases as extra keys pointing
+        # at the same parser; each parser is documented once, under its
+        # primary name, which comes first.
         parser = cli.build_parser()
         subparsers_action = next(
             a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
@@ -3550,9 +3550,11 @@ class TestCliReferenceDocsSync:
                 primary[name] = sub
         return parser, primary
 
-    def test_deprecated_filter_alias_is_mentioned_in_the_clean_section(self):
+    def test_every_removed_name_is_listed_in_the_clean_section(self):
         section = self._section(self._docs_text(), "`gdeltforge clean`")
-        assert "gdeltforge filter" in section
+        for old, new in cli._REMOVED_CLI_NAMES.values():
+            assert old.strip("`") in section
+            assert new.strip("`") in section
 
     def test_every_subcommand_has_its_own_section(self):
         _, subcommands = self._subcommands()
@@ -3621,9 +3623,7 @@ class TestCliReferenceDocsSync:
         # be the same set of values as the real choices= argparse
         # enforces, not just the same flag name. Order-insensitive:
         # argparse's choices= is a list for iteration, not a promise
-        # about display order, and sample's own choices=["indexed",
-        # "filtered", "daily"] already documents in a different order
-        # ("indexed,daily,filtered") without that being a real bug.
+        # about display order.
         _, subcommands = self._subcommands()
         text = self._docs_text()
         for name, subparser in subcommands.items():
@@ -3793,28 +3793,61 @@ class TestIoMaxConcurrentReads:
         assert seen["value"] is None
 
 
-class TestDeprecatedFilterNames:
-    """The clean stage's pre-0.12 names keep working through 0.12.x, each
-    with a deprecation warning: the `filter` command and `--source filtered`."""
+class TestRemovedFilterNames:
+    """Names deprecated in 0.12.0 and removed in 0.20.0: argparse rejects
+    each (exit 2), and a line after its error names the replacement."""
 
-    def test_filter_command_still_runs_the_clean_stage(self, monkeypatch, caplog):
-        monkeypatch.setattr(sys, "argv", ["gdeltforge", "filter", "--dataset", "events"])
+    @staticmethod
+    def _run(monkeypatch, capsys, *argv):
+        monkeypatch.setattr(sys, "argv", ["gdeltforge", *argv])
         monkeypatch.setattr(cli, "load_config", lambda path: {})
-        ran = {}
-        monkeypatch.setattr(cli, "run_clean_cmd", lambda config, args: ran.setdefault("yes", True))
-        with caplog.at_level("WARNING"):
+        with pytest.raises(SystemExit) as excinfo:
             cli.main()
-        assert ran == {"yes": True}
-        assert any("`gdeltforge filter` is deprecated" in r.message for r in caplog.records)
+        assert excinfo.value.code == 2
+        return capsys.readouterr().err
 
-    def test_source_filtered_is_read_as_cleaned(self, caplog):
-        args = cli.build_parser().parse_args(
-            ["aggregate", "--dataset", "gkg-v2", "--source", "filtered"]
+    @pytest.mark.parametrize("argv, hint", [
+        (["filter", "--dataset", "events"],
+         "`gdeltforge filter` was removed in 0.20.0; use `gdeltforge clean`."),
+        (["--config", "x.yaml", "filter", "--dataset", "events"],
+         "`gdeltforge filter` was removed in 0.20.0; use `gdeltforge clean`."),
+        (["aggregate", "--dataset", "gkg-v2", "--source", "filtered"],
+         "--source filtered was removed in 0.20.0; use --source cleaned."),
+        (["crossref", "--source=filtered"],
+         "--source filtered was removed in 0.20.0; use --source cleaned."),
+        (["sample", "--dataset", "events", "--mode", "daily"],
+         "--mode daily was removed in 0.20.0; use --mode calendar."),
+        (["sample", "--dataset", "events", "--mode", "calendar", "--per-day", "5"],
+         "--per-day was removed in 0.20.0; use --per-period."),
+    ])
+    def test_a_removed_name_is_refused_naming_its_replacement(
+        self, monkeypatch, capsys, argv, hint
+    ):
+        err = self._run(monkeypatch, capsys, *argv)
+        assert f"gdeltforge: {hint}" in err
+
+    def test_every_removed_name_in_one_command_gets_its_line(self, monkeypatch, capsys):
+        err = self._run(
+            monkeypatch, capsys,
+            "sample", "--dataset", "events", "--mode", "daily", "--per-day", "5",
         )
-        with caplog.at_level("WARNING"):
-            cli._migrate_deprecated_args(args)
-        assert args.source == "cleaned"
-        assert any("--source filtered is deprecated" in r.message for r in caplog.records)
+        assert "--mode daily was removed" in err
+        assert "--per-day was removed" in err
+
+    def test_an_unrelated_parse_error_gets_no_hint(self, monkeypatch, capsys):
+        # `filtered` as a sampling mode and as a --filter value are current
+        # names; the missing --dataset is what fails.
+        err = self._run(
+            monkeypatch, capsys,
+            "sample", "--mode", "filtered", "--filter", "filtered",
+        )
+        assert "was removed in 0.20.0" not in err
+
+    def test_a_valid_command_still_parses(self):
+        args = cli.build_parser().parse_args(
+            ["sample", "--dataset", "events", "--mode", "filtered", "--filter", "{}"]
+        )
+        assert args.mode == "filtered"
 
 
 class TestFilterRepeatedKeys:

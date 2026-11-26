@@ -740,23 +740,49 @@ def run_convert_cmd(config: dict, args: argparse.Namespace) -> None:
         )
 
 
-def _migrate_deprecated_args(args: argparse.Namespace) -> None:
+# Names deprecated in 0.12.0 and removed in 0.20.0: (option, value) -> the
+# replacement. A value of None matches the option alone; the command is
+# keyed as ("", "filter").
+_REMOVED_CLI_NAMES: dict[tuple[str, str | None], tuple[str, str]] = {
+    ("", "filter"): ("`gdeltforge filter`", "`gdeltforge clean`"),
+    ("--source", "filtered"): ("--source filtered", "--source cleaned"),
+    ("--mode", "daily"): ("--mode daily", "--mode calendar"),
+    ("--per-day", None): ("--per-day", "--per-period"),
+}
+
+
+def _removed_name_hint(argv: list[str]) -> str | None:
     """
-    Translate the clean stage's pre-0.12 CLI names, with a warning: the
-    `filter` command (an argparse alias of `clean`) and `--source filtered`
-    (sample/aggregate/crossref) both keep working through 0.12.x.
+    The line to print after argparse rejected argv, when what it rejected
+    is a name removed in 0.20.0; None otherwise. Read only once parsing has
+    already failed, so it never changes what a valid command does.
     """
-    if args.command == "filter":
-        logger.warning(
-            "`gdeltforge filter` is deprecated: the stage is now `gdeltforge clean`. "
-            "The old name will stop working in a future release."
-        )
-    if getattr(args, "source", None) == "filtered":
-        logger.warning(
-            "--source filtered is deprecated: use --source cleaned. "
-            "The old value will stop working in a future release."
-        )
-        args.source = "cleaned"
+    # The command is the first token that isn't an option or --config's value.
+    command = None
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+        elif token == "--config":
+            skip = True
+        elif not token.startswith("-"):
+            command = token
+            break
+    found: list[tuple[str, str]] = []
+    if command == "filter":
+        found.append(_REMOVED_CLI_NAMES[("", "filter")])
+    for i, token in enumerate(argv):
+        option, eq, value = token.partition("=")
+        if not eq:
+            value = argv[i + 1] if i + 1 < len(argv) else ""
+        for (name, removed_value), names in _REMOVED_CLI_NAMES.items():
+            if name and option == name and removed_value in (None, value):
+                found.append(names)
+    if not found:
+        return None
+    return "\n".join(
+        f"gdeltforge: {old} was removed in 0.20.0; use {new}." for old, new in found
+    )
 
 
 def run_clean_cmd(config: dict, args: argparse.Namespace) -> None:
@@ -819,12 +845,12 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # row count: --mode indexed already has one (FileIndex.total_rows),
     # and plain --mode filtered gets one via a first counting pass (see
     # FilteredSampler._get_random_sample_with_replacement). --mode
-    # calendar/daily and --stratify reservoir-sample many groups off one
+    # calendar and --stratify reservoir-sample many groups off one
     # shared accept-probability trick that doesn't generalize to
     # independent with-replacement draws without a materially different,
     # more expensive algorithm; not implemented yet (tracked in the
     # roadmap), so rejected here rather than silently ignored.
-    if args.replace and (args.mode in ("calendar", "daily") or args.stratify):
+    if args.replace and (args.mode == "calendar" or args.stratify):
         raise ValueError(
             "--replace is only supported for --mode indexed and --mode filtered "
             "(without --stratify); calendar and stratified with-replacement "
@@ -836,7 +862,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # --per-period or --n-per-group. Warned, not rejected: a script that
     # passes -n to either ran without complaint before.
     per_group = (
-        "--per-period" if args.mode in ("calendar", "daily")
+        "--per-period" if args.mode == "calendar"
         else "--n-per-group" if args.mode == "filtered" and args.stratify
         else None
     )
@@ -911,7 +937,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
             )
 
     quota_file = getattr(args, "quota_file", None)
-    if quota_file and not (args.mode in ("calendar", "daily") or args.stratify):
+    if quota_file and not (args.mode == "calendar" or args.stratify):
         raise ValueError(
             "--quota-file sets the rows per group: it applies to --mode calendar and "
             "to --mode filtered with --stratify."
@@ -959,25 +985,10 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
     # -----------------------------
     # Calendar Sampling
     # -----------------------------
-    if args.mode in ("calendar", "daily"):
-        if args.mode == "daily":
-            if args.period is not None:
-                raise ValueError(
-                    "--period isn't accepted with the deprecated --mode daily "
-                    "(ambiguous about which was meant); use --mode calendar instead"
-                )
-            logger.warning(
-                "--mode daily is deprecated; use --mode calendar (period=day is "
-                "the default, so --mode calendar alone behaves the same way)"
-            )
-            period = "day"
-        else:
-            period = args.period or "day"
+    if args.mode == "calendar":
+        period = args.period or "day"
 
-        if args.per_day is not None:
-            logger.warning("--per-day is deprecated; use --per-period instead")
-            samples_per_period = args.per_day
-        elif args.per_period is not None:
+        if args.per_period is not None:
             samples_per_period = args.per_period
         else:
             # A period the quota file doesn't list draws nothing, unless
@@ -1019,7 +1030,7 @@ def run_sampling_cmd(config: dict, args: argparse.Namespace) -> None:
                 # null when only the quota file gives counts.
                 "per_period": (
                     None if quotas is not None and args.per_period is None
-                    and args.per_day is None else samples_per_period
+                    else samples_per_period
                 ),
                 "quota_file": quota_file, "quotas": quotas,
             },
@@ -1504,12 +1515,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ----------------------------------------------------
-    # clean (formerly filter, still accepted as a deprecated alias)
+    # clean
     # ----------------------------------------------------
     clean_ = subparsers.add_parser(
-        "clean", aliases=["filter"],
-        help="Clean converted parquet: gdeltforge's data-quality stage "
-             "(`filter` is its deprecated pre-0.12 name)",
+        "clean",
+        help="Clean converted parquet: gdeltforge's data-quality stage",
     )
     clean_.add_argument(
         "--dataset",
@@ -1616,12 +1626,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     aggregate.add_argument(
         "--source",
-        choices=["cleaned", "converted", "filtered"],
+        choices=["cleaned", "converted"],
         default="cleaned",
         help="Which stage's output to aggregate from: 'cleaned' (default, "
              "after the clean command) or 'converted' (raw parquet, before "
-             "cleaning); 'filtered' is a deprecated alias of 'cleaned'. "
-             "Recorded as part of this run's resumability "
+             "cleaning). Recorded as part of this run's resumability "
              "fingerprint, so switching source for an already-aggregated "
              "period reprocesses and overwrites it rather than mixing the two"
     )
@@ -1701,21 +1710,19 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument(
         "--mode",
         required=True,
-        choices=["indexed", "filtered", "calendar", "daily"],
-        help="Sampling strategy. 'daily' is a deprecated alias for "
-             "'calendar' (period=day)"
+        choices=["indexed", "filtered", "calendar"],
+        help="Sampling strategy"
     )
     sample.add_argument(
         "--source",
-        choices=["cleaned", "converted", "aggregated", "filtered"],
+        choices=["cleaned", "converted", "aggregated"],
         default="cleaned",
         help="Which stage's output to sample from: 'cleaned' (default, "
              "after the clean command), 'converted' (raw parquet, "
              "before cleaning), or 'aggregated' (after `gdeltforge "
              "aggregate`; --dataset must be gkg-v2/mentions/events-15min, "
              "and --period picks which of its day/month/year directories "
-             "to read, default 'day'). 'filtered' is a deprecated alias "
-             "of 'cleaned'"
+             "to read, default 'day')"
     )
     sample.add_argument(
         "-n", type=int, default=None,
@@ -1757,16 +1764,11 @@ def build_parser() -> argparse.ArgumentParser:
              "(default 0)"
     )
     sample.add_argument(
-        "--per-day", type=int, default=None,
-        help="Deprecated alias for --per-period"
-    )
-    sample.add_argument(
         "--period",
         choices=["day", "month", "year"],
         default=None,
         help="Two independent uses, default 'day' for both: in --mode calendar, "
-             "the calendar period to group by (not accepted alongside the "
-             "deprecated --mode daily); with --source aggregated, which of the "
+             "the calendar period to group by; with --source aggregated, which of the "
              "day/month/year aggregated directories to read, for any --mode. "
              "The two combine naturally when both apply, e.g. --mode calendar "
              "--period month --source aggregated reads the month-aggregated "
@@ -1879,13 +1881,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     crossref.add_argument(
         "--source",
-        choices=["cleaned", "converted", "aggregated", "filtered"],
+        choices=["cleaned", "converted", "aggregated"],
         default="cleaned",
         help="Which stage's GKG/Mentions output to read from (default: cleaned; "
              "'aggregated' reads `gdeltforge aggregate`'s Mentions and GKG 2.1 output, "
              "--gkg-version v2 and auto only, auto reading GKG 1.0 from its cleaned "
-             "directory; "
-             "'filtered' is a deprecated alias of 'cleaned')"
+             "directory)"
     )
     crossref.add_argument(
         "--period",
@@ -1978,7 +1979,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 # The commands that read Parquet with polars, in this process or in its
 # workers: an invalid exported POLARS_MAX_CONCURRENT_SCANS stops them all.
-_PARQUET_READING_COMMANDS = frozenset({"clean", "filter", "aggregate", "sample", "crossref"})
+_PARQUET_READING_COMMANDS = frozenset({"clean", "aggregate", "sample", "crossref"})
 
 
 def _apply_memory_map(config: dict, command: str) -> bool:
@@ -2144,7 +2145,15 @@ def main() -> None:
     if sys.stdout.isatty() and "--version" not in sys.argv:
         safe_print(compact_emblem(__version__))
 
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse has printed its own error; add what replaced a removed name.
+        hint = _removed_name_hint(argv) if exc.code == 2 else None
+        if hint:
+            print(hint, file=sys.stderr)
+        raise
     _log_to_file(args)
 
     try:
@@ -2153,7 +2162,6 @@ def main() -> None:
             return
 
         config = load_config(args.config)
-        _migrate_deprecated_args(args)
         if args.command in _PARQUET_READING_COMMANDS:
             exported_scan_limit()
             _warn_if_unsupported_polars(pl.__version__)
@@ -2170,7 +2178,7 @@ def main() -> None:
         elif args.command == "convert":
             run_convert_cmd(config, args)
 
-        elif args.command in ("clean", "filter"):
+        elif args.command == "clean":
             run_clean_cmd(config, args)
 
         elif args.command == "aggregate":

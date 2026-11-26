@@ -74,7 +74,7 @@ The key names don't nest, but the example paths do: `settings.example.yaml` poin
 | `downloaded_data_directory` | scrape | Where ZIP files land |
 | `unzipped_data_directory` | convert | Scratch space for extracted CSVs (cleaned up automatically unless `converter.keep_unzipped` is true) |
 | `parquet_data_directory` | convert, clean, sample | Flat Parquet output |
-| `cleaned_data_directory` | clean, sample | Flat cleaned Parquet output (`filtered_data_directory` before 0.12, still read with a deprecation warning) |
+| `cleaned_data_directory` | clean, sample | Flat cleaned Parquet output (`filtered_data_directory` before 0.12; the old name is refused since 0.20.0) |
 | `clean_runs_directory` | clean | Where each `clean` run writes its audit. Unset (the default), a sibling of `cleaned_data_directory` with `_runs` added to its name. Must sit outside every data directory; see [the run audit](data-cleaning.md#the-run-audit) |
 
 `index_directory` (default `./data/index`) is one key for every dataset, unprefixed: where `sample` keeps its [saved file index](cli-reference.md#saved-file-index), one file per source directory. `null` keeps none. It must sit outside every data directory.
@@ -199,7 +199,7 @@ A marker sits beside the file a stage read, in that stage's input directory: `co
 
 ## `clean`
 
-The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:` keeps loading, read as `clean:` with a deprecation warning; setting both is an error.
+The config section of the `clean` stage, called `filter:` before 0.12.0. [Data Cleaning](data-cleaning.md) explains what the stage does, in what order, and why. A settings file that still uses `filter:`, or a `*filtered_data_directory`/`*filtered_historical_directory` path key, stops loading since 0.20.0 with an error naming each replacement.
 
 The section is checked before any file is read. An unknown key under `clean:` is ignored with a warning. A name under `errata`, `normalize`, `places` or `derive` that isn't a dataset, settings for a dataset that aren't a mapping, an empty (null) block, `errata` or `places` for a dataset other than `gdelt_event`/`gdelt_event_15min`, `errata.gdelt_event_15min.dateadded_blank`, a `labels` value that isn't a list, a derived column whose source the dataset doesn't declare, or a `labels` column listed twice fails the run, naming the setting. An empty block is what YAML makes of one whose lines are all commented out; for `errata` it would otherwise switch the default repair off. Write `{}` to keep the defaults, or turn a rule off by name (`date_1920: false`).
 
@@ -277,7 +277,7 @@ Three new base keys per eligible dataset, `dataset_path_key`-prefixed the same w
 | `aggregated_month_data_directory` | Month-granularity aggregated output |
 | `aggregated_year_data_directory` | Year-granularity aggregated output |
 
-`aggregate --source {converted,cleaned}` (default `cleaned`, matching `sample`'s own default; `filtered` is the deprecated pre-0.12 name) picks which upstream directory to build the aggregate *from*; the result always writes to the one canonical directory per period above, regardless of which source built it. Re-running `aggregate` with a different `--source` for an already-aggregated period is detected (`source` is part of the resumability fingerprint below) and overwrites it rather than silently mixing the two, so there's no need for a separate directory per source the way `cleaned_historical_directory`/`parquet_historical_directory` need one each for Events.
+`aggregate --source {converted,cleaned}` (default `cleaned`, matching `sample`'s own default) picks which upstream directory to build the aggregate *from*; the result always writes to the one canonical directory per period above, regardless of which source built it. Re-running `aggregate` with a different `--source` for an already-aggregated period is detected (`source` is part of the resumability fingerprint below) and overwrites it rather than silently mixing the two, so there's no need for a separate directory per source the way `cleaned_historical_directory`/`parquet_historical_directory` need one each for Events.
 
 Aggregated output files are named plainly by the period they cover (`20200101.parquet`, `202001.parquet`, `2020.parquet`), the same convention Events' own historical yearly/monthly archive already uses. This is deliberate: it means the existing generic `parse_file_date` (not the 15-minute `parse_gdeltv2_file_date` these datasets' *source* files use) reads them back with no code changes, so `sample --source aggregated`'s own `--start-date`/`--end-date` narrowing and file ordering reuse the identical machinery every other stage already has.
 
