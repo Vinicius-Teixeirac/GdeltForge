@@ -266,8 +266,8 @@ All sampling modes read from the cleaned directory by default; pass `--source co
 | `--stream {english,translated}` | all | GDELT 2.0 stream to sample (default `english`); see [`--stream`](#-stream) |
 | `--mode {indexed,filtered,calendar}` | all | Sampling strategy (required) |
 | `--source {cleaned,converted,aggregated}` | all | Which stage's output to read from (default `cleaned`). `aggregated` reads `gdeltforge aggregate`'s output; combine with `--period` to pick which granularity |
-| `-n N` | indexed, filtered | Number of rows to sample (default 1000). Not with `--stratify`, where `--n-per-group` sizes the sample: given there, or in calendar mode, it's ignored with a warning |
-| `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar`/`daily` and for `--stratify` |
+| `-n N` | indexed, filtered | Number of rows to sample (default 1000). A filtered draw matching fewer rows returns all of them. Not with `--stratify`, where `--n-per-group` sizes the sample: given there, or in calendar mode, it's ignored with a warning |
+| `--replace` | indexed, filtered (without `--stratify`) | Sample with replacement: duplicate rows are possible, and `n` may exceed the total row count. Off by default; rejected for `--mode calendar` and for `--stratify` |
 | `--seed N` | all | RNG seed (default 42) |
 | `--provenance` | all | Add `SourceFile` and `SourceRow` to every sampled row: the converted file it comes from and its 0-based position there, the 15-minute file for `--source aggregated` (see [Row provenance](#row-provenance)). Off by default |
 | `--file-index PATH` | all | The saved file index to read and update, in place of the one under `paths.index_directory` (see [Saved file index](#saved-file-index)) |
